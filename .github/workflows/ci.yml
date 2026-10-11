@@ -42,6 +42,8 @@ jobs:
         run: scripts/test-check-commit-subject.sh
       - name: Forbidden-file check tests
         run: scripts/test-check-forbidden-files.sh
+      - name: Watchdog tests
+        run: python3 -I scripts/spike/test-watchdog.py
       - name: ShellCheck
         run: |
           sudo apt-get install -y shellcheck

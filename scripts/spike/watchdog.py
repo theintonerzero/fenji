@@ -1,0 +1,607 @@
+#!/usr/bin/env python3
+"""Driver watchdog for scripts/spike/run-client.sh (M1 Task 9; first used locally in M0's runs 5–9).
+
+Host side, best effort. While a sandboxed run is active it polls about every 0.5 s. At the first
+sign of driver activity it freezes every process in the sandbox (SIGSTOP), records what it saw,
+kills the whole sandbox (SIGKILL: the PID namespace's init, every member, then bwrap) and exits 3.
+That is a gate event: stop all runs and report BLOCKED. It never reads or analyses a driver file
+beyond stat() and a SHA-256 for identification.
+
+  watchdog.py baseline --root S --out OUT
+      Snapshot of every *.sys under S and of the prefix's service keys -> OUT/watchdog-baseline.json.
+  watchdog.py watch --root S --out OUT --sandbox-pid PID --log FILE [--interval 0.5]
+      PID is the isolated-run.sh wrapper started in the background (it execs bwrap). Once the
+      sandbox's PID namespace exists the watchdog arms itself and creates OUT/.go, which the command
+      inside waits for before it starts the client. Exit 0: the sandbox ended, no sign seen.
+      Exit 3: gate event. Exit 4: the watchdog itself failed (the sandbox is killed then too).
+  watchdog.py scanlog --root S --out OUT FILE...
+      Runs only the log rules over finished logs (to test them against r1-r4), prints the hits.
+
+Signs (any one triggers):
+  S1 a *.sys under S that isn't in the baseline, or a baseline one whose identity changed: a regular
+     file's size, mtime or inode, or a symlink's target or the target file's size, mtime or inode
+     (sys_identity; a link merely re-created by Proton's prefix re-sync is not a change); any *.sys
+     in the sandbox's own tmpfs mounts, seen through /proc/<pid>/root of a sandbox process.
+  S2 a winedevice.exe process in the sandbox's PID namespace that started after the client
+     (gujianol.exe) started. Those started before it host Wine's own drivers (the baseline).
+  S3 in the Wine log, read incrementally: a .sys module loaded native (not a Wine builtin); a
+     FindResource of the named resource type "PE" (the embedded driver's type, PE/144); Nt/ZwLoadDriver
+     for a service that isn't in the baseline; a service key created by services.exe that isn't in
+     the baseline (needs +reg, r1-r6); CreateService for a service that isn't in the baseline
+     (needs +service, r7 on); the strings ProcessProtect, AGTDriver or AurogonGameTrust.
+  Notes only (no trigger): a builtin .sys outside the baseline set; LoadDriver for a baseline service
+  (Wine's own winebth fails to load in every run), the name read from the same line or, when a nested
+  Wine trace split the message, from a header-less continuation in the next 5 lines (r7); LoadDriver
+  logged before the client's process creation (controller ruling after r7). Everything else,
+  including a LoadDriver with no readable name after the client's creation, triggers.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import signal
+import stat
+import sys
+import time
+
+HOST_HOME = os.path.realpath(os.path.expanduser("~"))
+CLIENT = "gujianol.exe"
+WINEDEVICE = "winedevice.exe"
+BASELINE_SYS = {
+    "win32k.sys", "dxgkrnl.sys", "dxgmms1.sys", "mountmgr.sys", "nsiproxy.sys", "ndis.sys",
+    "hidparse.sys", "winebus.sys", "hidclass.sys", "winehid.sys", "wineusb.sys",
+}
+
+# Every pattern starts with a literal, so the regex engine can skip ahead fast (logs can be GBs).
+R_ANY_SYS = re.compile(rb'Loaded L"([^"\n]*\.(?:sys|SYS|Sys))" at [0-9A-Fa-f]+: (\w+)')
+R_RES_PE = re.compile(rb'FindResource\w*\s+[0-9A-Fa-f]+\s+L?"[Pp][Ee]"')
+R_LOADDRIVER = re.compile(rb"LoadDriver[^\n]*")
+R_SVC_NAME = re.compile(rb'Services(?:\\)+([^"\\\n]+)', re.I)
+DRIVER_STRINGS = (b"processprotect", b"agtdriver", b"aurogongametrust")
+R_SERVICES_PID = re.compile(rb'NtCreateUserProcess L"[^"\n]*\\services\.exe" pid ([0-9a-f]+) tid')
+R_CREATEKEY = re.compile(rb':trace:reg:NtCreateKey \(0x[0-9a-f]+,L"([^"\\\n]+)"')  # needs +reg
+R_HEADER = re.compile(rb"\d+\.\d+:[0-9a-f]+:[0-9a-f]+:")  # "<time>:<pid>:<tid>:" (+timestamp,+pid,+tid)
+# The client's creation (+process): steam.exe's CreateProcessInternalW, or NtCreateUserProcess.
+R_CLIENT_CREATE = re.compile(rb"(?:CreateProcessInternalW|NtCreateUserProcess) [^\n]*gujianol\.exe", re.I)
+# +service (r7 on, replacing +reg): sechost's "CreateServiceW <scm> L"name" ..." and services.exe's
+# "svcctl_CreateServiceW (L"name", ...)". The first quoted string on the line is the service name.
+R_CREATESERVICE = re.compile(rb'CreateService\w*[^"\n]*"([^"\n]*)"|CreateService\w*[^\n]*')
+
+
+def now():
+    return time.strftime("%Y-%m-%dT%H:%M:%S") + ("%.3f" % (time.time() % 1))[1:]
+
+
+class Log:
+    def __init__(self, path):
+        self.f = open(path, "a", buffering=1)
+
+    def __call__(self, msg):
+        self.f.write(f"{now()} {msg}\n")
+
+
+# --- *.sys files -------------------------------------------------------------------------------
+def sys_identity(path):
+    """What a *.sys entry is, for comparing snapshots. A symlink is its target plus the target
+    file's size, mtime and inode: Proton re-creates its links to Wine's built-in drivers at every
+    prefix re-sync, which renews the link itself but not what it points to (the owner's run look-1,
+    2026-10-12). A regular file is its own size, mtime and inode."""
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        target = os.readlink(path)
+        try:
+            t = os.stat(path)
+        except OSError:
+            return ["link", target, None, None, None]
+        return ["link", target, t.st_size, t.st_mtime_ns, t.st_ino]
+    return ["file", None, st.st_size, st.st_mtime_ns, st.st_ino]
+
+
+def scan_sys(root, prune=()):
+    found = {}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        if prune:
+            dirnames[:] = [d for d in dirnames if os.path.join(dirpath, d) not in prune]
+        for f in filenames:
+            if f.lower().endswith(".sys"):
+                p = os.path.join(dirpath, f)
+                try:
+                    found[p] = sys_identity(p)
+                except OSError:
+                    continue
+    return found
+
+
+def compare_sys(base, cur):
+    """S1 findings between two scan_sys() snapshots: new *.sys entries, and changed ones."""
+    out = []
+    for p, ident in sorted(cur.items()):
+        if p not in base:
+            out.append(("S1 new .sys file", p, ident))
+        elif base[p] != ident:
+            out.append(("S1 changed .sys file", p, {"before": base[p], "after": ident}))
+    return out
+
+
+def service_keys(prefix_system_reg):
+    names = set()
+    try:
+        with open(prefix_system_reg, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = re.match(r"\[System\\\\ControlSet00\d\\\\Services\\\\([^\]\\]+)\]", line)
+                if m:
+                    names.add(m.group(1).lower())
+    except OSError:
+        pass
+    return names
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+# --- processes ---------------------------------------------------------------------------------
+def read(path, mode="r"):
+    with open(path, mode) as fh:
+        return fh.read()
+
+
+def pidns(pid):
+    try:
+        return os.readlink(f"/proc/{pid}/ns/pid")
+    except OSError:
+        return None
+
+
+def children(pid):
+    try:
+        return [int(c) for c in read(f"/proc/{pid}/task/{pid}/children").split()]
+    except (OSError, ValueError):
+        return []
+
+
+def proc_info(pid):
+    try:
+        stat = read(f"/proc/{pid}/stat")
+        comm = read(f"/proc/{pid}/comm").strip()
+        argv = [a.decode("utf-8", "replace") for a in read(f"/proc/{pid}/cmdline", "rb").split(b"\0") if a]
+    except OSError:
+        return None
+    fields = stat[stat.rfind(")") + 2:].split()
+    return {"pid": pid, "state": fields[0], "ppid": int(fields[1]), "start": int(fields[19]),
+            "comm": comm, "argv": argv}
+
+
+def is_named(info, name):
+    a0 = info["argv"][0] if info["argv"] else ""
+    return info["comm"].lower() == name or re.split(r"[\\/]", a0)[-1].lower() == name
+
+
+def ppid_map():
+    m = {}
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try:
+                st = read(f"/proc/{d}/stat")
+                m[int(d)] = int(st[st.rfind(")") + 2:].split()[1])
+            except (OSError, ValueError, IndexError):
+                pass
+    return m
+
+
+def descendants(root):
+    """root and every process below it. The sandbox's init (bwrap's child, PID 1 in the new PID
+    namespace) reaps every orphan inside, so its subtree is the whole sandbox."""
+    kids = {}
+    for p, pp in ppid_map().items():
+        kids.setdefault(pp, []).append(p)
+    out, stack = [], [root]
+    while stack:
+        p = stack.pop()
+        out.append(p)
+        stack += kids.get(p, [])
+    return out
+
+
+def alive(pid):
+    try:
+        return read(f"/proc/{pid}/stat").split(") ", 1)[1][0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+
+# --- log rules ---------------------------------------------------------------------------------
+class LogRules:
+    def __init__(self, baseline_services):
+        self.services = set(baseline_services)
+        self.services_pids = set()
+        self.client_ts = None  # Wine timestamp of the client's process creation, once logged
+
+    def scan(self, chunk, look=b""):
+        """Returns (triggers, notes): lists of (rule, line). look: the text after chunk, if any
+        (held back by Tail), used only as look-ahead for messages split across lines."""
+        trig, notes = [], []
+
+        def line_at(pos):
+            s = chunk.rfind(b"\n", 0, pos) + 1
+            e = chunk.find(b"\n", pos)
+            return chunk[s:e if e >= 0 else len(chunk)].decode("utf-8", "replace")
+
+        def pid_at(pos):  # "<time>:<pid>:<tid>:..." at the start of the line
+            s = chunk.rfind(b"\n", 0, pos) + 1
+            parts = chunk[s:pos].split(b":", 3)
+            return parts[1].decode() if len(parts) > 2 else None
+
+        def ts_at(pos):  # the Wine timestamp at the start of the line, or None
+            s = chunk.rfind(b"\n", 0, pos) + 1
+            h = R_HEADER.match(chunk, s)
+            return float(chunk[s:chunk.index(b":", s)]) if h else None
+
+        for m in R_SERVICES_PID.finditer(chunk):
+            self.services_pids.add(m.group(1).decode())
+        for m in R_CLIENT_CREATE.finditer(chunk):
+            ts = ts_at(m.start())
+            if ts is not None and (self.client_ts is None or ts < self.client_ts):
+                self.client_ts = ts
+        for m in R_ANY_SYS.finditer(chunk):
+            name = m.group(1).decode("utf-8", "replace").replace("\\\\", "\\").split("\\")[-1].lower()
+            if m.group(2).lower() != b"builtin":
+                trig.append(("S3 .sys module loaded native", line_at(m.start())))
+            elif name not in BASELINE_SYS:
+                notes.append(("builtin .sys outside the baseline set", line_at(m.start())))
+        for m in R_RES_PE.finditer(chunk):
+            trig.append(('S3 FindResource of type "PE" (embedded driver resource type)', line_at(m.start())))
+        for m in R_LOADDRIVER.finditer(chunk):
+            # Controller ruling (r7): a driver-load line logged before the client's process
+            # creation can't be the client's. The log is appended in write order, so while the
+            # creation line hasn't appeared, every earlier line predates the client.
+            ts = ts_at(m.start())
+            if ts is not None and (self.client_ts is None or ts < self.client_ts):
+                notes.append((f"LoadDriver logged at {ts:.3f}, before the client's process creation "
+                              f"({'not yet logged' if self.client_ts is None else f'{self.client_ts:.3f}'})",
+                              line_at(m.start())))
+                continue
+            n = R_SVC_NAME.search(m.group(0))
+            split = False
+            if not n:
+                # A debug message that Wine emits while formatting another one (a nested trace)
+                # splits it: the outer header ends up joined to the nested text, and the outer
+                # text follows on a later line with no header (r7: Wine's own winebth error).
+                after = chunk[m.end():m.end() + 8192] + look[:8192]
+                for ln in after.split(b"\n")[1:6]:
+                    if ln and not R_HEADER.match(ln):
+                        n = R_SVC_NAME.search(ln)
+                        if n:
+                            split = True
+                            break
+            svc = n.group(1).decode("utf-8", "replace").lower() if n else None
+            how = " (message split across lines)" if split else ""
+            if svc and svc in self.services:
+                notes.append((f"LoadDriver for baseline service {svc}{how}", line_at(m.start())))
+            else:
+                trig.append((f"S3 LoadDriver for non-baseline service {svc}{how}", line_at(m.start())))
+        low = None
+        for kw in DRIVER_STRINGS:
+            if low is None:
+                low = chunk.lower()
+            i = low.find(kw)
+            while i >= 0:
+                trig.append(("S3 driver string in log", line_at(i)))
+                i = low.find(kw, i + 1)
+        for m in R_CREATESERVICE.finditer(chunk):
+            name = m.group(1)
+            if name is None or not name.strip():
+                notes.append(("CreateService line without a service name", line_at(m.start())))
+            elif name.decode("utf-8", "replace").lower() in self.services:
+                notes.append((f"CreateService for baseline service {name.decode('utf-8', 'replace')}",
+                              line_at(m.start())))
+            else:
+                trig.append((f"S3 CreateService for non-baseline service {name.decode('utf-8', 'replace')!r}",
+                             line_at(m.start())))
+        if self.services_pids:
+            for m in R_CREATEKEY.finditer(chunk):
+                key = m.group(1).decode("utf-8", "replace")
+                if pid_at(m.start()) in self.services_pids and key.lower() not in self.services:
+                    trig.append((f"S3 services.exe created key {key!r}, not a baseline service",
+                                 line_at(m.start())))
+        return trig, notes
+
+
+class Tail:
+    HOLD = 8  # complete lines held back as look-ahead (see LogRules.scan), released on a quiet poll
+
+    def __init__(self, path):
+        self.path, self.off, self.rest, self.fh = path, 0, b"", None
+
+    def read(self, limit=16 << 20, final=False):
+        """Returns (chunk, look): complete lines to scan now, and the text held back after them,
+        which is look-ahead only (it is scanned on a later read). With final=True, or when nothing
+        new arrived (a quiet poll), the held-back complete lines are released too."""
+        if self.fh is None:
+            try:
+                self.fh = open(self.path, "rb")
+            except OSError:
+                return b"", b""
+        self.fh.seek(self.off)
+        new = self.fh.read(limit)
+        self.off += len(new)
+        data = self.rest + new
+        if final:
+            self.rest = b""
+            return data, b""
+        if not new:
+            cut = data.rfind(b"\n")
+            self.rest = data[cut + 1:]
+            return data[:cut + 1], b""
+        cut = len(data)
+        for _ in range(self.HOLD + 1):
+            cut = data.rfind(b"\n", 0, cut)
+            if cut < 0:
+                break
+        if cut < 0:
+            self.rest = data
+            return b"", b""
+        self.rest = data[cut + 1:]
+        return data[:cut + 1], self.rest
+
+
+# --- modes -------------------------------------------------------------------------------------
+def cmd_baseline(a):
+    base = {"taken": now(), "root": a.root, "sys": scan_sys(a.root),
+            "services": sorted(service_keys(os.path.join(a.root, "compat/pfx/system.reg")))}
+    with open(os.path.join(a.out, "watchdog-baseline.json"), "w") as fh:
+        json.dump(base, fh, indent=1)
+    print(f"watchdog baseline: {len(base['sys'])} .sys files, {len(base['services'])} service keys")
+
+
+def load_baseline(out):
+    with open(os.path.join(out, "watchdog-baseline.json")) as fh:
+        return json.load(fh)
+
+
+def cmd_scanlog(a):
+    services = load_baseline(a.out)["services"]
+    rc = 0
+    for f in a.files:
+        rules = LogRules(services)  # per file: the client's creation time is per run
+        with open(f, "rb") as fh:
+            trig, notes = rules.scan(fh.read())
+        for kind, line in trig:
+            print(f"{f}: TRIGGER {kind}: {line}")
+            rc = 3
+        for kind, line in notes:
+            print(f"{f}: note {kind}: {line}")
+        print(f"{f}: {len(trig)} triggers, {len(notes)} notes")
+    return rc
+
+
+def cmd_watch(a):
+    log = Log(os.path.join(a.out, "watchdog.log"))
+    base = load_baseline(a.out)
+    base_sys = base["sys"]
+    rules = LogRules(base["services"])
+    tail = Tail(a.log)
+    spid = a.sandbox_pid
+    ns = None
+    init = None
+    seen = {}
+    client_start = None
+    client_pid = None
+    notes_seen = set()
+    polls = 0
+    tmpfs_warned = False
+    log(f"watch start: sandbox pid {spid}, root {a.root}, log {a.log}, interval {a.interval}s, "
+        f"baseline {len(base_sys)} .sys / {len(base['services'])} services")
+
+    def sandbox_root_scan():
+        nonlocal tmpfs_warned
+        hits = {}
+        cands = [p for p in ([init] if init else []) + list(seen) if alive(p)]
+        for p in cands:
+            r = f"/proc/{p}/root"  # the sandbox's mount namespace, if we may look (ptrace read)
+            try:
+                os.listdir(r + "/tmp")
+            except OSError:
+                continue
+            prune = {r + d for d in [a.root] + a.binds}  # bound dirs: scanned on the host side
+            for sub in ("/tmp", "/dev/shm", "/run", "/var", HOST_HOME):
+                hits.update(scan_sys(r + sub, prune=prune))
+            return hits
+        if cands and not tmpfs_warned:
+            log("note: can't read any sandbox process's /proc/PID/root; tmpfs mounts not scanned")
+            tmpfs_warned = True
+        return hits
+
+    def check_sys():
+        out = compare_sys(base_sys, scan_sys(a.root))
+        if init:
+            for p, st in sandbox_root_scan().items():
+                out.append(("S1 .sys file in a sandbox tmpfs mount", p, st))
+        return out
+
+    def check_procs():
+        nonlocal client_start, client_pid
+        out = []
+        if not init:
+            return out
+        cur = set(descendants(init))
+        for p in cur:
+            if p not in seen:
+                info = proc_info(p)
+                if not info:
+                    continue
+                info["alive"] = True
+                seen[p] = info
+                log(f"proc + pid {p} ppid {info['ppid']} start {info['start']} comm {info['comm']!r} "
+                    f"argv {info['argv'][:4]!r}")
+                if is_named(info, CLIENT) and (client_start is None or info["start"] < client_start):
+                    client_start, client_pid = info["start"], p
+                    log(f"client detected: pid {p} start {client_start}")
+        for p, info in seen.items():
+            if info.get("alive") and p not in cur:
+                info["alive"] = False
+                log(f"proc - pid {p} comm {info['comm']!r}")
+        if client_start is not None:
+            for p, info in seen.items():
+                if info.get("alive") and is_named(info, WINEDEVICE) and info["start"] > client_start:
+                    out.append(("S2 winedevice.exe started after the client", p, info))
+        return out
+
+    def check_log(final=False):
+        out = []
+        while True:
+            chunk, look = tail.read(final=final)
+            if not chunk:
+                break
+            trig, notes = rules.scan(chunk, look)
+            out += [(k, l, None) for k, l in trig]
+            for k, l in notes:
+                if (k, l) not in notes_seen:
+                    notes_seen.add((k, l))
+                    log(f"log note: {k}: {l}")
+            if not final:
+                break
+        return out
+
+    def freeze_kill_record(found):
+        t_trig = time.time()
+        mem = descendants(init) if init else []
+        for p in mem:
+            try:
+                os.kill(p, signal.SIGSTOP)
+            except OSError:
+                pass
+        snap = []
+        for p in mem:
+            info = proc_info(p) or {"pid": p}
+            try:
+                maps = sorted({ln.split(None, 5)[5].strip() for ln in read(f"/proc/{p}/maps").splitlines()
+                               if len(ln.split(None, 5)) == 6 and ln.lower().rstrip().endswith((".sys", ".exe"))})
+            except OSError:
+                maps = []
+            info["maps_sys_exe"] = maps
+            snap.append(info)
+        for p in ([init] if init else []) + mem:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            os.kill(spid, signal.SIGKILL)
+        except OSError:
+            pass
+        left = []
+        for _ in range(50):
+            left = [p for p in descendants(init) if alive(p)] if init else []
+            if not left and not alive(spid):
+                break
+            for p in left:
+                try:
+                    os.kill(p, signal.SIGKILL)
+                except OSError:
+                    pass
+            time.sleep(0.1)
+        with open(os.path.join(a.out, "watchdog-trigger.txt"), "w") as fh:
+            fh.write(f"GATE EVENT at {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t_trig))}\n")
+            fh.write(f"client pid {client_pid} start {client_start} (clock ticks since boot)\n\n")
+            for kind, what, detail in found:
+                fh.write(f"{kind}: {what}\n")
+                if isinstance(what, str) and what.startswith("/") and os.path.isfile(what):
+                    try:
+                        fh.write(f"  sha256 {sha256(what)}\n")
+                    except OSError as e:
+                        fh.write(f"  sha256 unavailable: {e}\n")
+                if detail is not None:
+                    fh.write(f"  {json.dumps(detail, default=str)}\n")
+            fh.write("\nsandbox processes at the trigger (frozen with SIGSTOP, then SIGKILL):\n")
+            for info in snap:
+                fh.write(json.dumps(info, default=str) + "\n")
+            fh.write(f"\nprocesses left after the kill: {left}; bwrap alive: {alive(spid)}\n")
+        log(f"GATE EVENT: {found[0][0]}: {found[0][1]} -> sandbox frozen and killed; left {left}")
+
+    try:
+        while True:
+            t = time.monotonic()
+            polls += 1
+            sandbox_alive = alive(spid)
+            if init is None and sandbox_alive:
+                # The wrapper execs bwrap under the same PID; bwrap's child (also named bwrap) is
+                # PID 1 of the new PID namespace. Other children (the wrapper's process
+                # substitution for the seccomp filter) are host processes.
+                try:
+                    comm = read(f"/proc/{spid}/comm").strip()
+                except OSError:
+                    comm = ""
+                if comm == "bwrap":
+                    for c in children(spid):
+                        try:
+                            if read(f"/proc/{c}/comm").strip() == "bwrap":
+                                init = c
+                                break
+                        except OSError:
+                            pass
+                if init:
+                    ns = pidns(init) or "unreadable (init not dumpable)"
+                    log(f"armed: bwrap pid {spid}, sandbox init pid {init}, pid namespace {ns}")
+                    open(os.path.join(a.out, ".go"), "w").close()
+            found = check_sys() + check_procs() + check_log()
+            if found:
+                freeze_kill_record(found)
+                return 3
+            if not sandbox_alive:
+                found = check_sys() + check_log(final=True)
+                if found:
+                    log("sign found after the sandbox had already ended")
+                    freeze_kill_record(found)
+                    return 3
+                log(f"sandbox ended; no sign of driver activity in {polls} polls; client pid {client_pid}; "
+                    f"log bytes scanned {tail.off}; processes seen {len(seen)}")
+                return 0
+            if polls % 20 == 0:
+                live = [f"{p}:{i['comm']}" for p, i in seen.items() if i.get("alive")]
+                log(f"heartbeat: poll {polls}, log {tail.off} bytes, live {live}")
+            time.sleep(max(0.0, a.interval - (time.monotonic() - t)))
+    except BaseException as e:  # fail safe: no watchdog, no run
+        log(f"WATCHDOG FAILURE {type(e).__name__}: {e}; killing the sandbox")
+        for p in ((descendants(init) if init else []) + [spid]):
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+        raise SystemExit(4)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="mode", required=True)
+    b = sub.add_parser("baseline")
+    w = sub.add_parser("watch")
+    s = sub.add_parser("scanlog")
+    for p in (b, w, s):
+        p.add_argument("--root", required=True)
+        p.add_argument("--out", required=True)
+    w.add_argument("--sandbox-pid", type=int, required=True)
+    w.add_argument("--log", required=True)
+    w.add_argument("--interval", type=float, default=0.5)
+    w.add_argument("--bind", dest="binds", action="append", default=[],
+                   help="other dirs bound into the sandbox (pruned from the tmpfs scan)")
+    s.add_argument("files", nargs="+")
+    a = ap.parse_args()
+    a.root = os.path.realpath(a.root)
+    a.out = os.path.realpath(a.out)
+    if a.mode == "baseline":
+        cmd_baseline(a)
+        return 0
+    if a.mode == "scanlog":
+        return cmd_scanlog(a)
+    a.binds = [os.path.realpath(x) for x in a.binds]
+    return cmd_watch(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

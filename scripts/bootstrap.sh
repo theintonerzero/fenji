@@ -33,6 +33,7 @@ ENV_FILE="$HOME/.config/fenji/env.sh"
 GHIDRA_DIR="$TOOLS_DIR/ghidra_${GHIDRA_VERSION}_PUBLIC"
 DD_DIR="$TOOLS_DIR/DepotDownloader-$DEPOTDOWNLOADER_VERSION"
 UMU_DIR="$TOOLS_DIR/umu-$UMU_LAUNCHER_VERSION"
+GE_PROTON_DIR="$TOOLS_DIR/$GE_PROTON_VERSION"
 JDK_DIR="$TOOLS_DIR/jdk-$TEMURIN_VERSION"
 UNLUAC_JAR="$TOOLS_DIR/unluac/unluac_${UNLUAC_VERSION}.jar"
 MISMATCH=0
@@ -169,6 +170,7 @@ check_all() {
   report DepotDownloader "$DEPOTDOWNLOADER_VERSION" "$([ -x "$DD_DIR/DepotDownloader" ] && echo "$DEPOTDOWNLOADER_VERSION")"
   if [ "$PLATFORM" = linux ]; then
     report umu-launcher "$UMU_LAUNCHER_VERSION" "$([ -n "$(find "$UMU_DIR" -name umu-run -type f 2>/dev/null | head -n 1)" ] && echo "$UMU_LAUNCHER_VERSION")"
+    report GE-Proton "$GE_PROTON_VERSION" "$([ -x "$GE_PROTON_DIR/proton" ] && echo "$GE_PROTON_VERSION")"
     printf '  %-18s %s\n' tcpdump "$(tcpdump --version 2>&1 | head -n 1 || echo missing)"
     printf '  %-18s %s\n' tshark "$(tshark --version 2>/dev/null | head -n 1 || echo missing)"
   fi
@@ -368,6 +370,18 @@ if [ "$PLATFORM" = linux ]; then
   fi
   umu_run=$(find "$UMU_DIR" -type f -name umu-run | head -n 1)
   if [ -n "$umu_run" ]; then ln -sf "$umu_run" "$BIN_DIR/umu-run"; else warn "umu-run not found in $UMU_DIR"; fi
+  if [ "$(uname -m)" = x86_64 ] && [ ! -x "$GE_PROTON_DIR/proton" ]; then
+    log "GE-Proton $GE_PROTON_VERSION (SHA-256 verified)"
+    mkdir -p "$TOOLS_DIR"
+    tmp=$(mktemp -d "$TOOLS_DIR/.ge-proton.XXXXXX") # same filesystem, so the final mv is one rename
+    download_verified \
+      "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/${GE_PROTON_VERSION}/${GE_PROTON_VERSION}-x86_64.tar.gz" \
+      "$GE_PROTON_SHA256_x86_64" "$tmp/ge-proton.tar.gz"
+    tar -xzf "$tmp/ge-proton.tar.gz" -C "$tmp"
+    # The archive's top directory is <version>-x86_64; it is installed under the pinned name.
+    mv "$tmp/${GE_PROTON_VERSION}-x86_64" "$GE_PROTON_DIR"
+    rm -rf "$tmp"
+  fi
 fi
 
 # ---------------------------------------------------------------- 6. shell environment
