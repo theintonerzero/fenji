@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Enforces Conventional Commits 1.0.0 on the subject line.
+# Installed by scripts/bootstrap.sh via `git config core.hooksPath .githooks`.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/check-commit-subject.sh" "$(head -n 1 "$1")"

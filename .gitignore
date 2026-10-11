@@ -1,0 +1,43 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Local reverse-engineering workspace: Ghidra/REA sessions, evidence bundles, decompiled output,
+# extracted scripts, sandbox runs and stub logs. NEVER commit.
+/re/
+
+# Game content must never enter the repo (ground rule: no redistribution)
+*.exe
+*.dll
+*.sys
+*.pae
+*.vplugin
+*.vPlugin
+*.luac
+data[0-9][0-9][0-9]
+_index
+*.tab
+*.bk2
+*.bank
+*.fsb
+*.pcap
+*.pcapng
+*.gpr
+*.rep/
+*.hop
+*.i64
+*.idb
+
+# Local server state and secrets
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+secrets.env
+.env
+fenji.local.toml
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

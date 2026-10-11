@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Installed by scripts/bootstrap.sh via `git config core.hooksPath .githooks`.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/check-forbidden-files.sh" --staged
