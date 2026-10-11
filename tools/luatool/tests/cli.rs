@@ -5,13 +5,25 @@ use std::process::Command;
 use fenji_data::test_util::{exe_with_files, lz4_blob};
 use fenji_lua::Dialect;
 
-fn client_chunk(src: &str) -> Vec<u8> {
+/// The test script, compiled by stock Lua 5.3 (stripped, as the client's are).
+fn stock_chunk() -> Vec<u8> {
     let lua = mlua::Lua::new();
-    let stock = lua.load(src).into_function().unwrap().dump(true);
-    fenji_lua::write(
-        &fenji_lua::parse(&stock, Dialect::Stock53).unwrap(),
-        Dialect::Client,
-    )
+    lua.load("if IsServer() then print('s') end")
+        .into_function()
+        .unwrap()
+        .dump(true)
+}
+
+/// The same chunk in the client's form: its dialect, and TRYTABUP for every GETTABUP.
+fn client_chunk() -> Vec<u8> {
+    let mut chunk = fenji_lua::parse(&stock_chunk(), Dialect::Stock53).unwrap();
+    for word in &mut chunk.main.code {
+        let i = fenji_lua::Instr(*word);
+        if i.op() == Some(fenji_lua::Op::GetTabUp) {
+            *word = i.with_op(fenji_lua::Op::TryTabUp).0;
+        }
+    }
+    fenji_lua::write(&chunk, Dialect::Client)
 }
 
 /// A damaged entry: its header and its file entry agree on the size, but the LZ4 block claims
@@ -35,7 +47,7 @@ fn setup() -> (tempfile::TempDir, PathBuf) {
     let pe = exe_with_files(&[
         (
             "interface/addons/Login/Test.luac",
-            lz4_blob(&client_chunk("if IsServer() then print('s') end"), 0),
+            lz4_blob(&client_chunk(), 0),
         ),
         ("interface/addons/Login/Test.xml", lz4_blob(b"<UI/>", 0)),
         ("scripts/combat/big.luac", corrupt_blob()),
@@ -188,4 +200,52 @@ fn cli_replaces_a_hard_link_instead_of_writing_through_it() {
         "keep"
     );
     assert_eq!(std::fs::read(dir.join("Test.xml")).unwrap(), b"<UI/>");
+}
+
+#[test]
+fn cli_normalizes_to_the_stock_bytes() {
+    let (repo, exe) = setup();
+    let ok = luatool(repo.path(), &exe)
+        .args(["normalize", "--out", "re/n"])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let normal = std::fs::read(
+        repo.path()
+            .join("re/n/data/interface/addons/Login/Test.luac"),
+    )
+    .unwrap();
+    assert_eq!(normal, stock_chunk());
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_decompiles_through_unluac_and_counts_per_area() {
+    use std::os::unix::fs::PermissionsExt;
+    let (repo, exe) = setup();
+    let java = repo.path().join("fake-java");
+    std::fs::write(&java, "#!/bin/sh\necho \"-- decompiled $3\"\n").unwrap();
+    std::fs::set_permissions(&java, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let jar = repo.path().join("unluac.jar");
+    std::fs::write(&jar, b"").unwrap();
+    let ok = luatool(repo.path(), &exe)
+        .args(["decompile", "--out", "re/c", "--jobs", "1"])
+        .arg("--java")
+        .arg(&java)
+        .arg("--jar")
+        .arg(&jar)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let lua = std::fs::read_to_string(
+        repo.path()
+            .join("re/c/data/interface/addons/Login/Test.lua"),
+    )
+    .unwrap();
+    assert!(lua.starts_with("-- decompiled"), "{lua}");
+    let summary = std::fs::read_to_string(repo.path().join("re/c/decompile-summary.tsv")).unwrap();
+    assert!(
+        summary.contains("data/interface/addons/Login\t1\t1\t0\t0\t0\n"),
+        "{summary}"
+    );
 }

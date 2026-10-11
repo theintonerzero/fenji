@@ -65,6 +65,7 @@ Source of truth: `scripts/versions.env` (bootstrap reads it). Keep this table id
 | pnpm | 12.11.2 | `npm install -g --prefix ~/.local` |
 | rea-agents | 6.3.0 | REA MCP server + skill (skill metadata version 34) |
 | Ghidra | 12.1.4 (build 20260921) | official release zip, SHA-256 pinned; `GHIDRA_INSTALL_DIR=~/.local/share/fenji/tools/ghidra_12.1.4_PUBLIC` |
+| unluac | 2025_12_23 | Lua 5.0–5.4 decompiler jar (MIT), SHA-256 pinned, `~/.local/share/fenji/tools/unluac/`; external tool, output only in `re/` |
 | uv | ≥ 0.12 | installs the ghidra-mcp bridge (`uv tool`); macOS: Homebrew, Fedora: dnf |
 | ghidra-mcp | 7.0.0-rc.2 (bridge 7.0.0) | GhidraMCP extension zip + `bridge-mcp-ghidra` wheel, SHA-256 pinned; only release built for Ghidra 12.1.4; bump to 7.0.0 final when it ships |
 | Java | 21 | macOS: Temurin 21 cask; Linux: Temurin tarball (`TEMURIN_VERSION`, SHA-256 pinned; Fedora 44 dropped JDK 21). Ghidra runtime |
