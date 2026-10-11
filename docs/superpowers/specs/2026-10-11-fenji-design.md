@@ -1,6 +1,7 @@
 # Fenji — Design Spec
 
 - **Date:** 2026-10-11
+- **M0 updates:** 2026-10-12, from [`docs/re/spike-0.md`](../../re/spike-0.md): notes in §3, §4, §5.2–§5.4 and §6.2, and the "Answer (M0)" column in §12.
 - **Status:** Approved in brainstorming (sections 1–3); awaiting written-spec review
 - **Scope:** Whole-project architecture and milestone map. Each milestone (M0–M5) gets its own implementation plan in `docs/superpowers/plans/`.
 - **Lineage:** Fenji replaces Caphras, a Black Desert Online emulator halted on 2026-10-11 in favour of SoLO, whose client can be read; BDO's is packed. Fenji keeps Caphras's tooling, process and server architecture. Everything specific to the game is new (§13).
@@ -51,8 +52,10 @@ The rules keep exposure as low as possible; they don't eliminate it.
 | Machine | Role |
 |---|---|
 | macOS (arm64) dev workstation | Rust development; static analysis (Ghidra, REA) of a copy of the pinned client kept outside the repo |
-| Fedora Linux game box | Runs the pinned client through Proton (umu-launcher) inside the sandbox, against the stub or dev server; Rust; analysis |
+| Fedora Linux game box | Runs the pinned client through GE-Proton inside the sandbox, against the stub or dev server; Rust; analysis |
 | VPS (Debian/Ubuntu) | Hosts `fenji-server`, Caddy, SQLite and the admin's own copy of the client data |
+
+**M0 update.** Sandboxed runs start GE-Proton's own `proton` script directly, because umu's runtime container fails inside the sandbox (seen without `--cpu-topology`; untested with it). Wine there needs `--cpu-topology` for its processor information ([spike-0 §8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)).
 
 Players: Windows and Linux (Proton). macOS players are out of scope.
 
@@ -60,13 +63,15 @@ Players: Windows and Linux (Proton). macOS players are out of scope.
 
 ## 4. Protocol discovery
 
-A static triage on 2026-10-11 found the following (M0 writes it up with evidence in `docs/re/spike-0.md`):
-- **Unprotected executable.** `gujianol.exe` is an ordinary MSVC 2013 x64 build, with about 75,000 functions in its exception table and named imports.
-- **Readable protocol.** The network layer is readable, and so are the protocol opcode enums (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`) and a 2,438-entry synced-property schema.
+A static triage on 2026-10-11 found the following (M0 wrote it up with evidence in `docs/re/spike-0.md`, which corrects two of its figures; the figures below are M0's):
+- **Unprotected executable.** `gujianol.exe` is an ordinary MSVC 2013 x64 build, with a full exception table (75,016 entries; Ghidra finds 51,808 functions) and named imports.
+- **Readable protocol.** The network layer is readable, and so are the protocol opcode enums (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`) and about 2,500 synced-property names (`prop_*`); the schema's exact size is not yet known.
 - **Logic in Lua.** Much of the game logic is Lua 5.3 bytecode embedded in the executable. The Lua is modified: a custom header and 7 extra opcodes.
 - **Data.** The archives are Oodle-compressed, not encrypted.
-- **Anti-cheat.** No third-party anti-cheat ships. An in-house kernel driver ("AGT") is embedded as a resource, with no visible load path.
+- **Anti-cheat.** No third-party anti-cheat ships. An in-house kernel driver ("AGT") is embedded as a resource, with no visible load path; no M0 run extracted or loaded it (§5.4).
 - **Boots without servers.** With the servers gone, the client still reaches its login scene.
+
+**M0 update.** The last point holds twice: in the owner's launch through Steam ([spike-0 §7](../../re/spike-0.md#7-the-owners-launch-2026-10-11)), and with the unmodified client started directly in the sandbox ([§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)), with `--gf-sdk=mocked` (dev-only, #11), `--fs=data:_index:_index` and `--cpu-topology`. Without a usable platform SDK the client exits about 50 ms in, inside `gameforge_api64.dll`'s initialisation. With all three, it reaches the login scene and stops at "FAILED TO FETCH GAMEFORGE SERVER LIST!", without a name lookup through Winsock or any connection.
 
 **A: static analysis (the backbone).**
 
@@ -78,7 +83,7 @@ A static triage on 2026-10-11 found the following (M0 writes it up with evidence
 | 4. Scripts | Extract, disassemble and decompile the embedded Lua; read the client's own protocol and gameplay scripts |
 | 5. Data | Archive and index format; table schemas |
 
-The shared Ghidra GUI project (`ghidra` MCP) is the primary analysis surface. REA's full auto-analysis of a 75,000-function executable is too slow to be the main surface. REA records Evidence IDs for targeted functions.
+The shared Ghidra GUI project (`ghidra` MCP) is the primary analysis surface. REA's full auto-analysis of an executable with about 52,000 functions is too slow to be the main surface. REA records Evidence IDs for targeted functions.
 
 **B: the real client against our stub, in the sandbox (validation).** No captures of the official servers exist, so the client is the only ground truth. The stub (`tools/stub`) logs every byte the real client sends and answers with our current best guess. The client's reaction refines the guess: its next packet, a stall, an error, Wine logs or its own `gujianol.log`. Every run happens inside `scripts/spike/isolated-run.sh`: loopback-only network, a nested display, and non-root.
 
@@ -109,6 +114,8 @@ The launcher replaces Gameforge's `SOLO_Launcher.exe`, whose server-list service
 - **Verification:** the files the client loads are checked against the pinned build's hash manifest; only hashes are shipped. A mismatch blocks Play and says which files differ.
 - **Launch:** `gujianol.exe` runs directly: on Linux through `umu-launcher`/Proton in a dedicated Wine prefix, on Windows natively.
 
+**M0 update** ([spike-0 §5](../../re/spike-0.md#5-startup-chain-server-address-and-ticket), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)). By static reading, `SOLO_Launcher.exe` picks a region and starts the game, and the game fetches the Gameforge server list itself; at run time it is the game that logs the failure. Started directly, `gujianol.exe` needs `--fs=data:_index:_index` to mount its archives, and a usable platform SDK, which `--gf-sdk=` chooses (without the flag the library defaults to `gf`, which needs the Gameforge Client's DLL); both are launcher design inputs, and which SDK players get is M3's decision (§5.3). What the original launcher passed to the game is unknown.
+
 ### 5.3 Client redirect and ticket (preference order; M0 and M3 decide)
 
 1. **Inputs the client already accepts**, without modifying any file: its command-line flags (`--gf-appid`, `--steam-appid`, `--gf-region`), `solo_steam.cfg`, `gfclient.ini` and `loader.ini`.
@@ -118,9 +125,18 @@ The launcher replaces Gameforge's `SOLO_Launcher.exe`, whose server-list service
 
 The client obtains an auth ticket through `gameforge_api64.dll`, which has Steam, Gameforge and Epic paths. M3 decides what the client sends our login listener and how we bind it to the Fenji game token. If the client turns out to need a running Steam client, M3 documents that requirement and how it affects players without a Steam licence.
 
+**M0 update** ([spike-0 §5](../../re/spike-0.md#5-startup-chain-server-address-and-ticket), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)):
+- Option 1: the inputs that matter so far are flags, read only in `--name=value` form: `--gf-sdk=` (`gf`, `steam`, `mocked` or `mailru`), each SDK with its own app-id flag and, for `gf` and `mocked` only, a region flag, and the game's own `--fs=`. `mocked` passed without its app-id flag, and its region flag changed nothing visible. Up to its login scene the game didn't look for `solo_steam.cfg` or read `loader.ini` through the INI API, and the library read only a log level and a password from `gfclient.ini`. The client looks for a `servername` file at its install root and has `--server-name`, `--server_locale` and `--net` flags: candidates for the server address.
+- Option 2: on the `gf` path the library doesn't talk to a pipe itself. It loads an in-process DLL, `gameforge_client_api64_v2.dll`, from the Gameforge Client's install (the `InstallLocation` of its Uninstall key); any pipe would sit behind that DLL (spike-0 8.6). `GC_PIPE_NAME` belongs to the library's Mail.ru module. A stand-in for that DLL would run our code inside the client process (#11).
+- Option 3: the client looked up no host name through Winsock, so there is nothing to redirect yet.
+- The library's `mocked` SDK, a built-in test backend, passes platform init without Steam or the Gameforge Client. The owner allowed it for sandboxed dev runs on their own copy only, never for players (#11).
+- Ticket: the Steam SDK loads Steam's `steamclient64.dll`, so it needs a Steam client on the player's machine, most likely running; the `gf` SDK needs the Gameforge Client's DLL. The player path is M3's decision.
+
 ### 5.4 Kernel driver gate
 
-The executable embeds a kernel driver ("AGT") with no visible load path in this build. Before the first client run, M0 confirms it is never extracted or loaded; the sandbox offers no way to load drivers in any case. If any step would load it, work stops (rule 6).
+The executable embeds a kernel driver ("AGT") with no visible load path in this build. Before the first client run, M0 confirms it is never extracted or loaded. If any step would load it, work stops (rule 6).
+
+**M0 update** ([spike-0 §3](../../re/spike-0.md#3-anti-cheat-and-the-embedded-agt-kernel-driver), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)). The sandbox alone doesn't prevent a load: Wine hosts kernel drivers in user mode, in `winedevice.exe`, as it does for its own drivers in every run. M0's answer: in runs 1–9 the client neither extracted nor loaded AGT, up to its login scene. Every run was checked afterwards, and a driver watchdog also watched runs 5–9. Code paths after login and in game are not yet covered.
 
 ## 6. Architecture
 
@@ -167,6 +183,8 @@ Key dependency versions at design time are the same as Caphras's: `tokio` 1.53, 
 - `payload`: the `pickle` and msgpack-style value codecs, plus typed packets per opcode, each doc-commented with its evidence.
   - `Opcode` is a `#[non_exhaustive]` enum.
   - Unknown opcodes decode to `Packet::Unknown { opcode, bytes }`, never a panic.
+
+**M0 update** ([spike-0 §4](../../re/spike-0.md#4-network-layer)). The triage's `u32` length prefix and `pickle` body belong to the client's built-in remote debugger, not to the game transport. By static reading, each game message has a 4-byte header with a 24-bit length and the message type, inside a stream scrambled with a 16-bit key per direction. The client only decodes Oodle Network data, so our server has to send data that its decoder accepts. Which serialiser the payloads use is unknown. M2 confirms all of this.
 
 ### 6.3 `fenji-data`, `fenji-lua` and content layering
 
@@ -292,19 +310,19 @@ SemVer 2.0.0 (one workspace version) and Conventional Commits 1.0.0. `dev` is th
 
 ## 12. Open questions (answered by milestones, not by guessing)
 
-| Question | Answered in |
-|---|---|
-| Does `gujianol.exe` start and reach its login scene without `SOLO_Launcher`, inside the sandbox? | M0 |
-| Is the embedded AGT kernel driver ever extracted or loaded? | M0 |
-| What does the client send first, and where does it get its server address? | M0 |
-| Archive and index format; Oodle LZ: clean-room decoder, licensed external tool, or gate? | M1 |
-| How much server-side logic do the embedded scripts carry? | M1 |
-| Oodle Network: clean-room codec, an uncompressed path, or gate? | M2 |
-| Handshake variant selection and per-connection keying | M2 |
-| One or two connections (gate vs world)? Ports? | M2–M3 |
-| Ticket handoff: what the client sends, and whether it needs a running Steam client | M3 |
-| Which gameplay systems run the client's scripts (hybrid rule) | M5 |
-| Does the client report hits, or expect server-side hit detection? | M5 |
+| Question | Answered in | Answer (M0) |
+|---|---|---|
+| Does `gujianol.exe` start and reach its login scene without `SOLO_Launcher`, inside the sandbox? | M0 | **Yes**, with `--gf-sdk=mocked` (dev-only, #11), `--fs=data:_index:_index` and `--cpu-topology`. It stops at the failed server-list fetch ([spike-0 §8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
+| Is the embedded AGT kernel driver ever extracted or loaded? | M0 | **No**, up to the login scene, in runs 1–9; later code paths are not yet covered ([§3](../../re/spike-0.md#3-anti-cheat-and-the-embedded-agt-kernel-driver), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
+| What does the client send first, and where does it get its server address? | M0 | **Unknown at run time**: the client connected nowhere. By static reading the server speaks first, with a 64-byte hello. Where the address comes from is open; a `servername` file and the `--server-name` and `--net` flags are among the candidates ([§4](../../re/spike-0.md#4-network-layer), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
+| Archive and index format; Oodle LZ: clean-room decoder, licensed external tool, or gate? | M1 | Partly: 100 archive parts whose record tables are only partly understood; the sampled entries are Oodle-compressed or stored, with no sign of encryption ([§6](../../re/spike-0.md#6-data-archives-and-scripts)) |
+| How much server-side logic do the embedded scripts carry? | M1 | Partly: 18,587 LZ4-wrapped chunks of modified Lua 5.3 in the exe, and much of the combat logic looks like scripts that run on both sides and branch on `IsServer`/`IsClient`; the amount is M1's to measure ([§6](../../re/spike-0.md#6-data-archives-and-scripts)) |
+| Oodle Network: clean-room codec, an uncompressed path, or gate? | M2 | Partly: the client imports Oodle's decoder but not its encoder, so the server has to send data that the decoder accepts ([§4](../../re/spike-0.md#4-network-layer)) |
+| Handshake variant selection and per-connection keying | M2 | Partly, by static reading: after the server's hello the client picks one of 27 stream variants, and each direction keeps its own 16-bit scramble key; untested ([§4](../../re/spike-0.md#4-network-layer)) |
+| One or two connections (gate vs world)? Ports? | M2–M3 | Open: no M0 run connected anywhere, so no port is known ([§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)) |
+| Ticket handoff: what the client sends, and whether it needs a running Steam client | M3 | Partly: the Steam SDK needs Steam's `steamclient64.dll`, so a Steam client, most likely running; the `gf` SDK needs the Gameforge Client's DLL; `mocked` is dev-only (#11). Which message carries the ticket is unknown ([§5](../../re/spike-0.md#5-startup-chain-server-address-and-ticket), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)) |
+| Which gameplay systems run the client's scripts (hybrid rule) | M5 | Not covered by M0 |
+| Does the client report hits, or expect server-side hit detection? | M5 | Not covered by M0 |
 
 ## 13. Lineage from Caphras
 

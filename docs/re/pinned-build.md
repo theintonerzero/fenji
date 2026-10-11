@@ -14,7 +14,7 @@ The pinned copy lives in `$FENJI_CLIENT_PATH` (default `~/fenji-client`). It is 
 
 ## Run-time artefacts removed
 
-The owner launched the game once through Steam after the download (2026-10-11, 19:32:53 to 19:33:36 AEDT). That run left four files and three empty directories in the install, all created by it rather than shipped: none of them is in the depot manifest. The files' sizes add up to the 8,357 bytes by which the install exceeded the recorded `SizeOnDisk`. They were deleted from the pinned copy only; the Steam install is unchanged.
+The owner launched the game once through Steam right after the download (2026-10-11): Proton set up its prefix from 19:32:45 AEDT, and the game's last writes came at 19:33:36 (`docs/re/spike-0.md` §7). That run left four files and three empty directories in the install, all created by it rather than shipped: none of them is in the depot manifest. The files' sizes add up to the 8,357 bytes by which the install exceeded the recorded `SizeOnDisk`. They were deleted from the pinned copy only; the Steam install is unchanged.
 
 | File | Bytes | Written |
 |---|---|---|

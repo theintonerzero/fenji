@@ -40,7 +40,7 @@ Then compare `bin64/gujianol.exe`'s SHA-256 with `docs/re/pinned-build.md`. On t
 - **Native engine:** **Ghidra 12.1.4** from the official release zip. Bootstrap installs it to `~/.local/share/fenji/tools/ghidra_12.1.4_PUBLIC`, and `~/.config/fenji/env.sh` exports `GHIDRA_INSTALL_DIR` and `JAVA_HOME` (JDK 21).
 - **Role split:**
   - The Ghidra GUI project (`re/ghidra/fenji.gpr`, git-ignored) is the main analysis surface for `gujianol.exe`, and the canonical place for names, types and structs. The owner and Claude share it through the `ghidra` MCP server (the GhidraMCP extension plus the `bridge-mcp-ghidra` bridge to `127.0.0.1:8089`).
-  - REA is the evidence ledger: Evidence IDs, unknowns, targeted decompilation and verification. Its full auto-analysis of the ~75,000-function executable is too slow to be the main surface.
+  - REA is the evidence ledger: Evidence IDs, unknowns, targeted decompilation and verification. Its full auto-analysis of the ~52,000-function executable is too slow to be the main surface.
   - Enable the plugin once in the GUI (File → Configure → Miscellaneous → GhidraMCP); `curl -s http://127.0.0.1:8089/check_connection` should then answer.
 - **Readiness check** (changes nothing): `npx -y rea-agents@<version> doctor --client claude_code --json`.
 
