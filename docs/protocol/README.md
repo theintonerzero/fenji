@@ -27,7 +27,7 @@ Status meanings:
 
 ## Payload table format (`packets/<area>.md`)
 
-Payloads are `pickle`/msgpack-style tables rather than fixed layouts. For each opcode, give:
+Which encoding the game's payloads use is not known yet. The client carries `cjson`, `cmsgpack` and `pickle_pack` codecs, and the `pickle` framing the triage saw belongs to its built-in remote debugger, not the game transport ([spike-0](../re/spike-0.md) 4.8–4.9, 4.32). For each opcode, give:
 - the value and direction, and a one-line purpose;
 - a field table (`key`, `type`, `meaning`, `notes`);
 - the evidence, and the golden-test fixture name if one exists.
