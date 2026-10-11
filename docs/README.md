@@ -12,6 +12,7 @@
 | [`re/spike-0.md`](re/spike-0.md) | M0 spike: static triage of the pinned client, runtime observation, conclusions. |
 | [`re/m1-script-format.md`](re/m1-script-format.md) | M1: the client's embedded file system, blob format, Lua 5.3 dialect and extra opcodes. |
 | [`re/m1-script-census.md`](re/m1-script-census.md) | M1: how much server-side logic the client's embedded scripts carry. |
+| [`re/m1-archives.md`](re/m1-archives.md) | M1: the data archives' structure, read without decompressing Oodle data. |
 | [`protocol/README.md`](protocol/README.md) | Our protocol findings (transport, opcode ledger, payloads) and their format. |
 | [`protocol/login.md`](protocol/login.md) | M1: how the client finds its server, and the first connection to our stub. |
 

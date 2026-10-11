@@ -1,5 +1,6 @@
 //! Reads the SoLO client's own data at run time (design spec §6.3; M1 spec §2–§5). Nothing it
 //! reads is ever committed: tools write only under `re/` ([`re_dir`]).
+pub mod archive;
 mod blob;
 mod codec;
 mod error;

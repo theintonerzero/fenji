@@ -1,5 +1,5 @@
-//! Synthetic inputs for tests, built from our own bytes: small PE32+ images, LZ4 blobs, and an
-//! embedded file system laid out like the client's. Never game bytes.
+//! Synthetic inputs for tests, built from our own bytes: small PE32+ images, LZ4 and stored blobs,
+//! an embedded file system and data archive parts laid out like the client's. Never game bytes.
 use crate::{blob::FIXED_LEN, exe_fs::PIECE_LEN};
 
 /// The image base of every synthetic image (the client's own is the same).
@@ -58,6 +58,53 @@ pub fn lz4_blob(content: &[u8], timestamp: u64) -> Vec<u8> {
     b.extend_from_slice(&(comp.len() as u32).to_le_bytes());
     b.extend_from_slice(&comp);
     b
+}
+
+/// A stored blob (codec 0): the 32-byte header, then `content`, with no block list. The block size
+/// field is min(size, 512 KiB), as in most of the client's stored blobs.
+pub fn stored_blob(content: &[u8]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(FIXED_LEN + content.len());
+    b.extend_from_slice(&(content.len() as u64).to_le_bytes());
+    b.extend_from_slice(&0u64.to_le_bytes());
+    b.extend_from_slice(&((FIXED_LEN + content.len()) as u64).to_le_bytes());
+    b.extend_from_slice(&(content.len().min(0x8_0000) as u32).to_le_bytes());
+    b.extend_from_slice(&0u16.to_le_bytes()); // codec 0: stored
+    b.extend_from_slice(&0u16.to_le_bytes()); // check: meaning unknown
+    b.extend_from_slice(content);
+    b
+}
+
+/// One record of a synthetic part for [`zfs_part`]: its status byte (1 in use, 0xff deleted), its
+/// key, and the blob it points at.
+pub type PartRecord = (u8, [u8; 20], Vec<u8>);
+
+/// A data archive part laid out like the client's (docs/re/m1-archives.md): "ZFS\0", then one
+/// index block per entry of `blocks`, each followed by its records' blobs and chained to the next.
+/// Records get their blob's offset and size and a correct CRC.
+pub fn zfs_part(blocks: &[Vec<PartRecord>]) -> Vec<u8> {
+    use crate::archive::{INDEX_BLOCK_LEN, INDEX_MAGIC, PART_MAGIC, RECORD_LEN, crc16_arc};
+    let mut p = PART_MAGIC.to_vec();
+    for (n, records) in blocks.iter().enumerate() {
+        let at = p.len();
+        p.resize(at + INDEX_BLOCK_LEN, 0);
+        p[at..at + 4].copy_from_slice(INDEX_MAGIC);
+        for (slot, (status, key, blob)) in records.iter().enumerate() {
+            let offset = p.len() as u32;
+            p.extend_from_slice(blob);
+            let r = at + 8 + slot * RECORD_LEN;
+            p[r..r + 20].copy_from_slice(key);
+            p[r + 20..r + 24].copy_from_slice(&offset.to_le_bytes());
+            p[r + 24..r + 28].copy_from_slice(&(blob.len() as u32).to_le_bytes());
+            let crc = crc16_arc(&p[r..r + 28]);
+            p[r + 28..r + 30].copy_from_slice(&crc.to_le_bytes());
+            p[r + 31] = *status;
+        }
+        if n + 1 < blocks.len() {
+            let next = p.len() as u32;
+            p[at + 4..at + 8].copy_from_slice(&next.to_le_bytes());
+        }
+    }
+    p
 }
 
 /// Appends NUL-terminated `text` to `.rdata` bytes, 8-aligned, and returns its VA.
