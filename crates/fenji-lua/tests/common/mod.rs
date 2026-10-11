@@ -26,11 +26,22 @@ goto done
 return M
 "#;
 
-/// Our test sources: the module, a one-liner, a long string (over 254 bytes, so its length is
-/// written as 0xFF plus a size_t), and a generic loop over `_G`.
+/// Method calls where jumps land: at the start of a `for` body (the FORLOOP target) and of an
+/// `else` branch, plus a chained call and one in a `while` body.
+pub const METHODS: &str = r#"local obj = { n = 0 }
+function obj:add(k) self.n = self.n + k return self end
+for i = 1, 3 do obj:add(i) end
+if obj.n > 5 then obj:add(1) else obj:add(2):add(3) end
+while obj.n < 20 do obj:add(4) end
+return obj:add(0).n
+"#;
+
+/// Our test sources: the module, the method calls, a one-liner, a long string (over 254 bytes, so
+/// its length is written as 0xFF plus a size_t), and a generic loop over `_G`.
 pub fn sources() -> Vec<String> {
     vec![
         MODULE.to_string(),
+        METHODS.to_string(),
         "print('hello')".to_string(),
         format!("local s = \"{}\" return s, #s", "x".repeat(300)),
         "local t = {} for k, v in pairs(_G) do t[k] = type(v) end return t".to_string(),

@@ -4,6 +4,7 @@
 mod chunk;
 mod disasm;
 mod error;
+mod normalize;
 mod opcode;
 
 pub use chunk::{
@@ -11,4 +12,5 @@ pub use chunk::{
 };
 pub use disasm::disassemble;
 pub use error::{Error, Result};
+pub use normalize::{Action, Report, action, normalize};
 pub use opcode::{BITRK, Instr, Mode, Op, STOCK_COUNT, is_k, k_index};

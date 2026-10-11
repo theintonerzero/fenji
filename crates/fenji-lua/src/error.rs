@@ -21,6 +21,8 @@ pub enum Error {
     UnknownOpcode { code: u8 },
     #[error("{op} has no established stock equivalent (docs/re/m1-script-format.md §4)")]
     Unmapped { op: &'static str },
+    #[error("can't normalise the instruction at pc {pc}: {reason}")]
+    Unremovable { pc: usize, reason: &'static str },
 }
 
 /// Result alias for this crate.

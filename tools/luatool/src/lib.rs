@@ -2,4 +2,5 @@
 //! it writes goes under re/ (ground rule 3).
 pub mod client;
 pub mod commands;
+pub mod decompile;
 pub mod output;

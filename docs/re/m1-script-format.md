@@ -126,6 +126,20 @@ This is the one place normalisation is not one instruction for one instruction. 
 
 Trial (NT): three client chunks normalised with this table decompile with unluac 2025_12_23 without errors. The planning run, which used `TRYSELF` → `SELF`, decompiled the same chunks too, but with each method lookup duplicated (`L2_2 = A1_2.GetScene` twice). That is 80, 70 and 96 extra lines: two per removed `TRYSELF` (40, 35 and 48). **Observed**. Because the chunks are stripped, unluac writes every register as a local (`L3_2 = A1_2`, `L2_2 = A1_2.GetScene`, `L2_2 = L2_2(L3_2)`) rather than `A1_2:GetScene()`.
 
+### Decompile results
+
+`luatool decompile` normalised every Lua chunk with this table and ran unluac 2025_12_23 on each one (M1 plan Task 7; DR). Every chunk normalised and decompiled: no chunk was refused, unluac failed on none, and none timed out. **Observed**.
+
+| Directory | Areas | Chunks | Decompiled |
+|---|---|---|---|
+| `data/scripts` | 16 | 18,855 | 18,855 |
+| `data/interface` | 265 | 1,006 | 1,006 |
+| `data/core` | 154 | 515 | 515 |
+| `data/locale` | 18 | 67 | 67 |
+| total | 453 | 20,443 | 20,443 |
+
+An area is a path's directories, at most four deep, such as `data/scripts/combat/skill`; the per-area counts are in DR. Decompiled means unluac exited cleanly; the output is register-level for stripped chunks (see the trial above), and the disassembly stays the ground truth.
+
 ## 5. Entries the exe can't supply
 
 | # | Finding | Tag | Evidence |
@@ -148,6 +162,7 @@ Paths are relative to the repo root. `re/` is git-ignored, so these files exist 
 | IX | `re/m1/evidence/index-and-opnames.txt` (probe `index_opnames.py`) | The `_index` header, the opcode-name table, every function's last opcode, timestamps as dates | 2.4, 2.6, 3.5, 3.6, 3.8 |
 | NT | `re/m1/evidence/normalise-trial/` (probe `normalise_trial.py`); the planning run in `re/m1-planning/sample*.naive.lua` | The normalisation trial and its unluac output | §4 trial |
 | PL | `re/m1/probes/probe_*.py` | The planning probes, kept as evidence | 5.2 |
+| DR | `re/m1/decompiled-all/decompile-summary.tsv` (`luatool decompile --out re/m1/decompiled-all`) | Per-area decompile counts over every Lua chunk | §4 Decompile results |
 | G1 | FUN_140690410; mount table 0x143197720 | Mounts the embedded directories | 1.1, 1.9 |
 | G2 | FUN_140690380 | Walks a directory's file entries and joins multi-piece files (piece size 0x3FFC) | 1.2, 1.3, 1.10, 5.4 |
 | G3 | FUN_1400B8DE0, FUN_1400B8C10 | Builds an in-memory directory and adds a file: header check, piece array, size | 1.9, 1.10, 5.4 |

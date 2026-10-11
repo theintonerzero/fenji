@@ -34,6 +34,7 @@ GHIDRA_DIR="$TOOLS_DIR/ghidra_${GHIDRA_VERSION}_PUBLIC"
 DD_DIR="$TOOLS_DIR/DepotDownloader-$DEPOTDOWNLOADER_VERSION"
 UMU_DIR="$TOOLS_DIR/umu-$UMU_LAUNCHER_VERSION"
 JDK_DIR="$TOOLS_DIR/jdk-$TEMURIN_VERSION"
+UNLUAC_JAR="$TOOLS_DIR/unluac/unluac_${UNLUAC_VERSION}.jar"
 MISMATCH=0
 export PATH="$BIN_DIR:$HOME/.cargo/bin:$PATH"
 
@@ -161,6 +162,7 @@ check_all() {
   jh=$(java_home)
   report java "$JAVA_MAJOR" "$([ -n "$jh" ] && "$jh/bin/java" -version 2>&1 | awk -F'"' '/version/ {print $2}')"
   report ghidra "$GHIDRA_VERSION" "$([ -x "$GHIDRA_DIR/support/analyzeHeadless" ] && echo "$GHIDRA_VERSION")"
+  report unluac "$UNLUAC_VERSION" "$([ -f "$UNLUAC_JAR" ] && echo "$UNLUAC_VERSION")"
   report DepotDownloader "$DEPOTDOWNLOADER_VERSION" "$([ -x "$DD_DIR/DepotDownloader" ] && echo "$DEPOTDOWNLOADER_VERSION")"
   if [ "$PLATFORM" = linux ]; then
     report umu-launcher "$UMU_LAUNCHER_VERSION" "$([ -n "$(find "$UMU_DIR" -name umu-run -type f 2>/dev/null | head -n 1)" ] && echo "$UMU_LAUNCHER_VERSION")"
@@ -338,6 +340,14 @@ if [ ! -x "$DD_DIR/DepotDownloader" ]; then
   rm -rf "$tmp"
 fi
 ln -sf "$DD_DIR/DepotDownloader" "$BIN_DIR/DepotDownloader"
+
+if [ ! -f "$UNLUAC_JAR" ]; then
+  log "unluac $UNLUAC_VERSION (SHA-256 verified)"
+  mkdir -p "$(dirname "$UNLUAC_JAR")"
+  download_verified \
+    "https://downloads.sourceforge.net/project/unluac/Unstable/unluac_${UNLUAC_VERSION}.jar" \
+    "$UNLUAC_SHA256" "$UNLUAC_JAR"
+fi
 
 if [ "$PLATFORM" = linux ]; then
   if [ ! -d "$UMU_DIR" ]; then
