@@ -38,7 +38,7 @@ STUBBIN="$REPO/target/release"
 LAVAPIPE=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 CHANNELS_DEFAULT=+timestamp,+pid,+tid,+threadname,+seh,+debugstr,+loaddll,+winsock,+module,+process,+service,+profile,warn+file
 
-usage() { sed -n '2,24p' "$0" >&2; exit 2; }
+usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0" >&2; exit 2; } # the header above
 die() { echo "run-client: $*" >&2; exit 1; }
 need_display() { [ -S "/tmp/.X11-unix/X$1" ] || die "no nested display :$1 (see isolated-run.sh, \"Display\")"; }
 
