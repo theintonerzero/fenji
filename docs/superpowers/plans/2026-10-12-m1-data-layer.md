@@ -112,6 +112,8 @@ These are facts the tasks build on. They are local evidence from planning probes
   Task 2's gate write-up names this as one reason the archives matter.
 - **D4. New dependencies:** `sha2` (the pinned-build check) and `mlua` (test-only, a real Lua 5.3 for fixtures). Both are MIT or MIT/Apache.
 
+**The owner's decisions (2026-10-12):** D1–D4 accepted, and the fresh reviews before merging Tasks 3 and 9 kept. Plan approved, executed inline. The M1 spec's Status, §3 Units and Done-when 1 carry the amendments.
+
 ## File map
 
 | Path | Task | Responsibility |
