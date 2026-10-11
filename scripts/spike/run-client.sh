@@ -11,6 +11,9 @@
 #       [--display N] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
 #       -- [client args...]
 #       One run: evidence in re/runs/out/NAME/, stub logs in re/stub-logs/NAME/; NAME must be new.
+#       The sandbox writes only to the client copy, the prefix, its home and re/runs/io/NAME; the
+#       evidence directories are never bound into it, and the host takes files out of what the
+#       sandbox can write only through `watchdog.py collect`, which never follows a link.
 #       --client-file puts SRC into the run's client copy as NAME at the install root, an input
 #       the client reads, for this run only. It never replaces a file the copy already has.
 #
@@ -58,13 +61,18 @@ cmd_setup() {
     rm -rf "$WORK/client"
     die "the reflink copy failed (it needs a copy-on-write filesystem such as btrfs); refusing a full copy"
   fi
-  # The prefix is created now, by Wine's own cmd.exe. A prefix appearing during a client run would
-  # look like new driver files to the watchdog.
-  "$WRAP" --no-root --x11 "$display" --cpu-topology --bind "$WORK" --ro-bind "$PROTON" -- \
+  # The prefix is created now, through Proton's own launcher (its steam.exe shim, which also
+  # registers Proton's Discord bridge service), and wineserver is left to exit cleanly so the
+  # registry reaches disk: everything Proton sets up belongs to the watchdog's baseline. A prefix, or
+  # a service, appearing during a client run would look like driver activity to the watchdog.
+  # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
+  "$WRAP" --no-root --x11 "$display" --cpu-topology --bind "$WORK/compat" --bind "$WORK/home" \
+    --bind "$WORK/steamclient" --ro-bind "$PROTON" -- \
     env HOME="$WORK/home" STEAM_COMPAT_DATA_PATH="$WORK/compat" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$WORK/steamclient" SteamGameId=1418100 SteamAppId=1418100 \
     PROTON_USE_XALIA=0 VK_ICD_FILENAMES="$LAVAPIPE" \
-    timeout -k 10 300 python3 "$PROTON/proton" run cmd.exe /c exit > "$WORK/prefix-init.log" 2>&1 || true
+    timeout -k 10 300 bash -c 'python3 "$1/proton" run cmd.exe /c exit; WINEPREFIX="$2/pfx" "$1/files/bin/wineserver" -w' \
+    _ "$PROTON" "$WORK/compat" > "$WORK/prefix-init.log" 2>&1 || true
   [ -f "$WORK/compat/pfx/system.reg" ] || die "the Wine prefix wasn't created; see $WORK/prefix-init.log"
   echo "workspace ready: $WORK"
 }
@@ -91,14 +99,16 @@ cmd_run() {
   case "$run" in '' | */* | .*) die "bad run name: '$run'" ;; esac
   case "$tmo" in '' | *[!0123456789]*) die "--timeout takes whole seconds" ;; esac
   case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
-  local OUT="$WORK/out/$run" STUB="$REPO/re/stub-logs/$run" PFX="$WORK/compat/pfx"
+  local OUT="$WORK/out/$run" IO="$WORK/io/$run" STUB="$REPO/re/stub-logs/$run" PFX="$WORK/compat/pfx"
   if [ ! -d "$WORK/client/bin64" ] || [ ! -f "$PFX/system.reg" ]; then die "no workspace; run: $0 setup"; fi
-  if [ -e "$OUT" ] || [ -e "$STUB" ]; then die "run $run exists already; pick a new name"; fi
+  if [ -e "$OUT" ] || [ -e "$IO" ] || [ -e "$STUB" ]; then die "run $run exists already; pick a new name"; fi
   need_display "$display"
   [ -f "$hosts" ] || die "hosts file missing: $hosts"
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
   [ -x "$STUBBIN/fenji-stub" ] || die "build the stub first: cargo build --release -p fenji-stub"
-  if pgrep -f 'winedevice\.exe|wineserver' >/dev/null; then
+  # Exact process names: matching whole command lines would also match any shell or editor that
+  # merely mentions them.
+  if pgrep -x wineserver >/dev/null || pgrep -x winedevice.exe >/dev/null; then
     die "Wine processes are already running on the host; stop them first"
   fi
   local spec name f
@@ -106,12 +116,16 @@ cmd_run() {
     name=${spec%%=*}
     case "$name" in '' | */* | . | ..) die "--client-file NAME must be a plain file name, not '$name'" ;; esac
     [ -f "${spec#*=}" ] || die "--client-file source missing: ${spec#*=}"
-    [ ! -e "$WORK/client/$name" ] || die "--client-file $name would replace a file the client copy has"
+    if [ -e "$WORK/client/$name" ] || [ -L "$WORK/client/$name" ]; then
+      die "--client-file $name would replace a file (or a link) the client copy has"
+    fi
   done
   for f in gujianol.log Log_gujianol.htm; do
-    [ ! -e "$WORK/client/bin64/$f" ] || die "leftover $f in the client copy's bin64; move it first"
+    if [ -e "$WORK/client/bin64/$f" ] || [ -L "$WORK/client/bin64/$f" ]; then
+      die "leftover $f in the client copy's bin64; move it first"
+    fi
   done
-  mkdir -p "$OUT" "$STUB"
+  mkdir -p "$OUT" "$IO/stub" "$STUB"
 
   # --- before: inputs, client files, AGT baseline
   {
@@ -135,8 +149,8 @@ cmd_run() {
     cp -- "${spec#*=}" "$WORK/client/${spec%%=*}"
   done
   find "$PFX" -iname '*.sys' -printf '%P\t%y\t%l\t%s\t%T@\n' | sort > "$OUT/sys-before.tsv"
-  grep -o '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\[^]\\]*' "$PFX/system.reg" | sort -u > "$OUT/services-before.txt" || true
-  mkdir -p "$OUT/reg-before" && cp -p "$PFX/system.reg" "$PFX/user.reg" "$OUT/reg-before/"
+  python3 -I "$WATCHDOG" collect --src "$PFX" --dest "$OUT/reg-before" --name system.reg --name user.reg
+  grep -o '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\[^]\\]*' "$OUT/reg-before/system.reg" | sort -u > "$OUT/services-before.txt" || true
   python3 -I "$WATCHDOG" baseline --root "$WORK" --out "$OUT"
   touch "$OUT/.start"
 
@@ -155,38 +169,44 @@ cmd_run() {
   local shots=$!
   touch "$OUT/.running"
 
-  # --- the sandboxed run: stub + client in one invocation, started once the watchdog has armed
+  # --- the sandboxed run: stub + client in one invocation, started once the watchdog has armed.
+  # One bind list for the sandbox and the watchdog: the watchdog leaves every bound directory out of
+  # its pass over the sandbox's tmpfs mounts (the read-write ones lie under WORK, which it scans on
+  # the host side; the read-only ones can't gain a file from inside).
+  local binds=(--bind "$WORK/client" --bind "$WORK/compat" --bind "$WORK/home" --bind "$WORK/steamclient"
+    --bind "$IO" --ro-bind "$STUBBIN" --ro-bind "$PROTON")
+  local wbinds=() i
+  for ((i = 1; i < ${#binds[@]}; i += 2)); do wbinds+=(--bind "${binds[i]}"); done
   set +e
   # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
-  "$WRAP" --no-root --x11 "$display" --cpu-topology --hosts "$hosts" --bind "$WORK" \
-    --bind "$REPO/re/stub-logs" --ro-bind "$STUBBIN" --ro-bind "$PROTON" -- \
+  "$WRAP" --no-root --x11 "$display" --cpu-topology --hosts "$hosts" "${binds[@]}" -- \
     env HOME="$WORK/home" STEAM_COMPAT_DATA_PATH="$WORK/compat" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$WORK/steamclient" SteamGameId=1418100 SteamAppId=1418100 \
-    PROTON_LOG_DIR="$OUT" PROTON_USE_XALIA=0 PROTON_LOG=1 WINEDEBUG="$channels" DXVK_LOG_PATH="$OUT" \
+    PROTON_LOG_DIR="$IO" PROTON_USE_XALIA=0 PROTON_LOG=1 WINEDEBUG="$channels" DXVK_LOG_PATH="$IO" \
     VK_ICD_FILENAMES="$LAVAPIPE" "${envs[@]}" \
     bash -c '
-      W=$1 OUT=$2 STUB=$3 STUBBIN=$4 PORTS=$5 TMO=$6 PROTON=$7
+      W=$1 IO=$2 STUB=$3 STUBBIN=$4 PORTS=$5 TMO=$6 PROTON=$7
       shift 7
-      for _ in $(seq 200); do [ -e "$OUT/.go" ] && break; sleep 0.05; done
-      [ -e "$OUT/.go" ] || { echo "watchdog never armed; client not started" >&2; exit 98; }
+      for _ in $(seq 200); do [ -e "$IO/.go" ] && break; sleep 0.05; done
+      [ -e "$IO/.go" ] || { echo "watchdog never armed; client not started" >&2; exit 98; }
       la=()
       for p in $PORTS; do la+=(--listen "127.0.0.1:$p"); done
-      "$STUBBIN/fenji-stub" "${la[@]}" --out "$STUB" > "$OUT/stub.out" 2>&1 &
+      "$STUBBIN/fenji-stub" "${la[@]}" --out "$STUB" > "$IO/stub.out" 2>&1 &
       stub=$!
       sleep 1
       cd "$W/client/bin64" || exit 99
-      timeout -k 10 "$TMO" python3 "$PROTON/proton" run "$W/client/bin64/gujianol.exe" "$@" > "$OUT/proton.out" 2>&1
+      timeout -k 10 "$TMO" python3 "$PROTON/proton" run "$W/client/bin64/gujianol.exe" "$@" > "$IO/proton.out" 2>&1
       rc=$?
-      echo "$rc" > "$OUT/exit-code"
+      echo "$rc" > "$IO/exit-code"
       WINEPREFIX="$W/compat/pfx" "$PROTON/files/bin/wineserver" -k 2>/dev/null
       sleep 2
       kill "$stub" 2>/dev/null
       wait "$stub" 2>/dev/null
       exit "$rc"
-    ' _ "$WORK" "$OUT" "$STUB" "$STUBBIN" "$ports" "$tmo" "$PROTON" "$@" > "$OUT/sandbox.out" 2>&1 &
+    ' _ "$WORK" "$IO" "$IO/stub" "$STUBBIN" "$ports" "$tmo" "$PROTON" "$@" > "$OUT/sandbox.out" 2>&1 &
   local spid=$!
   python3 -I "$WATCHDOG" watch --root "$WORK" --out "$OUT" --sandbox-pid "$spid" \
-    --log "$OUT/steam-1418100.log" --bind "$REPO/re/stub-logs" --bind "$STUBBIN" \
+    --log "$IO/steam-1418100.log" --go "$IO/.go" "${wbinds[@]}" \
     2>> "$OUT/watchdog.err" &
   local wdpid=$!
   # Whichever ends first. If it is the watchdog (gate event, failure, or killed), the sandbox must
@@ -205,39 +225,45 @@ cmd_run() {
     wdrc=$?
   fi
   set -e
-  rm -f "$OUT/.running" "$OUT/.go"
+  rm -f "$OUT/.running" "$IO/.go"
   wait "$shots" 2>/dev/null || true
   echo "$wrc" > "$OUT/sandbox-exit-code"
   echo "$wdrc" > "$OUT/watchdog-exit-code"
   date -Is > "$OUT/ended"
 
-  # --- after: evidence
-  [ ! -f "$OUT/steam-1418100.log" ] || mv "$OUT/steam-1418100.log" "$OUT/wine.log"
-  for f in gujianol.log Log_gujianol.htm; do
-    [ ! -e "$WORK/client/bin64/$f" ] || mv "$WORK/client/bin64/$f" "$OUT/$f"
-  done
+  # --- after: evidence, copied out of what the sandbox could write without following any link
+  python3 -I "$WATCHDOG" collect --src "$IO" --dest "$OUT/io" --exclude stub --exclude .go
+  python3 -I "$WATCHDOG" collect --src "$IO/stub" --dest "$STUB"
+  [ ! -f "$OUT/io/steam-1418100.log" ] || mv "$OUT/io/steam-1418100.log" "$OUT/wine.log"
+  python3 -I "$WATCHDOG" collect --src "$WORK/client/bin64" --dest "$OUT" \
+    --name gujianol.log --name Log_gujianol.htm
+  rm -f -- "$WORK/client/bin64/gujianol.log" "$WORK/client/bin64/Log_gujianol.htm"
   # Entries the client creates at its install root (settings/, ExportFace/, ExportPrefab/) and this
-  # run's --client-file inputs move into the evidence, so every run starts from the same copy.
+  # run's --client-file inputs go into the evidence and out of the copy, so every run starts from
+  # the same copy.
+  python3 -I "$WATCHDOG" collect --src "$WORK/client" --dest "$OUT/client-files" \
+    --exclude bin64 --exclude data --exclude tools
   local e
   for e in "$WORK/client"/* "$WORK/client"/.[!.]*; do
-    [ -e "$e" ] || continue
-    case "${e##*/}" in
-      bin64 | data | tools) ;;
-      *) mkdir -p "$OUT/client-files" && mv "$e" "$OUT/client-files/" ;;
-    esac
+    if [ -e "$e" ] || [ -L "$e" ]; then
+      case "${e##*/}" in
+        bin64 | data | tools) ;;
+        *) rm -rf -- "$e" ;;
+      esac
+    fi
   done
   find "$PFX" -iname '*.sys' -printf '%P\t%y\t%l\t%s\t%T@\n' | sort > "$OUT/sys-after.tsv"
   diff "$OUT/sys-before.tsv" "$OUT/sys-after.tsv" > "$OUT/sys-diff.txt" || true
-  grep -o '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\[^]\\]*' "$PFX/system.reg" | sort -u > "$OUT/services-after.txt" || true
+  python3 -I "$WATCHDOG" collect --src "$PFX" --dest "$OUT/reg-after" --name system.reg --name user.reg
+  grep -o '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\[^]\\]*' "$OUT/reg-after/system.reg" | sort -u > "$OUT/services-after.txt" || true
   diff "$OUT/services-before.txt" "$OUT/services-after.txt" > "$OUT/services-diff.txt" || true
-  mkdir -p "$OUT/reg-after" && cp -p "$PFX/system.reg" "$PFX/user.reg" "$OUT/reg-after/"
   local r
   for r in system user; do
     diff "$OUT/reg-before/$r.reg" "$OUT/reg-after/$r.reg" > "$OUT/reg-$r.diff" || true
   done
   find "$WORK/client" "$PFX/drive_c" "$WORK/home" -newer "$OUT/.start" -type f -not -path '*/mesa_shader_cache/*' \
     -printf '%TT\t%s\t%p\n' 2>/dev/null | sort > "$OUT/new-files.txt" || true
-  echo "run $run done: proton exit $(cat "$OUT/exit-code" 2>/dev/null || echo '?'), sandbox exit $wrc, watchdog exit $wdrc"
+  echo "run $run done: proton exit $(cat "$OUT/io/exit-code" 2>/dev/null || echo '?'), sandbox exit $wrc, watchdog exit $wdrc"
   case "$wdrc" in
     0) ;;
     3) echo "GATE EVENT: the driver watchdog stopped the run; see $OUT/watchdog-trigger.txt. Stop all runs." >&2; exit 3 ;;

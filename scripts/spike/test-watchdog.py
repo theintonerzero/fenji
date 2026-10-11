@@ -115,5 +115,69 @@ class S3(unittest.TestCase):
         self.assertEqual(trig, ["S3 CreateService for non-baseline service 'AGT'"])
 
 
+class SandboxWritableFiles(unittest.TestCase):
+    """Everything the sandbox can write may be a planted link: the host side never follows one."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self._tmp.name)
+        self.secret = self.root / "host-secret"
+        self.secret.write_text("do not copy")
+        self.src = self.root / "io"
+        (self.src / "sub").mkdir(parents=True)
+        (self.src / "proton.out").write_text("log")
+        (self.src / "sub" / "stub.log").write_text("stub")
+        (self.src / "link").symlink_to(self.secret)
+        (self.src / "linkdir").symlink_to(self.root)
+        self.dest = self.root / "evidence"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_collect_copies_regular_files_and_records_links(self):
+        notes = wd.collect(str(self.src), str(self.dest))
+        self.assertEqual((self.dest / "proton.out").read_text(), "log")
+        self.assertEqual((self.dest / "sub" / "stub.log").read_text(), "stub")
+        self.assertFalse((self.dest / "link").exists() or (self.dest / "link").is_symlink())
+        self.assertFalse((self.dest / "linkdir").exists())
+        self.assertEqual(sorted(n.split(" ")[0] for n in notes), ["link", "link"])
+        self.assertNotIn("do not copy", "".join(p.read_text() for p in self.dest.rglob("*") if p.is_file()))
+
+    def test_collect_can_take_only_some_names(self):
+        wd.collect(str(self.src), str(self.dest), names=["proton.out", "link"])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ["proton.out"])
+
+    def test_the_go_file_is_created_exclusively(self):
+        go = self.root / ".go"
+        wd.create_exclusive(str(go))
+        self.assertTrue(go.is_file())
+        planted = self.root / ".go2"
+        planted.symlink_to(self.root / "elsewhere")
+        with self.assertRaises(OSError):
+            wd.create_exclusive(str(planted))
+        self.assertFalse((self.root / "elsewhere").exists())
+
+    def test_the_log_is_never_read_through_a_link(self):
+        log = self.src / "steam-1418100.log"
+        log.symlink_to(self.secret)
+        with self.assertRaises(OSError):
+            wd.Tail(str(log)).read()
+
+    def test_a_planted_link_is_described_not_hashed(self):
+        self.assertTrue(wd.describe_file(str(self.src / "link")).startswith("symlink to "))
+        self.assertTrue(wd.describe_file(str(self.src / "proton.out")).startswith("sha256 "))
+
+    def test_the_tmpfs_scan_skips_bound_directories(self):
+        # The sandbox's view of a tmpfs $HOME holding a read-only bind of GE-Proton (m1-accept).
+        r = self.root / "proc-root"
+        proton = r / "home" / "u" / "tools" / "GE-Proton" / "files"
+        proton.mkdir(parents=True)
+        (proton / "winebth.sys").write_bytes(b"Wine builtin")
+        (r / "tmp").mkdir()
+        (r / "tmp" / "agt.sys").write_bytes(b"MZ")
+        hits = wd.scan_tmpfs(str(r), ["/tmp", "/home/u"], binds=["/home/u/tools/GE-Proton"])
+        self.assertEqual(sorted(pathlib.Path(p).name for p in hits), ["agt.sys"])
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)

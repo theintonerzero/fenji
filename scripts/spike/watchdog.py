@@ -14,6 +14,12 @@ beyond stat() and a SHA-256 for identification.
       sandbox's PID namespace exists the watchdog arms itself and creates OUT/.go, which the command
       inside waits for before it starts the client. Exit 0: the sandbox ended, no sign seen.
       Exit 3: gate event. Exit 4: the watchdog itself failed (the sandbox is killed then too).
+  watchdog.py watch ... [--go FILE]
+      FILE is the start signal (default OUT/.go); it is created exclusively and never through a link.
+  watchdog.py collect --src DIR --dest DIR [--name N]... [--exclude N]...
+      Copies DIR's regular files into DEST without following any link (links and special files are
+      listed in DEST/collect-notes.txt): how the host takes evidence from directories the sandbox
+      can write.
   watchdog.py scanlog --root S --out OUT FILE...
       Runs only the log rules over finished logs (to test them against r1-r4), prints the hits.
 
@@ -137,12 +143,81 @@ def service_keys(prefix_system_reg):
     return names
 
 
+def open_regular(path):
+    """A read-only file object for `path`, refusing a symlink (O_NOFOLLOW) or anything but a
+    regular file: the sandbox can write the directories this reads, and a planted link must never
+    make the host read one of its own files."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError(f"not a regular file: {path}")
+    return os.fdopen(fd, "rb")
+
+
 def sha256(path):
     h = hashlib.sha256()
-    with open(path, "rb") as fh:
+    with open_regular(path) as fh:
         for block in iter(lambda: fh.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def describe_file(path):
+    """`sha256 …` for a regular file; for a link, its target, never what it points to."""
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        return f"symlink to {os.readlink(path)}"
+    if not stat.S_ISREG(st.st_mode):
+        return f"not a regular file (mode {oct(st.st_mode)})"
+    return f"sha256 {sha256(path)}"
+
+
+def create_exclusive(path):
+    """Creates the empty file `path`; fails if anything, a link included, is already there."""
+    os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644))
+
+
+def scan_tmpfs(root, subs, binds):
+    """S1 over the sandbox's own mounts as seen at `root` (/proc/PID/root): *.sys under each of
+    `subs`, skipping the directories bound into the sandbox (`binds`): the read-write ones are
+    scanned on the host side, and a read-only one (GE-Proton) can't gain a file from inside."""
+    prune = {root + d for d in binds}
+    hits = {}
+    for sub in subs:
+        hits.update(scan_sys(root + sub, prune=prune))
+    return hits
+
+
+def collect(src, dest, names=None, exclude=()):
+    """Copies the regular files under `src` (all of it, or only its top-level `names`, minus
+    `exclude`) into `dest`, never following a link: links and special files are listed in the
+    returned notes instead. `src` may be written by the sandbox; `dest` is the host's evidence."""
+    notes = []
+    os.makedirs(dest, exist_ok=True)
+    try:
+        top = sorted(os.listdir(src))
+    except FileNotFoundError:
+        return notes
+    for name in top:
+        if (names is not None and name not in names) or name in exclude:
+            continue
+        stack = [name]
+        while stack:
+            rel = stack.pop()
+            p = os.path.join(src, rel)
+            st = os.lstat(p)
+            if stat.S_ISLNK(st.st_mode):
+                notes.append(f"link {rel} -> {os.readlink(p)} (not followed)")
+            elif stat.S_ISDIR(st.st_mode):
+                os.makedirs(os.path.join(dest, rel), exist_ok=True)
+                stack.extend(os.path.join(rel, c) for c in sorted(os.listdir(p)))
+            elif stat.S_ISREG(st.st_mode):
+                with open_regular(p) as fin, open(os.path.join(dest, rel), "xb") as fout:
+                    for block in iter(lambda: fin.read(1 << 20), b""):
+                        fout.write(block)
+            else:
+                notes.append(f"special {rel} mode {oct(st.st_mode)} (not copied)")
+    return notes
 
 
 # --- processes ---------------------------------------------------------------------------------
@@ -324,8 +399,8 @@ class Tail:
         new arrived (a quiet poll), the held-back complete lines are released too."""
         if self.fh is None:
             try:
-                self.fh = open(self.path, "rb")
-            except OSError:
+                self.fh = open_regular(self.path)
+            except FileNotFoundError:
                 return b"", b""
         self.fh.seek(self.off)
         new = self.fh.read(limit)
@@ -408,10 +483,7 @@ def cmd_watch(a):
                 os.listdir(r + "/tmp")
             except OSError:
                 continue
-            prune = {r + d for d in [a.root] + a.binds}  # bound dirs: scanned on the host side
-            for sub in ("/tmp", "/dev/shm", "/run", "/var", HOST_HOME):
-                hits.update(scan_sys(r + sub, prune=prune))
-            return hits
+            return scan_tmpfs(r, ("/tmp", "/dev/shm", "/run", "/var", HOST_HOME), [a.root] + a.binds)
         if cands and not tmpfs_warned:
             log("note: can't read any sandbox process's /proc/PID/root; tmpfs mounts not scanned")
             tmpfs_warned = True
@@ -511,11 +583,11 @@ def cmd_watch(a):
             fh.write(f"client pid {client_pid} start {client_start} (clock ticks since boot)\n\n")
             for kind, what, detail in found:
                 fh.write(f"{kind}: {what}\n")
-                if isinstance(what, str) and what.startswith("/") and os.path.isfile(what):
+                if isinstance(what, str) and what.startswith("/"):
                     try:
-                        fh.write(f"  sha256 {sha256(what)}\n")
+                        fh.write(f"  {describe_file(what)}\n")
                     except OSError as e:
-                        fh.write(f"  sha256 unavailable: {e}\n")
+                        fh.write(f"  unreadable: {e}\n")
                 if detail is not None:
                     fh.write(f"  {json.dumps(detail, default=str)}\n")
             fh.write("\nsandbox processes at the trigger (frozen with SIGSTOP, then SIGKILL):\n")
@@ -548,7 +620,11 @@ def cmd_watch(a):
                 if init:
                     ns = pidns(init) or "unreadable (init not dumpable)"
                     log(f"armed: bwrap pid {spid}, sandbox init pid {init}, pid namespace {ns}")
-                    open(os.path.join(a.out, ".go"), "w").close()
+                    try:
+                        create_exclusive(a.go)
+                    except OSError as e:
+                        log(f"WATCHDOG FAILURE: can't create the start signal {a.go}: {e}")
+                        return 4  # the runner kills the sandbox when the watchdog ends first
             found = check_sys() + check_procs() + check_log()
             if found:
                 freeze_kill_record(found)
@@ -590,8 +666,20 @@ def main():
     w.add_argument("--interval", type=float, default=0.5)
     w.add_argument("--bind", dest="binds", action="append", default=[],
                    help="other dirs bound into the sandbox (pruned from the tmpfs scan)")
+    w.add_argument("--go", help="the start signal to create once armed (default: OUT/.go)")
     s.add_argument("files", nargs="+")
+    c = sub.add_parser("collect", help="copy a sandbox-writable tree's regular files, never following a link")
+    c.add_argument("--src", required=True)
+    c.add_argument("--dest", required=True)
+    c.add_argument("--name", dest="names", action="append", help="only these top-level names")
+    c.add_argument("--exclude", action="append", default=[], help="skip these top-level names")
     a = ap.parse_args()
+    if a.mode == "collect":
+        notes = collect(a.src, a.dest, names=a.names, exclude=a.exclude)
+        if notes:
+            with open(os.path.join(a.dest, "collect-notes.txt"), "a") as fh:
+                fh.write("".join(n + "\n" for n in notes))
+        return 0
     a.root = os.path.realpath(a.root)
     a.out = os.path.realpath(a.out)
     if a.mode == "baseline":
@@ -600,6 +688,7 @@ def main():
     if a.mode == "scanlog":
         return cmd_scanlog(a)
     a.binds = [os.path.realpath(x) for x in a.binds]
+    a.go = a.go or os.path.join(a.out, ".go")
     return cmd_watch(a)
 
 
