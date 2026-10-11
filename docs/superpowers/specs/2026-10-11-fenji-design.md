@@ -61,13 +61,15 @@ Players: Windows and Linux (Proton). macOS players are out of scope.
 
 **Pinned client build.** Fenji targets exactly one build: Steam app 1418100, depot 1418101, manifest 5002037851744157048, build ID 10015727. Its main executable is `bin64/gujianol.exe`, FileVersion 2.1.19.42851. The build has been frozen since the shutdown. M0 records the executable's size and SHA-256 and the file list in `docs/re/pinned-build.md`. The pinned copy lives in `$FENJI_CLIENT_PATH` (default `~/fenji-client`). It is either fetched with DepotDownloader under the person's own Steam login or copied from their own existing install.
 
+**M0 update.** [`pinned-build.md`](../../re/pinned-build.md) records the file count and total bytes; for the file list it refers to Steam's cached depot manifest, which the pinned copy matches file for file.
+
 ## 4. Protocol discovery
 
 A static triage on 2026-10-11 found the following (M0 wrote it up with evidence in `docs/re/spike-0.md`, which corrects two of its figures; the figures below are M0's):
 - **Unprotected executable.** `gujianol.exe` is an ordinary MSVC 2013 x64 build, with a full exception table (75,016 entries; Ghidra finds 51,808 functions) and named imports.
 - **Readable protocol.** The network layer is readable, and so are the protocol opcode enums (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`) and about 2,500 synced-property names (`prop_*`); the schema's exact size is not yet known.
 - **Logic in Lua.** Much of the game logic is Lua 5.3 bytecode embedded in the executable. The Lua is modified: a custom header and 7 extra opcodes.
-- **Data.** The archives are Oodle-compressed, not encrypted.
+- **Data.** The sampled archive entries are Oodle-compressed or stored, with no sign of encryption.
 - **Anti-cheat.** No third-party anti-cheat ships. An in-house kernel driver ("AGT") is embedded as a resource, with no visible load path; no M0 run extracted or loaded it (§5.4).
 - **Boots without servers.** With the servers gone, the client still reaches its login scene.
 
@@ -79,7 +81,7 @@ A static triage on 2026-10-11 found the following (M0 wrote it up with evidence 
 |---|---|
 | 1. Network layer | Framing, header scramble, Oodle Network setup, handshake variant selection, send/receive state machine |
 | 2. Dispatch | Opcode → handler mapping in both directions, native and Lua |
-| 3. Payloads | `pickle`/msgpack payload schema per opcode; the synced-property schema |
+| 3. Payloads | The payload encoding, unknown so far ([spike-0](../../re/spike-0.md) 4.8–4.9), and the schema per opcode; the synced-property schema |
 | 4. Scripts | Extract, disassemble and decompile the embedded Lua; read the client's own protocol and gameplay scripts |
 | 5. Data | Archive and index format; table schemas |
 
@@ -136,7 +138,7 @@ The client obtains an auth ticket through `gameforge_api64.dll`, which has Steam
 
 The executable embeds a kernel driver ("AGT") with no visible load path in this build. Before the first client run, M0 confirms it is never extracted or loaded. If any step would load it, work stops (rule 6).
 
-**M0 update** ([spike-0 §3](../../re/spike-0.md#3-anti-cheat-and-the-embedded-agt-kernel-driver), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)). The sandbox alone doesn't prevent a load: Wine hosts kernel drivers in user mode, in `winedevice.exe`, as it does for its own drivers in every run. M0's answer: in runs 1–9 the client neither extracted nor loaded AGT, up to its login scene. Every run was checked afterwards, and a driver watchdog also watched runs 5–9. Code paths after login and in game are not yet covered.
+**M0 update** ([spike-0 §3](../../re/spike-0.md#3-anti-cheat-and-the-embedded-agt-kernel-driver), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)). The sandbox alone doesn't prevent a load: Wine hosts kernel drivers in user mode, in `winedevice.exe`, as it does for its own drivers in every run. M0's answer: in runs 1–9, all under Wine/Proton, the client neither extracted nor loaded AGT, up to its login scene. Every run was checked afterwards, and a driver watchdog also watched runs 5–9. On native Windows, which no run covered, the answer rests on the static reading (spike-0 3.11). Code paths after login and in game are not yet covered.
 
 ## 6. Architecture
 
@@ -313,7 +315,7 @@ SemVer 2.0.0 (one workspace version) and Conventional Commits 1.0.0. `dev` is th
 | Question | Answered in | Answer (M0) |
 |---|---|---|
 | Does `gujianol.exe` start and reach its login scene without `SOLO_Launcher`, inside the sandbox? | M0 | **Yes**, with `--gf-sdk=mocked` (dev-only, #11), `--fs=data:_index:_index` and `--cpu-topology`. It stops at the failed server-list fetch ([spike-0 §8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
-| Is the embedded AGT kernel driver ever extracted or loaded? | M0 | **No**, up to the login scene, in runs 1–9; later code paths are not yet covered ([§3](../../re/spike-0.md#3-anti-cheat-and-the-embedded-agt-kernel-driver), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
+| Is the embedded AGT kernel driver ever extracted or loaded? | M0 | **No**, up to the login scene, in runs 1–9 under Wine/Proton; on native Windows it rests on the static reading (3.11); later code paths are not yet covered ([§3](../../re/spike-0.md#3-anti-cheat-and-the-embedded-agt-kernel-driver), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
 | What does the client send first, and where does it get its server address? | M0 | **Unknown at run time**: the client connected nowhere. By static reading the server speaks first, with a 64-byte hello. Where the address comes from is open; a `servername` file and the `--server-name` and `--net` flags are among the candidates ([§4](../../re/spike-0.md#4-network-layer), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
 | Archive and index format; Oodle LZ: clean-room decoder, licensed external tool, or gate? | M1 | Partly: 100 archive parts whose record tables are only partly understood; the sampled entries are Oodle-compressed or stored, with no sign of encryption ([§6](../../re/spike-0.md#6-data-archives-and-scripts)) |
 | How much server-side logic do the embedded scripts carry? | M1 | Partly: 18,587 LZ4-wrapped chunks of modified Lua 5.3 in the exe, and much of the combat logic looks like scripts that run on both sides and branch on `IsServer`/`IsClient`; the amount is M1's to measure ([§6](../../re/spike-0.md#6-data-archives-and-scripts)) |
