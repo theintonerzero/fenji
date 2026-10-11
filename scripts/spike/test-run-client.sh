@@ -52,7 +52,8 @@ refuses "--env takes VAR=VALUE" "VAR=VALUE" -- --env NOVALUE
 refuses "--ports takes numbers" "--ports" -- --ports '7800;x'
 refuses "--ports can't be empty" "--ports" -- --ports ''
 
-refuses "valid --ports and --env pass their checks" "no workspace" -- --ports '7800 7801' --env FOO=bar
+refuses "--click takes T:X,Y in whole numbers" "--click" -- --click 5:abc
+refuses "valid --ports, --env and --click pass their checks" "no workspace" -- --ports '7800 7801' --env FOO=bar --click 30:640,360
 
 case "$(watch_channels -all)" in
   -all,*+process*+loaddll*+resource*+service*err+all*) ok "the watchdog's channels follow any --channels" ;;
