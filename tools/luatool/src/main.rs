@@ -53,6 +53,14 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Measure server-side logic: census.tsv and census-server-chunks.tsv under OUT (inside re/)
+    Census {
+        /// Only engine paths starting with this
+        #[arg(long, default_value = "")]
+        prefix: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Decompile each Lua chunk with unluac into OUT (inside re/)
     Decompile {
         /// Only engine paths starting with this
@@ -83,7 +91,8 @@ fn main() -> Result<()> {
         Command::Extract { out, .. }
         | Command::Disasm { out, .. }
         | Command::Normalize { out, .. }
-        | Command::Decompile { out, .. } => Some(Out::new(out)?),
+        | Command::Decompile { out, .. }
+        | Command::Census { out, .. } => Some(Out::new(out)?),
     };
     let image = client::load(&client::exe_path(cli.exe.clone())?, cli.any_build)?;
     let fs = fenji_data::ExeFs::scan(&image)?;
@@ -124,6 +133,7 @@ fn main() -> Result<()> {
                 commands::decompile(&fs, prefix, o, &unluac, workers)?,
             )
         }
+        (Command::Census { prefix, .. }, Some(o)) => ("census", commands::census(&fs, prefix, o)?),
         _ => unreachable!("every command that writes has an output directory"),
     };
     if let Some(o) = &out {

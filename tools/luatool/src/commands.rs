@@ -261,3 +261,74 @@ pub fn decompile(
     std::fs::write(out.root().join("decompile-summary.tsv"), tsv)?;
     Ok(s)
 }
+
+fn census_row(area: &str, c: &fenji_lua::Counts) -> String {
+    format!(
+        "{area}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        c.chunks,
+        c.functions,
+        c.instructions,
+        c.reads_is_server,
+        c.reads_is_client,
+        c.server_only,
+        c.client_only
+    )
+}
+
+/// `census`: the server-logic measurement over every decodable Lua chunk. Per-area counts go to
+/// `census.tsv`. Chunks under a `server/` directory, or with at least 90 % server-only
+/// instructions, go to `census-server-chunks.tsv`.
+pub fn census(fs: &ExeFs, prefix: &str, out: &mut Out) -> Result<Summary> {
+    let mut s = Summary::default();
+    let mut areas: BTreeMap<String, fenji_lua::Counts> = BTreeMap::new();
+    let mut server_chunks = String::from("path\treason\tinstructions\tserver_only\n");
+    for e in selected(fs, prefix) {
+        let path = e.engine_path();
+        match decode(fs, e) {
+            Decoded::Lua(bytes, dialect) => {
+                s.lua += 1;
+                match fenji_lua::parse(&bytes, dialect) {
+                    Ok(chunk) => {
+                        let c = fenji_lua::census(&chunk);
+                        *areas.entry(area(&path)).or_default() += c;
+                        let in_server_dir = path.split('/').any(|d| d == "server");
+                        let mostly_server =
+                            c.instructions > 0 && c.server_only * 10 >= c.instructions * 9;
+                        if in_server_dir || mostly_server {
+                            let why = if in_server_dir {
+                                "server/ directory"
+                            } else {
+                                "at least 90% server-only"
+                            };
+                            server_chunks.push_str(&format!(
+                                "{path}\t{why}\t{}\t{}\n",
+                                c.instructions, c.server_only
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        s.bad_chunks += 1;
+                        s.fail(&path, err);
+                    }
+                }
+            }
+            Decoded::Other(_) => s.other += 1,
+            Decoded::Failed(why) => {
+                s.undecodable += 1;
+                s.fail(&path, why);
+            }
+        }
+    }
+    let mut tsv = String::from(
+        "area\tchunks\tfunctions\tinstructions\treads_is_server\treads_is_client\tserver_only\tclient_only\n",
+    );
+    let mut total = fenji_lua::Counts::default();
+    for (a, c) in &areas {
+        total += *c;
+        tsv.push_str(&census_row(a, c));
+    }
+    tsv.push_str(&census_row("(all)", &total));
+    std::fs::write(out.root().join("census.tsv"), tsv)?;
+    std::fs::write(out.root().join("census-server-chunks.tsv"), server_chunks)?;
+    Ok(s)
+}
