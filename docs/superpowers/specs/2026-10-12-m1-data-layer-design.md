@@ -1,6 +1,8 @@
 # M1: Data layer — Design Spec
 
 **Status:** approved by the owner on 2026-10-12. Amended the same day by the plan's deviations D1–D3, which the owner accepted ([plan](../plans/2026-10-12-m1-data-layer.md), "Deviations from the spec"). Task 1's findings then corrected facts in the plan ("Execution amendments" E1–E3), and Done-when 1 lost its example of truncated scripts.
+
+**Implementation:** done in M1 except the Oodle follow-through, which waits on the owner (gate #39); see [`docs/re/m1-summary.md`](../../re/m1-summary.md).
 **Parent:** [Fenji design spec](2026-10-11-fenji-design.md) §6.3 and §10 (M1), and the M0 findings in [`docs/re/spike-0.md`](../../re/spike-0.md).
 
 ## 1. Purpose and priority

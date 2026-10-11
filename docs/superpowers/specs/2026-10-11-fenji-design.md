@@ -2,6 +2,7 @@
 
 - **Date:** 2026-10-11
 - **M0 updates:** 2026-10-12, from [`docs/re/spike-0.md`](../../re/spike-0.md): notes in §3, §4, §5.2–§5.4 and §6.2, and the "Answer (M0)" column in §12.
+- **M1 updates:** 2026-10-12, from [`docs/re/m1-summary.md`](../../re/m1-summary.md): a note in §10 and the "Answer (M1)" column in §12.
 - **Status:** Approved in brainstorming (sections 1–3); awaiting written-spec review
 - **Scope:** Whole-project architecture and milestone map. Each milestone (M0–M5) gets its own implementation plan in `docs/superpowers/plans/`.
 - **Lineage:** Fenji replaces Caphras, a Black Desert Online emulator halted on 2026-10-11 in favour of SoLO, whose client can be read; BDO's is packed. Fenji keeps Caphras's tooling, process and server architecture. Everything specific to the game is new (§13).
@@ -302,6 +303,15 @@ M5 may add or rename rates once SoLO's progression systems are mapped.
 | M4 | Social sandbox + VPS | Friends enter the starting zone, move, see each other and chat; admin commands; deployed to the VPS |
 | M5 | Grind loop (v1) | Monsters, AI, combat (hybrid decision per system), XP, loot, inventory, persistence, live-tunable rates |
 
+**M1 update** ([`m1-summary.md`](../../re/m1-summary.md)). M1 delivered:
+- `luatool`, which lists, disassembles and decompiles all 20,443 embedded scripts;
+- `archive`, which reads the archives' structure without decompression;
+- the server-logic census;
+- the tracked client runner with its AGT watchdog;
+- the real client's first session with fenji-stub.
+
+The archives' compressed content, and with it the item, skill, monster, XP-curve and map dumps, waits on the owner's Oodle decision (gate #39).
+
 M0–M2 can redirect or stop the project (the kernel driver, Oodle licensing, the ticket handoff). That is intended: we learn it before building the server.
 
 Each milestone release to `main` bumps the minor version (M0 → `0.1.0` … M4 → `0.5.0`); M5 releases `1.0.0`.
@@ -312,19 +322,19 @@ SemVer 2.0.0 (one workspace version) and Conventional Commits 1.0.0. `dev` is th
 
 ## 12. Open questions (answered by milestones, not by guessing)
 
-| Question | Answered in | Answer (M0) |
-|---|---|---|
-| Does `gujianol.exe` start and reach its login scene without `SOLO_Launcher`, inside the sandbox? | M0 | **Yes**, with `--gf-sdk=mocked` (dev-only, #11), `--fs=data:_index:_index` and `--cpu-topology`. It stops at the failed server-list fetch ([spike-0 §8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
-| Is the embedded AGT kernel driver ever extracted or loaded? | M0 | **No**, up to the login scene, in runs 1–9 under Wine/Proton; on native Windows it rests on the static reading (3.11); later code paths are not yet covered ([§3](../../re/spike-0.md#3-anti-cheat-and-the-embedded-agt-kernel-driver), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
-| What does the client send first, and where does it get its server address? | M0 | **Unknown at run time**: the client connected nowhere. By static reading the server speaks first, with a 64-byte hello. Where the address comes from is open; a `servername` file and the `--server-name` and `--net` flags are among the candidates ([§4](../../re/spike-0.md#4-network-layer), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) |
-| Archive and index format; Oodle LZ: clean-room decoder, licensed external tool, or gate? | M1 | Partly: 100 archive parts whose record tables are only partly understood; the sampled entries are Oodle-compressed or stored, with no sign of encryption ([§6](../../re/spike-0.md#6-data-archives-and-scripts)) |
-| How much server-side logic do the embedded scripts carry? | M1 | Partly: 18,587 LZ4-wrapped chunks of modified Lua 5.3 in the exe, and much of the combat logic looks like scripts that run on both sides and branch on `IsServer`/`IsClient`; the amount is M1's to measure ([§6](../../re/spike-0.md#6-data-archives-and-scripts)) |
-| Oodle Network: clean-room codec, an uncompressed path, or gate? | M2 | Partly: the client imports Oodle's decoder but not its encoder, so the server has to send data that the decoder accepts ([§4](../../re/spike-0.md#4-network-layer)) |
-| Handshake variant selection and per-connection keying | M2 | Partly, by static reading: after the server's hello the client picks one of 27 stream variants, and each direction keeps its own 16-bit scramble key; untested ([§4](../../re/spike-0.md#4-network-layer)) |
-| One or two connections (gate vs world)? Ports? | M2–M3 | Open: no M0 run connected anywhere, so no port is known ([§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)) |
-| Ticket handoff: what the client sends, and whether it needs a running Steam client | M3 | Partly: the Steam SDK needs Steam's `steamclient64.dll`, so a Steam client, most likely running; the `gf` SDK needs the Gameforge Client's DLL; `mocked` is dev-only (#11). Which message carries the ticket is unknown ([§5](../../re/spike-0.md#5-startup-chain-server-address-and-ticket), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)) |
-| Which gameplay systems run the client's scripts (hybrid rule) | M5 | Not covered by M0 |
-| Does the client report hits, or expect server-side hit detection? | M5 | Not covered by M0 |
+| Question | Answered in | Answer (M0) | Answer (M1) |
+|---|---|---|---|
+| Does `gujianol.exe` start and reach its login scene without `SOLO_Launcher`, inside the sandbox? | M0 | **Yes**, with `--gf-sdk=mocked` (dev-only, #11), `--fs=data:_index:_index` and `--cpu-topology`. It stops at the failed server-list fetch ([spike-0 §8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) | — |
+| Is the embedded AGT kernel driver ever extracted or loaded? | M0 | **No**, up to the login scene, in runs 1–9 under Wine/Proton; on native Windows it rests on the static reading (3.11); later code paths are not yet covered ([§3](../../re/spike-0.md#3-anti-cheat-and-the-embedded-agt-kernel-driver), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) | **Still no sign** through the first connection (runs m1-c1 and m1-c2, [`login.md`](../../protocol/login.md) §6), now with every resource lookup logged, none of the driver's type `PE` |
+| What does the client send first, and where does it get its server address? | M0 | **Unknown at run time**: the client connected nowhere. By static reading the server speaks first, with a 64-byte hello. Where the address comes from is open; a `servername` file and the `--server-name` and `--net` flags are among the candidates ([§4](../../re/spike-0.md#4-network-layer), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only), [Conclusions](../../re/spike-0.md#conclusions)) | **Both answered** ([`login.md`](../../protocol/login.md) §3, §6). The address comes from the server list at the `serverlist_url` setting and the player's choice in the server-choice frame. The client sends nothing first: connected to fenji-stub, it waited 85 s in silence, so the server speaks first |
+| Archive and index format; Oodle LZ: clean-room decoder, licensed external tool, or gate? | M1 | Partly: 100 archive parts whose record tables are only partly understood; the sampled entries are Oodle-compressed or stored, with no sign of encryption ([§6](../../re/spike-0.md#6-data-archives-and-scripts)) | **Format answered; Oodle waits on the owner (gate #39)** ([`m1-archives.md`](../../re/m1-archives.md)). Parts chain checksummed index blocks of SHA-1-keyed records; 93.6% of files are Oodle, the rest stored and plain. `_index` is one Oodle blob of path lines |
+| How much server-side logic do the embedded scripts carry? | M1 | Partly: 18,587 LZ4-wrapped chunks of modified Lua 5.3 in the exe, and much of the combat logic looks like scripts that run on both sides and branch on `IsServer`/`IsClient`; the amount is M1's to measure ([§6](../../re/spike-0.md#6-data-archives-and-scripts)) | **Measured** ([`m1-script-census.md`](../../re/m1-script-census.md)): 17.6% of `data/scripts`' instructions run only on the server, mostly in combat, and two `server/` directories ship whole |
+| Oodle Network: clean-room codec, an uncompressed path, or gate? | M2 | Partly: the client imports Oodle's decoder but not its encoder, so the server has to send data that the decoder accepts ([§4](../../re/spike-0.md#4-network-layer)) | — |
+| Handshake variant selection and per-connection keying | M2 | Partly, by static reading: after the server's hello the client picks one of 27 stream variants, and each direction keeps its own 16-bit scramble key; untested ([§4](../../re/spike-0.md#4-network-layer)) | — |
+| One or two connections (gate vs world)? Ports? | M2–M3 | Open: no M0 run connected anywhere, so no port is known ([§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)) | **Partly:** the gate's address and port come from the server list, so they are ours to choose; the client opened one connection, to the gate ([`login.md`](../../protocol/login.md) §6) |
+| Ticket handoff: what the client sends, and whether it needs a running Steam client | M3 | Partly: the Steam SDK needs Steam's `steamclient64.dll`, so a Steam client, most likely running; the `gf` SDK needs the Gameforge Client's DLL; `mocked` is dev-only (#11). Which message carries the ticket is unknown ([§5](../../re/spike-0.md#5-startup-chain-server-address-and-ticket), [§8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)) | — |
+| Which gameplay systems run the client's scripts (hybrid rule) | M5 | Not covered by M0 | — |
+| Does the client report hits, or expect server-side hit detection? | M5 | Not covered by M0 | — |
 
 ## 13. Lineage from Caphras
 
