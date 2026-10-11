@@ -242,6 +242,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fenji-luatool"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fenji-data",
+ "fenji-lua",
+ "mlua",
+ "tempfile",
+]
+
+[[package]]
 name = "fenji-stub"
 version = "0.1.0"
 dependencies = [
