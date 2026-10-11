@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["tools/stub", "crates/fenji-data"]
+members = ["tools/stub", "crates/fenji-data", "crates/fenji-lua"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,7 +12,9 @@ publish = false
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 fenji-data = { path = "crates/fenji-data" }
+fenji-lua = { path = "crates/fenji-lua" }
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
+mlua = { version = "0.12.2", features = ["lua53", "vendored"] }
 sha2 = "0.11.0"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
