@@ -6,13 +6,16 @@
 //! 24 bytes too (a path pointer, a u32 stored size, a u32 continuation flag and a pointer to a
 //! piece of the stored blob) and end at a NULL path. A file whose flag is set continues in the
 //! following entries; its pieces, [`PIECE_LEN`] bytes each except the last, are concatenated.
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
 use crate::{BlobHeader, Decompressor, Error, PeImage, Result, Section, blob};
 
 /// Bytes in each piece of a multi-piece file except the last (the engine's walker passes 0x3FFC).
 pub const PIECE_LEN: usize = 0x3FFC;
 /// Size of a mount-table entry and of a file entry.
-const ENTRY_LEN: usize = 24;
-/// The longest path the scanner accepts.
+const ENTRY_LEN: u64 = 24;
+/// The longest path the scanner reads.
 const MAX_PATH: usize = 260;
 /// The longest mount or directory name the scanner accepts.
 const MAX_NAME: usize = 64;
@@ -24,7 +27,8 @@ pub struct ExeEntry {
     pub mount: String,
     /// The embedded directory: `c`, `locale`, `core`, `interface` or `scripts` in the pinned build.
     pub dir: String,
-    /// The path inside the directory, such as `addons/Login/Login.luac`.
+    /// The path inside the directory, such as `addons/Login/Login.luac`. A path that can't be
+    /// read is named `?unreadable-path-at-<address>`; bytes that aren't UTF-8 become U+FFFD.
     pub path: String,
     /// Size of the stored blob, header included.
     pub stored_size: u64,
@@ -52,16 +56,31 @@ pub struct ExeFs<'a> {
 }
 
 impl<'a> ExeFs<'a> {
-    /// Finds the mount table in `.data` (8-byte aligned) and walks every directory it lists. A
-    /// candidate table counts only if every list ends at a NULL path inside `.data` and the first
-    /// file of each list has a blob header that agrees with its entry.
+    /// Finds the mount table in `.data` and walks every directory it lists.
+    ///
+    /// A candidate table is a run of well-formed mount entries (two `.rdata` names and a list in
+    /// `.data`) ended by a NULL mount name. The first candidate in which some file has a blob
+    /// header that agrees with its entry is the table. Its lists must each end at a NULL path inside
+    /// `.data` and share no entries with each other or with the table; if they don't, the scan
+    /// fails rather than guessing. A problem with one file (an unreadable path, a bad header, a
+    /// damaged block, a piece outside the image) affects only that file. The scan's work is bounded
+    /// by the size of `.data`.
     pub fn scan(image: &'a PeImage) -> Result<Self> {
         let data = image.section(".data").ok_or(Error::NoRegistry)?;
         let end = data.va + image.section_data(data).len() as u64;
+        let mut scanner = Scanner::new(image, data);
+        let mut known_bad = HashSet::new();
         let mut va = data.va;
-        while va + ENTRY_LEN as u64 <= end {
-            if let Some(entries) = mount_table(image, data, va) {
-                return Ok(Self { image, entries });
+        while va + ENTRY_LEN <= end {
+            if !known_bad.contains(&va)
+                && let Some(run) = mount_run(image, data, va)
+            {
+                if scanner.signature(&run)? {
+                    let entries = scanner.build(va, &run)?;
+                    return Ok(Self { image, entries });
+                }
+                // A table whose lists hold no sound file has no sound sub-table either.
+                known_bad.extend((1..run.len() as u64).map(|i| va + i * ENTRY_LEN));
             }
             va += 8;
         }
@@ -86,9 +105,16 @@ impl<'a> ExeFs<'a> {
     }
 }
 
-/// The files of the mount table at `va`, if a sound one starts there.
-fn mount_table(image: &PeImage, data: &Section, va: u64) -> Option<Vec<ExeEntry>> {
-    let mut entries = Vec::new();
+/// One mount-table entry.
+struct Mount {
+    mount: String,
+    dir: String,
+    list: u64,
+}
+
+/// The well-formed mount entries from `va` to a NULL mount name, if there is at least one.
+fn mount_run(image: &PeImage, data: &Section, va: u64) -> Option<Vec<Mount>> {
+    let mut run = Vec::new();
     let mut at = va;
     loop {
         let raw = in_section(image, data, at)?;
@@ -97,50 +123,152 @@ fn mount_table(image: &PeImage, data: &Section, va: u64) -> Option<Vec<ExeEntry>
         if word(0) == 0 {
             break;
         }
-        let mount = rdata_str(image, word(0), MAX_NAME)?;
-        let dir = rdata_str(image, word(1), MAX_NAME)?;
-        let files = walk_list(image, data, word(2), &mount, &dir)?;
-        let first = files.first()?;
-        header_of(&join(image, first).ok()?, first).ok()?;
-        entries.extend(files);
-        at += ENTRY_LEN as u64;
-    }
-    (at != va).then_some(entries)
-}
-
-/// The files of one directory's list, if it ends at a NULL path inside `.data`.
-fn walk_list(
-    image: &PeImage,
-    data: &Section,
-    first: u64,
-    mount: &str,
-    dir: &str,
-) -> Option<Vec<ExeEntry>> {
-    let mut files = Vec::new();
-    let mut at = first;
-    loop {
-        let e = FileEntry::read(image, data, at)?;
-        if e.path == 0 {
-            return Some(files);
+        let mount = name(image, word(0))?;
+        let dir = name(image, word(1))?;
+        if image.section_of(word(2))? != data {
+            return None;
         }
-        let path = rdata_str(image, e.path, MAX_PATH)?;
-        let mut pieces = vec![e.piece];
-        let mut more = e.more;
-        while more != 0 {
-            at += ENTRY_LEN as u64;
-            let next = FileEntry::read(image, data, at)?;
-            pieces.push(next.piece);
-            more = next.more;
-        }
-        let (mount, dir) = (mount.to_owned(), dir.to_owned());
-        files.push(ExeEntry {
+        run.push(Mount {
             mount,
             dir,
-            path,
-            stored_size: u64::from(e.size),
-            pieces,
+            list: word(2),
         });
-        at += ENTRY_LEN as u64;
+        at += ENTRY_LEN;
+    }
+    (!run.is_empty()).then_some(run)
+}
+
+/// One file as its entries list it.
+struct RawFile {
+    path: String,
+    size: u32,
+    pieces: Vec<u64>,
+}
+
+/// One list, walked.
+struct Walk {
+    files: Vec<RawFile>,
+    /// Every entry the walk read, its NULL entry included.
+    entries: Vec<u64>,
+    /// Whether the list ended at a NULL path inside `.data`.
+    ended: bool,
+    /// Whether some file has a blob header that agrees with its entry.
+    sound: bool,
+}
+
+/// Walks lists once each, within a budget of entries proportional to `.data`.
+struct Scanner<'i> {
+    image: &'i PeImage,
+    data: &'i Section,
+    walks: HashMap<u64, Rc<Walk>>,
+    budget: u64,
+}
+
+impl<'i> Scanner<'i> {
+    fn new(image: &'i PeImage, data: &'i Section) -> Self {
+        let entries = image.section_data(data).len() as u64 / ENTRY_LEN;
+        Self {
+            image,
+            data,
+            walks: HashMap::new(),
+            budget: 2 * entries + 1024,
+        }
+    }
+
+    /// Whether some file in `run`'s lists has a sound header.
+    fn signature(&mut self, run: &[Mount]) -> Result<bool> {
+        for m in run {
+            if self.walk(m.list)?.sound {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The files of the table at `va`, walked strictly.
+    fn build(&mut self, va: u64, run: &[Mount]) -> Result<Vec<ExeEntry>> {
+        let table_end = va + ENTRY_LEN * (run.len() as u64 + 1);
+        let mut used: Vec<u64> = (va..table_end).step_by(ENTRY_LEN as usize).collect();
+        let mut entries = Vec::new();
+        for m in run {
+            let walk = self.walk(m.list)?;
+            if !walk.ended {
+                return Err(Error::BadEntry {
+                    va: m.list,
+                    reason: format!("the list of {} runs off the end of .data", m.dir),
+                });
+            }
+            used.extend(&walk.entries);
+            entries.extend(walk.files.iter().map(|f| ExeEntry {
+                mount: m.mount.clone(),
+                dir: m.dir.clone(),
+                path: f.path.clone(),
+                stored_size: u64::from(f.size),
+                pieces: f.pieces.clone(),
+            }));
+        }
+        used.sort_unstable();
+        if let Some(w) = used.windows(2).find(|w| w[1] - w[0] < ENTRY_LEN) {
+            return Err(Error::BadEntry {
+                va: w[1],
+                reason: "two lists, or a list and the mount table, share entries".into(),
+            });
+        }
+        Ok(entries)
+    }
+
+    /// The list at `first`, walked once. Fails when the scan's budget is spent.
+    fn walk(&mut self, first: u64) -> Result<Rc<Walk>> {
+        if let Some(w) = self.walks.get(&first) {
+            return Ok(Rc::clone(w));
+        }
+        let mut w = Walk {
+            files: Vec::new(),
+            entries: Vec::new(),
+            ended: false,
+            sound: false,
+        };
+        let mut at = first;
+        while let Some(e) = self.entry(at)? {
+            w.entries.push(at);
+            if e.path == 0 {
+                w.ended = true;
+                break;
+            }
+            let mut file = RawFile {
+                path: path_of(self.image, e.path),
+                size: e.size,
+                pieces: vec![e.piece],
+            };
+            let mut more = e.more;
+            while more != 0 {
+                // A continuation entry has size 0 and a piece; anything else starts a new file, so
+                // a stray flag can't swallow a file or a list's end.
+                match self.entry(at + ENTRY_LEN)? {
+                    Some(next) if next.size == 0 && next.piece != 0 => {
+                        at += ENTRY_LEN;
+                        w.entries.push(at);
+                        file.pieces.push(next.piece);
+                        more = next.more;
+                    }
+                    _ => break,
+                }
+            }
+            w.sound |= sound(self.image, &file);
+            w.files.push(file);
+            at += ENTRY_LEN;
+        }
+        let w = Rc::new(w);
+        self.walks.insert(first, Rc::clone(&w));
+        Ok(w)
+    }
+
+    fn entry(&mut self, va: u64) -> Result<Option<FileEntry>> {
+        if self.budget == 0 {
+            return Err(Error::NoRegistry); // the work bound: no table within it
+        }
+        self.budget -= 1;
+        Ok(FileEntry::read(self.image, self.data, va))
     }
 }
 
@@ -166,37 +294,66 @@ impl FileEntry {
 
 /// The 24 bytes at `va`, if they lie in `section`'s file data.
 fn in_section<'i>(image: &'i PeImage, section: &Section, va: u64) -> Option<&'i [u8]> {
-    if image.section_of(va)?.name != section.name {
+    if image.section_of(va)? != section {
         return None;
     }
-    image.read(va, ENTRY_LEN)
+    image.read(va, ENTRY_LEN as usize)
 }
 
-/// The non-empty printable string at `va` in `.rdata`.
-fn rdata_str(image: &PeImage, va: u64, max: usize) -> Option<String> {
+/// The non-empty string at `va` in `.rdata`, without control characters, at most `max` bytes.
+fn rdata_bytes(image: &PeImage, va: u64, max: usize) -> Option<&[u8]> {
     if image.section_of(va)?.name != ".rdata" {
         return None;
     }
     let s = image.c_str(va, max)?;
-    if s.is_empty() || s.iter().any(|&b| b < 0x20 || b == 0x7F) {
-        return None;
-    }
+    (!s.is_empty() && !s.iter().any(|&b| b < 0x20 || b == 0x7F)).then_some(s)
+}
+
+/// A mount or directory name: printable UTF-8 in `.rdata`.
+fn name(image: &PeImage, va: u64) -> Option<String> {
+    let s = rdata_bytes(image, va, MAX_NAME)?;
     std::str::from_utf8(s).ok().map(str::to_owned)
+}
+
+/// A file's path, as well as it can be read.
+fn path_of(image: &PeImage, va: u64) -> String {
+    rdata_bytes(image, va, MAX_PATH).map_or_else(
+        || format!("?unreadable-path-at-{va:#x}"),
+        |s| String::from_utf8_lossy(s).into_owned(),
+    )
+}
+
+/// Whether the file's first piece starts with a blob header that agrees with its entry.
+fn sound(image: &PeImage, f: &RawFile) -> bool {
+    let len = (f.size as usize).min(PIECE_LEN);
+    f.pieces
+        .first()
+        .and_then(|&p| image.read(p, len))
+        .and_then(|b| BlobHeader::parse(b, 0).ok())
+        .is_some_and(|h| h.stored_size == u64::from(f.size))
 }
 
 /// The file's stored blob, its pieces joined.
 fn join(image: &PeImage, e: &ExeEntry) -> Result<Vec<u8>> {
-    let size = e.stored_size as usize; // from a u32 field
+    let bad = |reason: String| Error::BadEntry {
+        va: e.header_va(),
+        reason,
+    };
+    // Its pieces could repeat one region, so cap the size by the image before reserving it.
+    if e.stored_size > image.file_len() as u64 {
+        return Err(bad(format!(
+            "it claims {} stored bytes, more than the image's {}",
+            e.stored_size,
+            image.file_len()
+        )));
+    }
+    let size = e.stored_size as usize;
     let needed = size.div_ceil(PIECE_LEN).max(1);
     if e.pieces.len() != needed {
-        let reason = format!(
+        return Err(bad(format!(
             "{} pieces for {size} stored bytes, where {needed} are needed",
             e.pieces.len()
-        );
-        return Err(Error::BadEntry {
-            va: e.header_va(),
-            reason,
-        });
+        )));
     }
     let mut out = Vec::with_capacity(size);
     for &piece in &e.pieces {
@@ -229,7 +386,9 @@ fn header_of(stored: &[u8], e: &ExeEntry) -> Result<BlobHeader> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{DATA_RVA, IMAGE_BASE, RDATA_RVA, exe_with_files, lz4_blob, pe_image};
+    use crate::test_util::{
+        DATA_RVA, IMAGE_BASE, RDATA_RVA, exe_with_dirs, exe_with_files, lz4_blob, pe_image,
+    };
     use crate::{BuiltinCodecs, FIXED_LEN};
 
     /// Bytes LZ4 can't shrink, so a blob of them spans several pieces.
@@ -383,9 +542,10 @@ mod tests {
     }
 
     #[test]
-    fn a_list_that_runs_off_data_is_not_a_registry() {
+    fn a_list_that_runs_into_the_mount_table_is_an_error() {
         // One file entry, then the mount table with no NULL entry between them: walking the list
-        // reads the table as entries and runs off the end of .data.
+        // reads the table's entries, so the table found is broken, and the scan says so rather
+        // than guessing.
         let blob = lz4_blob(b"x", 0);
         let rva = |off: usize| IMAGE_BASE + u64::from(RDATA_RVA) + off as u64;
         let mut rdata = b"data\0\0\0\0scripts\0a.luac\0\0".to_vec();
@@ -405,6 +565,225 @@ mod tests {
             (".data", DATA_RVA, data),
         ]))
         .unwrap();
-        assert!(matches!(ExeFs::scan(&img), Err(Error::NoRegistry)));
+        assert!(matches!(ExeFs::scan(&img), Err(Error::BadEntry { .. })));
+    }
+
+    /// Two directories of two files each (core: a, b; scripts: c, d), and the image position of
+    /// each file's entry, in that order.
+    fn two_dirs() -> (Vec<u8>, Vec<usize>) {
+        let pe = exe_with_files(&[
+            ("core/a.luac", lz4_blob(b"a", 0)),
+            ("core/b.luac", lz4_blob(b"b", 0)),
+            ("scripts/c.luac", lz4_blob(b"c", 0)),
+            ("scripts/d.luac", lz4_blob(b"d", 0)),
+        ]);
+        let pieces: Vec<u64> = {
+            let img = PeImage::parse(pe.clone()).unwrap();
+            ExeFs::scan(&img)
+                .unwrap()
+                .entries()
+                .iter()
+                .map(|e| e.pieces[0])
+                .collect()
+        };
+        let at = pieces.iter().map(|&p| entry_at(&pe, p)).collect();
+        (pe, at)
+    }
+
+    fn read_all(img: &PeImage) -> Vec<(String, Result<Vec<u8>>)> {
+        let fs = ExeFs::scan(img).unwrap();
+        fs.entries()
+            .iter()
+            .map(|e| (e.engine_path(), fs.read(e, &BuiltinCodecs)))
+            .collect()
+    }
+
+    #[test]
+    fn an_empty_directory_keeps_the_others() {
+        let img = PeImage::parse(exe_with_dirs(&[
+            ("core", vec![("a.luac", lz4_blob(b"a", 0))]),
+            ("empty", vec![]),
+            ("scripts", vec![("b.luac", lz4_blob(b"b", 0))]),
+        ]))
+        .unwrap();
+        let fs = ExeFs::scan(&img).unwrap();
+        let got: Vec<String> = fs.entries().iter().map(ExeEntry::engine_path).collect();
+        assert_eq!(got, ["data/core/a.luac", "data/scripts/b.luac"]);
+    }
+
+    #[test]
+    fn a_bad_first_file_is_an_error_for_that_file_only() {
+        // The first file of each directory claims one byte more than its blob holds.
+        let (mut pe, at) = two_dirs();
+        for i in [at[0], at[2]] {
+            let size = u32::from_le_bytes(pe[i + 8..i + 12].try_into().unwrap()) + 1;
+            pe[i + 8..i + 12].copy_from_slice(&size.to_le_bytes());
+        }
+        let got = read_all(&PeImage::parse(pe).unwrap());
+        assert_eq!(got.len(), 4);
+        assert!(got[0].1.is_err() && got[2].1.is_err());
+        assert_eq!(got[1].1.as_deref().unwrap(), b"b");
+        assert_eq!(got[3].1.as_deref().unwrap(), b"d");
+    }
+
+    #[test]
+    fn odd_paths_are_still_listed() {
+        // b's path pointer leads nowhere, and c's path holds a byte that isn't UTF-8.
+        let (mut pe, at) = two_dirs();
+        pe[at[1]..at[1] + 8].copy_from_slice(&(IMAGE_BASE + 0x50_0000).to_le_bytes());
+        let c = pe.windows(7).position(|w| w == b"c.luac\0").unwrap();
+        pe[c] = 0xD6;
+        let img = PeImage::parse(pe).unwrap();
+        let fs = ExeFs::scan(&img).unwrap();
+        let paths: Vec<&str> = fs.entries().iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths.len(), 4, "{paths:?}");
+        assert!(paths[1].contains("unreadable"), "{paths:?}");
+        assert_eq!(paths[2], "\u{FFFD}.luac");
+        assert_eq!(fs.read(&fs.entries()[1], &BuiltinCodecs).unwrap(), b"b");
+    }
+
+    #[test]
+    fn a_stray_continuation_flag_drops_no_file() {
+        // a says it continues, but the entry after it is b, a file of its own.
+        let (mut pe, at) = two_dirs();
+        pe[at[0] + 12..at[0] + 16].copy_from_slice(&1u32.to_le_bytes());
+        let got = read_all(&PeImage::parse(pe).unwrap());
+        let paths: Vec<&str> = got.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "data/core/a.luac",
+                "data/core/b.luac",
+                "data/scripts/c.luac",
+                "data/scripts/d.luac"
+            ]
+        );
+        assert!(got.iter().all(|(_, r)| r.is_ok()));
+    }
+
+    #[test]
+    fn a_flag_on_a_last_file_does_not_run_into_the_next_directory() {
+        // core's last file says it continues, into its list's NULL entry and beyond.
+        let (mut pe, at) = two_dirs();
+        pe[at[1] + 12..at[1] + 16].copy_from_slice(&1u32.to_le_bytes());
+        let got = read_all(&PeImage::parse(pe).unwrap());
+        let paths: Vec<&str> = got.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "data/core/a.luac",
+                "data/core/b.luac",
+                "data/scripts/c.luac",
+                "data/scripts/d.luac"
+            ]
+        );
+    }
+
+    #[test]
+    fn directories_sharing_entries_are_refused() {
+        // The second mount entry names the first directory's list.
+        let (mut pe, _) = two_dirs();
+        let list1 = IMAGE_BASE + u64::from(DATA_RVA) + 40; // after exe_with_dirs' 40 bytes of noise
+        let list2 = list1 + 3 * 24; // core's two entries and its NULL entry
+        let at = pe
+            .windows(8)
+            .position(|w| w == list2.to_le_bytes())
+            .unwrap();
+        pe[at..at + 8].copy_from_slice(&list1.to_le_bytes());
+        let img = PeImage::parse(pe).unwrap();
+        assert!(matches!(ExeFs::scan(&img), Err(Error::BadEntry { .. })));
+    }
+
+    /// `.rdata` with the names `data`, `scripts` and `f.luac`, a small sound blob, and a 16 KiB
+    /// region of zeros: (bytes, mount, dir, path, blob VA, blob length, zeros VA).
+    fn rdata_parts() -> (Vec<u8>, [u64; 6]) {
+        let base = IMAGE_BASE + u64::from(RDATA_RVA);
+        let mut r = b"data\0\0\0\0scripts\0f.luac\0\0".to_vec();
+        let blob = lz4_blob(b"ok", 0);
+        let blob_at = r.len();
+        r.extend_from_slice(&blob);
+        r.resize(r.len().next_multiple_of(8), 0);
+        let zeros_at = r.len();
+        r.resize(zeros_at + PIECE_LEN, 0);
+        let vas = [
+            base,
+            base + 8,
+            base + 16,
+            base + blob_at as u64,
+            blob.len() as u64,
+            base + zeros_at as u64,
+        ];
+        (r, vas)
+    }
+
+    fn file_entry(data: &mut Vec<u8>, path: u64, size: u32, more: bool, piece: u64) {
+        data.extend_from_slice(&path.to_le_bytes());
+        data.extend_from_slice(&size.to_le_bytes());
+        data.extend_from_slice(&u32::from(more).to_le_bytes());
+        data.extend_from_slice(&piece.to_le_bytes());
+    }
+
+    #[test]
+    fn a_file_larger_than_the_image_is_refused_before_allocating() {
+        // A sound file, then one that claims more bytes than the whole image in pieces that all
+        // repeat one 16 KiB region.
+        let (rdata, [mount, dir, path, blob, blob_len, zeros]) = rdata_parts();
+        let mut data = Vec::new();
+        file_entry(&mut data, path, blob_len as u32, false, blob);
+        let pieces = 8;
+        file_entry(&mut data, path, (pieces * PIECE_LEN) as u32, true, zeros);
+        for i in 1..pieces {
+            file_entry(&mut data, path, 0, i + 1 < pieces, zeros);
+        }
+        data.extend_from_slice(&[0; 24]);
+        let list = IMAGE_BASE + u64::from(DATA_RVA);
+        for w in [mount, dir, list] {
+            data.extend_from_slice(&w.to_le_bytes());
+        }
+        data.extend_from_slice(&[0; 24]);
+        let img = PeImage::parse(pe_image(&[
+            (".rdata", RDATA_RVA, rdata),
+            (".data", DATA_RVA, data),
+        ]))
+        .unwrap();
+        assert!(img.file_len() < pieces * PIECE_LEN);
+        let fs = ExeFs::scan(&img).unwrap();
+        let err = fs.read(&fs.entries()[1], &BuiltinCodecs).unwrap_err();
+        assert!(
+            matches!(&err, Error::BadEntry { reason, .. } if reason.contains("image")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn many_candidate_tables_are_given_up_quickly() {
+        // A long list of files without a sound header, and as many mount entries, each naming a
+        // different point in it: checking every candidate in full would take quadratic time.
+        let (rdata, [mount, dir, path, _, _, zeros]) = rdata_parts();
+        let n = 8000u64;
+        let mut data = Vec::new();
+        for _ in 0..n {
+            file_entry(&mut data, path, 64, false, zeros);
+        }
+        data.extend_from_slice(&[0; 24]);
+        let list = IMAGE_BASE + u64::from(DATA_RVA);
+        for i in 0..n {
+            for w in [mount, dir, list + 24 * i] {
+                data.extend_from_slice(&w.to_le_bytes());
+            }
+        }
+        data.extend_from_slice(&[0; 24]);
+        let img = PeImage::parse(pe_image(&[
+            (".rdata", RDATA_RVA, rdata),
+            (".data", DATA_RVA, data),
+        ]))
+        .unwrap();
+        let started = std::time::Instant::now();
+        assert!(ExeFs::scan(&img).is_err());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

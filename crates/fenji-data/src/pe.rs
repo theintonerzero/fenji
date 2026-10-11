@@ -55,11 +55,16 @@ impl PeImage {
                 .get(at..at + 40)
                 .ok_or(Error::NotPe("truncated section table"))?;
             let field = |o: usize| u32::from_le_bytes(raw[o..o + 4].try_into().expect("4 bytes"));
+            // Every address in a section must fit in 64 bits, so later arithmetic can't overflow.
+            let va = image_base
+                .checked_add(u64::from(field(12)))
+                .filter(|va| va.checked_add(u64::from(field(16))).is_some())
+                .ok_or(Error::NotPe("section addresses overflow"))?;
             sections.push(Section {
                 name: String::from_utf8_lossy(&raw[..8])
                     .trim_end_matches('\0')
                     .to_string(),
-                va: image_base + u64::from(field(12)),
+                va,
                 raw_size: field(16) as usize,
                 raw_offset: field(20) as usize,
             });
@@ -73,6 +78,11 @@ impl PeImage {
 
     pub fn image_base(&self) -> u64 {
         self.image_base
+    }
+
+    /// Length of the image file in bytes.
+    pub fn file_len(&self) -> usize {
+        self.bytes.len()
     }
 
     pub fn sections(&self) -> &[Section] {
@@ -153,6 +163,21 @@ mod tests {
         assert_eq!(img.read(IMAGE_BASE + 0x5000, 1), None); // in no section
         assert_eq!(img.read(u64::MAX - 1, 4), None);
         assert_eq!(img.c_str(IMAGE_BASE + 0x1000, 16), None); // no NUL before the end
+    }
+
+    #[test]
+    fn section_addresses_that_overflow_are_refused() {
+        for (base, rva) in [
+            (0xFFFF_FFFF_FFFF_F000u64, 0x2000u32),
+            (0xFFFF_FFFF_FFFF_0000, 0xFF00),
+        ] {
+            let mut pe = pe_image(&[(".data", rva, vec![0; 0x200])]);
+            pe[0x70..0x78].copy_from_slice(&base.to_le_bytes()); // the optional header's image base
+            assert!(
+                matches!(PeImage::parse(pe), Err(Error::NotPe(_))),
+                "{base:#x} + {rva:#x}"
+            );
+        }
     }
 
     #[test]

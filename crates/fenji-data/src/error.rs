@@ -5,7 +5,7 @@ pub enum Error {
     NotPe(&'static str),
     #[error("blob header at {at:#x}: {reason}")]
     BadBlob { at: u64, reason: String },
-    #[error("codec {0} is not available here (Oodle waits on the M1 decision gate)")]
+    #[error("codec {0} is not available here (Oodle, codec 4, waits on decision gate #39)")]
     CodecUnavailable(u16),
     #[error("LZ4 block {index}: {reason}")]
     Lz4 { index: usize, reason: String },

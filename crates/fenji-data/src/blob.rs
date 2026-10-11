@@ -151,7 +151,14 @@ pub fn decode(bytes: &[u8], at: u64, codecs: &dyn Decompressor) -> Result<Vec<u8
         let raw_len = (h.raw_size - out.len() as u64).min(u64::from(h.block_size)) as usize;
         // In range: `data` is exactly the sum of the block sizes (checked by `parse`).
         let block = &data[pos..pos + len as usize];
-        out.extend_from_slice(&codecs.decompress_block(h.codec, block, raw_len, index)?);
+        let decoded = codecs.decompress_block(h.codec, block, raw_len, index)?;
+        if decoded.len() != raw_len {
+            return Err(Error::SizeMismatch {
+                got: decoded.len() as u64,
+                want: raw_len as u64,
+            });
+        }
+        out.extend_from_slice(&decoded);
         pos += len as usize;
     }
     if out.len() as u64 != h.raw_size {
@@ -250,6 +257,50 @@ mod tests {
                 let _ = decode(&b, 0, &BuiltinCodecs); // Ok or Err, never a panic
             }
         }
+    }
+
+    #[test]
+    fn a_decompressor_that_returns_too_much_is_an_error() {
+        // A Decompressor of ours that misbehaves (say, a future Oodle backend) must not make decode
+        // panic on the block arithmetic.
+        struct TooMuch;
+        impl Decompressor for TooMuch {
+            fn decompress_block(
+                &self,
+                _: Codec,
+                _: &[u8],
+                raw_len: usize,
+                _: usize,
+            ) -> Result<Vec<u8>> {
+                Ok(vec![0; raw_len * 3])
+            }
+        }
+        let content: Vec<u8> = (0..10_000u32)
+            .flat_map(|i| (i % 251).to_le_bytes())
+            .collect();
+        let block = 16_384usize;
+        let blocks: Vec<Vec<u8>> = content
+            .chunks(block)
+            .map(lz4_flex::block::compress)
+            .collect();
+        let stored = FIXED_LEN + 4 * blocks.len() + blocks.iter().map(Vec::len).sum::<usize>();
+        let mut b = Vec::new();
+        b.extend_from_slice(&(content.len() as u64).to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&(stored as u64).to_le_bytes());
+        b.extend_from_slice(&(block as u32).to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&0u16.to_le_bytes());
+        for c in &blocks {
+            b.extend_from_slice(&(c.len() as u32).to_le_bytes());
+        }
+        for c in &blocks {
+            b.extend_from_slice(c);
+        }
+        assert!(matches!(
+            decode(&b, 0, &TooMuch),
+            Err(Error::SizeMismatch { .. })
+        ));
     }
 
     #[test]

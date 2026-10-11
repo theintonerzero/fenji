@@ -3,24 +3,30 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::{Error, Result};
 
-/// The repository root: the nearest ancestor of `start` holding both `.git` and a `re/` directory.
+/// The repository root: the nearest ancestor of `start` holding `.git`, which must have a `re/`
+/// directory.
 pub fn find_repo_root(start: &Path) -> Result<PathBuf> {
     let start = start.canonicalize()?;
-    start
+    // The nearest checkout only: a clone or worktree without re/ must not resolve to an outer one.
+    let root = start
         .ancestors()
-        .find(|d| d.join(".git").exists() && d.join("re").is_dir())
-        .map(Path::to_path_buf)
+        .find(|d| d.join(".git").exists())
         .ok_or_else(|| {
-            Error::OutDir(format!(
-                "no Fenji checkout with a re/ directory above {}",
-                start.display()
-            ))
-        })
+            Error::OutDir(format!("{} is not inside a git checkout", start.display()))
+        })?;
+    if !root.join("re").is_dir() {
+        return Err(Error::OutDir(format!(
+            "{} has no re/ directory (create it: it is git-ignored)",
+            root.display()
+        )));
+    }
+    Ok(root.to_path_buf())
 }
 
 /// Resolves `requested` (absolute, or relative to the current directory) to a directory strictly
 /// inside `<repo_root>/re/`, and creates it. Refuses `..`, `re/` itself, and anything that
-/// resolves outside `re/`, including through a symlink.
+/// resolves outside `re/`, including through a symlink. If `re` is itself a symlink (to other
+/// storage, say), its target is the boundary.
 pub fn resolve_out_dir(repo_root: &Path, requested: &Path) -> Result<PathBuf> {
     let re = repo_root.join("re").canonicalize()?;
     let abs = if requested.is_absolute() {
@@ -54,14 +60,16 @@ pub fn resolve_out_dir(repo_root: &Path, requested: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// A registry path as a relative path that can't leave the directory it is joined to: plain
-/// components only, with no empty part, `.`, `..`, backslash, drive colon or control character.
+/// A registry path as a relative path made of plain components only: no empty part, `.`, `..`,
+/// `.git`, backslash, drive colon or control character. On its own it can't leave the directory it
+/// is joined to; links already inside that directory are the writer's to check.
 pub fn safe_relative(path: &str) -> Option<PathBuf> {
     let mut out = PathBuf::new();
     for part in path.split('/') {
         if part.is_empty()
             || part == "."
             || part == ".."
+            || part.eq_ignore_ascii_case(".git")
             || part.contains(['\\', ':'])
             || part.chars().any(char::is_control)
         {
@@ -129,6 +137,24 @@ mod tests {
             find_repo_root(&t.path().join("a/b")).unwrap(),
             t.path().canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn find_repo_root_stops_at_the_nearest_checkout() {
+        // A checkout without re/ (a fresh clone, a worktree) inside another that has one must not
+        // resolve to the outer one.
+        let outer = repo();
+        let inner = outer.path().join("inner");
+        std::fs::create_dir_all(inner.join("sub")).unwrap();
+        std::fs::write(inner.join(".git"), "gitdir: elsewhere\n").unwrap(); // as in a worktree
+        assert!(find_repo_root(&inner.join("sub")).is_err());
+    }
+
+    #[test]
+    fn safe_relative_refuses_git_directories() {
+        for bad in [".git/config", "a/.GIT/hooks/post-checkout", ".Git"] {
+            assert_eq!(safe_relative(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
