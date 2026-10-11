@@ -5,7 +5,7 @@
 # ground rule 4). Linux x86_64 only; needs bwrap, python3 and unprivileged user namespaces.
 #
 #   scripts/spike/isolated-run.sh [--hosts FILE] [--bind DIR]... [--ro-bind DIR]... [--x11 N]
-#                                 -- COMMAND [ARGS...]
+#                                 [--no-root] -- COMMAND [ARGS...]
 #
 #   --hosts FILE    FILE's content becomes /etc/hosts inside (after localhost entries), e.g. to
 #                   point the client's hostnames at a stub listening on 127.0.0.1 inside.
@@ -13,17 +13,21 @@
 #   --ro-bind DIR   the same, read-only.
 #   --x11 N         give COMMAND X display :N, a nested X server you started for the run (see
 #                   "Display" below): its socket is the only X11 thing inside, with DISPLAY=:N.
+#   --no-root       run COMMAND as your own uid and gid with no capabilities, not as uid 0 (see
+#                   "Inside" below), for tools that refuse to run as root, such as umu-run.
 #   Pass extra environment with `env VAR=value COMMAND`; only PATH, HOME, TERM, LANG, LANGUAGE,
 #   LC_* and USER are inherited, plus BROWSER=/bin/false (and DISPLAY with --x11).
 #
-# Inside: uid 0 of a new user namespace with only CAP_NET_BIND_SERVICE (ports < 1024) and
-# CAP_SETFCAP (lets a nested bwrap, e.g. Proton's pressure-vessel, map uid 0); new network, pid,
-# ipc, uts and cgroup namespaces, so the only interface is lo and host abstract sockets are out of
-# reach; a new session (no controlling tty, so no TIOCSTI typing into the host terminal); all
-# inherited file descriptors except stdin/out/err are closed, and a socket on stdin/out/err is
-# replaced with /dev/null (with a warning). Other stdin/out/err pass through: start it from a
-# terminal emulator (not a Linux VT) or redirect them. Core dumps are off (RLIMIT_CORE 0, soft and
-# hard), so systemd-coredump keeps no client memory; keep abrt's autoreporting off on this host.
+# Inside: in a new user namespace, uid 0 with only CAP_NET_BIND_SERVICE (ports < 1024) and
+# CAP_SETFCAP (lets a nested bwrap, e.g. Proton's pressure-vessel, map uid 0), or with --no-root
+# your own uid and gid with no capabilities at all (so no ports below 1024; a nested bwrap such as
+# pressure-vessel then maps your uid itself); new network, pid, ipc, uts and cgroup namespaces, so
+# the only interface is lo and host abstract sockets are out of reach; a new session (no
+# controlling tty, so no TIOCSTI typing into the host terminal); all inherited file descriptors
+# except stdin/out/err are closed, and a socket on stdin/out/err is replaced with /dev/null (with a
+# warning). Other stdin/out/err pass through: start it from a terminal emulator (not a Linux VT) or
+# redirect them. Core dumps are off (RLIMIT_CORE 0, soft and hard), so systemd-coredump keeps no
+# client memory; keep abrt's autoreporting off on this host.
 #
 # A seccomp filter (scripts/spike/seccomp-deny-keys.py, built at each run; needs python3) makes
 # add_key, request_key and keyctl fail with EPERM for x86_64 and i386 and denies the x32 ABI. A
@@ -34,10 +38,12 @@
 # The filesystem is an allowlist, not a mask: an empty root plus read-only /usr (and the
 # /bin, /lib... links), a private /proc, a minimal /dev, empty tmpfs /tmp, /run, /var, /dev/shm
 # and $HOME, a handful of read-only /etc files (linker, certificates, fonts, time zone), and
-# generated hosts, nsswitch.conf (files only), passwd and group. No resolv.conf. No host display,
-# audio, bus or daemon socket (systemd-resolved, D-Bus, systemd --user, PulseAudio/PipeWire, CUPS,
-# sshd, avahi, X11, Wayland, ibus, Steam) exists inside unless a --bind/--ro-bind DIR exposes it,
-# bar the one nested X server socket --x11 N names (see "Display").
+# generated hosts, nsswitch.conf (files only), passwd and group (root and nobody, and with
+# --no-root you: by your names, or as user and users if a name is empty, starts with '-' or has
+# anything but letters, digits, '.', '_' and '-'). No resolv.conf. No host display, audio, bus or
+# daemon socket (systemd-resolved, D-Bus, systemd --user, PulseAudio/PipeWire, CUPS, sshd, avahi,
+# X11, Wayland, ibus, Steam) exists inside unless a --bind/--ro-bind DIR exposes it, bar the one
+# nested X server socket --x11 N names (see "Display").
 # Bound dirs must belong to the run. One is refused (exit 2) if, at start:
 #   - it holds a socket or fifo at any depth (also one mounted over another file), or can't be
 #     fully scanned for them;
@@ -106,14 +112,15 @@
 # A running host Steam (native or Flatpak) is refused (exit 2); the self-test alone overrides that
 # with FENJI_ISOLATED_RUN_ALLOW_STEAM=1 (and adds refused filesystem types for its own test with
 # FENJI_ISOLATED_RUN_TEST_EXTRA_FSTYPES; that can only refuse more). Exit 2 also on usage
-# errors, a missing --hosts file or bind dir, a refused bind dir or --x11 display, a non-x86_64
-# host, or missing bwrap, pgrep or python3. Otherwise the exit status is COMMAND's.
+# errors, a missing --hosts file or bind dir, a refused bind dir or --x11 display, --no-root when
+# your uid or gid is 0 or 65534 (root and nobody inside), a non-x86_64 host, or missing bwrap,
+# pgrep or python3. Otherwise the exit status is COMMAND's.
 set -euo pipefail
 
-usage() { sed -n '2,17p' "$0" >&2; exit 2; }
+usage() { sed -n '2,19p' "$0" >&2; exit 2; }
 die2() { echo "isolated-run: $*" >&2; exit 2; }
 
-hosts="" binds=() x11=""
+hosts="" binds=() x11="" noroot=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --hosts)
@@ -138,6 +145,7 @@ while [ $# -gt 0 ]; do
       esac
       shift 2
       ;;
+    --no-root) noroot=1; shift ;;
     --) shift; break ;;
     *) usage ;;
   esac
@@ -149,6 +157,29 @@ command -v pgrep >/dev/null || die2 "pgrep not found, can't check for Steam"
 command -v python3 >/dev/null || die2 "python3 not found, can't build the seccomp filter"
 [ "$(uname -m)" = x86_64 ] || die2 "x86_64 only (the seccomp filter knows x86 syscall numbers only)"
 here=$(cd -- "$(dirname -- "$0")" && pwd -P)
+
+# --no-root: COMMAND runs as your uid and gid, named in the generated passwd and group (below).
+# Refused if either is 0 or 65534, which are root and nobody there (and running this as real root
+# is out of scope). entry_name NAME FALLBACK prints NAME, or FALLBACK if NAME is empty, starts
+# with '-' or has anything but letters, digits, '.', '_' and '-', which could break those files'
+# format. Spelled out, as for --x11: a range can match other characters in some locales.
+entry_name() {
+  case "$1" in
+    ""|-*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) printf '%s\n' "$2" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+if [ -n "$noroot" ]; then
+  caller_uid=$(id -u)
+  caller_gid=$(id -g)
+  for n in "$caller_uid" "$caller_gid"; do
+    case "$n" in
+      0|65534) die2 "--no-root needs a uid and gid other than 0 and 65534 (root and nobody inside); yours are $caller_uid and $caller_gid" ;;
+    esac
+  done
+  caller_user=$(entry_name "$(id -un 2>/dev/null)" user)
+  caller_group=$(entry_name "$(id -gn 2>/dev/null)" users)
+fi
 
 if [ "${FENJI_ISOLATED_RUN_ALLOW_STEAM:-}" != 1 ]; then
   if pgrep -x steam >/dev/null || pgrep -x steamwebhelper >/dev/null || pgrep -f com.valvesoftware.Steam >/dev/null; then
@@ -331,8 +362,13 @@ fi
 
 args=(
   --unshare-all --unshare-user --unshare-net    # user ns and net ns are mandatory, not "-try"
-  --uid 0 --gid 0
-  --cap-add CAP_NET_BIND_SERVICE --cap-add CAP_SETFCAP
+)
+if [ -n "$noroot" ]; then
+  args+=(--uid "$caller_uid" --gid "$caller_gid")   # and no --cap-add: no capabilities at all
+else
+  args+=(--uid 0 --gid 0 --cap-add CAP_NET_BIND_SERVICE --cap-add CAP_SETFCAP)
+fi
+args+=(
   --die-with-parent --new-session
   --seccomp 7                                   # fd 7: seccomp-deny-keys.py's filter (exec line)
   --hostname isolated-run
@@ -404,6 +440,10 @@ passwd_data="root:x:0:0:root:$home:/bin/bash
 nobody:x:65534:65534:Kernel Overflow User:/:/sbin/nologin"
 group_data="root:x:0:
 nobody:x:65534:"
+if [ -n "$noroot" ]; then
+  passwd_data+=$'\n'"$caller_user:x:$caller_uid:$caller_gid::$home:/bin/bash"
+  group_data+=$'\n'"$caller_group:x:$caller_gid:"
+fi
 
 if ! { bpf=$(python3 -I "$here/seccomp-deny-keys.py" --printf) && [ -n "$bpf" ]; }; then
   die2 "couldn't build the seccomp filter"

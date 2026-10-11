@@ -4,13 +4,14 @@
 # a host daemon. Linux only; needs bwrap. Run locally on Fedora and in CI.
 # Every check runs; failures are reported as `FAIL -` lines and make the exit status 1.
 set -euo pipefail
+exec </dev/null   # a socket on stdin makes the wrapper warn on stderr, which several checks capture
 
 run="$(cd "$(dirname "$0")" && pwd)/isolated-run.sh"
 passed=0 failed=0
 ok()   { echo "ok - $1"; passed=$((passed + 1)); }
 fail() { echo "FAIL - $1" >&2; failed=$((failed + 1)); }
 check() { local msg=$1; shift; if "$@"; then ok "$msg"; else fail "$msg"; fi; }
-uid=$(id -u)
+uid=$(id -u) gid=$(id -g)
 
 # Cleanup first, so nothing created below can be left behind.
 tmp="" marker_tmp="" marker_shm="" listener="" fake_x_pid="" fake_x_made=() x11_dir_made=""
@@ -38,20 +39,27 @@ host_hashes=$(sha256sum /etc/hosts /etc/resolv.conf 2>/dev/null || true)
 export FENJI_ISOLATED_RUN_ALLOW_STEAM=1
 
 # --- network: only loopback ----------------------------------------------------------------
+# These helpers take extra wrapper options last (the --no-root checks reuse them). The negative
+# ones print what happened inside, so a wrapper that fails to start can't pass them.
 t_links() {
-  [ "$("$run" -- ip -o link show | awk -F': ' '{print $2}')" = lo ] &&
-    "$run" -- ip -o addr show dev lo | grep -q 'inet 127.0.0.1/8' &&
-    "$run" -- ip -o addr show dev lo | grep -q 'inet6 ::1/128' &&
-    "$run" -- ip -o link show dev lo | grep -q ',UP'
+  [ "$("$run" "$@" -- ip -o link show | awk -F': ' '{print $2}')" = lo ] &&
+    "$run" "$@" -- ip -o addr show dev lo | grep -q 'inet 127.0.0.1/8' &&
+    "$run" "$@" -- ip -o addr show dev lo | grep -q 'inet6 ::1/128' &&
+    "$run" "$@" -- ip -o link show dev lo | grep -q ',UP'
+}
+t_no_tcp() {  # HOST PORT [OPTION...]
+  local host=$1 port=$2
+  shift 2
+  [ "$("$run" "$@" -- bash -c '(exec 3<>"/dev/tcp/$1/$2") 2>/dev/null || echo no-connection' \
+       _ "$host" "$port")" = no-connection ]
+}
+t_no_dns() {  # [OPTION...]
+  [ "$("$run" "$@" -- bash -c 'getent hosts example.com >/dev/null 2>&1 || echo unresolved')" = unresolved ]
 }
 check "only the loopback interface exists, up, with 127.0.0.1 and ::1" t_links
-
-check "cannot open a TCP connection to the internet by IP" \
-  bash -c '! "$1" -- bash -c "exec 3<>/dev/tcp/1.1.1.1/443" 2>/dev/null' _ "$run"
-check "cannot open a TCP connection to the internet over IPv6" \
-  bash -c '! "$1" -- bash -c "exec 3<>/dev/tcp/2606:4700:4700::1111/53" 2>/dev/null' _ "$run"
-check "public hostnames don't resolve" \
-  bash -c '! "$1" -- getent hosts example.com >/dev/null 2>&1' _ "$run"
+check "cannot open a TCP connection to the internet by IP" t_no_tcp 1.1.1.1 443
+check "cannot open a TCP connection to the internet over IPv6" t_no_tcp 2606:4700:4700::1111 53
+check "public hostnames don't resolve" t_no_dns
 
 printf '127.0.0.1 login.fenji.test\n' > "$tmp/hosts"
 check "--hosts file maps names to 127.0.0.1" \
@@ -439,6 +447,17 @@ t_x11_session() {
   env -u DISPLAY "$run" --x11 "$xn" -- true || { echo "  an unset DISPLAY was refused" >&2; return 1; }
 }
 
+# With --no-root, as umu needs: the caller's uid inside, DISPLAY=:N and a working socket.
+t_x11_noroot() {
+  local out
+  out=$(DISPLAY=:$xm "$run" --no-root --x11 "$xn" -- bash -c '
+    [ "$(id -u)" = "$3" ] && echo uid=caller
+    [ "$DISPLAY" = ":$1" ] && echo display=ok
+    python3 -I -c "$2" "/tmp/.X11-unix/X$1" && echo socket=connects' _ "$xn" "$x11_probe" "$uid" 2>&1) || true
+  [ "$out" = "$(printf '%s\n' uid=caller display=ok socket=connects)" ] ||
+    { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+}
+
 if [ -n "$x11_host" ]; then
   check "--x11 N: DISPLAY=:N and no XAUTHORITY inside; the nested server's socket takes connections, its abstract twin is out of reach" \
     t_x11_inside
@@ -448,6 +467,8 @@ if [ -n "$x11_host" ]; then
   check "--x11 N adds exactly one mount, the socket at /tmp/.X11-unix/XN" t_x11_mounts
   check "--x11 N is refused when DISPLAY names display N (:N, :N.S, unix:N, host:N.S, unix/:N, :0N) or can't be parsed" \
     t_x11_session
+  check "--no-root --x11 N: COMMAND runs as the caller's uid with DISPLAY=:N, and the nested server's socket takes connections" \
+    t_x11_noroot
 elif [ -n "$fake_x_pid" ]; then
   fail "a fake X server starts in /tmp/.X11-unix (the --x11 checks against it need one): $(head -c 300 "$tmp/fake-x.out")"
 else
@@ -771,9 +792,10 @@ else:                                          # i386 ABI: int 0x80 from this 64
         res["i386 " + name] = "EPERM" if r == -1 else f"rc={r}"
 for k, v in res.items(): print(f"{k}={v}")
 '
-t_keys() {
-  local out want=$1
-  out=$("$run" -- python3 -I -c "$key_probe" "$2" 2>&1) || true
+t_keys() {  # WANT ABI [OPTION...]
+  local out want=$1 abi=$2
+  shift 2
+  out=$("$run" "$@" -- python3 -I -c "$key_probe" "$abi" 2>&1) || true
   if [ "$out" = no-ia32 ]; then echo "  (no i386 ABI on this kernel)" >&2; return 2; fi
   if [ "$(grep -c '=EPERM$' <<<"$out")" -ne "$want" ] || grep -qv '=EPERM$' <<<"$out"; then
     echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1
@@ -844,9 +866,120 @@ t_home() {
 check "HOME is a fresh empty tmpfs: host files and Steam IPC (even recreated mid-run) are absent" t_home
 
 # Proton's pressure-vessel runs its own bwrap; it must work inside and still see only lo.
-check "a nested bwrap sandbox works inside and still sees only lo" "$run" -- bash -c '
-  [ "$(bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib64 /lib64 \
-       --symlink usr/lib /lib --proc /proc --dev /dev -- ip -o link show | awk -F": " "{print \$2}")" = lo ]'
+t_nested_bwrap() {  # [OPTION...]
+  "$run" "$@" -- bash -c '
+    [ "$(bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib64 /lib64 \
+         --symlink usr/lib /lib --proc /proc --dev /dev -- ip -o link show | awk -F": " "{print \$2}")" = lo ]'
+}
+check "a nested bwrap sandbox works inside and still sees only lo" t_nested_bwrap
+
+# --- --no-root: the caller's uid and gid, no capabilities, isolation unchanged ----------------
+# For tools that refuse to run as uid 0 (umu-run). Inside, the generated passwd and group name the
+# caller as id does on the host, or user and users when a name is empty, starts with '-' or has
+# anything but letters, digits, '.', '_' and '-'.
+want_name() {  # NAME FALLBACK
+  case "$1" in
+    ""|-*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) printf '%s\n' "$2" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+want_user=$(want_name "$(id -un 2>/dev/null)" user) want_group=$(want_name "$(id -gn 2>/dev/null)" users)
+t_noroot_ids() {
+  local opts out want
+  want=$(printf '%s\n' "$uid" "$gid" "$want_user" "$want_group" \
+           "$want_user:x:$uid:$gid::${HOME%/}:/bin/bash" "$want_group:x:$gid:")
+  for opts in --no-root "--no-root --no-root"; do
+    # shellcheck disable=SC2086 # word splitting intended
+    out=$("$run" $opts -- bash -c 'id -u; id -g; id -un; id -gn; getent passwd "$(id -u)"; getent group "$(id -g)"' \
+            2>&1) || true
+    [ "$out" = "$want" ] || { echo "  $opts: got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+  done
+}
+check "--no-root (also given twice) runs COMMAND as the caller's uid and gid, named in passwd and group as on the host" \
+  t_noroot_ids
+
+t_noroot_caps() {
+  local out
+  out=$("$run" --no-root -- grep -E '^Cap(Prm|Eff|Amb):' /proc/self/status 2>&1) || true
+  [ "$out" = "$(printf 'Cap%s:\t0000000000000000\n' Prm Eff Amb)" ] ||
+    { echo "  got: $(tr '\n\t' '  ' <<<"$out")" >&2; return 1; }
+}
+check "--no-root: no capabilities inside (CapPrm, CapEff and CapAmb are all zero)" t_noroot_caps
+
+check "--no-root: binding 127.0.0.1:80 fails, while a listener on a high loopback port takes connections" \
+  "$run" --no-root -- python3 -I -c '
+import socket, sys
+try:
+    socket.socket().bind(("127.0.0.1", 80))
+    sys.exit("  bound 127.0.0.1:80")
+except PermissionError:
+    pass
+srv = socket.socket(); srv.bind(("127.0.0.1", 18080)); srv.listen()
+cli = socket.create_connection(("127.0.0.1", 18080), timeout=5)
+srv.accept()[0].sendall(b"ok")
+sys.exit(0 if cli.recv(2) == b"ok" else "  no reply from the listener on 127.0.0.1:18080")'
+
+check "--no-root: only the loopback interface exists, up, with 127.0.0.1 and ::1" t_links --no-root
+check "--no-root: cannot open a TCP connection to the internet by IP" t_no_tcp 1.1.1.1 443 --no-root
+check "--no-root: public hostnames don't resolve" t_no_dns --no-root
+check "--no-root: add_key, request_key and keyctl fail with EPERM inside (x86_64 and x32 syscall numbers)" \
+  t_keys 6 64 --no-root
+check "--no-root: a nested user namespace can be created inside (unshare --user --map-root-user true)" \
+  "$run" --no-root -- unshare --user --map-root-user true
+check "--no-root: a nested bwrap sandbox works inside and still sees only lo" t_nested_bwrap --no-root
+
+# The generated passwd and group give 0 to root and 65534 to nobody, so --no-root refuses a caller
+# with either as uid or gid: run it in user namespaces that give the caller those ids.
+t_noroot_refused() {
+  local ids err rc
+  for ids in "0 $gid" "65534 $gid" "$uid 0" "$uid 65534"; do
+    set +e
+    err=$(unshare --map-user="${ids% *}" --map-group="${ids#* }" "$run" --no-root -- true 2>&1 >/dev/null)
+    rc=$?
+    set -e
+    if ! { [ "$rc" -eq 2 ] && [[ $err == *"--no-root needs"* ]]; }; then
+      echo "  uid ${ids% *}, gid ${ids#* }: exited $rc: $err" >&2
+      return 1
+    fi
+  done
+  unshare --map-user="$uid" --map-group="$gid" "$run" --no-root -- true ||
+    { echo "  control: the caller's own uid and gid were refused" >&2; return 1; }
+}
+if unshare --map-user="$uid" --map-group="$gid" true 2>/dev/null; then
+  check "--no-root is refused (exit 2) when the caller's uid or gid is 0 or 65534 (root and nobody inside)" \
+    t_noroot_refused
+else
+  echo "skip - unshare --map-user/--map-group unavailable or not permitted, can't test the --no-root refusal of uid or gid 0 and 65534"
+fi
+
+# Names that could break the generated passwd and group, or pass for an option, become user and
+# users. An id stand-in first on PATH (outside only: its dir isn't inside) prints the contents of
+# $tmp/id-shim/user and group for -un and -gn, and fails when they are missing.
+mkdir "$tmp/id-shim"
+printf '#!/bin/sh\nd=%s\ncase "$1" in -un) f=$d/user ;; -gn) f=$d/group ;; *) exec %s "$@" ;; esac\n[ -e "$f" ] && exec cat -- "$f"\nexit 1\n' \
+  "'$tmp/id-shim'" "$(command -v id)" > "$tmp/id-shim/id"
+chmod +x "$tmp/id-shim/id"
+t_noroot_names() {
+  local name out
+  for name in "" -x "a:b" "a b" "a/b" $'\xc3\xbc' $'\xff' $'a\nroot2:x:0:0::/:/bin/sh'; do
+    printf '%s' "$name" > "$tmp/id-shim/user"
+    printf '%s' "$name" > "$tmp/id-shim/group"
+    out=$(PATH=$tmp/id-shim:$PATH "$run" --no-root -- bash -c 'id -un; id -gn; grep -c "" /etc/passwd /etc/group' \
+            2>&1) || true
+    [ "$out" = "$(printf '%s\n' user users /etc/passwd:3 /etc/group:3)" ] ||
+      { echo "  name $(printf %q "$name"): got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+  done
+  rm -f -- "$tmp/id-shim/user" "$tmp/id-shim/group"   # id finds no name at all
+  out=$(PATH=$tmp/id-shim:$PATH "$run" --no-root -- bash -c 'id -un; id -gn' 2>&1) || true
+  [ "$out" = "$(printf '%s\n' user users)" ] || { echo "  no names: got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+  printf 'A.b_c-9' > "$tmp/id-shim/user"
+  printf 'g-1.x_y' > "$tmp/id-shim/group"
+  out=$(PATH=$tmp/id-shim:$PATH "$run" --no-root -- bash -c 'id -un; id -gn' 2>&1) || true
+  [ "$out" = "$(printf '%s\n' A.b_c-9 g-1.x_y)" ] ||
+    { echo "  names of letters, digits, '.', '_' and '-': got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+}
+check "--no-root names the caller user and users when id gives no name, or one that starts with '-' or has characters other than letters, digits, '.', '_' and '-'" \
+  t_noroot_names
 
 # --- Steam refusal and host files ------------------------------------------------------------
 if pgrep -x steam >/dev/null 2>&1 || pgrep -x steamwebhelper >/dev/null 2>&1 ||
