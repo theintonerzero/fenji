@@ -9,13 +9,15 @@
 #       own cmd.exe; and empty home/, steamclient/ and hosts-empty.
 #   scripts/spike/run-client.sh run NAME [--hosts FILE] [--ports "P1 P2"] [--timeout S]
 #       [--display N] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
-#       -- [client args...]
+#       [--click T:X,Y]... -- [client args...]
 #       One run: evidence in re/runs/out/NAME/, stub logs in re/stub-logs/NAME/; NAME must be new.
 #       The sandbox writes only to the client copy, the prefix, its home and re/runs/io/NAME; the
 #       evidence directories are never bound into it, and the host takes files out of what the
 #       sandbox can write only through `watchdog.py collect`, which never follows a link.
 #       --client-file puts SRC into the run's client copy as NAME at the install root, an input
 #       the client reads, for this run only. It never replaces a file the copy already has.
+#       --click plays a player's left click at X,Y on the nested display, T seconds into the run
+#       (xclick.py, through XTEST): input to the client's own UI, never a change to the client.
 #
 # Every run uses isolated-run.sh --no-root --x11 N --cpu-topology (CLAUDE.md "Client runs"), the
 # pinned GE-Proton's own `proton run` (umu's runtime container fails in the sandbox), lavapipe, and
@@ -94,7 +96,7 @@ cmd_run() {
   local run=$1
   shift
   local hosts="$WORK/hosts-empty" ports=7804 tmo=300 display=99 channels=$CHANNELS_DEFAULT
-  local envs=() client_files=()
+  local envs=() client_files=() clicks=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --hosts) [ $# -ge 2 ] || usage; hosts=$(realpath -- "$2"); shift 2 ;;
@@ -104,6 +106,7 @@ cmd_run() {
       --channels) [ $# -ge 2 ] || usage; channels=$2; shift 2 ;;
       --env) [ $# -ge 2 ] || usage; envs+=("$2"); shift 2 ;;
       --client-file) [ $# -ge 2 ] || usage; client_files+=("$2"); shift 2 ;;
+      --click) [ $# -ge 2 ] || usage; clicks+=("$2"); shift 2 ;;
       --) shift; break ;;
       *) usage ;;
     esac
@@ -118,6 +121,10 @@ cmd_run() {
     case "$ENV_RESERVED" in *" ${ev%%=*} "*) die "--env ${ev%%=*}: the runner sets it, and the watchdog depends on it" ;; esac
   done
   channels=$(watch_channels "$channels")
+  local c
+  for c in "${clicks[@]}"; do
+    [[ "$c" =~ ^[0-9]+:[0-9]+,[0-9]+$ ]] || die "--click takes T:X,Y in whole numbers, not '$c'"
+  done
   local OUT="$WORK/out/$run" IO="$WORK/io/$run" STUB="$REPO/re/stub-logs/$run" PFX="$WORK/compat/pfx"
   if [ ! -d "$WORK/client/bin64" ] || [ ! -f "$PFX/system.reg" ]; then die "no workspace; run: $0 setup"; fi
   if [ -e "$OUT" ] || [ -e "$IO" ] || [ -e "$STUB" ]; then die "run $run exists already; pick a new name"; fi
@@ -153,6 +160,7 @@ cmd_run() {
     echo "client args: $*"
     echo "extra env: ${envs[*]-}"
     echo "client files: ${client_files[*]-}"
+    echo "clicks (T:X,Y): ${clicks[*]-}"
     echo "stub ports: $ports"
     echo "timeout: $tmo"
     echo "display: :$display"
@@ -186,6 +194,20 @@ cmd_run() {
     done
   ) &
   local shots=$!
+  # --- host-side clicks on the nested display, at their times
+  (
+    start=$(date +%s)
+    for c in "${clicks[@]}"; do
+      t=${c%%:*} xy=${c#*:}
+      now=$(date +%s)
+      sl=$((start + t - now))
+      [ "$sl" -le 0 ] || sleep "$sl"
+      [ -e "$OUT/.running" ] || break
+      python3 -I "$HERE/xclick.py" --display ":$display" "${xy%,*}" "${xy#*,}" 2>>"$OUT/click.err" &&
+        echo "$(date -Is) click $c" >> "$OUT/clicks.log"
+    done
+  ) &
+  local clicker=$!
   touch "$OUT/.running"
 
   # --- the sandboxed run: stub + client in one invocation, started once the watchdog has armed.
@@ -245,7 +267,7 @@ cmd_run() {
   fi
   set -e
   rm -f "$OUT/.running" "$IO/.go"
-  wait "$shots" 2>/dev/null || true
+  wait "$shots" "$clicker" 2>/dev/null || true
   local ran=0
   if [ -e "$IO/exit-code" ]; then ran=1; fi # the inner script writes it once the client has run
   echo "$wrc" > "$OUT/sandbox-exit-code"
