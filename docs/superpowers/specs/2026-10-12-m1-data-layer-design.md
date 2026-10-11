@@ -1,6 +1,6 @@
 # M1: Data layer — Design Spec
 
-**Status:** design agreed with the owner in chat on 2026-10-12; awaiting written-spec review.
+**Status:** approved by the owner on 2026-10-12. Amended the same day by the plan's deviations D1–D3, which the owner accepted ([plan](../plans/2026-10-12-m1-data-layer.md), "Deviations from the spec").
 **Parent:** [Fenji design spec](2026-10-11-fenji-design.md) §6.3 and §10 (M1), and the M0 findings in [`docs/re/spike-0.md`](../../re/spike-0.md).
 
 ## 1. Purpose and priority
@@ -42,6 +42,8 @@ Rejected:
 - **Disassembly only:** too slow for 18,587 chunks. It remains the fallback if the decompiler doesn't work out.
 
 ### Units (`crates/fenji-lua`)
+
+> **Amended (D1, D2; owner, 2026-10-12):** the embedded scripts turned out to be files in the engine's blob format, which the archives share. So locating and decompressing live in `fenji-data` (`exe_fs`, `blob`, `codec`), and chunks are found through the client's own registry, not by scanning. `fenji-lua` keeps `chunk`, `disasm` and `normalize`, and adds `census`.
 
 - **`locate`:** finds every embedded chunk in `gujianol.exe` and returns its offset, compressed size and script path where known.
   - The preferred source is the client's own chunk registry, if W1's Ghidra task finds one.
@@ -138,7 +140,7 @@ Table parsing and the `archive dump` command wait for the owner's decision. If t
 
 ## 7. Done when
 
-1. **Lua tooling:** `luatool` lists, extracts and disassembles all 18,587 chunks, and decompiles through the normaliser. The success rate is reported per area, and the login-stage scripts are readable, whether decompiled or from disassembly.
+1. **Lua tooling:** `luatool` lists every embedded-file registry entry. It extracts, disassembles and decompiles (through the normaliser) every decodable Lua chunk, and reports the success rate per area. Entries the exe can't supply, such as the large scripts cut at 16 KiB in the image, are listed with their reason. The login-stage scripts are readable, whether decompiled or from disassembly. (Amended by D3; owner, 2026-10-12. The spec first said "all 18,587 chunks".)
 2. **Login write-up:** `docs/protocol/login.md` documents what gives the client its server address, with evidence.
 3. **First connection:** in a sandboxed run, the real client connects to `fenji-stub` (W5).
 4. **Census:** `docs/re/m1-script-census.md` gives the server-logic measurement.
