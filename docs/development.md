@@ -27,7 +27,7 @@ Fedora notes (the Linux box runs Fedora; other distros get a printed package lis
 - Ghidra comes from the official release zip on both macOS and Fedora (SHA-256 verified), so both machines run the identical pinned build at `~/.local/share/fenji/tools/ghidra_12.1.4_PUBLIC`.
 - macOS gets Java from the Temurin 21 cask and Node from Homebrew `node@24`. On Linux, bootstrap downloads the Temurin 21 tarball (SHA-256 pinned) into `~/.local/share/fenji/tools`, because Fedora 44 no longer packages JDK 21.
 - `umu-run` (Proton outside Steam), `DepotDownloader`, `ghidraRun`, `bridge-mcp-ghidra` (via `uv tool`) and pnpm land in `~/.local/bin`; the GhidraMCP extension lands in Ghidra's user directory (`~/.config/ghidra/ghidra_12.1.4_PUBLIC/Extensions` on Linux, `~/Library/ghidra/...` on macOS).
-- Fenji doesn't need Steam. If it's installed (RPM Fusion or Flatpak), quit it before sandboxed runs. The pinned client runs through `umu-run`, never through Steam.
+- Fenji doesn't need Steam. If it's installed (RPM Fusion or Flatpak), quit it before sandboxed runs. The pinned client never runs through Steam, and every client run on this machine goes through the sandbox. Sandboxed runs start GE-Proton's `proton` script directly, because umu's runtime container fails inside the sandbox (seen without `--cpu-topology`; untested with it). `umu-run` stays installed for the launcher's future Linux launch path (design spec §5.2).
 - The pinned client copy goes in `$FENJI_CLIENT_PATH` (default `~/fenji-client`), outside any Steam or Gameforge library (the sandbox refuses binds inside Steam directories). See `docs/re/README.md`.
 
 ## Branches

@@ -5,7 +5,7 @@
 # ground rule 4). Linux x86_64 only; needs bwrap, python3 and unprivileged user namespaces.
 #
 #   scripts/spike/isolated-run.sh [--hosts FILE] [--bind DIR]... [--ro-bind DIR]... [--x11 N]
-#                                 [--no-root] -- COMMAND [ARGS...]
+#                                 [--no-root] [--cpu-topology] -- COMMAND [ARGS...]
 #
 #   --hosts FILE    FILE's content becomes /etc/hosts inside (after localhost entries), e.g. to
 #                   point the client's hostnames at a stub listening on 127.0.0.1 inside.
@@ -15,6 +15,10 @@
 #                   "Display" below): its socket is the only X11 thing inside, with DISPLAY=:N.
 #   --no-root       run COMMAND as your own uid and gid with no capabilities, not as uid 0 (see
 #                   "Inside" below), for tools that refuse to run as root, such as umu-run.
+#   --cpu-topology  bind the host's /sys/devices/system/cpu (CPU topology, caches, frequencies...)
+#                   read-only at the same path; Wine and Proton build their processor information
+#                   from it. No other part of /sys is inside, and without it there is no /sys,
+#                   unless a --bind/--ro-bind DIR exposes some.
 #   Pass extra environment with `env VAR=value COMMAND`; only PATH, HOME, TERM, LANG, LANGUAGE,
 #   LC_* and USER are inherited, plus BROWSER=/bin/false (and DISPLAY with --x11).
 #
@@ -43,7 +47,8 @@
 # anything but letters, digits, '.', '_' and '-'). No resolv.conf. No host display, audio, bus or
 # daemon socket (systemd-resolved, D-Bus, systemd --user, PulseAudio/PipeWire, CUPS, sshd, avahi,
 # X11, Wayland, ibus, Steam) exists inside unless a --bind/--ro-bind DIR exposes it, bar the one
-# nested X server socket --x11 N names (see "Display").
+# nested X server socket --x11 N names (see "Display"). Nor does /sys, unless a --bind/--ro-bind
+# DIR exposes part of it, bar the read-only /sys/devices/system/cpu that --cpu-topology adds.
 # Bound dirs must belong to the run. One is refused (exit 2) if, at start:
 #   - it holds a socket or fifo at any depth (also one mounted over another file), or can't be
 #     fully scanned for them;
@@ -113,14 +118,16 @@
 # with FENJI_ISOLATED_RUN_ALLOW_STEAM=1 (and adds refused filesystem types for its own test with
 # FENJI_ISOLATED_RUN_TEST_EXTRA_FSTYPES; that can only refuse more). Exit 2 also on usage
 # errors, a missing --hosts file or bind dir, a refused bind dir or --x11 display, --no-root when
-# your uid or gid is 0 or 65534 (root and nobody inside), a non-x86_64 host, or missing bwrap,
-# pgrep or python3. Otherwise the exit status is COMMAND's.
+# your uid or gid is 0 or 65534 (root and nobody inside), --cpu-topology unless
+# /sys/devices/system/cpu is a directory on sysfs with nothing mounted below it (only the kernel's
+# own CPU sysfs goes inside: in LXC containers, for one, lxcfs mounts FUSE files there), a
+# non-x86_64 host, or missing bwrap, pgrep or python3. Otherwise the exit status is COMMAND's.
 set -euo pipefail
 
-usage() { sed -n '2,19p' "$0" >&2; exit 2; }
+usage() { sed -n '2,23p' "$0" >&2; exit 2; }
 die2() { echo "isolated-run: $*" >&2; exit 2; }
 
-hosts="" binds=() x11="" noroot=""
+hosts="" binds=() x11="" noroot="" cputopo=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --hosts)
@@ -146,6 +153,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --no-root) noroot=1; shift ;;
+    --cpu-topology) cputopo=1; shift ;;
     --) shift; break ;;
     *) usage ;;
   esac
@@ -204,13 +212,42 @@ refused_fstype() {
 }
 # Mount table: mount points (octal escapes like \040 decoded) and filesystem types.
 mnt_points=() mnt_types=()
-if [ "${#binds[@]}" -gt 0 ]; then
+if [ "${#binds[@]}" -gt 0 ] || [ -n "$cputopo" ]; then
   while IFS= read -r line; do
     read -r _ _ _ _ mp _ <<<"$line"
     printf -v mp '%b' "${mp//\\/\\0}"
     rest=${line#* - }
     mnt_points+=("$mp") mnt_types+=("${rest%% *}")
   done < /proc/self/mountinfo
+fi
+# mounts_at DIR sets on_type to the type of the filesystem DIR is on (the deepest mount at or above
+# it; the last listed wins a tie, being on top), and below_points and below_types to the mount
+# point and type of every mount below it.
+mounts_at() {
+  local m mp t on_len=-1
+  on_type="" below_points=() below_types=()
+  for ((m = 0; m < ${#mnt_points[@]}; m++)); do
+    mp=${mnt_points[$m]} t=${mnt_types[$m]}
+    case "$1/" in
+      "${mp%/}/"*) if [ "${#mp}" -ge "$on_len" ]; then on_len=${#mp} on_type=$t; fi ;;
+    esac
+    case "$mp/" in
+      "$1/"?*) below_points+=("$mp") below_types+=("$t") ;;
+    esac
+  done
+}
+
+# --cpu-topology binds the host's /sys/devices/system/cpu, and nothing but the kernel's own CPU
+# sysfs may go inside with it: the directory must be on sysfs, with nothing mounted below it. (In
+# LXC containers, for one, lxcfs mounts FUSE files there, which a host daemon serves.)
+if [ -n "$cputopo" ]; then
+  [ -d /sys/devices/system/cpu ] ||
+    die2 "--cpu-topology: the host has no /sys/devices/system/cpu directory (is sysfs mounted on /sys?)"
+  mounts_at /sys/devices/system/cpu
+  [ "$on_type" = sysfs ] ||
+    die2 "--cpu-topology: /sys/devices/system/cpu is on ${on_type:-an unknown filesystem}, not sysfs; only the kernel's own CPU sysfs is bound"
+  [ "${#below_points[@]}" -eq 0 ] ||
+    die2 "--cpu-topology: a filesystem (${below_types[0]}) is mounted at ${below_points[0]}, below /sys/devices/system/cpu; only the kernel's own CPU sysfs is bound, with nothing mounted in it"
 fi
 
 # Refuse binds that obviously contain host daemon sockets: a dir that is, or is a parent of, one
@@ -235,17 +272,11 @@ for ((i = 1; i < ${#binds[@]}; i += 2)); do
   for u in "${under[@]}"; do
     case "$b/" in "${u%/}/"*) die2 "refusing to bind $b: it is inside $u (host daemon sockets)" ;; esac
   done
-  # The filesystem b is on (the deepest mount at or above it; the last listed wins a tie, being on
-  # top) and every mount below it.
-  on_len=-1 on_type=""
-  for ((m = 0; m < ${#mnt_points[@]}; m++)); do
-    mp=${mnt_points[$m]} t=${mnt_types[$m]}
-    case "$b/" in
-      "${mp%/}/"*) if [ "${#mp}" -ge "$on_len" ]; then on_len=${#mp} on_type=$t; fi ;;
-    esac
-    case "$mp/" in
-      "$b/"?*) ! refused_fstype "$t" || die2 "refusing to bind $b: it contains a $t mount at $mp (a host daemon serves it)" ;;
-    esac
+  # The filesystem b is on, and every mount below it (see mounts_at).
+  mounts_at "$b"
+  for ((m = 0; m < ${#below_points[@]}; m++)); do
+    ! refused_fstype "${below_types[$m]}" ||
+      die2 "refusing to bind $b: it contains a ${below_types[$m]} mount at ${below_points[$m]} (a host daemon serves it)"
   done
   ! refused_fstype "$on_type" || die2 "refusing to bind $b: it is on a $on_type filesystem (a host daemon serves it)"
   # No -xdev: bwrap binds recursively, so everything below b is visible inside. %M makes find
@@ -404,6 +435,13 @@ done
 # Read-only: connect() works on it, but nothing inside can chmod or touch the host's socket.
 if [ -n "$x11" ]; then
   args+=(--dir /tmp/.X11-unix --ro-bind "$xsock" "$xsock" --setenv DISPLAY ":$x11")
+fi
+
+# --cpu-topology: the host's /sys/devices/system/cpu (checked above: on sysfs, nothing mounted
+# below it), read-only, and nothing else of /sys (Wine and Proton build their processor
+# information from it). After the caller's binds, so none can sit on top of it.
+if [ -n "$cputopo" ]; then
+  args+=(--ro-bind /sys/devices/system/cpu /sys/devices/system/cpu)
 fi
 
 # Generated /etc files go last so no bind can shadow them (fds 3-6 are opened on the exec line).
