@@ -45,7 +45,17 @@ jobs:
       - name: ShellCheck
         run: |
           sudo apt-get install -y shellcheck
-          shellcheck scripts/*.sh .githooks/*
+          shellcheck scripts/*.sh scripts/spike/*.sh .githooks/*
+      - name: Network isolation self-test
+        run: |
+          sudo apt-get update
+          # keyutils gives the self-test the keyctl CLI (the syscall-level key checks run without it).
+          sudo apt-get install -y bubblewrap keyutils
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor by default; bwrap needs them.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --version
+          python3 -I scripts/spike/seccomp-deny-keys.py --disasm
+          scripts/spike/test-isolated-run.sh
 
   pr-title:
     if: github.event_name == 'pull_request'
