@@ -82,7 +82,7 @@ b = socket.socket(socket.AF_INET6); b.bind(("::1", 80))'
 
 # --- usage errors exit 2 before running anything -------------------------------------------
 t_usage() {
-  local rc
+  local rc out opt
   for argv in "--hosts /nonexistent/hosts -- true" "--bind /nonexistent/dir -- true" \
               "--ro-bind /nonexistent/dir -- true" "" "-- " "true" "--hosts" "--x11" "--bogus -- true"; do
     set +e
@@ -92,8 +92,17 @@ t_usage() {
     set -e
     [ "$rc" -eq 2 ] || { echo "  '$argv' exited $rc" >&2; return 1; }
   done
+  # usage() prints a hand-kept range of header lines: it must hold every option's entry and end
+  # with the environment note.
+  out=$("$run" --bogus -- true 2>&1 >/dev/null) || true
+  for opt in --hosts --bind --ro-bind --x11 --no-root --cpu-topology; do
+    grep -q "^#   $opt " <<<"$out" || { echo "  the usage text has no entry for $opt" >&2; return 1; }
+  done
+  [[ $(tail -n 1 <<<"$out") == *"plus BROWSER=/bin/false (and DISPLAY with --x11)." ]] ||
+    { echo "  the usage text ends with: $(tail -n 1 <<<"$out")" >&2; return 1; }
 }
-check "usage errors, missing --hosts file and missing bind dirs exit 2" t_usage
+check "usage errors, missing --hosts file and missing bind dirs exit 2; the usage text has every option's entry and ends with the environment note" \
+  t_usage
 
 t_refuse_binds() {
   local rc fh=$tmp/fakehome-parent/home
@@ -1003,7 +1012,9 @@ t_cpu_online() {  # [OPTION...]
   [ "$out" = "$host" ] || { echo "  host: $host, inside: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
 }
 # Every mount in /sys inside, with the mount's own options (mountinfo field 6; the superblock's,
-# after " - ", stay rw): just /sys/devices/system/cpu, with ro among them.
+# after " - ", stay rw): just /sys/devices/system/cpu, with ro among them. A bind keeps the
+# source mount's ro, so this tells --ro-bind from --bind only when the host's /sys is mounted rw.
+host_sys_opts=$(awk '$5 == "/sys" { o = $6 } END { print o }' /proc/self/mountinfo)
 t_cpu_ro() {  # [OPTION...]
   local out
   out=$("$run" "$@" -- cut -d' ' -f5,6 /proc/self/mountinfo 2>&1 | LC_ALL=C grep -E '^/sys(/| )') || true
@@ -1036,8 +1047,12 @@ for mode in "" --no-root; do
   check "$flag: /sys holds only devices, /sys/devices only system, /sys/devices/system only cpu" \
     t_cpu_tree $mode --cpu-topology
   check "$flag: /sys/devices/system/cpu/online inside is the host's" t_cpu_online $mode --cpu-topology
-  check "$flag: the only mount in /sys is /sys/devices/system/cpu, with ro among its mount options" \
-    t_cpu_ro $mode --cpu-topology
+  if [[ ,$host_sys_opts, == *,rw,* ]]; then
+    check "$flag: the only mount in /sys is /sys/devices/system/cpu, with ro among its mount options" \
+      t_cpu_ro $mode --cpu-topology
+  else
+    echo "skip - the host's /sys isn't mounted rw (options: ${host_sys_opts:-none found}), so ro inside can't tell $flag's --ro-bind from --bind"
+  fi
   check "$flag (also given twice) adds exactly one mount, /sys/devices/system/cpu, and removes none" \
     t_cpu_mounts $mode
   check "$flag: no socket or fifo is visible anywhere inside except one the command made in its bound dir" \
@@ -1048,17 +1063,27 @@ for mode in "" --no-root; do
   check "$flag: a nested bwrap sandbox works inside and still sees only lo" t_nested_bwrap $mode --cpu-topology
 done
 
-# Refused (exit 2) on a host without /sys/devices/system/cpu: an empty tmpfs hides it here, in a
-# private mount namespace (no test hook needed).
+# Refused (exit 2) unless /sys/devices/system/cpu is a directory on the kernel's sysfs with nothing
+# mounted below it (in LXC containers, lxcfs mounts FUSE files there that a host daemon serves).
+# Each case puts an empty tmpfs on DIR in a private mount namespace, after a control run there;
+# the strict sysfs rule needs no test hook.
+t_cpu_refused() {  # DIR WANT
+  unshare -rm bash -c '
+    "$1" --cpu-topology -- true || { echo "  control: refused before the tmpfs went on $2" >&2; exit 1; }
+    mount -t tmpfs fenji-test "$2" || { echo "  can'\''t mount a tmpfs on $2" >&2; exit 1; }
+    err=$("$1" --cpu-topology -- true 2>&1); rc=$?
+    if ! { [ "$rc" -eq 2 ] && [[ $err == *"$3"* ]]; }; then echo "  tmpfs on $2: exited $rc: $err" >&2; exit 1; fi' \
+    _ "$run" "$1" "$2"
+}
 if unshare -rm true 2>/dev/null; then
   check "--cpu-topology is refused (exit 2) on a host without /sys/devices/system/cpu" \
-    unshare -rm bash -c '
-      "$1" --cpu-topology -- true || { echo "  control: refused while /sys/devices/system/cpu exists" >&2; exit 1; }
-      mount -t tmpfs fenji-test /sys/devices/system || exit 1
-      err=$("$1" --cpu-topology -- true 2>&1); rc=$?
-      [ "$rc" -eq 2 ] && [[ $err == *"has no /sys/devices/system/cpu"* ]] || { echo "  rc=$rc $err" >&2; exit 1; }' _ "$run"
+    t_cpu_refused /sys/devices/system "has no /sys/devices/system/cpu"
+  check "--cpu-topology is refused (exit 2) when /sys/devices/system/cpu is on a filesystem other than sysfs" \
+    t_cpu_refused /sys/devices/system/cpu "/sys/devices/system/cpu is on tmpfs, not sysfs"
+  check "--cpu-topology is refused (exit 2) when a mount lies below /sys/devices/system/cpu" \
+    t_cpu_refused /sys/devices/system/cpu/cpu0 "a filesystem (tmpfs) is mounted at /sys/devices/system/cpu/cpu0"
 else
-  echo "skip - unshare -rm not permitted, can't test refusing --cpu-topology without /sys/devices/system/cpu"
+  echo "skip - unshare -rm not permitted, can't test the --cpu-topology refusals (no CPU dir, not sysfs, a mount below)"
 fi
 
 # --- Steam refusal and host files ------------------------------------------------------------
