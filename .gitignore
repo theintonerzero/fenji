@@ -9,6 +9,9 @@
 # Game content must never enter the repo (ground rule: no redistribution)
 *.exe
 *.dll
+*.so
+*.so.*
+*.dylib
 *.sys
 *.pae
 *.vplugin
