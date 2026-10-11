@@ -78,12 +78,26 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 git switch dev && git pull
 git switch -c release/vX.Y.Z
 # bump [workspace.package] version in Cargo.toml (+ launcher tauri.conf.json / package.json once they exist)
+cargo check --workspace          # refreshes Cargo.lock; CI builds with --locked
+# set CLAUDE.md's **Status:** line: this milestone released as vX.Y.Z, and which milestone is next
 git cliff --tag vX.Y.Z -o CHANGELOG.md
-git commit -am "chore(release): vX.Y.Z"
+# stage the release files only, so no unrelated local edit rides into the release commit
+git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md   # + the launcher's tauri.conf.json / package.json once they exist
+git commit -m "chore(release): vX.Y.Z"
 # PR release/vX.Y.Z → main, merge commit, then:
 git switch main && git pull && git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 # merge main back into dev
 git switch dev && git merge --no-ff main && git push
+# release notes: a line naming the pinned build (from docs/re/pinned-build.md), then the changelog section
+notes=$(mktemp)
+{ echo "Pinned SoLO client: build <build ID>, bin64/gujianol.exe SHA-256 <exe SHA-256> (docs/re/pinned-build.md)."
+  echo
+  git cliff --latest --strip all; } > "$notes"
+gh release create vX.Y.Z --title "vX.Y.Z" --notes-file "$notes"
+# close the milestone's release issue (PRs into main don't auto-close it) and the milestone
+gh issue close <release issue>
+m=$(gh api 'repos/{owner}/{repo}/milestones' --jq '.[] | select(.title == "<milestone title>") | .number')
+gh api -X PATCH "repos/{owner}/{repo}/milestones/$m" -f state=closed
 ```
 
 ## Checks before a PR

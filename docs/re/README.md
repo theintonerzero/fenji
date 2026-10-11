@@ -60,6 +60,8 @@ Before a run:
 
 Read the wrapper's header before the first run.
 
+The client flags that reach the login scene in a dev run are in [spike-0 §8](spike-0.md#8-runtime-observation-isolated-stub-only) (`--gf-sdk=mocked` is dev-only, gate #11). The runner and the driver watchdog are local, git-ignored files under `re/spike/` for now; a tracked runner is issue #17.
+
 ## Working rules
 
 - Static analysis of files on disk comes first. Runtime observation (Wine `WINEDEBUG`, the client's own log, stub sessions) happens only inside the sandbox, against our own stub or server.
