@@ -2,7 +2,7 @@
 
 Clean-room private server emulator for Swords of Legends Online (SoLO: the Western build of 古剑奇谭网络版, Steam app 1418100; servers shut down 2023-06-30), in Rust, for a small invited group on the owner's VPS. Built by reverse engineering the owner's own licensed client. Design: `docs/superpowers/specs/2026-10-11-fenji-design.md`. Docs index: `docs/README.md`. Fenji replaces the halted Caphras project (Black Desert Online) and keeps its tooling and process.
 
-**Status:** M0 (dev environment + spike) in progress: `docs/superpowers/plans/2026-10-11-m0-dev-environment-and-spike.md`.
+**Status:** M0 (dev environment + spike) released as v0.1.0; findings in `docs/re/spike-0.md`. M1 (data layer) is next and has no plan yet.
 
 ## Ground rules (never break these)
 
@@ -17,10 +17,10 @@ Clean-room private server emulator for Swords of Legends Online (SoLO: the Weste
 ## How to work here
 
 - **Process (superpowers plugin):** `brainstorming` → spec → `writing-plans` → `subagent-driven-development` or `executing-plans`; `test-driven-development` for code; `systematic-debugging` for bugs; `verification-before-completion` before claiming done. One implementation plan per milestone in `docs/superpowers/plans/`.
-- **Reverse engineering:** use the `reverse-engineer-anything` skill, the shared Ghidra GUI project and the `rea` MCP server. Static analysis first. The Ghidra project is the main surface for `gujianol.exe`, because REA's full auto-analysis of its ~75,000 functions is too slow. REA records Evidence IDs for targeted functions. Cite REA Evidence IDs (or pinned-exe addresses where REA can't reach) in `docs/protocol/` and in packet type doc comments. Separate observation, inference and unknown. Close REA sessions when done.
-- **Clean-room hygiene:** anyone, person or agent, who has read material listed as rejected in `docs/re/sources.md` does no RE or protocol work on the client. They may coordinate, review process and write code that doesn't depend on client internals.
+- **Reverse engineering:** use the `reverse-engineer-anything` skill, the shared Ghidra GUI project and the `rea` MCP server. Static analysis first. The Ghidra project is the main surface for `gujianol.exe`, because REA's full auto-analysis of its ~52,000 functions is too slow. REA records Evidence IDs for targeted functions. Cite REA Evidence IDs (or pinned-exe addresses where REA can't reach) in `docs/protocol/` and in packet type doc comments. Separate observation, inference and unknown. Close REA sessions when done.
+- **Clean-room hygiene:** anyone, person or agent, who has read material listed as rejected in `docs/re/sources.md` does no RE or protocol work on the client; client runs, diagnostic ones included, count as RE work. They may coordinate, review process and write code that doesn't depend on client internals.
 - **Ghidra GUI project (`ghidra` MCP):** canonical names, types and structs for the pinned binary, shared with the owner live. Leave `GHIDRA_MCP_ALLOW_SCRIPTS` unset (script execution off) and the server on 127.0.0.1. Never use its `debugger_*` tools on the SoLO client: attaching a debugger is a decision gate.
-- **Client runs:** only inside `scripts/spike/isolated-run.sh` (loopback only; a nested display with `--x11 N`; non-root with `--no-root`). Quit Steam first, bind only directories that belong to the run, and keep the pinned copy outside any Steam library.
+- **Client runs:** only inside `scripts/spike/isolated-run.sh` (loopback only; a nested display with `--x11 N`; non-root with `--no-root`; `--cpu-topology` for Wine's processor information). Quit Steam first, bind only directories that belong to the run, and keep the pinned copy outside any Steam library.
 - **Launcher UI** (`apps/launcher`, Tauri 2): use the `impeccable` skill for design work.
 - **Library/API docs:** use `context7` rather than memory for crate and tool APIs (Tauri, Bevy, sqlx, axum, binrw).
 - **Live server inspection:** `brp` MCP against a local `fenji-server` (BRP binds to localhost only).
@@ -111,4 +111,4 @@ If the same plugins are also enabled at user scope from another marketplace (e.g
 
 ## Machines
 
-macOS (Ghidra/REA + Rust), Fedora Linux game box (the client via `umu-run` inside the sandbox, Rust; REA works too), VPS (deploy). Claude's auto-memory does not travel between machines: anything that matters goes in this file or `docs/`. Per-OS setup: `docs/development.md`.
+macOS (Ghidra/REA + Rust), Fedora Linux game box (the client via GE-Proton inside the sandbox, Rust; REA works too), VPS (deploy). Claude's auto-memory does not travel between machines: anything that matters goes in this file or `docs/`. Per-OS setup: `docs/development.md`.

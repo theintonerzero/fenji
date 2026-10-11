@@ -40,7 +40,7 @@ Then compare `bin64/gujianol.exe`'s SHA-256 with `docs/re/pinned-build.md`. On t
 - **Native engine:** **Ghidra 12.1.4** from the official release zip. Bootstrap installs it to `~/.local/share/fenji/tools/ghidra_12.1.4_PUBLIC`, and `~/.config/fenji/env.sh` exports `GHIDRA_INSTALL_DIR` and `JAVA_HOME` (JDK 21).
 - **Role split:**
   - The Ghidra GUI project (`re/ghidra/fenji.gpr`, git-ignored) is the main analysis surface for `gujianol.exe`, and the canonical place for names, types and structs. The owner and Claude share it through the `ghidra` MCP server (the GhidraMCP extension plus the `bridge-mcp-ghidra` bridge to `127.0.0.1:8089`).
-  - REA is the evidence ledger: Evidence IDs, unknowns, targeted decompilation and verification. Its full auto-analysis of the ~75,000-function executable is too slow to be the main surface.
+  - REA is the evidence ledger: Evidence IDs, unknowns, targeted decompilation and verification. Its full auto-analysis of the ~52,000-function executable is too slow to be the main surface.
   - Enable the plugin once in the GUI (File → Configure → Miscellaneous → GhidraMCP); `curl -s http://127.0.0.1:8089/check_connection` should then answer.
 - **Readiness check** (changes nothing): `npx -y rea-agents@<version> doctor --client claude_code --json`.
 
@@ -50,7 +50,8 @@ Only inside `scripts/spike/isolated-run.sh` (design spec §2 rule 4). Inside it:
 - the network is loopback only, and names come from a hosts file;
 - there are no host daemon sockets;
 - the display is a nested X server (`--x11 N`);
-- the client runs non-root (`--no-root`, which umu needs).
+- the client runs non-root (`--no-root`); sandboxed runs start GE-Proton's own `proton` script directly, because umu's runtime container fails inside the sandbox (`bwrap: Can't find source path /sys`, seen without `--cpu-topology`; umu with it is untested);
+- Wine/Proton runs need `--cpu-topology`: Wine builds its processor information from `/sys/devices/system/cpu`, and without it the client hangs at start.
 
 Before a run:
 - Quit Steam; the wrapper refuses to start while it runs.
@@ -58,6 +59,8 @@ Before a run:
 - Run the stub on loopback inside the same sandbox.
 
 Read the wrapper's header before the first run.
+
+The client flags that reach the login scene in a dev run are in [spike-0 §8](spike-0.md#8-runtime-observation-isolated-stub-only) (`--gf-sdk=mocked` is dev-only, gate #11). The runner and the driver watchdog are local, git-ignored files under `re/spike/` for now; a tracked runner is issue #17.
 
 ## Working rules
 

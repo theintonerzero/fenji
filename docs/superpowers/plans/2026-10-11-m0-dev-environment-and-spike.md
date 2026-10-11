@@ -984,7 +984,7 @@ Follow it with Observed/Inferred/Unknown bullets. If the client tries to load th
 - every gate is resolved or open as an issue;
 - with the owner's go-ahead, `v0.1.0` is tagged on `main`.
 
-**Files:** Modify `docs/re/spike-0.md`, `docs/superpowers/specs/2026-10-11-fenji-design.md`, `Cargo.toml` (`version = "0.1.0"`), `CHANGELOG.md` (generated).
+**Files:** Modify `docs/re/spike-0.md`, `docs/superpowers/specs/2026-10-11-fenji-design.md`, `Cargo.toml` (`version = "0.1.0"`), `Cargo.lock` (refreshed), `CLAUDE.md` (the Status line), `CHANGELOG.md` (generated).
 
 - [ ] **Step 1: Conclusions.** Append to `docs/re/spike-0.md`:
 
@@ -1013,15 +1013,27 @@ Follow it with Observed/Inferred/Unknown bullets. If the client tries to load th
 ```bash
 git switch dev && git pull && git switch -c release/v0.1.0
 sed -i 's/^version = "0.0.0"/version = "0.1.0"/' Cargo.toml
-cargo check --workspace          # refreshes Cargo.lock
+cargo check --workspace          # refreshes Cargo.lock; CI builds with --locked
+# set CLAUDE.md's **Status:** line: M0 is released as v0.1.0, and M1 is next
 git cliff --tag v0.1.0 -o CHANGELOG.md
-git commit -am "chore(release): v0.1.0"
+# stage the release files only, so no unrelated local edit rides into the release commit
+git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md
+git commit -m "chore(release): v0.1.0"
 git push -u origin HEAD
 gh pr create --base main --title "chore(release): v0.1.0" --body "M0: dev environment + spike. See docs/re/spike-0.md."
 # after CI passes and the owner merges with a merge commit:
 git switch main && git pull && git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
 git switch dev && git merge --no-ff main -m "chore(release): merge v0.1.0 back into dev" && git push
-gh release create v0.1.0 --title "v0.1.0 (M0)" --notes-from-tag
+# release notes: a line naming the pinned build (from docs/re/pinned-build.md), then the changelog section
+notes=$(mktemp)
+{ echo "Pinned SoLO client: build 10015727, bin64/gujianol.exe SHA-256 3fdc6394de85c1224b91312d62bf2e57251625b49e8d0f3960accf8dfe5f0678 (docs/re/pinned-build.md)."
+  echo
+  git cliff --latest --strip all; } > "$notes"
+gh release create v0.1.0 --title "v0.1.0 (M0)" --notes-file "$notes"
+# close the release issue (PRs into main don't auto-close it) and the milestone
+gh issue close 6
+m=$(gh api 'repos/{owner}/{repo}/milestones' --jq '.[] | select(.title == "M0 Dev environment + spike") | .number')
+gh api -X PATCH "repos/{owner}/{repo}/milestones/$m" -f state=closed
 ```
 
-Expected: a `v0.1.0` tag on `main`, a `## [0.1.0]` section in `CHANGELOG.md`, and milestone M0 closed.
+Expected: a `v0.1.0` tag on `main`, a `## [0.1.0]` section in `CHANGELOG.md`, CLAUDE.md's Status line saying M0 is released, release notes that name the pinned build, and issue #6 and milestone M0 closed.

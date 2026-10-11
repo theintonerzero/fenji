@@ -27,7 +27,7 @@ Fedora notes (the Linux box runs Fedora; other distros get a printed package lis
 - Ghidra comes from the official release zip on both macOS and Fedora (SHA-256 verified), so both machines run the identical pinned build at `~/.local/share/fenji/tools/ghidra_12.1.4_PUBLIC`.
 - macOS gets Java from the Temurin 21 cask and Node from Homebrew `node@24`. On Linux, bootstrap downloads the Temurin 21 tarball (SHA-256 pinned) into `~/.local/share/fenji/tools`, because Fedora 44 no longer packages JDK 21.
 - `umu-run` (Proton outside Steam), `DepotDownloader`, `ghidraRun`, `bridge-mcp-ghidra` (via `uv tool`) and pnpm land in `~/.local/bin`; the GhidraMCP extension lands in Ghidra's user directory (`~/.config/ghidra/ghidra_12.1.4_PUBLIC/Extensions` on Linux, `~/Library/ghidra/...` on macOS).
-- Fenji doesn't need Steam. If it's installed (RPM Fusion or Flatpak), quit it before sandboxed runs. The pinned client runs through `umu-run`, never through Steam.
+- Fenji doesn't need Steam. If it's installed (RPM Fusion or Flatpak), quit it before sandboxed runs. The pinned client never runs through Steam, and every client run on this machine goes through the sandbox. Sandboxed runs start GE-Proton's `proton` script directly, because umu's runtime container fails inside the sandbox (seen without `--cpu-topology`; untested with it). `umu-run` stays installed for the launcher's future Linux launch path (design spec §5.2).
 - The pinned client copy goes in `$FENJI_CLIENT_PATH` (default `~/fenji-client`), outside any Steam or Gameforge library (the sandbox refuses binds inside Steam directories). See `docs/re/README.md`.
 
 ## Branches
@@ -78,12 +78,26 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 git switch dev && git pull
 git switch -c release/vX.Y.Z
 # bump [workspace.package] version in Cargo.toml (+ launcher tauri.conf.json / package.json once they exist)
+cargo check --workspace          # refreshes Cargo.lock; CI builds with --locked
+# set CLAUDE.md's **Status:** line: this milestone released as vX.Y.Z, and which milestone is next
 git cliff --tag vX.Y.Z -o CHANGELOG.md
-git commit -am "chore(release): vX.Y.Z"
+# stage the release files only, so no unrelated local edit rides into the release commit
+git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md   # + the launcher's tauri.conf.json / package.json once they exist
+git commit -m "chore(release): vX.Y.Z"
 # PR release/vX.Y.Z → main, merge commit, then:
 git switch main && git pull && git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 # merge main back into dev
 git switch dev && git merge --no-ff main && git push
+# release notes: a line naming the pinned build (from docs/re/pinned-build.md), then the changelog section
+notes=$(mktemp)
+{ echo "Pinned SoLO client: build <build ID>, bin64/gujianol.exe SHA-256 <exe SHA-256> (docs/re/pinned-build.md)."
+  echo
+  git cliff --latest --strip all; } > "$notes"
+gh release create vX.Y.Z --title "vX.Y.Z" --notes-file "$notes"
+# close the milestone's release issue (PRs into main don't auto-close it) and the milestone
+gh issue close <release issue>
+m=$(gh api 'repos/{owner}/{repo}/milestones' --jq '.[] | select(.title == "<milestone title>") | .number')
+gh api -X PATCH "repos/{owner}/{repo}/milestones/$m" -f state=closed
 ```
 
 ## Checks before a PR
