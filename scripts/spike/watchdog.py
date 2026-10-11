@@ -30,12 +30,22 @@ Signs (any one triggers):
      in the sandbox's own tmpfs mounts, seen through /proc/<pid>/root of a sandbox process.
   S2 a winedevice.exe process in the sandbox's PID namespace that started after the client
      (gujianol.exe) started. Those started before it host Wine's own drivers (the baseline).
-  S3 in the Wine log, read incrementally: a .sys module loaded native (not a Wine builtin); a
-     FindResource of the named resource type "PE" (the embedded driver's type, PE/144); Nt/ZwLoadDriver
-     for a service that isn't in the baseline; a service key created by services.exe that isn't in
-     the baseline (needs +reg, r1-r6); CreateService for a service that isn't in the baseline
-     (needs +service, r7 on); the strings ProcessProtect, AGTDriver or AurogonGameTrust.
-  Notes only (no trigger): a builtin .sys outside the baseline set; LoadDriver for a baseline service
+  S3 in the Wine log, read incrementally: a .sys module (any letter case) loaded native, not as a
+     Wine builtin; a native module loaded from a drivers directory or into a winedevice.exe process
+     (Wine's builtin drivers and their imports are all builtin); a resource lookup of the named type
+     "PE" (the embedded driver's type, PE/144; needs +resource); Nt/ZwLoadDriver for a service that
+     isn't in the baseline; a service key created by services.exe that isn't in the baseline (needs
+     +reg, r1-r6); CreateService for a service that isn't in the baseline, or for a baseline service
+     with an image path other than its baseline one (needs +service, r7 on); the strings
+     ProcessProtect, AGTDriver or AurogonGameTrust.
+  S4 the prefix's system.reg (re-read when it changes; Wine saves it periodically and at exit): a new
+     service key of a driver type (kernel or file system) or with a driver image, or a baseline
+     service whose type or image path changed, or a system.reg that is no longer a regular file.
+  Fail safe (exit 4, the sandbox killed): the client has run 20 s, the log scan has caught up, and
+  the log still hasn't shown the client's creation, so the LoadDriver sign would be blind.
+  Notes only (no trigger): a builtin .sys outside the baseline set; a new service of another type;
+  CreateService re-registering a baseline service with its baseline image (Proton's discord-bridge,
+  at every start); LoadDriver for a baseline service
   (Wine's own winebth fails to load in every run), the name read from the same line or, when a nested
   Wine trace split the message, from a header-less continuation in the next 5 lines (r7); LoadDriver
   logged before the client's process creation (controller ruling after r7). Everything else,
@@ -60,12 +70,15 @@ BASELINE_SYS = {
 }
 
 # Every pattern starts with a literal, so the regex engine can skip ahead fast (logs can be GBs).
-R_ANY_SYS = re.compile(rb'Loaded L"([^"\n]*\.(?:sys|SYS|Sys))" at [0-9A-Fa-f]+: (\w+)')
-R_RES_PE = re.compile(rb'FindResource\w*\s+[0-9A-Fa-f]+\s+L?"[Pp][Ee]"')
+# Every module load (+loaddll): the path as Wine logs it, and "native" or "builtin".
+R_LOADED = re.compile(rb'Loaded L"([^"\n]*)" at [0-9A-Fa-f]+: (\w+)')
+# A resource lookup of the type (or name) "PE": kernelbase's FindResource*, or any +resource line.
+R_RES_PE = re.compile(rb'FindResource\w*\s+[0-9A-Fa-f]+\s+L?"[Pp][Ee]"|:resource:[^\n]*L?"[Pp][Ee]"')
 R_LOADDRIVER = re.compile(rb"LoadDriver[^\n]*")
 R_SVC_NAME = re.compile(rb'Services(?:\\)+([^"\\\n]+)', re.I)
 DRIVER_STRINGS = (b"processprotect", b"agtdriver", b"aurogongametrust")
 R_SERVICES_PID = re.compile(rb'NtCreateUserProcess L"[^"\n]*\\services\.exe" pid ([0-9a-f]+) tid')
+R_WINEDEVICE_PID = re.compile(rb'NtCreateUserProcess L"[^"\n]*\\winedevice\.exe" pid ([0-9a-f]+) tid', re.I)
 R_CREATEKEY = re.compile(rb':trace:reg:NtCreateKey \(0x[0-9a-f]+,L"([^"\\\n]+)"')  # needs +reg
 R_HEADER = re.compile(rb"\d+\.\d+:[0-9a-f]+:[0-9a-f]+:")  # "<time>:<pid>:<tid>:" (+timestamp,+pid,+tid)
 # The client's creation (+process): steam.exe's CreateProcessInternalW, or NtCreateUserProcess.
@@ -73,6 +86,13 @@ R_CLIENT_CREATE = re.compile(rb"(?:CreateProcessInternalW|NtCreateUserProcess) [
 # +service (r7 on, replacing +reg): sechost's "CreateServiceW <scm> L"name" ..." and services.exe's
 # "svcctl_CreateServiceW (L"name", ...)". The first quoted string on the line is the service name.
 R_CREATESERVICE = re.compile(rb'CreateService\w*[^"\n]*"([^"\n]*)"|CreateService\w*[^\n]*')
+R_QUOTED = re.compile(rb'"((?:[^"\\\n]|\\.)*)"')  # a debugstr_w string's text, escapes kept
+# The sandbox's tmpfs mounts (isolated-run.sh): walked whole, and the root's own entries.
+TMPFS_SUBS = ("/tmp", "/dev/shm", "/run", "/var", "/etc", HOST_HOME)
+TMPFS_SHALLOW = ("/",)
+# Seconds the client may run before the log must have shown its creation (review M3).
+CLIENT_LOG_GRACE = 20.0
+DRIVER_TYPES = {1, 2}  # SERVICE_KERNEL_DRIVER, SERVICE_FILE_SYSTEM_DRIVER
 
 
 def now():
@@ -130,19 +150,6 @@ def compare_sys(base, cur):
     return out
 
 
-def service_keys(prefix_system_reg):
-    names = set()
-    try:
-        with open(prefix_system_reg, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                m = re.match(r"\[System\\\\ControlSet00\d\\\\Services\\\\([^\]\\]+)\]", line)
-                if m:
-                    names.add(m.group(1).lower())
-    except OSError:
-        pass
-    return names
-
-
 def open_regular(path):
     """A read-only file object for `path`, refusing a symlink (O_NOFOLLOW) or anything but a
     regular file: the sandbox can write the directories this reads, and a planted link must never
@@ -152,6 +159,68 @@ def open_regular(path):
         os.close(fd)
         raise OSError(f"not a regular file: {path}")
     return os.fdopen(fd, "rb")
+
+
+# --- the prefix's services (system.reg) ----------------------------------------------------------
+R_REG_SERVICE = re.compile(r"\[System\\\\ControlSet00\d\\\\Services\\\\([^\]\\]+)\]")
+R_REG_TYPE = re.compile(r'"Type"=dword:([0-9a-fA-F]{8})')
+R_REG_IMAGE = re.compile(r'"ImagePath"=(?:str\(2\):)?"((?:[^"\\]|\\.)*)"')
+
+
+def norm_image(text):
+    """A service's image path for comparison: escapes undone (system.reg and Wine's debugstr_w both
+    write a backslash as two), no case, no surrounding blanks."""
+    return re.sub(r"\\(.)", r"\1", text).strip().lower()
+
+
+def parse_services(system_reg):
+    """Each service key in a prefix's system.reg: {name: {"type": int or None, "image": str or
+    None}}, names lowercased and images normalised (norm_image). Subkeys are skipped. Reads through
+    open_regular, and raises if system.reg is a link or not a regular file: the sandbox can write the
+    prefix."""
+    services, cur = {}, None
+    with open_regular(system_reg) as fh:
+        for raw in fh:
+            line = raw.decode("utf-8", "replace")
+            if line.startswith("["):
+                m = R_REG_SERVICE.match(line)
+                cur = services.setdefault(m.group(1).lower(), {"type": None, "image": None}) if m else None
+            elif cur is not None:
+                m = R_REG_TYPE.match(line)
+                if m:
+                    cur["type"] = int(m.group(1), 16)
+                m = R_REG_IMAGE.match(line)
+                if m:
+                    cur["image"] = norm_image(m.group(1))
+    return services
+
+
+def is_driver_service(info):
+    image = info.get("image") or ""
+    return info.get("type") in DRIVER_TYPES or image.endswith(".sys") or "\\drivers\\" in image
+
+
+def compare_services(base, cur):
+    """S4 findings between two parse_services() results, and notes: (rule, name, detail) each."""
+    trig, notes = [], []
+    for name, info in sorted(cur.items()):
+        before = base.get(name)
+        if before is None:
+            if is_driver_service(info):
+                trig.append(("S4 new driver service in the registry", name, info))
+            else:
+                notes.append(("new service in the registry", name, info))
+        elif before != info:
+            trig.append(("S4 baseline service changed in the registry", name,
+                         {"before": before, "after": info}))
+    return trig, notes
+
+
+def client_creation_overdue(client_seen, now, client_ts, caught_up, grace=CLIENT_LOG_GRACE):
+    """Whether the client has run `grace` seconds (host side, monotonic clock) while the log, read
+    up to its end, still hasn't shown the client's creation. Every LoadDriver would then count as
+    logged before the client, so the LoadDriver sign is blind (review M3)."""
+    return client_seen is not None and client_ts is None and caught_up and now - client_seen > grace
 
 
 def sha256(path):
@@ -177,14 +246,28 @@ def create_exclusive(path):
     os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644))
 
 
-def scan_tmpfs(root, subs, binds):
+def scan_tmpfs(root, subs, binds, shallow=()):
     """S1 over the sandbox's own mounts as seen at `root` (/proc/PID/root): *.sys under each of
     `subs`, skipping the directories bound into the sandbox (`binds`): the read-write ones are
-    scanned on the host side, and a read-only one (GE-Proton) can't gain a file from inside."""
+    scanned on the host side, and a read-only one (GE-Proton) can't gain a file from inside. Plus
+    the *.sys entries directly in each of `shallow` (the sandbox's root, whose other directories
+    are mount points)."""
     prune = {root + d for d in binds}
     hits = {}
     for sub in subs:
         hits.update(scan_sys(root + sub, prune=prune))
+    for d in shallow:
+        top = os.path.join(root + d, "")
+        try:
+            names = os.listdir(top)
+        except OSError:
+            continue
+        for n in names:
+            if n.lower().endswith(".sys"):
+                try:
+                    hits[top + n] = sys_identity(top + n)
+                except OSError:
+                    continue
     return hits
 
 
@@ -207,7 +290,7 @@ def collect(src, dest, names=None, exclude=()):
             p = os.path.join(src, rel)
             st = os.lstat(p)
             if stat.S_ISLNK(st.st_mode):
-                notes.append(f"link {rel} -> {os.readlink(p)} (not followed)")
+                notes.append(f"link {rel!r} -> {os.readlink(p)!r} (not followed)")
             elif stat.S_ISDIR(st.st_mode):
                 os.makedirs(os.path.join(dest, rel), exist_ok=True)
                 stack.extend(os.path.join(rel, c) for c in sorted(os.listdir(p)))
@@ -216,7 +299,7 @@ def collect(src, dest, names=None, exclude=()):
                     for block in iter(lambda: fin.read(1 << 20), b""):
                         fout.write(block)
             else:
-                notes.append(f"special {rel} mode {oct(st.st_mode)} (not copied)")
+                notes.append(f"special {rel!r} mode {oct(st.st_mode)} (not copied)")
     return notes
 
 
@@ -292,9 +375,11 @@ def alive(pid):
 
 # --- log rules ---------------------------------------------------------------------------------
 class LogRules:
-    def __init__(self, baseline_services):
+    def __init__(self, baseline_services, images=None):
         self.services = set(baseline_services)
+        self.images = dict(images or {})  # baseline service -> its normalised image path
         self.services_pids = set()
+        self.winedevice_pids = set()
         self.client_ts = None  # Wine timestamp of the client's process creation, once logged
 
     def scan(self, chunk, look=b""):
@@ -302,10 +387,13 @@ class LogRules:
         (held back by Tail), used only as look-ahead for messages split across lines."""
         trig, notes = [], []
 
-        def line_at(pos):
+        def raw_line_at(pos):
             s = chunk.rfind(b"\n", 0, pos) + 1
             e = chunk.find(b"\n", pos)
-            return chunk[s:e if e >= 0 else len(chunk)].decode("utf-8", "replace")
+            return chunk[s:e if e >= 0 else len(chunk)]
+
+        def line_at(pos):
+            return raw_line_at(pos).decode("utf-8", "replace")
 
         def pid_at(pos):  # "<time>:<pid>:<tid>:..." at the start of the line
             s = chunk.rfind(b"\n", 0, pos) + 1
@@ -319,16 +407,27 @@ class LogRules:
 
         for m in R_SERVICES_PID.finditer(chunk):
             self.services_pids.add(m.group(1).decode())
+        for m in R_WINEDEVICE_PID.finditer(chunk):
+            self.winedevice_pids.add(m.group(1).decode().lower())
         for m in R_CLIENT_CREATE.finditer(chunk):
             ts = ts_at(m.start())
             if ts is not None and (self.client_ts is None or ts < self.client_ts):
                 self.client_ts = ts
-        for m in R_ANY_SYS.finditer(chunk):
-            name = m.group(1).decode("utf-8", "replace").replace("\\\\", "\\").split("\\")[-1].lower()
-            if m.group(2).lower() != b"builtin":
-                trig.append(("S3 .sys module loaded native", line_at(m.start())))
-            elif name not in BASELINE_SYS:
-                notes.append(("builtin .sys outside the baseline set", line_at(m.start())))
+        for m in R_LOADED.finditer(chunk):
+            path = m.group(1).decode("utf-8", "replace").replace("\\\\", "\\").lower()
+            name = path.split("\\")[-1]
+            native = m.group(2).lower() != b"builtin"
+            if name.endswith(".sys"):
+                if native:
+                    trig.append(("S3 .sys module loaded native", line_at(m.start())))
+                elif name not in BASELINE_SYS:
+                    notes.append(("builtin .sys outside the baseline set", line_at(m.start())))
+            elif native and "\\drivers\\" in path:
+                trig.append(("S3 native module loaded from a drivers directory", line_at(m.start())))
+            elif native and pid_at(m.start()) in self.winedevice_pids:
+                # Wine's own drivers and everything they import are builtin; a native module in a
+                # driver host is a driver whatever its name (review I2).
+                trig.append(("S3 native module loaded into winedevice.exe", line_at(m.start())))
         for m in R_RES_PE.finditer(chunk):
             trig.append(('S3 FindResource of type "PE" (embedded driver resource type)', line_at(m.start())))
         for m in R_LOADDRIVER.finditer(chunk):
@@ -372,12 +471,26 @@ class LogRules:
             name = m.group(1)
             if name is None or not name.strip():
                 notes.append(("CreateService line without a service name", line_at(m.start())))
-            elif name.decode("utf-8", "replace").lower() in self.services:
-                notes.append((f"CreateService for baseline service {name.decode('utf-8', 'replace')}",
+                continue
+            svc = name.decode("utf-8", "replace")
+            if svc.lower() not in self.services:
+                trig.append((f"S3 CreateService for non-baseline service {svc!r}", line_at(m.start())))
+                continue
+            # services.exe's line carries the image path after the name, the display name and the
+            # (unquoted) access mask (m1-accept2). Proton re-registers its own services at every
+            # start with their baseline image; another image is a driver under a borrowed name
+            # (review I1). sechost's line has no path: a note, as services.exe's line follows.
+            raw = raw_line_at(m.start())
+            quoted = R_QUOTED.findall(raw)
+            if b"svcctl_CreateService" in raw and len(quoted) >= 3:
+                image = norm_image(quoted[2].decode("utf-8", "replace"))
+                if image != self.images.get(svc.lower()):
+                    trig.append((f"S3 CreateService re-points baseline service {svc}", line_at(m.start())))
+                    continue
+                notes.append((f"CreateService for baseline service {svc}, with its baseline image",
                               line_at(m.start())))
             else:
-                trig.append((f"S3 CreateService for non-baseline service {name.decode('utf-8', 'replace')!r}",
-                             line_at(m.start())))
+                notes.append((f"CreateService for baseline service {svc}", line_at(m.start())))
         if self.services_pids:
             for m in R_CREATEKEY.finditer(chunk):
                 key = m.group(1).decode("utf-8", "replace")
@@ -392,6 +505,7 @@ class Tail:
 
     def __init__(self, path):
         self.path, self.off, self.rest, self.fh = path, 0, b"", None
+        self.at_eof = False  # whether the last read reached the end of the log as it was then
 
     def read(self, limit=16 << 20, final=False):
         """Returns (chunk, look): complete lines to scan now, and the text held back after them,
@@ -401,10 +515,12 @@ class Tail:
             try:
                 self.fh = open_regular(self.path)
             except FileNotFoundError:
+                self.at_eof = True
                 return b"", b""
         self.fh.seek(self.off)
         new = self.fh.read(limit)
         self.off += len(new)
+        self.at_eof = len(new) < limit
         data = self.rest + new
         if final:
             self.rest = b""
@@ -426,9 +542,14 @@ class Tail:
 
 
 # --- modes -------------------------------------------------------------------------------------
+def system_reg(root):
+    return os.path.join(root, "compat/pfx/system.reg")
+
+
 def cmd_baseline(a):
+    info = parse_services(system_reg(a.root))
     base = {"taken": now(), "root": a.root, "sys": scan_sys(a.root),
-            "services": sorted(service_keys(os.path.join(a.root, "compat/pfx/system.reg")))}
+            "services": sorted(info), "service_info": info}
     with open(os.path.join(a.out, "watchdog-baseline.json"), "w") as fh:
         json.dump(base, fh, indent=1)
     print(f"watchdog baseline: {len(base['sys'])} .sys files, {len(base['services'])} service keys")
@@ -439,11 +560,16 @@ def load_baseline(out):
         return json.load(fh)
 
 
+def baseline_rules(base):
+    """LogRules for a baseline: its service names, and each one's image path (S3 CreateService)."""
+    return LogRules(base["services"], {n: i["image"] for n, i in base.get("service_info", {}).items()})
+
+
 def cmd_scanlog(a):
-    services = load_baseline(a.out)["services"]
+    base = load_baseline(a.out)
     rc = 0
     for f in a.files:
-        rules = LogRules(services)  # per file: the client's creation time is per run
+        rules = baseline_rules(base)  # per file: the client's creation time is per run
         with open(f, "rb") as fh:
             trig, notes = rules.scan(fh.read())
         for kind, line in trig:
@@ -459,7 +585,8 @@ def cmd_watch(a):
     log = Log(os.path.join(a.out, "watchdog.log"))
     base = load_baseline(a.out)
     base_sys = base["sys"]
-    rules = LogRules(base["services"])
+    rules = baseline_rules(base)
+    reg_path, reg_sig = system_reg(a.root), None
     tail = Tail(a.log)
     spid = a.sandbox_pid
     ns = None
@@ -467,6 +594,7 @@ def cmd_watch(a):
     seen = {}
     client_start = None
     client_pid = None
+    client_seen = None  # monotonic time the client was first seen running
     notes_seen = set()
     polls = 0
     tmpfs_warned = False
@@ -483,7 +611,7 @@ def cmd_watch(a):
                 os.listdir(r + "/tmp")
             except OSError:
                 continue
-            return scan_tmpfs(r, ("/tmp", "/dev/shm", "/run", "/var", HOST_HOME), [a.root] + a.binds)
+            return scan_tmpfs(r, TMPFS_SUBS, [a.root] + a.binds, shallow=TMPFS_SHALLOW)
         if cands and not tmpfs_warned:
             log("note: can't read any sandbox process's /proc/PID/root; tmpfs mounts not scanned")
             tmpfs_warned = True
@@ -496,8 +624,30 @@ def cmd_watch(a):
                 out.append(("S1 .sys file in a sandbox tmpfs mount", p, st))
         return out
 
+    def check_reg():
+        """S4: re-reads system.reg when its lstat() changes (never through a link)."""
+        nonlocal reg_sig
+        try:
+            st = os.lstat(reg_path)
+        except FileNotFoundError:
+            return []
+        sig = (st.st_mode, st.st_ino, st.st_size, st.st_mtime_ns)
+        if sig == reg_sig:
+            return []
+        reg_sig = sig
+        try:
+            cur = parse_services(reg_path)
+        except OSError as e:
+            return [("S4 the prefix's system.reg is not a regular file any more", reg_path, str(e))]
+        trig, notes = compare_services(base.get("service_info", {}), cur)
+        for k, name, detail in notes:
+            if (k, name) not in notes_seen:
+                notes_seen.add((k, name))
+                log(f"registry note: {k}: {name} {json.dumps(detail)}")
+        return trig
+
     def check_procs():
-        nonlocal client_start, client_pid
+        nonlocal client_start, client_pid, client_seen
         out = []
         if not init:
             return out
@@ -513,6 +663,7 @@ def cmd_watch(a):
                     f"argv {info['argv'][:4]!r}")
                 if is_named(info, CLIENT) and (client_start is None or info["start"] < client_start):
                     client_start, client_pid = info["start"], p
+                    client_seen = client_seen or time.monotonic()
                     log(f"client detected: pid {p} start {client_start}")
         for p, info in seen.items():
             if info.get("alive") and p not in cur:
@@ -625,12 +776,15 @@ def cmd_watch(a):
                     except OSError as e:
                         log(f"WATCHDOG FAILURE: can't create the start signal {a.go}: {e}")
                         return 4  # the runner kills the sandbox when the watchdog ends first
-            found = check_sys() + check_procs() + check_log()
+            found = check_sys() + check_procs() + check_log() + (check_reg() if polls % 4 == 0 else [])
             if found:
                 freeze_kill_record(found)
                 return 3
+            if client_creation_overdue(client_seen, time.monotonic(), rules.client_ts, tail.at_eof):
+                raise RuntimeError(f"the client has run {CLIENT_LOG_GRACE:.0f} s, but the log never showed "
+                                   "its creation: the LoadDriver sign would be blind")
             if not sandbox_alive:
-                found = check_sys() + check_log(final=True)
+                found = check_sys() + check_log(final=True) + check_reg()
                 if found:
                     log("sign found after the sandbox had already ended")
                     freeze_kill_record(found)

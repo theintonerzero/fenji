@@ -69,9 +69,15 @@ CLIENT = r'1.000:0020:0024:trace:process:CreateProcessInternalW app (null) cmdli
 AGT_LOADDRIVER = r'2.000:0098:00a4:trace:ntoskrnl:ZwLoadDriver (L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\AGT")'
 
 
+WINEDEVICE = (r'1.500:0030:0034:trace:process:NtCreateUserProcess L"\\??\\C:\\windows\\system32\\winedevice.exe" '
+              "pid 003c tid 0040 handles 0xf8/0xfc")
+DISCORD = r"c:\\windows\\system32\\discord\\bridge.exe --service"
+
+
 class S3(unittest.TestCase):
     def scan(self, *lines):
-        rules = wd.LogRules(["winebth", "mountmgr"])
+        rules = wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
+                            {"discord-bridge": wd.norm_image(DISCORD)})
         trig, notes = rules.scan(("\n".join(lines) + "\n").encode())
         return [t[0] for t in trig], [n[0] for n in notes]
 
@@ -114,6 +120,147 @@ class S3(unittest.TestCase):
         trig, _ = self.scan('2.000:0134:0138:trace:service:CreateServiceW 0000000000000001 L"AGT" L"AGT"')
         self.assertEqual(trig, ["S3 CreateService for non-baseline service 'AGT'"])
 
+
+    def test_native_sys_load_in_any_letter_case_triggers(self):  # review I2
+        trig, _ = self.scan(
+            r'2.000:0134:0138:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\drivers\\agt.sYs" '
+            "at 0000000140000000: native"
+        )
+        self.assertEqual(trig, ["S3 .sys module loaded native"])
+
+    def test_native_module_from_a_drivers_directory_triggers(self):  # review I2
+        trig, _ = self.scan(
+            r'2.000:0134:0138:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\DRIVERS\\agt.dll" '
+            "at 0000000140000000: native"
+        )
+        self.assertEqual(trig, ["S3 native module loaded from a drivers directory"])
+
+    def test_native_module_in_a_winedevice_process_triggers(self):  # review I2
+        trig, _ = self.scan(
+            WINEDEVICE,
+            r'2.000:003c:0040:trace:loaddll:build_module Loaded L"Z:\\c\\bin64\\agt.dll" at 0000000180000000: native',
+        )
+        self.assertEqual(trig, ["S3 native module loaded into winedevice.exe"])
+
+    def test_the_clients_own_native_modules_are_quiet(self):  # m1-accept3's 16 native loads
+        trig, notes = self.scan(
+            WINEDEVICE,
+            CLIENT,
+            r'1.459:0020:0024:trace:process:NtCreateUserProcess L"\\??\\Z:\\c\\bin64\\gujianol.exe" pid 0134 tid 0138',
+            r'1.463:0134:0138:trace:loaddll:build_module Loaded L"Z:\\c\\bin64\\gameforge_api64.dll" at 00006FFFF99D0000: native',
+            r'1.470:003c:0040:trace:loaddll:build_module Loaded L"C:\\windows\\system32\\ntoskrnl.exe" at 0000000140000000: builtin',
+        )
+        self.assertEqual((trig, notes), ([], []))
+
+    def test_pe_resource_lookup_through_ntdll_triggers(self):
+        trig, _ = self.scan(
+            '2.000:0134:0138:trace:resource:LdrFindResource_U module 0000000140000000 type L"PE" name 0090 lang 0000 level 3'
+        )
+        self.assertEqual(trig, ['S3 FindResource of type "PE" (embedded driver resource type)'])
+
+    def test_createservice_re_registering_a_baseline_service_is_a_note(self):  # m1-accept2's discord-bridge
+        trig, notes = self.scan(
+            '2.000:0020:0024:trace:service:CreateServiceW 000000000080C950 L"discord-bridge" L"Wine Discord RPC Bridge"',
+            '2.000:0030:0048:trace:service:svcctl_CreateServiceW (L"discord-bridge", L"Wine Discord RPC Bridge", '
+            f'0xf01ff, L"{DISCORD}")',
+        )
+        self.assertEqual(trig, [])
+        self.assertEqual(len(notes), 2)
+
+    def test_createservice_that_re_points_a_baseline_service_triggers(self):  # review I1
+        trig, _ = self.scan(
+            '2.000:0030:0048:trace:service:svcctl_CreateServiceW (L"discord-bridge", L"Wine Discord RPC Bridge", '
+            r'0xf01ff, L"C:\\agt\\agt.sys")'
+        )
+        self.assertEqual(trig, ["S3 CreateService re-points baseline service discord-bridge"])
+
+    def test_a_loaddriver_without_a_name_after_the_client_triggers(self):  # review test gap
+        trig, _ = self.scan(
+            CLIENT,
+            "2.000:0098:00a4:err:ntoskrnl:ZwLoadDriver flags 0x1, load_path 0000000000000000, "
+            "name 0000000000A1F840, base 0000000000A1F838.",
+        )
+        self.assertEqual(trig, ["S3 LoadDriver for non-baseline service None"])
+
+
+SYSTEM_REG = r"""WINE REGISTRY Version 2
+[System\\ControlSet001\\Services\\discord-bridge] 1791759044
+#time=1dd59d2f2ae0cb0
+"DisplayName"="Wine Discord RPC Bridge"
+"ImagePath"=str(2):"c:\\windows\\system32\\discord\\bridge.exe --service"
+"Type"=dword:00000010
+
+[System\\ControlSet001\\Services\\winebth] 1789520096
+"ImagePath"=str(2):"C:\\windows\\system32\\drivers\\winebth.sys"
+"Type"=dword:00000001
+
+[System\\ControlSet001\\Services\\winebth\\Parameters] 1789520096
+"Type"=dword:00000002
+"""
+
+
+class S4Registry(unittest.TestCase):
+    """The prefix's service keys, compared with the baseline (review I1, M7)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self._tmp.name)
+        self.reg = self.root / "system.reg"
+        self.reg.write_text(SYSTEM_REG)
+        self.base = wd.parse_services(str(self.reg))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def findings(self, text):
+        self.reg.write_text(text)
+        trig, notes = wd.compare_services(self.base, wd.parse_services(str(self.reg)))
+        return [t[0] for t in trig], [n[0] for n in notes]
+
+    def test_services_are_parsed_with_type_and_image(self):
+        self.assertEqual(
+            self.base,
+            {
+                "discord-bridge": {"type": 0x10, "image": "c:\\windows\\system32\\discord\\bridge.exe --service"},
+                "winebth": {"type": 1, "image": "c:\\windows\\system32\\drivers\\winebth.sys"},
+            },
+        )
+
+    def test_an_unchanged_registry_is_quiet(self):
+        self.assertEqual(self.findings(SYSTEM_REG), ([], []))
+
+    def test_a_new_driver_service_triggers(self):
+        agt = '\n[System\\\\ControlSet001\\\\Services\\\\AGT] 1\n"ImagePath"="C:\\\\agt.bin"\n"Type"=dword:00000001\n'
+        self.assertEqual(self.findings(SYSTEM_REG + agt)[0], ["S4 new driver service in the registry"])
+
+    def test_a_new_ordinary_service_is_a_note(self):
+        svc = '\n[System\\\\ControlSet001\\\\Services\\\\Updater] 1\n"ImagePath"="C:\\\\u.exe"\n"Type"=dword:00000010\n'
+        self.assertEqual(self.findings(SYSTEM_REG + svc), ([], ["new service in the registry"]))
+
+    def test_a_re_pointed_baseline_service_triggers(self):
+        changed = SYSTEM_REG.replace("drivers\\\\winebth.sys", "drivers\\\\agt.dll")
+        self.assertEqual(self.findings(changed)[0], ["S4 baseline service changed in the registry"])
+
+    def test_a_linked_registry_file_is_refused(self):
+        secret = self.root / "secret"
+        secret.write_text(SYSTEM_REG)
+        self.reg.unlink()
+        self.reg.symlink_to(secret)
+        with self.assertRaises(OSError):
+            wd.parse_services(str(self.reg))
+
+
+class ClientCreationOverdue(unittest.TestCase):
+    """Review M3: if the log never shows the client's creation, every LoadDriver would count as
+    'before the client'; the watchdog stops the run instead of going blind."""
+
+    def test_overdue_only_after_the_grace_period_with_the_log_caught_up(self):
+        f = wd.client_creation_overdue
+        self.assertFalse(f(None, 100.0, None, True))  # client not seen yet
+        self.assertFalse(f(10.0, 25.0, None, True))  # within the grace period
+        self.assertTrue(f(10.0, 31.0, None, True))
+        self.assertFalse(f(10.0, 31.0, 5.0, True))  # the creation was logged
+        self.assertFalse(f(10.0, 31.0, None, False))  # the log scan is behind
 
 class SandboxWritableFiles(unittest.TestCase):
     """Everything the sandbox can write may be a planted link: the host side never follows one."""
@@ -177,6 +324,21 @@ class SandboxWritableFiles(unittest.TestCase):
         (r / "tmp" / "agt.sys").write_bytes(b"MZ")
         hits = wd.scan_tmpfs(str(r), ["/tmp", "/home/u"], binds=["/home/u/tools/GE-Proton"])
         self.assertEqual(sorted(pathlib.Path(p).name for p in hits), ["agt.sys"])
+
+    def test_the_tmpfs_scan_covers_the_sandbox_root_and_etc(self):  # review M2
+        r = self.root / "proc-root"
+        (r / "etc" / "x").mkdir(parents=True)
+        (r / "usr").mkdir()
+        (r / "top.sys").write_bytes(b"MZ")
+        (r / "etc" / "x" / "deep.sys").write_bytes(b"MZ")
+        (r / "usr" / "ro-bound.sys").write_bytes(b"not scanned: a read-only bind")
+        hits = wd.scan_tmpfs(str(r), wd.TMPFS_SUBS, binds=[], shallow=wd.TMPFS_SHALLOW)
+        self.assertEqual(sorted(pathlib.Path(p).name for p in hits), ["deep.sys", "top.sys"])
+
+    def test_collect_notes_escape_names(self):  # review M6
+        (self.src / "evil\nspecial forged (not copied)").symlink_to(self.secret)
+        notes = wd.collect(str(self.src), str(self.dest))
+        self.assertTrue(all("\n" not in n for n in notes), notes)
 
 
 if __name__ == "__main__":

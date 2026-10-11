@@ -372,15 +372,23 @@ if [ "$PLATFORM" = linux ]; then
   if [ -n "$umu_run" ]; then ln -sf "$umu_run" "$BIN_DIR/umu-run"; else warn "umu-run not found in $UMU_DIR"; fi
   if [ "$(uname -m)" = x86_64 ] && [ ! -x "$GE_PROTON_DIR/proton" ]; then
     log "GE-Proton $GE_PROTON_VERSION (SHA-256 verified)"
+    # A directory without a working proton is a partial install; mv would nest the new one inside it.
+    if [ -e "$GE_PROTON_DIR" ] || [ -L "$GE_PROTON_DIR" ]; then
+      die "$GE_PROTON_DIR exists but has no executable proton (a partial install?); remove it and re-run"
+    fi
     mkdir -p "$TOOLS_DIR"
     tmp=$(mktemp -d "$TOOLS_DIR/.ge-proton.XXXXXX") # same filesystem, so the final mv is one rename
-    download_verified \
+    # The archive's top directory is <version>-x86_64; it is installed under the pinned name. The
+    # temporary directory goes whichever way this ends.
+    if ! (download_verified \
       "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/${GE_PROTON_VERSION}/${GE_PROTON_VERSION}-x86_64.tar.gz" \
-      "$GE_PROTON_SHA256_x86_64" "$tmp/ge-proton.tar.gz"
-    tar -xzf "$tmp/ge-proton.tar.gz" -C "$tmp"
-    # The archive's top directory is <version>-x86_64; it is installed under the pinned name.
-    mv "$tmp/${GE_PROTON_VERSION}-x86_64" "$GE_PROTON_DIR"
-    rm -rf "$tmp"
+      "$GE_PROTON_SHA256_x86_64" "$tmp/ge-proton.tar.gz" &&
+      tar -xzf "$tmp/ge-proton.tar.gz" -C "$tmp" &&
+      mv "$tmp/${GE_PROTON_VERSION}-x86_64" "$GE_PROTON_DIR"); then
+      rm -rf -- "$tmp"
+      die "GE-Proton $GE_PROTON_VERSION was not installed"
+    fi
+    rm -rf -- "$tmp"
   fi
 fi
 
