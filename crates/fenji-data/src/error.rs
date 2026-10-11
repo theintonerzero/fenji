@@ -17,6 +17,8 @@ pub enum Error {
     NoRegistry,
     #[error("embedded file at {va:#x}: {reason}")]
     BadEntry { va: u64, reason: String },
+    #[error("archive: {0}")]
+    BadArchive(String),
     #[error("output directory: {0}")]
     OutDir(String),
     #[error(transparent)]
