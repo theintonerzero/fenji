@@ -11,7 +11,7 @@ Static triage of the pinned SoLO client: build 10015727, `bin64/gujianol.exe` SH
 | **Inferred** | Our reading of observed facts, including our reading of code in Ghidra. Not confirmed at run time. |
 | **Unknown** | Open. The questions for the runtime run are under "Open for runtime (Task 7)". |
 
-Evidence keys such as `V06` or `G` resolve to files under `re/triage/` in the [Evidence index](#evidence-index). `re/` is git-ignored, so the evidence stays on the owner's machines.
+Evidence keys such as `V06` or `G` resolve to files under `re/triage/`, and §8's keys such as `R8` to files under `re/spike/` and `re/stub-logs/`, in the [Evidence index](#evidence-index). `re/` is git-ignored, so the evidence stays on the owner's machines.
 
 In short:
 - `gujianol.exe` is an ordinary, unprotected MSVC 2013 x64 build with a full exception table, named imports and plain-text strings (§2). **Inferred** from the observed layout.
@@ -20,6 +20,7 @@ In short:
 - The launcher is a region picker. The game fetches a Gameforge server list itself and gets its login ticket through `gameforge_api64.dll` (§5). **Inferred**.
 - Much of the game logic is LZ4-wrapped, modified Lua 5.3 bytecode inside the exe, and the archives are Oodle-compressed with no sign of encryption (§6). **Observed** and **Inferred**.
 - With the servers gone, the client's log shows its login scene and then a failed server-list fetch (**Observed (local)**), which is where the client stopped (**Inferred**, §7).
+- In the isolated sandbox, with the library's mocked platform backend, the archive argument `--fs=data:_index:_index` and a CPU topology for Wine, the unmodified client reaches its login scene. It resolves no name, connects nowhere and sends nothing, and no run showed any sign of the AGT driver (§8). **Observed**.
 
 Where re-verification disagreed with the triage report, this document follows the re-verification:
 - imports: 922 functions, of which 871 by name and 51 by ordinal (the report said 922 named imports);
@@ -300,6 +301,128 @@ AGT checks. Any sign that the driver is extracted or loaded stops the run and op
 
 Log lines to look for: "Load Login Scene", "FAILED TO FETCH GAMEFORGE SERVER LIST!", "SETUP LOGIN STAGE DONE" and `NET_ST_CLOSED(5)`.
 
+## 8. Runtime observation (isolated, stub only)
+
+Nine runs of the pinned client on 2026-10-11 and 2026-10-12, by an agent that has not read any source rejected in [`sources.md`](sources.md). Each run happened inside `scripts/spike/isolated-run.sh` with `--no-root --x11 99`: loopback only, names from a generated hosts file, a dedicated rootful Xwayland `:99`. Steam was not running. From run 7 the sandbox also had `--cpu-topology` (#14), which binds the host's `/sys/devices/system/cpu` read-only so that Wine has processor information. Nothing else of `/sys` is inside.
+
+The client was the pinned build (`bin64/gujianol.exe` as above, `bin64/gameforge_api64.dll` SHA-256 `1250487a…908f`), started from a throwaway reflink copy with GE-Proton 11-7's own `proton run`. It ran non-root, with no Steam client files and Mesa's lavapipe for Vulkan. umu's runtime container needs `/sys`, so it wasn't used. `fenji-stub` listened in the same sandbox on `127.0.0.1:7804`, a placeholder port, because no run showed a real one. The hosts file stayed empty, because no run resolved a name.
+
+Wine debug channels:
+- runs 1–6: Proton's default set plus `+winsock,+module,+process,+loaddll,+profile,+reg,+environ,warn+all`;
+- runs 7–9: a lean set, `+timestamp,+pid,+tid,+threadname,+seh,+debugstr,+loaddll,+winsock,+module,+process,+service,+profile,warn+file`.
+
+From run 5 a driver watchdog on the host checked every run every 0.5 s and would have frozen and killed the sandbox at the first sign of driver activity. It watched for:
+- a new or changed `.sys` file in the run's workspace or the sandbox's temporary mounts;
+- a `winedevice.exe` started after the client (Wine starts its own two before the client);
+- driver signs in Wine's log: a native `.sys` load, a lookup of resource type `PE`, a driver load or service creation outside Wine's own, and the driver's strings.
+
+The client started only after the watchdog had armed itself.
+
+No client file was modified. The client created `settings/`, `ExportFace/` and `ExportPrefab/` in its own copy; after each run these were moved into that run's evidence, so the next run started from the pinned layout.
+
+Static reading for this section used read-only Ghidra queries (addresses in the pinned exe) and `objdump` on `gameforge_api64.dll`. No REA was used. In this section, **Observed** means seen in a run's evidence; anyone with the pinned build can reproduce it with the sandbox and the runner.
+
+**Gate #11** (decided by the owner on 2026-10-11): option (c), `--gf-sdk=mocked`, the test backend built into `gameforge_api64.dll`. It is allowed for sandboxed dev runs on this copy only, and every other gate still applies. It let runs 5–9 pass platform init without Steam or the Gameforge client.
+
+| Run | Change | Login scene? | Names resolved | Ports tried | AGT driver | Stub sessions |
+|---|---|---|---|---|---|---|
+| 1 | None: no arguments, empty hosts file | No. Exits with -1 after about 50 ms in platform init; no window | None | None | No sign | None |
+| 2 | `--gf-sdk steam --steam-appid 1418100`, values after a space | No. Same as run 1: values after a space aren't read | None | None | No sign | None |
+| 3 | `--gf-sdk=steam --steam-appid=1418100` | No. Steam SDK selected; `SteamAPI_Init` can't load `steamclient64.dll`; -1 after about 50 ms | None | None | No sign | None |
+| 4 | Run 1 plus `GFCLIENT_CONFIGURATION_FILE` pointing at our own `gfclient.ini`, which holds only `logLevel=all` | No. The library logs `Error: 4 gameforge_client_api64_v2.dll`; -1 after about 50 ms | None | None | No sign | None |
+| 5 | `--gf-sdk=mocked` (gate #11) | No. Platform init passes, but no archive is mounted and the first table load fails; exits with 1 after about 100 ms | None | None | No sign; watchdog quiet | None |
+| 6 | Run 5 plus `--fs=data:_index:_index` | No. The archives mount; 1 s in, thread-affinity set-up loops forever because Wine has no CPU topology without `/sys`; stopped by hand after about 150 s; no window | None | None | No sign; watchdog quiet | None |
+| 7 | Run 6 plus `--cpu-topology` (#14); lean channels | Not reached: a watchdog false positive stopped the run 0.12 s after the client started (8.36) | None | None | No sign (the trigger was Wine's own driver) | None |
+| 8 | Run 7 again, with the corrected watchdog | **Yes.** The login scene renders, under the error "Interner Serverfehler: None", after "FAILED TO FETCH GAMEFORGE SERVER LIST!"; full 300 s | None | None | No sign; watchdog quiet | None |
+| 9 | Run 8 plus `--mocked-region=na` | **Yes**, the same as run 8 | None | None | No sign; watchdog quiet | None |
+
+In short:
+- With the mocked backend, the archive argument and a CPU topology for Wine, the unmodified client reaches its login scene under lavapipe (8.15–8.18).
+- It resolves no name, opens no connection and sends nothing; the server-list fetch fails without any network attempt (8.20–8.25).
+- No run showed any sign that the AGT driver is extracted or loaded (8.26–8.31).
+- The stub received nothing, not even a zero-byte connection (8.24).
+
+Start-up and platform init:
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 8.1 | Runs 1–4 ended 48–54 ms after the client started, with exit code -1 (Proton 255), inside `gameforge_api64.dll`'s platform init. There was no window and no `gujianol.log`, and the client made no Winsock call. | **Observed** | R1–R4 |
+| 8.2 | Before it picks an SDK, the library looks for a Gameforge client configuration, in this order: env `GFCLIENT_CONFIGURATION_FILE`; `HKLM\SOFTWARE\(WOW6432Node\)Gameforge4d`; env `_TNT_CLIENT_APPLICATION_ID`; the Gameforge client's Inno Setup key `…\Uninstall\{d3b2a0c1-f0d0-4888-ae0b-1c5e1febdafb}_is1`; and `\gfclient.ini` at the root of drive Z:. All were absent; run 4 set the first, and the library then skipped the rest. Each missing key raises a `std::system_error` that the library catches. Runs 7–9 don't trace registry reads, so there the two missing keys show only as those two caught exceptions. Then the library asks for its parent's image name, which is Proton's `steam.exe`. | **Observed** | R1–R9 |
+| 8.3 | The library takes flag values only in `--name=value` form. Run 2 (`--gf-sdk steam`) behaved exactly like run 1, and run 3 (`--gf-sdk=steam`) selected Steam. | **Observed** | R2, R3 |
+| 8.4 | The value 1 that the exe passes to `GameforgeApi_LoadSdk` (5.7, 5.8) means "the SDK named on the command line" (`gameforge_api64.dll` 0x180008040; the parser splits at `=` around 0x180012358). `--gf-sdk=` takes `gf`, `steam`, `mocked` or `mailru`, with `gf` for a missing or unknown value; env `AUTH_TYPE=exchangecode` selects Epic. The app-id flag goes with the SDK (5.10). Only `gf` and `mocked` read a region flag. | **Inferred** | RL |
+| 8.5 | On the default `gf` path (runs 1, 2 and 4) the library looks for `gameforge_client_api64_v2.dll`, finds none, and ends the process with a `GfApiException`. In run 4 it wrote its own log, `Error: 4 gameforge_client_api64_v2.dll`, and read only the `logLevel` and `password` keys of `[GameforgeClient]`; `password` was empty, and we didn't set it. | **Observed** | R1, R2, R4 |
+| 8.6 | The `gf` path needs an in-process DLL from the Gameforge client's install: the library finds it through `_TNT_CLIENT_APPLICATION_ID` (default `{d3b2a0c1-…}`), that Uninstall key's `InstallLocation`, and then `LoadLibraryW` (around 0x1800975B0). The named pipe in 5.11, if there is one, would sit behind that DLL. `GC_PIPE_NAME` belongs to the library's Mail.ru module. | **Inferred** | RL |
+| 8.7 | On the `steam` path (run 3) the library loaded the client's own `steam_api64.dll`. `SteamAPI_Init` then failed to load `C:\Program Files (x86)\Steam\steamclient64.dll`, with no `steam://` or ShellExecute attempt. The Steam path can't work in this sandbox by design. | **Observed** | R3 |
+| 8.8 | The `mocked` path (runs 5–9) passes platform init without Steam, without the Gameforge client and without `--mocked-appid`. Adding `--mocked-region=na` changed nothing visible. A Steam client isn't needed with this backend (5.25). | **Observed** | R5–R9 |
+
+Archives, and the sandbox's CPU topology:
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 8.9 | In run 5 the client wrote its own `gujianol.log` for the first time: `load data/caches/protocol_ver.new_cache failed!`, then `load tab file(data/core/xobject/actor_class_define.tab) failed!` and a script error in `__builtins__/__script_system__.lua` (line 118). It then exited with 1, about 100 ms in. Nothing tried to open `data/_index` or a `dataNNN` part. | **Observed** | R5 |
+| 8.10 | The root file system (0x14068FB60) mounts the archives only when the command line has `--fs=` (string at 0x142DA5B20). Its value is split at `:` into archive directory, data index and asset index. The directory is relative to the parent of the exe's directory: 0x1400B6580 returns the exe's directory, with the drive letter lowercased. A failed mount exits with 1, and without `--fs=` only `<root>/asset` is mounted, as a plain directory. The editor's `--fs=../data:_index:_index` (6.10) runs from `tools/GujianOL_Editor/` and so reaches the same `data/`. For `bin64/gujianol.exe` the matching value is `--fs=data:_index:_index`. | **Inferred** | RL |
+| 8.11 | With `--fs=data:_index:_index` (run 6) the archives mounted. The client opened `data/` and probed for parts beyond `data099`, which don't exist. | **Observed** | R6 |
+| 8.12 | One second into run 6, Wine logged `init_logical_proc_info Failed to get logical processor information, status 0xc0000002` in the client; wineboot logs the same in runs 1–6, which had no `/sys`. The main thread then called `GetMaximumProcessorGroupCount` once and `GetMaximumProcessorCount` 178.8 million times, its 16-bit group number wrapping 2,728 times, until the run was stopped about 150 s in. Its Wine log was 12 GB. | **Observed** | R6 |
+| 8.13 | The loop is in 0x140E63640, which pins a thread to processor N. It finds N's group by subtracting each group's `GetMaximumProcessorCount`, with a 16-bit group counter and no other bound. It can't end while Wine reports 0 processors per group, which it does without a CPU topology. The "Kernel_Threads" set-up at 0x140E68FC0 resolves these APIs at run time. | **Inferred** | RL |
+| 8.14 | In non-client checks (Wine's own `cmd.exe`), a read-only bind of `/sys/devices/system/cpu` was enough for Wine to build its topology, and Proton's `WINE_CPU_TOPOLOGY` override did not help without it. With `--cpu-topology` (runs 7–9) there was no loop. | **Observed** | RA, R8, R9 |
+
+Login scene:
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 8.15 | Runs 8 and 9 started the engine. Their `gujianol.log` shows the Vision Engine's DirectX 11 renderer on DXVK over lavapipe (adapter "llvmpipe (LLVM 22.1.8, 256 bits)") and "Engine initialized". Along the way: NVIDIA Aftermath and NGX skipped, "Bink Direct Sound Create Failed!" (no audio device in the sandbox), and input set up. | **Observed** | R8, R9 |
+| 8.16 | The client's log then shows the same sequence as the owner's launch (7.2):<br>"Load tables from cache, result: true"<br>"++++ Load Login Scene"<br>"ERROR FAILED TO FETCH GAMEFORGE SERVER LIST!"<br>"[GAME_SYSTEM] SETUP DONE"<br>"SETUP LOGIN STAGE DONE"<br>"net error during waiting: 5"<br>"[login...] LoginTimer, Net State: NET_ST_CLOSED(5), Close Reason: None" | **Observed** | R8, R9 |
+| 8.17 | The screenshots show the client's own splash logo at 5–10 s. From 30 s there is a modal dialog, "Fehler", "Interner Serverfehler: None", with the button "Spiel verlassen". From about 120 s the full login scene is visible behind it: the background art, the logo, a menu (Lizenzen, Credits, Kooperationspartner, Systemeinstellungen, Spiel verlassen), the publishers' logos and "Client-Version: 2.1.19.42851". The interface is in German. | **Observed** | R8, R9 |
+| 8.18 | The client reaches its login scene in the sandbox, and stops where the owner's launch stopped (7.3): no server list, so the net client closes and the login screen shows an internal server error. | **Inferred** | R8, R9 |
+| 8.19 | Why the interface is German: the mocked backend's language, or the client's default for a language it doesn't know. | **Unknown** | R8, R9 |
+
+Network:
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 8.20 | In no run did the client resolve a name, open a connection or send anything. No client thread called `getaddrinfo`, `gethostbyname`, `connect` or `sendto`. Runs 1–4 made no Winsock call at all; runs 5–9 called `WSAStartup` one to four times. Nothing below port 1024 was tried. | **Observed** | R1–R9 |
+| 8.21 | The only sockets were in runs 8 and 9: one IPv6 datagram socket, created and closed at once, with no bind, connect or send. The client also made ioctl 0x121000 on another handle, twice every 1.5–2 s, for the whole run. | **Observed** | R8, R9 |
+| 8.22 | The IPv6 socket is a capability probe of the kind libcurl makes when it starts. 0x121000 is Wine's network-interface enumeration (device 0x12, function 0x400); the client had loaded `IPHLPAPI.DLL` and `nsi.dll`, and was polling its network adapters. | **Inferred** | R8, R9 |
+| 8.23 | The only name lookup in any log is Wine's own: wineboot resolving the sandbox's host name `isolated-run` from the generated hosts file. None of the names under "Open for runtime" was looked up. | **Observed** | R1–R9 |
+| 8.24 | The stub received no connection in any run, not even one with 0 bytes; it records every connection it accepts. | **Observed** | SL, R1–R9 |
+| 8.25 | The server-list fetch fails before any network access: there was no lookup, no socket and no connection. Started directly, the client lacks the server-list source; this isn't a dead service answering. The client never connected to a game server (4.22), so the handshake reading (4.23, the server speaks first) wasn't exercised. | **Inferred** | R8, R9 |
+
+AGT driver:
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 8.26 | The client loaded no `.sys` file in any run. The only `.sys` modules loaded were Wine's own drivers, inside Wine's own `winedevice.exe`. Both `winedevice.exe` started before the client in every run, and the client started no process. | **Observed** | R1–R9 |
+| 8.27 | The client never looked up the resource type `PE` (3.4): runs 5–9 were checked as they ran, and runs 1–4's logs afterwards. Its lookups were all standard resource types (cursor, icon, menu, string, version) plus Wine's theme resource types. | **Observed** | R1–R9 |
+| 8.28 | The prefix's 24 `.sys` files, all Wine's own, never changed, and no new one appeared. From run 5 the watchdog checked the run's whole workspace and the sandbox's temporary mounts too, and found none. None of the files the client created is an executable. The only new service key in any run is Proton's own user-mode `discord-bridge`, added in run 1. | **Observed** | R1–R9 |
+| 8.29 | From run 7, with service calls traced, the client made no Service Control Manager call at all, not even the read-only `CryptSvc` status query that static reading expects (3.9–3.10). Its only service-channel calls were device-change notifications (`I_ScRegisterDeviceNotification`). The driver's names never appear in any log, and the only failed `GetProcAddress` lookups are two kernel32 file-information functions. | **Observed** | R8, R9 |
+| 8.30 | Up to the login scene, no code path extracts or loads the AGT driver, which agrees with 3.11. | **Inferred** | R1–R9 |
+| 8.31 | Whether a later code path would, after login or in game, which these runs never reached (3.12). Successful `GetProcAddress` lookups and device ioctls other than network ones aren't logged by these channels. | **Unknown** | |
+
+Files, modules and processes:
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 8.32 | Files the client looked for and didn't find: `Z:\gfclient.ini` (every run); `client/servername` and `D:\wy_debug.json`, around login-stage set-up (runs 8 and 9); `bin64/../VERSION`; and `settings/LanguageSetting.dat` and other `settings/*.dat` files before it had created `settings/`. It looked for neither `solo_steam.cfg` nor `steam_appid.txt`. Through the INI API it read only Wine's `system.ini` (the audio codec list) and, in run 8, `desktop.ini` files, never `loader.ini` or `sentry.ini`. | **Observed** | R1–R9 |
+| 8.33 | The game doesn't read `solo_steam.cfg`, at least up to the login scene (5.5). Whether it reads `loader.ini` through some other file API stays open, because successful opens aren't logged (5.21). | **Inferred** | R8, R9 |
+| 8.34 | Writes, in runs 8 and 9. In the install: `settings/GameSetting.dat` and the empty `ExportFace/` and `ExportPrefab/`, as in the owner's launch (7.1). In the prefix: the NVIDIA GfeSDK log and DXVK's state cache. | **Observed** | R8, R9 |
+| 8.35 | Besides its static imports, the client loaded Wine's `dinput8`, `xinput1_3`, `DSOUND`, `mmdevapi`, `winepulse.drv`, `winevulkan`, `IPHLPAPI`, `nsi`, `WININET` and `dnsapi`. It never loaded `libcef.dll` or `psw_tnt64.dll`, and loaded `steam_api64.dll` only in run 3. It started no child process: no `browserhost.exe`, `crashpad_handler.exe` or `AurCrashSender64.exe`. | **Observed** | R1–R9 |
+
+The watchdog:
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 8.36 | A watchdog false positive stopped run 7, 0.12 s after the client started. Wine's driver host had failed to load Wine's own Bluetooth driver (`winebth`, c0000135). Wine's error message about it was split in two by a nested trace, so the watchdog's driver-load rule matched a line without a readable service name. That line was logged at 39666.696, before the client's creation at 39666.858, and the same `winebth` error appears in every run. The stop was ruled a false positive. From run 8 the watchdog reads the name from the message's continuation, and ignores driver-load lines logged before the client's creation; everything else still stops the run. | **Observed** | R7, RL |
+
+Open after these runs:
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 8.37 | Started directly, what would give the client its server list or a server address. The candidates are what the launcher passes on (5.6), the `servername` file at the install root, the flags `--server-name`, `--server_locale` and `--net`, and the server-list URL (5.19). | **Unknown** | R8 |
+| 8.38 | What the client sends first, and whether it really waits for the server's 64 bytes (4.23, 4.25). A listen-only stub would see a connection with 0 bytes. | **Unknown** | |
+| 8.39 | What `data/caches/protocol_ver.new_cache` is. It isn't in either install, and its failed load didn't stop the client. | **Unknown** | R5, R8 |
+| 8.40 | Why the net layer trains an Oodle Network dictionary at start-up from almost no data. Run 6's Oodle debug output said "test_packet_total_size = 1" and "not enough packets to fill dictionary!" (4.19–4.21). | **Unknown** | R6 |
+| 8.41 | Which other sandbox gaps a later stage would hit, for example audio, CEF pages or the GPU. | **Unknown** | |
+
 ## Evidence index
 
 Paths are relative to the repo root. `re/` is git-ignored: these files exist only on the owner's machines. Every finding's row above names its keys.
@@ -334,5 +457,18 @@ Paths are relative to the repo root. `re/` is git-ignored: these files exist onl
 | TS | `re/triage/strings/` | string dumps: `SOLO_Launcher.*`, `gameforge_api64.*`, `gujianol-builtin-lua-region.txt` | 4.32, 4.33, 5.2, 5.3, 5.9–5.11, 6.22 |
 | TR | `re/triage/rea-attempt.txt` | the triage's one REA session: the exe opened, no analysis, no evidence bundle | Method |
 | PB | [`pinned-build.md`](pinned-build.md) | the pinned build, and the files the launch created | 7.1 |
+| R1 | `re/spike/out/r1-bare/` | run 1: inputs, Wine log, exit codes, `.sys` and service snapshots, registry diffs, new files | 8.1–8.2, 8.5, 8.20, 8.23–8.24, 8.26–8.28, 8.30, 8.32, 8.35 |
+| R2 | `re/spike/out/r2-steam-sdk/` | run 2: the same set | 8.1–8.3, 8.5, 8.20, 8.23–8.24, 8.26–8.28, 8.30, 8.32, 8.35 |
+| R3 | `re/spike/out/r3-steam-sdk-eq/` | run 3: the same set | 8.1–8.3, 8.7, 8.20, 8.23–8.24, 8.26–8.28, 8.30, 8.32, 8.35 |
+| R4 | `re/spike/out/r4-gfclient-loglevel/`, with the input `re/spike/inputs/r4-gfclient-loglevel/gfclient.ini` | run 4: the same set, plus the Gameforge library's own log | 8.1–8.2, 8.5, 8.20, 8.23–8.24, 8.26–8.28, 8.30, 8.32, 8.35 |
+| R5 | `re/spike/out/r5-mocked/` | run 5: the same set, plus the client's `gujianol.log` and the watchdog's log and baseline | 8.2, 8.8–8.9, 8.20, 8.23–8.24, 8.26–8.28, 8.30, 8.32, 8.35, 8.39 |
+| R6 | `re/spike/out/r6-mocked-fs/` | run 6: the same set, with the 12 GB Wine log compressed (`wine.log.zst`, SHA-256 in `wine.log.sha256`) and without its loop lines (`wine-noloop.log`); screenshots; how the run was stopped | 8.2, 8.8, 8.11–8.12, 8.20, 8.23–8.24, 8.26–8.28, 8.30, 8.32, 8.35, 8.40 |
+| R7 | `re/spike/out/r7-mocked-fs-cpu/` | run 7: the same set, plus the watchdog's trigger record (`watchdog-trigger.txt`) | 8.2, 8.8, 8.20, 8.23–8.24, 8.26–8.28, 8.30, 8.32, 8.35–8.36 |
+| R8 | `re/spike/out/r8-mocked-fs-cpu/` | run 8: the same set, plus screenshots, the client's `gujianol.log` and `Log_gujianol.htm`, DXVK's logs and the files the client created (`client-files/`) | 8.2, 8.8, 8.14–8.30, 8.32–8.35, 8.37, 8.39 |
+| R9 | `re/spike/out/r9-mocked-region-na/` | run 9: the same as run 8 | 8.2, 8.8, 8.14–8.30, 8.32–8.35 |
+| RL | `re/spike/out/RUNS.md` | the run log: set-up, every run, the watchdog's design, tests and fixes, and the static addresses read for §8 | 8.4, 8.6, 8.10, 8.13, 8.36 |
+| RA | `re/spike/out/aux-cputopo-a-none/`, `aux-cputopo-b-override/`, `aux-cputopo-c-sysbind/` | non-client checks of Wine's CPU topology in the sandbox (Wine's own `cmd.exe`) | 8.14 |
+| SL | `re/stub-logs/r1-bare/` … `r9-mocked-region-na/` | `fenji-stub`'s session logs, one directory per run; all empty | 8.24 |
+| RW | `re/spike/run.sh`, `re/spike/watchdog.py`, `re/spike/run-r1-r4.sh` | the runner (runs 5–9), the driver watchdog, and the runner of runs 1–4 | §8 set-up |
 
 REA Evidence IDs: none. REA was tried for this write-up, but its `binary_session` status output was too large to read in this setup, so no REA analysis ran; the triage's one REA session recorded no evidence either (TR).
