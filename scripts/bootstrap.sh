@@ -77,7 +77,10 @@ download_verified() {
   curl -fsSL -o "$3" "$1"
   local got
   got=$(sha256_of "$3")
-  [ "$got" = "$2" ] || die "checksum mismatch for $1 (expected $2, got $got)"
+  if [ "$got" != "$2" ]; then
+    rm -f "$3" # never leave an unverified download behind
+    die "checksum mismatch for $1 (expected $2, got $got)"
+  fi
 }
 
 # ---------------------------------------------------------------- platform
@@ -343,10 +346,13 @@ ln -sf "$DD_DIR/DepotDownloader" "$BIN_DIR/DepotDownloader"
 
 if [ ! -f "$UNLUAC_JAR" ]; then
   log "unluac $UNLUAC_VERSION (SHA-256 verified)"
-  mkdir -p "$(dirname "$UNLUAC_JAR")"
+  tmp=$(mktemp -d)
   download_verified \
     "https://downloads.sourceforge.net/project/unluac/Unstable/unluac_${UNLUAC_VERSION}.jar" \
-    "$UNLUAC_SHA256" "$UNLUAC_JAR"
+    "$UNLUAC_SHA256" "$tmp/unluac.jar"
+  mkdir -p "$(dirname "$UNLUAC_JAR")"
+  mv "$tmp/unluac.jar" "$UNLUAC_JAR" # only a verified jar reaches its final path
+  rm -rf "$tmp"
 fi
 
 if [ "$PLATFORM" = linux ]; then

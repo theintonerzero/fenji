@@ -38,7 +38,10 @@ impl Unluac {
             .unwrap_or_else(|| PathBuf::from("java"));
         let jar = match jar {
             Some(j) => j,
-            None => pinned_jar(repo)?,
+            None => pinned_jar(
+                repo,
+                Path::new(&std::env::var_os("HOME").context("HOME is not set")?),
+            )?,
         };
         if !jar.is_file() {
             bail!(
@@ -109,13 +112,37 @@ fn with_suffix(p: &Path, suffix: &str) -> PathBuf {
     s.into()
 }
 
-/// `~/.local/share/fenji/tools/unluac/unluac_<UNLUAC_VERSION>.jar`.
-fn pinned_jar(repo: &Path) -> Result<PathBuf> {
+/// `<home>/.local/share/fenji/tools/unluac/unluac_<UNLUAC_VERSION>.jar`, refused unless its
+/// SHA-256 is `UNLUAC_SHA256` (scripts/versions.env): java runs it, so a jar that doesn't match the
+/// pin never runs.
+fn pinned_jar(repo: &Path, home: &Path) -> Result<PathBuf> {
     let env = std::fs::read_to_string(repo.join("scripts").join("versions.env"))
         .context("reading scripts/versions.env")?;
-    let version = env
-        .lines()
-        .find_map(|l| l.strip_prefix("UNLUAC_VERSION="))
+    let version = pin(&env, "UNLUAC_VERSION")?;
+    let sha = pin(&env, "UNLUAC_SHA256")?;
+    let jar = home.join(format!(
+        ".local/share/fenji/tools/unluac/unluac_{version}.jar"
+    ));
+    let bytes = std::fs::read(&jar).with_context(|| {
+        format!(
+            "unluac jar not found at {} (run scripts/bootstrap.sh, or pass --jar)",
+            jar.display()
+        )
+    })?;
+    let got = fenji_data::sha256_hex(&bytes);
+    if got != sha {
+        bail!(
+            "the unluac jar at {} has SHA-256 {got}, not the pinned {sha}; delete it and re-run scripts/bootstrap.sh",
+            jar.display()
+        );
+    }
+    Ok(jar)
+}
+
+/// The value of `NAME="value"` in versions.env, without quotes or a trailing comment.
+fn pin(env: &str, name: &str) -> Result<String> {
+    env.lines()
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix('='))
         .map(|v| {
             v.split('#')
                 .next()
@@ -125,9 +152,41 @@ fn pinned_jar(repo: &Path) -> Result<PathBuf> {
                 .to_string()
         })
         .filter(|v| !v.is_empty())
-        .context("UNLUAC_VERSION is missing from scripts/versions.env")?;
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(Path::new(&home).join(format!(
-        ".local/share/fenji/tools/unluac/unluac_{version}.jar"
-    )))
+        .with_context(|| format!("{name} is missing from scripts/versions.env"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A checkout whose versions.env pins `b"the real jar"`, and a home holding `jar` at the pinned
+    /// path.
+    fn fixture(jar: &[u8]) -> (tempfile::TempDir, tempfile::TempDir) {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join("scripts")).unwrap();
+        let sha = fenji_data::sha256_hex(b"the real jar");
+        let env =
+            format!("# pins\nUNLUAC_VERSION=\"1_2\"   # a comment\nUNLUAC_SHA256=\"{sha}\"\n");
+        std::fs::write(repo.path().join("scripts/versions.env"), env).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".local/share/fenji/tools/unluac");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("unluac_1_2.jar"), jar).unwrap();
+        (repo, home)
+    }
+
+    #[test]
+    fn the_pinned_jar_runs_only_if_its_checksum_matches() {
+        let (repo, home) = fixture(b"the real jar");
+        let jar = pinned_jar(repo.path(), home.path()).unwrap();
+        assert!(jar.ends_with("unluac_1_2.jar"));
+        let (repo, home) = fixture(b"a tampered jar");
+        let err = pinned_jar(repo.path(), home.path())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("SHA-256") && err.contains("bootstrap"),
+            "{err}"
+        );
+    }
 }
