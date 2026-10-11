@@ -142,3 +142,50 @@ fn cli_refuses_unpinned_build() {
         "{err}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn cli_never_writes_through_a_link_inside_the_output_directory() {
+    // A symlink where an output directory would be, leading out of re/.
+    let (repo, exe) = setup();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join("re/x")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.path().join("re/x/data")).unwrap();
+    let out = luatool(repo.path(), &exe)
+        .args(["extract", "--out", "re/x"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("link"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_dir(outside.path()).unwrap().count(),
+        0,
+        "nothing written outside re/"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_replaces_a_hard_link_instead_of_writing_through_it() {
+    // A hard link where an output file goes, to a file outside re/.
+    let (repo, exe) = setup();
+    std::fs::create_dir(repo.path().join("docs")).unwrap();
+    std::fs::write(repo.path().join("docs/tracked.md"), "keep").unwrap();
+    let dir = repo.path().join("re/x/data/interface/addons/Login");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::hard_link(repo.path().join("docs/tracked.md"), dir.join("Test.xml")).unwrap();
+    let ok = luatool(repo.path(), &exe)
+        .args(["extract", "--out", "re/x"])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("docs/tracked.md")).unwrap(),
+        "keep"
+    );
+    assert_eq!(std::fs::read(dir.join("Test.xml")).unwrap(), b"<UI/>");
+}

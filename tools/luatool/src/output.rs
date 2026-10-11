@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// An output directory inside the repository's re/.
 pub struct Out {
@@ -42,7 +42,14 @@ impl Out {
             target = s.into();
         }
         if let Some(dir) = target.parent() {
-            std::fs::create_dir_all(dir)?;
+            make_dirs_inside(&self.root, dir)?;
+        }
+        // A link already at the target (symlink or hard link) is replaced, never written through.
+        match std::fs::symlink_metadata(&target) {
+            Ok(_) => std::fs::remove_file(&target)
+                .with_context(|| format!("replacing {}", target.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
         Ok(Some(target))
     }
@@ -55,4 +62,26 @@ impl Out {
         std::fs::write(&target, bytes).with_context(|| format!("writing {}", target.display()))?;
         Ok(Some(target))
     }
+}
+
+/// Creates `dir` (inside `root`, which exists) one component at a time, refusing to pass through a
+/// link: a link planted inside the output directory could otherwise lead a write out of re/.
+fn make_dirs_inside(root: &Path, dir: &Path) -> Result<()> {
+    let rel = dir
+        .strip_prefix(root)
+        .context("an output path outside the output directory")?;
+    let mut at = root.to_path_buf();
+    for part in rel.components() {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => {
+                bail!("{} is a link; luatool won't write through it", at.display())
+            }
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => bail!("{} is in the way: it isn't a directory", at.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&at)?,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
