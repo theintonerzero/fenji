@@ -6,8 +6,7 @@ Every outside source we take hints from (design spec §2 rule 2, §4 C). Only cl
 
 | Source (URL) | Licence | Provenance checked | What we used it for | Date |
 |---|---|---|---|---|
-
-No external sources used yet.
+| [Lua 5.3](https://www.lua.org) (vendored by [mlua](https://github.com/mlua-rs/mlua) 0.12.2) | MIT | Yes: upstream Lua, built from source by the `lua-src` crate | Test-only: compiles our own Lua source into stock 5.3 bytecode fixtures at test time (M1 Task 4) | 2026-10-12 |
 
 ## Rejected
 

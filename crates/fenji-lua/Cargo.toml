@@ -1,0 +1,18 @@
+[package]
+name = "fenji-lua"
+description = "The SoLO client's Lua 5.3 dialect: chunk parser and writer, disassembler, normaliser to stock Lua 5.3, script census"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+# Real Lua 5.3, compiled from source by the build, so tests make their own fixtures from our own
+# Lua code at test time. Bytecode is never committed.
+mlua.workspace = true
+
+[lints]
+workspace = true
