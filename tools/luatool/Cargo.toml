@@ -1,0 +1,25 @@
+[package]
+name = "fenji-luatool"
+description = "Lists, extracts, disassembles, normalises and decompiles the Lua scripts embedded in the pinned SoLO client; writes only under re/"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "luatool"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+fenji-data.workspace = true
+fenji-lua.workspace = true
+
+[dev-dependencies]
+fenji-data = { workspace = true, features = ["test-util"] }
+mlua.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["tools/stub", "crates/fenji-data", "crates/fenji-lua"]
+members = ["tools/stub", "tools/luatool", "crates/fenji-data", "crates/fenji-lua"]
 
 [workspace.package]
 version = "0.1.0"
