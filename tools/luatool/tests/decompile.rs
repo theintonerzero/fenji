@@ -102,3 +102,24 @@ fn real_unluac_decompiles_a_stripped_chunk() {
             .contains("127.0.0.1")
     );
 }
+
+#[test]
+fn a_planted_err_link_is_not_written_through() {
+    // A symlink where unluac's stderr goes, to a file elsewhere.
+    let t = tempfile::tempdir().unwrap();
+    let u = unluac(t.path(), Duration::from_secs(5));
+    let victim = t.path().join("victim");
+    std::fs::write(&victim, "keep").unwrap();
+    std::os::unix::fs::symlink(&victim, t.path().join("fail.lua.err")).unwrap();
+    let outcome = u
+        .run(&t.path().join("fail.luac"), &t.path().join("fail.lua"))
+        .unwrap();
+    assert_eq!(outcome, Outcome::Failed);
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+    assert_eq!(
+        std::fs::read_to_string(t.path().join("fail.lua.err"))
+            .unwrap()
+            .trim(),
+        "boom"
+    );
+}

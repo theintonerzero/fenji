@@ -55,6 +55,16 @@ impl Unluac {
     /// Decompiles `input` into `output`. On failure, unluac's stderr is kept in `<output>.err`.
     pub fn run(&self, input: &Path, output: &Path) -> Result<Outcome> {
         let err_path = with_suffix(output, ".err");
+        // Fresh files: a link already at either path is replaced, never written through.
+        for p in [output, err_path.as_path()] {
+            match std::fs::symlink_metadata(p) {
+                Ok(_) => {
+                    std::fs::remove_file(p).with_context(|| format!("replacing {}", p.display()))?
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
         let mut child = Command::new(&self.java)
             .arg("-jar")
             .arg(&self.jar)
