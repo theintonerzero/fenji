@@ -57,7 +57,7 @@ Every task's requirements implicitly include these.
 
 These are the five inputs most likely to hurt a user that the spec implies but doesn't spell out. Each has its pinning test in the task that owns the code.
 
-1. **Undecodable embedded entries.** 79 large files are cut at 16 KiB in the exe (see "Planning findings"). They must yield a per-entry error that is counted and reported. They must never cause a panic, abort a batch, or read outside the image. Tests: Task 3 `truncated_entry_is_an_error_not_a_panic` and `read_outside_image_is_none`; Task 6 summary counts.
+1. **Undecodable embedded entries.** 79 large files are cut at 16 KiB in the exe (see "Planning findings"; withdrawn by E2: none is, so this item now means malformed headers, blocks and pieces). They must yield a per-entry error that is counted and reported. They must never cause a panic, abort a batch, or read outside the image. Tests: Task 3 `truncated_entry_is_an_error_not_a_panic` and `read_outside_image_is_none`; Task 6 summary counts.
 2. **Malformed bytecode:** truncation at any byte, absurd counts, unknown constant tags, extreme nesting and trailing bytes. Each gives a typed error, never a panic or a huge allocation. Tests: Task 4 `every_truncation_is_an_error`, `absurd_count_is_refused`, `deep_nesting_is_refused`, `unknown_constant_tag_is_refused` and `trailing_bytes_are_refused`.
 3. **Output location.** Each of these is refused, and nothing is written outside `re/`:
    - `--out` outside `re/`, through `..` or through a symlink that leaves `re/`;
@@ -73,7 +73,7 @@ These are the five inputs most likely to hurt a user that the spec implies but d
 
 ## Planning findings (read-only probes, 2026-10-12)
 
-These are facts the tasks build on. They are local evidence from planning probes, with scripts copied to `re/m1/probes/` in Task 1. Task 1 re-verifies them and writes them up properly.
+These are facts the tasks build on. They are local evidence from planning probes, with scripts copied to `re/m1/probes/` in Task 1. Task 1 re-verifies them and writes them up properly. Task 1 corrected the registry layout, the counts, the truncation finding and the `TRYSELF` mapping: see "Execution amendments" E1–E3.
 
 - **The registry (Observed):** the embedded files are listed by 76 runs of 24-byte triples in `.data`. Each triple is (pointer to a NUL-terminated path in `.rdata`, `u64` stored size, pointer to a blob header in `.rdata`).
   - Example: the triple at VA `0x143181fc8` maps `combat/skill/3007163.luac` to the header at `0x1413e9d40`.
@@ -113,6 +113,16 @@ These are facts the tasks build on. They are local evidence from planning probes
 - **D4. New dependencies:** `sha2` (the pinned-build check) and `mlua` (test-only, a real Lua 5.3 for fixtures). Both are MIT or MIT/Apache.
 
 **The owner's decisions (2026-10-12):** D1–D4 accepted, and the fresh reviews before merging Tasks 3 and 9 kept. Plan approved, executed inline. The M1 spec's Status, §3 Units and Done-when 1 carry the amendments.
+
+## Execution amendments (from Task 1, 2026-10-12)
+
+Task 1 ([`m1-script-format.md`](../../re/m1-script-format.md)) corrected three planning findings. Each is a ruling in the execution ledger. Where a task's text below still says otherwise, these amendments apply.
+
+- **E1. The registry is a mount table, and large files span several entries.** A mount table at `0x143197720` lists five directories: `data/c`, `data/locale`, `data/core`, `data/interface` and `data/scripts`. Each is a NULL-terminated list of 24-byte entries: path pointer, `u32` stored size, `u32` continuation flag, piece pointer. A file whose flag is set continues in the following entries, and its pieces (0x3FFC bytes each, except the last) are concatenated. Walked that way there are 21,512 files (20,443 `.luac`). All of them decode, and all the chunks parse (100,465 functions). This changes two tasks:
+  - Task 3: `exe_fs` walks the mount table and joins multi-piece files instead of scanning `.data` for triples. `ExeEntry` carries its directory and piece addresses rather than one header address. `test_util` builds a mount table that includes a multi-piece file, and Task 3 gains tests for multi-piece decoding.
+  - Task 6: the pinned test expects 21,512 entries and none undecodable.
+- **E2. No embedded file is truncated.** The "79 large scripts cut at 16 KiB" were the first pieces of multi-piece files. Review Focus 1 still applies to malformed input (a bad header, a bad block, a piece outside the image): each gives a per-entry error, never a panic. Tasks 2, 12 and 13 drop "complete copies of truncated scripts" from what Oodle would unlock. D3's wording stands; for the pinned build its list of undecodable entries is empty.
+- **E3. `TRYSELF` is removed, not mapped to `SELF`.** Every `TRYSELF` is a caching prefix right before an identical `SELF`. Its stock equivalent is therefore nothing, which is what the spec's "where their meaning allows" admits. Normalisation removes it and re-targets jumps (m1-script-format §4). `TRYTABUP` and `TRYLIBUP` still become `GETTABUP`, and `NOP`, `XGETTABUP`, `XGETSELF` and `XSELF` stay unmapped (they never occur in the dumps). Task 7's normaliser takes one of four actions per opcode (keep, replace, remove, refuse), re-targets jumps, and gains tests for removal and re-targeting.
 
 ## File map
 
