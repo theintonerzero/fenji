@@ -249,3 +249,26 @@ fn cli_decompiles_through_unluac_and_counts_per_area() {
         "{summary}"
     );
 }
+
+#[test]
+fn cli_census_writes_its_tables() {
+    let (repo, exe) = setup();
+    let ok = luatool(repo.path(), &exe)
+        .args(["census", "--out", "re/c"])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let tsv = std::fs::read_to_string(repo.path().join("re/c/census.tsv")).unwrap();
+    let login = tsv
+        .lines()
+        .find(|l| l.starts_with("data/interface/addons/Login\t"))
+        .expect("a data/interface/addons/Login row");
+    let cols: Vec<&str> = login.split('\t').collect();
+    assert_eq!(
+        (cols[1], cols[4]),
+        ("1", "1"),
+        "one chunk, one function reading IsServer: {login}"
+    );
+    assert!(tsv.lines().any(|l| l.starts_with("(all)\t")));
+    assert!(repo.path().join("re/c/census-server-chunks.tsv").is_file());
+}
