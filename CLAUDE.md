@@ -20,7 +20,7 @@ Clean-room private server emulator for Swords of Legends Online (SoLO: the Weste
 - **Reverse engineering:** use the `reverse-engineer-anything` skill, the shared Ghidra GUI project and the `rea` MCP server. Static analysis first. The Ghidra project is the main surface for `gujianol.exe`, because REA's full auto-analysis of its ~75,000 functions is too slow. REA records Evidence IDs for targeted functions. Cite REA Evidence IDs (or pinned-exe addresses where REA can't reach) in `docs/protocol/` and in packet type doc comments. Separate observation, inference and unknown. Close REA sessions when done.
 - **Clean-room hygiene:** anyone, person or agent, who has read material listed as rejected in `docs/re/sources.md` does no RE or protocol work on the client. They may coordinate, review process and write code that doesn't depend on client internals.
 - **Ghidra GUI project (`ghidra` MCP):** canonical names, types and structs for the pinned binary, shared with the owner live. Leave `GHIDRA_MCP_ALLOW_SCRIPTS` unset (script execution off) and the server on 127.0.0.1. Never use its `debugger_*` tools on the SoLO client: attaching a debugger is a decision gate.
-- **Client runs:** only inside `scripts/spike/isolated-run.sh` (loopback only; a nested display with `--x11 N`; non-root with `--no-root`). Quit Steam first, bind only directories that belong to the run, and keep the pinned copy outside any Steam library.
+- **Client runs:** only inside `scripts/spike/isolated-run.sh` (loopback only; a nested display with `--x11 N`; non-root with `--no-root`; `--cpu-topology` for Wine's processor information). Quit Steam first, bind only directories that belong to the run, and keep the pinned copy outside any Steam library.
 - **Launcher UI** (`apps/launcher`, Tauri 2): use the `impeccable` skill for design work.
 - **Library/API docs:** use `context7` rather than memory for crate and tool APIs (Tauri, Bevy, sqlx, axum, binrw).
 - **Live server inspection:** `brp` MCP against a local `fenji-server` (BRP binds to localhost only).
@@ -111,4 +111,4 @@ If the same plugins are also enabled at user scope from another marketplace (e.g
 
 ## Machines
 
-macOS (Ghidra/REA + Rust), Fedora Linux game box (the client via `umu-run` inside the sandbox, Rust; REA works too), VPS (deploy). Claude's auto-memory does not travel between machines: anything that matters goes in this file or `docs/`. Per-OS setup: `docs/development.md`.
+macOS (Ghidra/REA + Rust), Fedora Linux game box (the client via GE-Proton inside the sandbox, Rust; REA works too), VPS (deploy). Claude's auto-memory does not travel between machines: anything that matters goes in this file or `docs/`. Per-OS setup: `docs/development.md`.

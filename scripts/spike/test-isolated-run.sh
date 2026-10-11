@@ -223,9 +223,9 @@ check "CUPS, sshd, avahi, X11, ICE and user runtime sockets are absent" "$run" -
 # a plain -type s sees a socket bind-mounted over a file as a regular file.
 find_ipc='find / -path /proc -prune -o -printf "%M %p\n" 2>/dev/null | sed -n "s/^[sp]......... //p"'
 mkdir "$tmp/bound"
-t_no_sockets() {
+t_no_sockets() {  # [OPTION...]
   local found
-  found=$("$run" --bind "$tmp/bound" -- bash -c 'mkfifo "$1/fifo-inside" && eval "$2" | sort' \
+  found=$("$run" "$@" --bind "$tmp/bound" -- bash -c 'mkfifo "$1/fifo-inside" && eval "$2" | sort' \
     _ "$tmp/bound" "$find_ipc" || true)
   rm -f -- "$tmp/bound/fifo-inside"
   [ "$found" = "$tmp/bound/fifo-inside" ] || { echo "  found: $(echo "$found" | tr '\n' ' ')" >&2; return 1; }
@@ -980,6 +980,86 @@ t_noroot_names() {
 }
 check "--no-root names the caller user and users when id gives no name, or one that starts with '-' or has characters other than letters, digits, '.', '_' and '-'" \
   t_noroot_names
+
+# --- --cpu-topology: the host's /sys/devices/system/cpu, read-only, nothing else of /sys --------
+# Wine and Proton build their processor information from that subtree; without the option there
+# is no /sys inside at all. Each check runs as uid 0 and with --no-root. Read-only is read from the
+# mount's own options: sysfs refuses most writes anyway, so a write attempt would prove nothing.
+t_no_sys() {  # [OPTION...]
+  [ "$("$run" "$@" -- bash -c '[ -e /sys ] || [ -L /sys ] || echo absent')" = absent ]
+}
+t_cpu_tree() {  # [OPTION...]
+  local out
+  out=$("$run" "$@" -- bash -c 'ls -A /sys; ls -A /sys/devices; ls -A /sys/devices/system' 2>&1) || true
+  [ "$out" = "$(printf '%s\n' devices system cpu)" ] || { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+}
+t_cpu_online() {  # [OPTION...]
+  local host out
+  if ! host=$(cat /sys/devices/system/cpu/online) || [ -z "$host" ]; then
+    echo "  can't read the host's /sys/devices/system/cpu/online" >&2
+    return 1
+  fi
+  out=$("$run" "$@" -- cat /sys/devices/system/cpu/online 2>&1) || true
+  [ "$out" = "$host" ] || { echo "  host: $host, inside: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+}
+# Every mount in /sys inside, with the mount's own options (mountinfo field 6; the superblock's,
+# after " - ", stay rw): just /sys/devices/system/cpu, with ro among them.
+t_cpu_ro() {  # [OPTION...]
+  local out
+  out=$("$run" "$@" -- cut -d' ' -f5,6 /proc/self/mountinfo 2>&1 | LC_ALL=C grep -E '^/sys(/| )') || true
+  if [[ $out != "/sys/devices/system/cpu "* || $out == *$'\n'* || ,${out#* }, != *,ro,* ]]; then
+    echo "  mounts in /sys, with their options: $(tr '\n' ' ' <<<"$out")" >&2
+    return 1
+  fi
+}
+# The option adds exactly one mount, /sys/devices/system/cpu, and removes none; given twice, it
+# adds nothing more. The options given go to every run.
+t_cpu_mounts() {  # [OPTION...]
+  local without with twice added removed again
+  without=$("$run" "$@" -- cut -d' ' -f5 /proc/self/mountinfo | LC_ALL=C sort) || return 1
+  with=$("$run" "$@" --cpu-topology -- cut -d' ' -f5 /proc/self/mountinfo | LC_ALL=C sort) || return 1
+  twice=$("$run" "$@" --cpu-topology --cpu-topology -- cut -d' ' -f5 /proc/self/mountinfo |
+          LC_ALL=C sort) || return 1
+  added=$(LC_ALL=C comm -13 <(printf '%s\n' "$without") <(printf '%s\n' "$with"))
+  removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$without") <(printf '%s\n' "$with"))
+  again=$(LC_ALL=C comm -3 <(printf '%s\n' "$with") <(printf '%s\n' "$twice"))
+  if [ "$added" != /sys/devices/system/cpu ] || [ -n "$removed" ] || [ -n "$again" ]; then
+    echo "  added: $(tr '\n' ' ' <<<"$added")removed: $(tr '\n' ' ' <<<"$removed")" \
+         "given twice, differs in: $(tr '\n\t' '  ' <<<"$again")" >&2
+    return 1
+  fi
+}
+# shellcheck disable=SC2086 # word splitting intended: $mode is empty or --no-root
+for mode in "" --no-root; do
+  flag="${mode:+$mode }--cpu-topology"
+  check "without --cpu-topology${mode:+ ($mode)}, /sys is absent inside" t_no_sys $mode
+  check "$flag: /sys holds only devices, /sys/devices only system, /sys/devices/system only cpu" \
+    t_cpu_tree $mode --cpu-topology
+  check "$flag: /sys/devices/system/cpu/online inside is the host's" t_cpu_online $mode --cpu-topology
+  check "$flag: the only mount in /sys is /sys/devices/system/cpu, with ro among its mount options" \
+    t_cpu_ro $mode --cpu-topology
+  check "$flag (also given twice) adds exactly one mount, /sys/devices/system/cpu, and removes none" \
+    t_cpu_mounts $mode
+  check "$flag: no socket or fifo is visible anywhere inside except one the command made in its bound dir" \
+    t_no_sockets $mode --cpu-topology
+  check "$flag: only the loopback interface exists, up, with 127.0.0.1 and ::1" t_links $mode --cpu-topology
+  check "$flag: cannot open a TCP connection to the internet by IP" t_no_tcp 1.1.1.1 443 $mode --cpu-topology
+  check "$flag: public hostnames don't resolve" t_no_dns $mode --cpu-topology
+  check "$flag: a nested bwrap sandbox works inside and still sees only lo" t_nested_bwrap $mode --cpu-topology
+done
+
+# Refused (exit 2) on a host without /sys/devices/system/cpu: an empty tmpfs hides it here, in a
+# private mount namespace (no test hook needed).
+if unshare -rm true 2>/dev/null; then
+  check "--cpu-topology is refused (exit 2) on a host without /sys/devices/system/cpu" \
+    unshare -rm bash -c '
+      "$1" --cpu-topology -- true || { echo "  control: refused while /sys/devices/system/cpu exists" >&2; exit 1; }
+      mount -t tmpfs fenji-test /sys/devices/system || exit 1
+      err=$("$1" --cpu-topology -- true 2>&1); rc=$?
+      [ "$rc" -eq 2 ] && [[ $err == *"has no /sys/devices/system/cpu"* ]] || { echo "  rc=$rc $err" >&2; exit 1; }' _ "$run"
+else
+  echo "skip - unshare -rm not permitted, can't test refusing --cpu-topology without /sys/devices/system/cpu"
+fi
 
 # --- Steam refusal and host files ------------------------------------------------------------
 if pgrep -x steam >/dev/null 2>&1 || pgrep -x steamwebhelper >/dev/null 2>&1 ||

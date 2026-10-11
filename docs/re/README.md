@@ -50,7 +50,8 @@ Only inside `scripts/spike/isolated-run.sh` (design spec §2 rule 4). Inside it:
 - the network is loopback only, and names come from a hosts file;
 - there are no host daemon sockets;
 - the display is a nested X server (`--x11 N`);
-- the client runs non-root (`--no-root`, which umu needs).
+- the client runs non-root (`--no-root`); sandboxed runs start GE-Proton's own `proton` script directly, because umu's runtime container fails inside the sandbox (`bwrap: Can't find source path /sys`);
+- Wine/Proton runs need `--cpu-topology`: Wine builds its processor information from `/sys/devices/system/cpu`, and without it the client hangs at start.
 
 Before a run:
 - Quit Steam; the wrapper refuses to start while it runs.

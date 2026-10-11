@@ -5,7 +5,7 @@
 # ground rule 4). Linux x86_64 only; needs bwrap, python3 and unprivileged user namespaces.
 #
 #   scripts/spike/isolated-run.sh [--hosts FILE] [--bind DIR]... [--ro-bind DIR]... [--x11 N]
-#                                 [--no-root] -- COMMAND [ARGS...]
+#                                 [--no-root] [--cpu-topology] -- COMMAND [ARGS...]
 #
 #   --hosts FILE    FILE's content becomes /etc/hosts inside (after localhost entries), e.g. to
 #                   point the client's hostnames at a stub listening on 127.0.0.1 inside.
@@ -15,6 +15,9 @@
 #                   "Display" below): its socket is the only X11 thing inside, with DISPLAY=:N.
 #   --no-root       run COMMAND as your own uid and gid with no capabilities, not as uid 0 (see
 #                   "Inside" below), for tools that refuse to run as root, such as umu-run.
+#   --cpu-topology  bind the host's /sys/devices/system/cpu (CPU topology, caches, frequencies...)
+#                   read-only at the same path, the only part of /sys inside; Wine and Proton
+#                   build their processor information from it. Without it there is no /sys.
 #   Pass extra environment with `env VAR=value COMMAND`; only PATH, HOME, TERM, LANG, LANGUAGE,
 #   LC_* and USER are inherited, plus BROWSER=/bin/false (and DISPLAY with --x11).
 #
@@ -43,7 +46,8 @@
 # anything but letters, digits, '.', '_' and '-'). No resolv.conf. No host display, audio, bus or
 # daemon socket (systemd-resolved, D-Bus, systemd --user, PulseAudio/PipeWire, CUPS, sshd, avahi,
 # X11, Wayland, ibus, Steam) exists inside unless a --bind/--ro-bind DIR exposes it, bar the one
-# nested X server socket --x11 N names (see "Display").
+# nested X server socket --x11 N names (see "Display"). There is no /sys, bar the read-only
+# /sys/devices/system/cpu that --cpu-topology adds.
 # Bound dirs must belong to the run. One is refused (exit 2) if, at start:
 #   - it holds a socket or fifo at any depth (also one mounted over another file), or can't be
 #     fully scanned for them;
@@ -113,14 +117,15 @@
 # with FENJI_ISOLATED_RUN_ALLOW_STEAM=1 (and adds refused filesystem types for its own test with
 # FENJI_ISOLATED_RUN_TEST_EXTRA_FSTYPES; that can only refuse more). Exit 2 also on usage
 # errors, a missing --hosts file or bind dir, a refused bind dir or --x11 display, --no-root when
-# your uid or gid is 0 or 65534 (root and nobody inside), a non-x86_64 host, or missing bwrap,
-# pgrep or python3. Otherwise the exit status is COMMAND's.
+# your uid or gid is 0 or 65534 (root and nobody inside), --cpu-topology on a host without
+# /sys/devices/system/cpu, a non-x86_64 host, or missing bwrap, pgrep or python3. Otherwise the
+# exit status is COMMAND's.
 set -euo pipefail
 
-usage() { sed -n '2,19p' "$0" >&2; exit 2; }
+usage() { sed -n '2,22p' "$0" >&2; exit 2; }
 die2() { echo "isolated-run: $*" >&2; exit 2; }
 
-hosts="" binds=() x11="" noroot=""
+hosts="" binds=() x11="" noroot="" cputopo=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --hosts)
@@ -146,6 +151,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --no-root) noroot=1; shift ;;
+    --cpu-topology) cputopo=1; shift ;;
     --) shift; break ;;
     *) usage ;;
   esac
@@ -179,6 +185,11 @@ if [ -n "$noroot" ]; then
   done
   caller_user=$(entry_name "$(id -un 2>/dev/null)" user)
   caller_group=$(entry_name "$(id -gn 2>/dev/null)" users)
+fi
+
+# --cpu-topology binds the host's /sys/devices/system/cpu (see below).
+if [ -n "$cputopo" ] && [ ! -d /sys/devices/system/cpu ]; then
+  die2 "--cpu-topology: the host has no /sys/devices/system/cpu directory (is sysfs mounted on /sys?)"
 fi
 
 if [ "${FENJI_ISOLATED_RUN_ALLOW_STEAM:-}" != 1 ]; then
@@ -404,6 +415,13 @@ done
 # Read-only: connect() works on it, but nothing inside can chmod or touch the host's socket.
 if [ -n "$x11" ]; then
   args+=(--dir /tmp/.X11-unix --ro-bind "$xsock" "$xsock" --setenv DISPLAY ":$x11")
+fi
+
+# --cpu-topology: the host's /sys/devices/system/cpu, read-only, alone in an otherwise absent /sys
+# (Wine and Proton build their processor information from it). After the caller's binds, so none
+# can sit on top of it.
+if [ -n "$cputopo" ]; then
+  args+=(--ro-bind /sys/devices/system/cpu /sys/devices/system/cpu)
 fi
 
 # Generated /etc files go last so no bind can shadow them (fds 3-6 are opened on the exec line).
