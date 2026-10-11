@@ -1,0 +1,26 @@
+name: Bug
+description: Something in Fenji behaves incorrectly.
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened vs what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Fenji version / commit and pinned client build
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server/launcher logs. Never paste credentials, session tokens, game files or capture contents.
+      render: text

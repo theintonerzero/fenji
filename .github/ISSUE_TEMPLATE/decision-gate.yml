@@ -1,0 +1,23 @@
+name: Decision gate
+description: Work has stopped at a gate (client patching, the embedded kernel driver, Oodle licensing, …) and needs the owner's decision.
+labels: ["decision-gate", "status:blocked"]
+body:
+  - type: textarea
+    id: finding
+    attributes:
+      label: What we found
+      description: The evidence that triggered the gate (REA Evidence IDs).
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options
+      description: Each option with its legal/technical risk and effort, plus a recommendation.
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision
+      description: Filled in by the project owner. Work resumes only after this is set.

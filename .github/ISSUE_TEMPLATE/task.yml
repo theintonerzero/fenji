@@ -1,0 +1,28 @@
+name: Task
+description: A unit of planned work (usually one task from a milestone plan). One task → one PR.
+labels: ["type:task"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What this task delivers, in one or two sentences.
+    validations:
+      required: true
+  - type: input
+    id: plan
+    attributes:
+      label: Plan reference
+      description: Plan file and task number, e.g. docs/superpowers/plans/2026-10-12-m0-dev-environment.md, Task 3
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Verifiable acceptance criteria (commands, tests, observable behaviour).
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes / dependencies
+      description: Blocking issues (#N), relevant evidence or docs.

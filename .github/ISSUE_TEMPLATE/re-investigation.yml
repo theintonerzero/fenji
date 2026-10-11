@@ -1,0 +1,34 @@
+name: RE investigation
+description: A reverse-engineering question to answer with REA evidence.
+labels: ["type:re"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: The specific question, e.g. "How does the client derive the per-packet cipher key?"
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence needed
+      description: "What kind of evidence would answer it (static: functions/xrefs/strings/scripts; runtime: sandboxed stub session, Wine log, the client's own log)."
+    validations:
+      required: true
+  - type: textarea
+    id: findings
+    attributes:
+      label: Findings
+      description: Fill in when done. Observations, inferences and unknowns kept separate, with REA Evidence IDs. No decompiled code; summarise in prose.
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Ground rules
+      options:
+        - label: Uses only my own legitimately obtained client and clean-provenance sources
+          required: true
+        - label: Nothing instrumented or modified connects to a live official service
+          required: true
+        - label: I have not read material listed as rejected in docs/re/sources.md
+          required: true
