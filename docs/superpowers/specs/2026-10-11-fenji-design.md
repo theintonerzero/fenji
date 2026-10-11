@@ -1,0 +1,318 @@
+# Fenji — Design Spec
+
+- **Date:** 2026-10-11
+- **Status:** Approved in brainstorming (sections 1–3); awaiting written-spec review
+- **Scope:** Whole-project architecture and milestone map. Each milestone (M0–M5) gets its own implementation plan in `docs/superpowers/plans/`.
+- **Lineage:** Fenji replaces Caphras, a Black Desert Online emulator halted on 2026-10-11 in favour of SoLO, whose client can be read; BDO's is packed. Fenji keeps Caphras's tooling, process and server architecture. Everything specific to the game is new (§13).
+
+## 1. Purpose
+
+Fenji is a clean-room private server emulator for **Swords of Legends Online (SoLO)**, written in Rust. SoLO is the Western build of 古剑奇谭网络版 (Gujian Online, developed by Aurogon and published in China by Wangyuan Shengtang). Gameforge operated it from 2021 until its servers shut on 2023-06-30 (Steam app 1418100, delisted on 2023-06-01). Fenji lets a small invited group of friends play together on a server the admin hosts on their own VPS, with admin-tunable rates.
+
+Success for v1: invited friends sign in through the Fenji launcher, each with their own legitimately obtained copy of the client. They create characters, enter the starting zone, see each other, fight monsters, gain XP, loot items and keep their progress. The admin can change the server's rates live.
+
+## 2. Ground rules (non-negotiable)
+
+1. **Legitimate copies only.** Every player and the server host needs their own legitimately obtained copy of the SoLO client. That means Steam (app 1418100 already in their library, since it was delisted) or Gameforge's own launcher while SoLO was distributed there. Fenji never distributes the client, never points to unofficial copies, and never supports cracked or modified clients. There is no automated ownership check: the owner vets everyone they invite (rule 5).
+2. **Clean room.** Everything is derived from our own analysis of our own licensed client, and from watching it run against our own server. Leaked server files, server binaries, server scripts or server source for SoLO / 古剑奇谭网络版 are never used, referenced or accepted in contributions, and neither is anything derived from them. That covers:
+   - write-ups based on such leaks, for example the GuJian Online "server RE report" circulated on RaGEZONE, recorded as rejected in `docs/re/sources.md`;
+   - anything from the unofficial servers that appeared after the shutdown.
+
+   Community material is used only if it is clearly licensed and has clean provenance, only as hints or as external tools, and only once listed in `docs/re/sources.md`.
+3. **No redistribution of game content.** None of the following goes in the repo or in releases:
+   - game binaries, data archives and extracted assets;
+   - extracted or decompiled Lua;
+   - middleware libraries (Oodle and others);
+   - captures and REA evidence bundles.
+
+   The server and tools read data from the operator's own installation at runtime. CI enforces this (§9).
+4. **Never touch official services with modified or instrumented clients.** The original game is still operated in China, and Gameforge, Steam and Epic services are live. Instrumented runs (Wine API logging, debuggers) happen only inside `scripts/spike/isolated-run.sh`, connected to our own stub or server.
+5. **Private and non-commercial.** The server is invite-only, unlisted, and never monetized.
+6. **Decision gates stop the work.** Work stops and the owner decides explicitly when a step would:
+   - patch the client, on disk or in memory;
+   - circumvent any protection;
+   - load the kernel driver embedded in the client (§5.4);
+   - use proprietary middleware outside its licence, for example running Oodle's DLL on our server.
+
+   These are never default plan steps.
+7. **Credentials.** Fenji never handles Steam or Gameforge credentials; players type those only into DepotDownloader or the services' own pages. Fenji's own account passwords are stored only as argon2id hashes.
+
+Legal context the owner has acknowledged:
+- SoLO's EULA and terms likely prohibit reverse engineering and emulation.
+- Copyright and anti-circumvention law apply.
+- The rights holder still operates the game in China, and publishers do pursue private servers.
+- Oodle is Epic Games' proprietary middleware.
+- "Preservation" is not a legal safe harbour for an online server.
+
+The rules keep exposure as low as possible; they don't eliminate it.
+
+## 3. Environment
+
+| Machine | Role |
+|---|---|
+| macOS (arm64) dev workstation | Rust development; static analysis (Ghidra, REA) of a copy of the pinned client kept outside the repo |
+| Fedora Linux game box | Runs the pinned client through Proton (umu-launcher) inside the sandbox, against the stub or dev server; Rust; analysis |
+| VPS (Debian/Ubuntu) | Hosts `fenji-server`, Caddy, SQLite and the admin's own copy of the client data |
+
+Players: Windows and Linux (Proton). macOS players are out of scope.
+
+**Pinned client build.** Fenji targets exactly one build: Steam app 1418100, depot 1418101, manifest 5002037851744157048, build ID 10015727. Its main executable is `bin64/gujianol.exe`, FileVersion 2.1.19.42851. The build has been frozen since the shutdown. M0 records the executable's size and SHA-256 and the file list in `docs/re/pinned-build.md`. The pinned copy lives in `$FENJI_CLIENT_PATH` (default `~/fenji-client`). It is either fetched with DepotDownloader under the person's own Steam login or copied from their own existing install.
+
+## 4. Protocol discovery
+
+A static triage on 2026-10-11 found the following (M0 writes it up with evidence in `docs/re/spike-0.md`):
+- **Unprotected executable.** `gujianol.exe` is an ordinary MSVC 2013 x64 build, with about 75,000 functions in its exception table and named imports.
+- **Readable protocol.** The network layer is readable, and so are the protocol opcode enums (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`) and a 2,438-entry synced-property schema.
+- **Logic in Lua.** Much of the game logic is Lua 5.3 bytecode embedded in the executable. The Lua is modified: a custom header and 7 extra opcodes.
+- **Data.** The archives are Oodle-compressed, not encrypted.
+- **Anti-cheat.** No third-party anti-cheat ships. An in-house kernel driver ("AGT") is embedded as a resource, with no visible load path.
+- **Boots without servers.** With the servers gone, the client still reaches its login scene.
+
+**A: static analysis (the backbone).**
+
+| Stage | Goal |
+|---|---|
+| 1. Network layer | Framing, header scramble, Oodle Network setup, handshake variant selection, send/receive state machine |
+| 2. Dispatch | Opcode → handler mapping in both directions, native and Lua |
+| 3. Payloads | `pickle`/msgpack payload schema per opcode; the synced-property schema |
+| 4. Scripts | Extract, disassemble and decompile the embedded Lua; read the client's own protocol and gameplay scripts |
+| 5. Data | Archive and index format; table schemas |
+
+The shared Ghidra GUI project (`ghidra` MCP) is the primary analysis surface. REA's full auto-analysis of a 75,000-function executable is too slow to be the main surface. REA records Evidence IDs for targeted functions.
+
+**B: the real client against our stub, in the sandbox (validation).** No captures of the official servers exist, so the client is the only ground truth. The stub (`tools/stub`) logs every byte the real client sends and answers with our current best guess. The client's reaction refines the guess: its next packet, a stall, an error, Wine logs or its own `gujianol.log`. Every run happens inside `scripts/spike/isolated-run.sh`: loopback-only network, a nested display, and non-root.
+
+**C: community material.** Only clearly licensed tools and notes with clean provenance, checked before use. Examples are Lua 5.3 decompilers, Oodle-compatible decoders and archive notes.
+- Permissively licensed code may be linked (cargo-deny enforces the list).
+- Anything else is used only as an external tool whose output stays in `re/`.
+
+Every source is credited in `docs/re/sources.md`.
+
+**Evidence handling.** Raw sessions, analysis databases, evidence bundles, decompiled output and extracted scripts live in the git-ignored `re/` directory. The repo holds only our own prose findings (`docs/protocol/`, `docs/re/`) and Rust definitions. Each cites REA Evidence IDs, or addresses in the pinned executable where REA can't reach in reasonable time.
+
+## 5. Accounts, launcher and client redirect
+
+### 5.1 Accounts (`fenji-auth` behind an `axum` HTTP API, Caddy for TLS)
+
+1. The admin issues one-time invite codes (`/invite` in game or the server CLI), each optionally labelled with who it's for.
+2. A player redeems a code in the launcher and chooses a username and password. The server stores an argon2id hash. One account per invite code.
+3. Sign-in exchanges username and password for a session token. Attempts are rate-limited, with a temporary lockout after repeated failures.
+4. On Play, the launcher exchanges the session token for a single-use **game token** (60 s TTL, bound to the account), which the login listener validates. How the token reaches the client: §5.3.
+
+There is no Steam sign-in and no ownership check (rule 1).
+
+### 5.2 Launcher (Linux + Windows)
+
+The launcher replaces Gameforge's `SOLO_Launcher.exe`, whose server-list service is dead. It is a **Tauri 2** desktop app (`apps/launcher`) with a small Vite + TypeScript frontend. All logic lives in the `fenji-launcher` library crate, so it's testable without a UI; the Tauri shell only wires commands and events to the frontend. UI work follows the `impeccable` skill.
+
+- **Client source:** either an existing install the player points to, used in place if it verifies, or a DepotDownloader download of the pinned build under the player's own Steam login. With DepotDownloader the player authenticates directly; Fenji never sees credentials.
+- **Verification:** the files the client loads are checked against the pinned build's hash manifest; only hashes are shipped. A mismatch blocks Play and says which files differ.
+- **Launch:** `gujianol.exe` runs directly: on Linux through `umu-launcher`/Proton in a dedicated Wine prefix, on Windows natively.
+
+### 5.3 Client redirect and ticket (preference order; M0 and M3 decide)
+
+1. **Inputs the client already accepts**, without modifying any file: its command-line flags (`--gf-appid`, `--steam-appid`, `--gf-region`), `solo_steam.cfg`, `gfclient.ini` and `loader.ini`.
+2. **Standing in for the dead Gameforge side.** The launcher provides what Gameforge used to provide: the region server list, and the ticket over the Gameforge client's named pipe. That talks to the client through its own interfaces; it is not patching.
+3. **A hostname redirect**, active only while playing.
+4. **Patching the client:** an owner decision gate (rule 6).
+
+The client obtains an auth ticket through `gameforge_api64.dll`, which has Steam, Gameforge and Epic paths. M3 decides what the client sends our login listener and how we bind it to the Fenji game token. If the client turns out to need a running Steam client, M3 documents that requirement and how it affects players without a Steam licence.
+
+### 5.4 Kernel driver gate
+
+The executable embeds a kernel driver ("AGT") with no visible load path in this build. Before the first client run, M0 confirms it is never extracted or loaded; the sandbox offers no way to load drivers in any case. If any step would load it, work stops (rule 6).
+
+## 6. Architecture
+
+### 6.1 Monorepo layout
+
+```
+fenji/
+├── Cargo.toml                 # workspace
+├── rust-toolchain.toml        # pinned Rust
+├── crates/
+│   ├── fenji-proto/           # framing, header scramble, Oodle Network codec, handshake, payloads, opcodes (sans-I/O)
+│   ├── fenji-data/            # archive + index reader, Oodle LZ decompression, table parsers → typed GameDb
+│   ├── fenji-lua/             # the client's modified Lua 5.3: chunk extraction, disassembler, decompiler; later a VM (§6.4)
+│   ├── fenji-auth/            # invite codes, accounts (argon2id), sessions, game tokens
+│   ├── fenji-store/           # SQLite persistence (sqlx)
+│   ├── fenji-server/          # binary: login + world listeners, ECS world, admin, config
+│   └── fenji-launcher/        # library: sign-in, client verification, client launch
+├── apps/
+│   └── launcher/              # Tauri 2 shell (src-tauri/) + Vite/TypeScript frontend
+├── tools/
+│   ├── stub/                  # stub server for the discovery loop (ported from Caphras)
+│   ├── archive/               # CLI: list archives, dump tables
+│   └── luatool/               # CLI: list, disassemble and decompile embedded Lua (output stays in re/)
+├── content/                   # our own authored content overlays (TOML)
+├── deploy/                    # systemd units, Caddyfile, backup timer
+├── docs/                      # specs, plans, protocol findings, RE notes
+├── scripts/                   # bootstrap.sh, versions.env, checks, spike/isolated-run.sh
+└── re/                        # LOCAL ONLY, git-ignored: analysis sessions, evidence, extracted data
+```
+
+Crate dependency direction:
+- `proto`, `lua`, `auth` and `store` depend on nothing internal; `data` may depend on `lua`.
+- `server` depends on all five; `launcher` on `proto` and `auth`; `apps/launcher` on `launcher`.
+- Tools depend on `proto`, `data` and `lua`.
+
+Key dependency versions at design time are the same as Caphras's: `tokio` 1.53, `binrw` 0.15, `bevy_ecs`/`bevy_app`/`bevy_remote` 0.20 with `bevy_brp_extras` 0.23, `axum` 0.8, `sqlx` 0.9 (SQLite), `reqwest` 0.13, `serde` 1, `toml` 1.1, `notify` 8.2, `arc-swap` 1.9, `tracing` 0.1, `clap` 4.6, `thiserror` 2 and `tauri` 2.12. New for Fenji: RustCrypto's `argon2` for password hashes. Exact pins go in `Cargo.toml`/`Cargo.lock` when each crate is created.
+
+### 6.2 `fenji-proto` (pure, no network I/O)
+
+- `frame`: stream → frames, each with a little-endian `u32` length prefix (from the triage; M2 confirms it).
+- `scramble`: the rolling XOR over frame headers, with a separate key per direction.
+- `codec`: a `StreamCodec` trait. The Oodle Network implementation is clean-room, or handled under a decision gate (rule 6). `NullCodec` is for tests.
+- `handshake`: a sans-I/O state machine, including the gate handshake that selects one of the codec variants together with the shared dictionary.
+- `payload`: the `pickle` and msgpack-style value codecs, plus typed packets per opcode, each doc-commented with its evidence.
+  - `Opcode` is a `#[non_exhaustive]` enum.
+  - Unknown opcodes decode to `Packet::Unknown { opcode, bytes }`, never a panic.
+
+### 6.3 `fenji-data`, `fenji-lua` and content layering
+
+- **Client-derived (runtime only, never committed):** tables (items, skills, quests, monsters, maps), the XP curve, the embedded Lua scripts, and terrain later.
+- **Authored overlays (`content/*.toml`, committed):** values that only ever existed server-side and that the client doesn't carry, such as drop tables, spawn data (if absent from the client), missing stats and formula parameters.
+- `GameDb` is the client-derived data merged with the overlays. Overlays win on conflict, and loading fails loudly on schema errors.
+- `fenji-lua` parses the modified bytecode format (header and extra opcodes) into a typed representation. `luatool` writes disassembly and decompiled source to `re/` only.
+
+### 6.4 `fenji-server`
+
+- A `tokio` runtime with one task per connection. Each task decodes packets and forwards `Inbound { conn, packet }` over a channel to the ECS world. Per-connection outbound channels carry encoded packets back.
+- Login and world listeners run in one process, and support both one- and two-connection client flows.
+- A headless `bevy_ecs` app with a fixed tick (default 20 Hz, `server.tick_hz`). One world, one channel.
+- The client's synced-property model (the `prop_*` schema, `STC_PROTOCOL_SYNC_ENTER/LEAVE/UPDATE`) maps onto ECS components; M4 defines the mapping.
+
+Components: `Account`, `Connection`, `Character`, `Position`, `Movement`, `Vitals`, `Level`, `Experience`, `Inventory`, `Cooldowns`, `Monster { template }`, `SpawnPoint`, `AggroTable`, `AiState`, `GroundLoot { owner, expires }`.
+
+Systems per tick, in order:
+
+1. **Inbound:** apply queued packets.
+2. **Movement:** accept client positions that pass a speed check (`max_speed × dt × tolerance`); otherwise rubber-band. Lenient by design.
+3. **Interest management:** a 50 m grid. A player sees their own cell and the 8 neighbouring cells; entering or leaving a cell sends spawn or despawn packets.
+4. **Monster AI:** Idle → Aggro → Chase → Attack → Leash to spawn → Dead → Respawn after `base × rates.respawn`.
+5. **Combat:** validate skill use (range, cooldown, resource cost), compute results, broadcast them.
+6. **Progression:** XP is the overlay value × `rates.xp`, with level-ups from the client's XP curve. Drops are rolled from `content/drops/*.toml` × `rates.drop`. Ground loot belongs to the killer.
+7. **Outbound:** send to interested connections, and mark dirty characters.
+
+**Hybrid rule.** Rust owns networking, the ECS world, movement, interest management, persistence and accounts. At the start of M5, each gameplay system is decided on its own: skills, buffs, effects, damage formulas, AI. Either the system runs through the client's own scripts, or Fenji implements it in Rust. Scripts are loaded at runtime from the operator's install by a `fenji-lua` VM and never redistributed. The M5 plan records each decision with the evidence from M1.
+
+### 6.5 `fenji-store`
+
+SQLite (WAL) via `sqlx`. Tables: `accounts` (username, argon2id hash, created, last sign-in), `invites`, `characters`, `character_stats`, `inventory_items`, `character_skills`.
+- Characters are saved on logout, on level-up, every 60 s if dirty, and all of them on SIGTERM.
+- Each character save is one transaction.
+
+### 6.6 Admin
+
+Admins are account names in `[access].admins`. Chat commands: `/reload`, `/rate <name> <value>`, `/give <item> [n]`, `/spawn <monster>`, `/tp`, `/level`, `/kick`, `/invite`, `/announce`. BRP (Bevy Remote Protocol, via `bevy_brp_extras`) binds to localhost only, so it is reachable over an SSH tunnel; the `brp` MCP uses it for live world inspection.
+
+### 6.7 Capacity and performance targets
+
+Design capacity is **20 concurrent players** (`server.max_players`, default 20). A sign-in beyond the cap is refused with a "server full" message. Everything is sized for that, not for an MMO:
+
+- One process, one world, one SQLite file. No sharding, no separate database server, no horizontal scaling.
+- At 20 Hz the tick budget is 50 ms. The target is p99 tick work ≤ 10 ms with 20 players in the starting zone and the monsters around them. A tick over budget is logged with the slowest systems.
+- Character saves run on the tokio runtime, never inside a tick. The target is a full save of all 20 characters (SIGTERM) in ≤ 2 s.
+
+These are targets to measure against from M4, not promises. The owner adjusts them if the VPS or the player count changes.
+
+## 7. Configuration (`fenji.toml`)
+
+```toml
+[server]
+public_host = "play.example.net"
+login_bind  = "0.0.0.0:<port>"   # ports chosen in M2–M3; the client gets its address from us
+world_bind  = "0.0.0.0:<port>"
+tick_hz     = 20
+max_players = 20
+
+[data]
+client_path  = "/srv/fenji/solo-client"
+pinned_build = "10015727"
+content_path = "/srv/fenji/content"
+
+[access]
+invite_only = true
+admins      = []
+
+[rates]
+xp      = 1.0
+drop    = 1.0
+money   = 1.0
+respawn = 1.0
+
+[combat]
+crit_multiplier = 1.5
+```
+
+Hot reload (a file watcher or `/reload`) parses and validates the whole file, then swaps it in atomically (`arc-swap`).
+- An invalid file leaves the old config in place; the error is logged and whispered to online admins.
+- `[rates]`, `[combat]` and `[access]` reload live. Changes to `[server]` and `[data]` are reported as "restart required".
+
+M5 may add or rename rates once SoLO's progression systems are mapped.
+
+## 8. Deployment (VPS)
+
+- A release binary run by systemd: `StateDirectory=fenji`, `ProtectSystem=strict`, `NoNewPrivileges=yes`, `PrivateTmp=yes`. Secrets (the token-signing key) come via `EnvironmentFile=/etc/fenji/secrets.env`. No Docker.
+- Caddy 2.11 reverse-proxies the account API with automatic HTTPS.
+- `ufw` allows 443 and the game ports only; BRP and admin tooling stay on localhost.
+- The admin copies their own client data into `/srv/fenji/solo-client`, read-only to the service. The full install is about 100 GB of archives. M1 measures the subset the server actually needs, so the VPS may hold only that subset, copied from the admin's own install and never shared.
+- A nightly systemd timer runs SQLite `.backup`, with 14-day retention.
+- Sizing: at least 4 GB RAM; disk per M1's measurement.
+
+## 9. Testing and CI
+
+- **`fenji-proto`:** golden round-trip tests (bytes → struct → bytes). Codec tests use frames the real client sent to our stub inside the sandbox, the only ground truth available. Fixtures from those runs are minimal and scrubbed before commit.
+- **`fenji-data`, `fenji-lua`:** integration tests gated on `FENJI_CLIENT_PATH`, skipped in CI (there are no game files there).
+- **`fenji-server`:** deterministic ECS tests with fake connections (e.g. a kill at `rates.xp = 3` gives 3× XP).
+- **Bot client:** built on `fenji-proto` (login → enter world → move → attack → loot), it runs in CI. It validates the server against *our* understanding of the protocol, so each milestone also requires a manual run with the real client in the sandbox.
+- **CI (GitHub Actions):** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check`, ShellCheck, the commit-subject and PR-title check, the sandbox self-test, and `scripts/check-forbidden-files.sh`. The last rejects:
+  - PE/DLL/driver binaries, `data0NN`/`_index` archives, Lua bytecode and decompiled script dumps, and Oodle libraries;
+  - pcaps, REA bundles and Ghidra/Hopper databases;
+  - anything under `re/`.
+
+## 10. Milestones
+
+| # | Milestone | Done when |
+|---|---|---|
+| M0 | Dev environment + spike | Tooling ported and CI green. Pinned build recorded. Triage written up in `docs/re/spike-0.md` with evidence. The sandbox runs the client non-root on a nested display. One real-client run against the stub answers: does it start without `SOLO_Launcher`, what does it send first, and does the AGT driver stay unloaded? Gates resolved |
+| M1 | Data layer | `archive` lists archives and dumps items, skills, monsters, XP curve and maps. `luatool` disassembles the embedded Lua and decompiles enough to read the protocol and combat scripts. How much server-side logic the scripts carry is measured. The Oodle-for-archives path is decided |
+| M2 | Transport + handshake | The stub completes the real client's gate handshake and decodes its first packets with `fenji-proto`. The Oodle Network path is decided |
+| M3 | Login + lobby | Invite accounts, launcher (verify, launch), ticket handoff, and character list/create/delete in the real client |
+| M4 | Social sandbox + VPS | Friends enter the starting zone, move, see each other and chat; admin commands; deployed to the VPS |
+| M5 | Grind loop (v1) | Monsters, AI, combat (hybrid decision per system), XP, loot, inventory, persistence, live-tunable rates |
+
+M0–M2 can redirect or stop the project (the kernel driver, Oodle licensing, the ticket handoff). That is intended: we learn it before building the server.
+
+Each milestone release to `main` bumps the minor version (M0 → `0.1.0` … M4 → `0.5.0`); M5 releases `1.0.0`.
+
+## 11. Conventions
+
+SemVer 2.0.0 (one workspace version) and Conventional Commits 1.0.0. `dev` is the default and integration branch; `main` holds tagged releases only, and work branches are cut from `dev`. `CHANGELOG.md` follows Keep a Changelog and is generated by `git-cliff`. Full rules: `docs/development.md`.
+
+## 12. Open questions (answered by milestones, not by guessing)
+
+| Question | Answered in |
+|---|---|
+| Does `gujianol.exe` start and reach its login scene without `SOLO_Launcher`, inside the sandbox? | M0 |
+| Is the embedded AGT kernel driver ever extracted or loaded? | M0 |
+| What does the client send first, and where does it get its server address? | M0 |
+| Archive and index format; Oodle LZ: clean-room decoder, licensed external tool, or gate? | M1 |
+| How much server-side logic do the embedded scripts carry? | M1 |
+| Oodle Network: clean-room codec, an uncompressed path, or gate? | M2 |
+| Handshake variant selection and per-connection keying | M2 |
+| One or two connections (gate vs world)? Ports? | M2–M3 |
+| Ticket handoff: what the client sends, and whether it needs a running Steam client | M3 |
+| Which gameplay systems run the client's scripts (hybrid rule) | M5 |
+| Does the client report hits, or expect server-side hit detection? | M5 |
+
+## 13. Lineage from Caphras
+
+Carried over, with only names changed (caphras → fenji, BDO → SoLO):
+- the dev environment and pinned tool versions;
+- the Claude Code configuration (plugins, MCP servers);
+- the git workflow, CI, and issue and PR templates;
+- the stub;
+- the sandbox, `isolated-run.sh`, as reviewed in Caphras PR #25 (head `1e23272`).
+
+The sandbox follow-ups left open by Caphras's reviews become Fenji issues in M0, the planned `--no-root` mode first. Caphras's BDO-specific documents (spec, plans, spike notes, pinned build) are not carried over.
