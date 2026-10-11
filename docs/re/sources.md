@@ -15,4 +15,4 @@ Material refused because it is leaked server material, or derives from it. Nobod
 
 | Source | Why rejected | Exposure | Date |
 |---|---|---|---|
-| "GuJian Online (古剑奇谭网络版) Server Reverse Engineering Report" (`GuJianOL-Server-RE-Report.md`, distributed in a RaGEZONE zip) | Its table of contents shows an analysis of the game's server package (server binaries, start script, server-side scripts), which the developer never published | One Claude session (the Caphras → Fenji transition) read its table of contents only and used nothing. That session coordinates Fenji but does no RE or protocol work | 2026-10-11 |
+| "GuJian Online (古剑奇谭网络版) Server Reverse Engineering Report" (`GuJianOL-Server-RE-Report.md`, distributed in a RaGEZONE zip) | Its table of contents shows an analysis of the game's server package (server binaries, start script, server-side scripts), which the developer never published | One Claude session (the Caphras → Fenji transition) read its table of contents only and used nothing. That session coordinates Fenji but does no RE or protocol work. The owner deleted the downloaded copy on 2026-10-11 | 2026-10-11 |
