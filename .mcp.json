@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "rea": {
+      "type": "stdio",
+      "command": "scripts/rea-mcp.sh",
+      "args": []
+    },
+    "brp": {
+      "type": "stdio",
+      "command": "bevy_brp_mcp",
+      "args": []
+    },
+    "ghidra": {
+      "type": "stdio",
+      "command": "bridge-mcp-ghidra",
+      "args": ["--transport", "stdio"],
+      "env": { "GHIDRA_MCP_URL": "http://127.0.0.1:8089", "GHIDRA_MCP_LAZY": "0" }
+    }
+  }
+}
