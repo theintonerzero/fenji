@@ -26,8 +26,8 @@ struct Args {
     /// Variant for client-to-server frames (--speak)
     #[arg(long, default_value_t = fenji_proto::variant::AES128)]
     up_variant: u32,
-    /// Reply to the auth message: ok (a stored frame) or none
-    #[arg(long, default_value = "ok", value_parser = ["ok", "none"])]
+    /// Reply to the auth message: ok or reject (each in a stored frame), or none
+    #[arg(long, default_value = "ok", value_parser = ["ok", "reject", "none"])]
     auth_reply: String,
 }
 
@@ -46,10 +46,10 @@ async fn main() -> anyhow::Result<()> {
                 down: args.down_variant,
                 up: args.up_variant,
             },
-            auth_reply: if args.auth_reply == "ok" {
-                fenji_stub::speak::AuthReply::Ok
-            } else {
-                fenji_stub::speak::AuthReply::None
+            auth_reply: match args.auth_reply.as_str() {
+                "ok" => fenji_stub::speak::AuthReply::Ok,
+                "reject" => fenji_stub::speak::AuthReply::Reject,
+                _ => fenji_stub::speak::AuthReply::None,
             },
         })
     } else {

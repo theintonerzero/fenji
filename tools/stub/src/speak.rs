@@ -24,7 +24,13 @@ pub enum AuthReply {
     Ok,
     /// Nothing: stop after reading the auth (rungs R1–R2).
     None,
+    /// `REJECT_REASON` in a stored frame: R3's control. A client that decodes and reads the
+    /// frame closes with `CLOSED_AUTH` (transport.md 6.7).
+    Reject,
 }
+
+/// The close reason `AuthReply::Reject` sends (never empty and never `ok`).
+pub const REJECT_REASON: &[u8] = b"fenji-stub: rejected (control run)";
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpeakOpts {
@@ -112,11 +118,18 @@ pub async fn handle(
                         ),
                     )?;
                     std::fs::write(log.path().with_extension("auth.bin"), a.to_body())?;
-                    if opts.auth_reply == AuthReply::Ok {
-                        let out = server.accept(&StoredCodec).map_err(other)?;
+                    let reply = match opts.auth_reply {
+                        AuthReply::Ok => Some((server.accept(&StoredCodec), "ok")),
+                        AuthReply::Reject => {
+                            Some((server.reject(REJECT_REASON, &StoredCodec), "reject"))
+                        }
+                        AuthReply::None => None,
+                    };
+                    if let Some((out, what)) = reply {
+                        let out = out.map_err(other)?;
                         stream.write_all(&out).await?;
                         log.record_sent(&out)?;
-                        events.line("sent", "ok (stored frame)")?;
+                        events.line("sent", &format!("{what} (stored frame)"))?;
                     }
                 }
                 Event::TimeSync(ms) => events.line("time_sync", &format!("client_ms={ms}"))?,

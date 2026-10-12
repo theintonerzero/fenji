@@ -96,3 +96,20 @@ async fn auth_reply_none_stays_silent() {
     assert!(ev.contains("\tauth\t"), "{ev}");
     assert!(!ev.contains("\tsent\t"), "{ev}");
 }
+
+#[tokio::test]
+async fn auth_reply_reject_sends_the_reason() {
+    let tmp = tempfile::tempdir().unwrap();
+    let addr = start(tmp.path(), AuthReply::Reject).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let mut client = Client::new(auth());
+    assert_eq!(
+        pump(&mut s, &mut client, 5000).await,
+        [ClientEvent::Rejected(
+            fenji_stub::speak::REJECT_REASON.to_vec()
+        )]
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let ev = read_events(tmp.path());
+    assert!(ev.contains("\tsent\treject (stored frame)"), "{ev}");
+}
