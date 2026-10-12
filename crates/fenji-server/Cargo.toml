@@ -25,6 +25,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+# Without dev-login-path: a dev-dependency's features would reach every workspace test build.
+fenji-launcher.workspace = true
 tempfile.workspace = true
 tower.workspace = true
 

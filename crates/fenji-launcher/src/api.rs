@@ -1,0 +1,306 @@
+//! The account API's client (M3 spec D12, D14). It speaks only https, or http to this machine,
+//! never follows a redirect, and never shows a password, session token or ticket in `Debug`.
+use std::net::IpAddr;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use reqwest::{Method, StatusCode, Url};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+
+/// How long one request may take.
+pub const TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Debug, thiserror::Error)]
+pub enum ApiError {
+    #[error("the server address must start with https:// (http:// only for this machine)")]
+    Insecure,
+    #[error("{0:?} is not a server address")]
+    BadUrl(String),
+    #[error("the server answered {code} (HTTP {status})")]
+    Server {
+        status: u16,
+        code: String,
+        /// With `try_later`: how long to wait.
+        retry_after_secs: Option<u64>,
+    },
+    #[error("can't reach the server: {0}")]
+    Http(String),
+    #[error("the server's answer didn't make sense: {0}")]
+    Decode(String),
+}
+
+/// What `GET /api/v1/server` says.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ServerInfo {
+    pub name: String,
+    pub version: String,
+    pub pinned_build: String,
+    pub gate_host: String,
+    pub gate_port: u16,
+    pub server_id: u32,
+    pub api_version: u32,
+}
+
+/// A signed-in session. Its `Debug` doesn't show the token.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+pub struct Session {
+    token: String,
+    pub expires_at: i64,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("token", &"…")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+/// A single-use game token and where to use it. Its `Debug` doesn't show the ticket.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+pub struct GameGrant {
+    pub ticket: String,
+    pub expires_in_secs: u64,
+    pub gate_host: String,
+    pub gate_port: u16,
+    pub server_id: u32,
+    pub server_name: String,
+    pub account: String,
+    pub user_id: i64,
+}
+
+impl std::fmt::Debug for GameGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GameGrant")
+            .field("ticket", &"…")
+            .field("expires_in_secs", &self.expires_in_secs)
+            .field("gate_host", &self.gate_host)
+            .field("gate_port", &self.gate_port)
+            .field("server_id", &self.server_id)
+            .field("server_name", &self.server_name)
+            .field("account", &self.account)
+            .field("user_id", &self.user_id)
+            .finish()
+    }
+}
+
+pub struct ApiClient {
+    base: reqwest::Url,
+    http: reqwest::Client,
+}
+
+/// rustls with the `ring` provider (M3 spec D20), installed once per process.
+fn crypto() {
+    static DONE: OnceLock<()> = OnceLock::new();
+    DONE.get_or_init(|| {
+        // Another part of the process may have installed one already; either is fine.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+/// A loopback host: `localhost`, 127.0.0.0/8 or `::1`.
+fn loopback(url: &Url) -> bool {
+    match url.host_str() {
+        Some("localhost") => true,
+        Some(h) => h
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()),
+        None => false,
+    }
+}
+
+impl ApiClient {
+    /// A client for the server at `server` (`https://host[:port]`, or `http://` on this machine).
+    pub fn new(server: &str) -> Result<Self, ApiError> {
+        let base = Url::parse(server).map_err(|_| ApiError::BadUrl(server.into()))?;
+        match base.scheme() {
+            "https" => {}
+            "http" if loopback(&base) => {}
+            "http" => return Err(ApiError::Insecure),
+            _ => return Err(ApiError::BadUrl(server.into())),
+        }
+        if base.host_str().is_none() {
+            return Err(ApiError::BadUrl(server.into()));
+        }
+        crypto();
+        let http = reqwest::Client::builder()
+            .timeout(TIMEOUT)
+            // A redirect could carry a password to another place, or to http://.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| ApiError::Http(e.to_string()))?;
+        Ok(Self { base, http })
+    }
+
+    async fn call<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<Value>,
+    ) -> Result<Option<T>, ApiError> {
+        let url = self
+            .base
+            .join(path)
+            .map_err(|_| ApiError::BadUrl(path.into()))?;
+        let mut req = self.http.request(method, url);
+        if let Some(t) = bearer {
+            req = req.bearer_auth(t);
+        }
+        if let Some(b) = body {
+            req = req.json(&b);
+        }
+        // Without the URL: the error's text stays free of anything a user typed.
+        let res = req
+            .send()
+            .await
+            .map_err(|e| ApiError::Http(e.without_url().to_string()))?;
+        let status = res.status();
+        let bytes = res
+            .bytes()
+            .await
+            .map_err(|e| ApiError::Http(e.without_url().to_string()))?;
+        if !status.is_success() {
+            return Err(server_error(status.as_u16(), &bytes));
+        }
+        if status == StatusCode::NO_CONTENT || bytes.is_empty() {
+            return Ok(None);
+        }
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| ApiError::Decode(e.to_string()))
+    }
+
+    async fn expect<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<Value>,
+    ) -> Result<T, ApiError> {
+        self.call(method, path, bearer, body)
+            .await?
+            .ok_or_else(|| ApiError::Decode("an empty answer".into()))
+    }
+
+    pub async fn server_info(&self) -> Result<ServerInfo, ApiError> {
+        self.expect(Method::GET, "/api/v1/server", None, None).await
+    }
+
+    /// Creates an account with an invite code.
+    pub async fn register(
+        &self,
+        invite: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<(), ApiError> {
+        let body = json!({"invite": invite, "username": username, "password": password});
+        self.call::<Value>(Method::POST, "/api/v1/accounts", None, Some(body))
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn sign_in(&self, username: &str, password: &str) -> Result<Session, ApiError> {
+        let body = json!({"username": username, "password": password});
+        self.expect(Method::POST, "/api/v1/sessions", None, Some(body))
+            .await
+    }
+
+    /// Ends the session; the token is spent either way.
+    pub async fn sign_out(&self, session: Session) -> Result<(), ApiError> {
+        self.call::<Value>(
+            Method::DELETE,
+            "/api/v1/sessions",
+            Some(&session.token),
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// A single-use game token, valid for about a minute.
+    pub async fn game_token(&self, session: &Session) -> Result<GameGrant, ApiError> {
+        self.expect(
+            Method::POST,
+            "/api/v1/game-tokens",
+            Some(&session.token),
+            None,
+        )
+        .await
+    }
+}
+
+/// The error an answer's status and body describe: the body's `error` code, or `unknown`.
+fn server_error(status: u16, body: &[u8]) -> ApiError {
+    let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    ApiError::Server {
+        status,
+        code: v["error"].as_str().unwrap_or("unknown").to_string(),
+        retry_after_secs: v["retry_after_secs"].as_u64(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refuses_plain_http_off_loopback() {
+        assert!(ApiClient::new("http://127.0.0.1:7801").is_ok());
+        assert!(ApiClient::new("http://127.9.9.9:7801/").is_ok());
+        assert!(ApiClient::new("http://localhost:7801").is_ok());
+        assert!(ApiClient::new("http://[::1]:7801").is_ok());
+        assert!(matches!(
+            ApiClient::new("http://play.example.net"),
+            Err(ApiError::Insecure)
+        ));
+        assert!(matches!(
+            ApiClient::new("http://10.0.0.1:7801"),
+            Err(ApiError::Insecure)
+        ));
+        assert!(ApiClient::new("https://play.example.net").is_ok());
+        assert!(ApiClient::new("ftp://play.example.net").is_err());
+        assert!(ApiClient::new("play.example.net").is_err());
+    }
+
+    #[test]
+    fn error_bodies_become_codes() {
+        let e = server_error(429, br#"{"error":"try_later","retry_after_secs":7}"#);
+        assert!(matches!(
+            e,
+            ApiError::Server { status: 429, ref code, retry_after_secs: Some(7) } if code == "try_later"
+        ));
+        let e = server_error(401, br#"{"error":"bad_credentials"}"#);
+        assert!(matches!(
+            e,
+            ApiError::Server { status: 401, ref code, retry_after_secs: None } if code == "bad_credentials"
+        ));
+        let e = server_error(502, b"<html>Bad Gateway</html>");
+        assert!(matches!(e, ApiError::Server { status: 502, ref code, .. } if code == "unknown"));
+    }
+
+    #[test]
+    fn grants_never_show_their_secrets() {
+        let s = Session {
+            token: "fenji1-secret".into(),
+            expires_at: 9,
+        };
+        assert!(!format!("{s:?}").contains("secret"));
+        let g = GameGrant {
+            ticket: "fenji1-secret".into(),
+            expires_in_secs: 60,
+            gate_host: "h".into(),
+            gate_port: 1,
+            server_id: 1,
+            server_name: "F".into(),
+            account: "a".into(),
+            user_id: 1,
+        };
+        assert!(!format!("{g:?}").contains("secret"));
+    }
+}
