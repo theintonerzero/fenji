@@ -6,7 +6,7 @@ use std::time::Duration;
 use common::*;
 use fenji_proto::lobby::{self, code};
 use fenji_proto::pickle::{Table, Value};
-use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN, SERVER_FULL};
+use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN, PRE_AUTH_CAP, SERVER_ERROR, SERVER_FULL};
 use fenji_server::server::GateLimits;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -260,15 +260,123 @@ async fn silent_connection_is_closed_after_the_deadline() {
 async fn oversized_pre_auth_input_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
-    let mut bot = Bot::connect(s.login_addr, vec![b'a'; 0x5000]).await;
-    let mut closed = false;
-    for _ in 0..3 {
-        if bot.next_is_end().await {
-            closed = true;
+    let mut sock = TcpStream::connect(s.login_addr).await.unwrap();
+    assert!(hello(&mut sock).await.is_some());
+    // One byte past the cap, never a complete auth message.
+    let _ = sock.write_all(&vec![b'a'; PRE_AUTH_CAP + 1]).await;
+    let mut buf = [0u8; 64];
+    match tokio::time::timeout(Duration::from_secs(3), sock.read(&mut buf)).await {
+        Ok(Ok(0)) | Ok(Err(_)) => {}
+        Ok(Ok(n)) => panic!("{n} bytes after the hello"),
+        Err(_) => panic!("not closed past the cap"),
+    }
+    s.shutdown().await;
+}
+
+#[tokio::test]
+async fn refused_connections_keep_their_waiting_place_until_they_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    let mut refused = Vec::new();
+    for _ in 0..8 {
+        let mut bot = Bot::connect(s.login_addr, vec![0xFF, 0, 0, 9, 1, 2, 3]).await;
+        assert_eq!(bot.expect_rejected().await, AUTH_FAILED.as_bytes());
+        refused.push(bot); // still open: the server lingers for the client's close
+    }
+    let mut extra = TcpStream::connect(s.login_addr).await.unwrap();
+    assert!(
+        hello(&mut extra).await.is_none(),
+        "a 9th got a hello while 8 were being refused"
+    );
+    drop(refused);
+    let mut freed = false;
+    for _ in 0..50 {
+        let mut sock = TcpStream::connect(s.login_addr).await.unwrap();
+        if hello(&mut sock).await.is_some() {
+            freed = true;
             break;
         }
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(closed);
+    assert!(freed, "the places never came back");
+    s.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_idle_client_is_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let limits = GateLimits {
+        idle: Duration::from_millis(300),
+        ..GateLimits::default()
+    };
+    let (s, _c) = server(dir.path(), "", limits).await;
+    account(&s, "tester").await;
+    let t = ticket(&s, "tester").await;
+    let mut bot = Bot::connect(s.login_addr, payload(&t, "tester", false)).await;
+    bot.expect_work().await;
+    // The bot's own reads give up only after 5 s, so an end within 2 s is the server's close.
+    let end = tokio::time::timeout(Duration::from_secs(2), bot.next()).await;
+    assert!(matches!(end, Ok(None)), "not closed when idle: {end:?}");
+    s.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_client_that_stops_reading_is_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let limits = GateLimits {
+        max_players: 1,
+        write_deadline: Duration::from_millis(300),
+        ..GateLimits::default()
+    };
+    let (s, _c) = server(dir.path(), "", limits).await;
+    account(&s, "aaa").await;
+    account(&s, "bbb").await;
+    let t = ticket(&s, "aaa").await;
+    let mut a = Bot::connect(s.login_addr, payload(&t, "aaa", false)).await;
+    a.expect_work().await;
+    // Nine characters with the largest face make each list about 40 KB.
+    let face = Value::Str(format!("v:5;{}", "1".repeat(4000)).into_bytes());
+    for name in [
+        "Ana", "Bea", "Cid", "Dax", "Eli", "Fay", "Gus", "Hal", "Ivy",
+    ] {
+        let mut req = request(name, 0, 2);
+        if let Value::Table(t) = &mut req[0] {
+            t.hash[5].1 = face.clone();
+        }
+        a.send(lobby::CREATE_ACTOR, &req).await;
+        assert_eq!(a.recv().await.0, lobby::ROLE_CREATE);
+    }
+    // Far more than the socket buffers hold, never read.
+    for _ in 0..600 {
+        a.send(lobby::QUERY_ACTORS, &[]).await;
+    }
+    let mut joined = false;
+    for _ in 0..100 {
+        let t = ticket(&s, "bbb").await;
+        let mut b = Bot::connect(s.login_addr, payload(&t, "bbb", false)).await;
+        if matches!(
+            b.next().await,
+            Some(fenji_proto::client::ClientEvent::Accepted)
+        ) {
+            joined = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(joined, "the stuck connection kept its place");
+    drop(a);
+    s.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_store_failure_refuses_with_the_server_error_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    let t = ticket(&s, "tester").await;
+    s.accounts().store().close().await;
+    let mut bot = Bot::connect(s.login_addr, payload(&t, "tester", false)).await;
+    assert_eq!(bot.expect_rejected().await, SERVER_ERROR.as_bytes());
     s.shutdown().await;
 }
 

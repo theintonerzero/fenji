@@ -57,6 +57,12 @@ pub struct GateLimits {
     pub max_unauthenticated: usize,
     /// Of those, from one network (an IPv4 address or an IPv6 /64), so one host can't take them all.
     pub max_unauthenticated_per_network: usize,
+    /// No frame from a client in the lobby for this long ends the connection (it sends a time
+    /// sync every 2 s).
+    pub idle: Duration,
+    /// A write to a client that takes longer than this ends the connection: a client that stops
+    /// reading can't hold its task, its buffers and its place.
+    pub write_deadline: Duration,
 }
 
 impl Default for GateLimits {
@@ -66,6 +72,8 @@ impl Default for GateLimits {
             auth_deadline: Duration::from_secs(30),
             max_unauthenticated: 64,
             max_unauthenticated_per_network: 8,
+            idle: IDLE,
+            write_deadline: Duration::from_secs(10),
         }
     }
 }
@@ -179,7 +187,13 @@ pub(crate) async fn accept_loop(listener: TcpListener, gate: Arc<Gate>) {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             },
-            Some(_) = conns.join_next(), if !conns.is_empty() => {}
+            Some(done) = conns.join_next(), if !conns.is_empty() => {
+                if let Err(e) = done
+                    && e.is_panic()
+                {
+                    tracing::error!("a connection task panicked");
+                }
+            }
         }
     }
 }
@@ -213,10 +227,11 @@ async fn serve(
         Ok(auth) => auth?,
         Err(_) => bail!("no auth within {deadline:?}"),
     };
-    drop(place);
     let Some(auth) = auth else {
         return Ok(());
     };
+    // The place is kept through the ticket check and any refusal (with its linger), so connections
+    // being checked or refused count against the waiting caps too.
     let account = match login(&auth, &gate.accounts).await {
         Ok(a) => a,
         Err(reason) => {
@@ -231,9 +246,46 @@ async fn serve(
             return refuse(sock, &mut server, SERVER_FULL).await;
         }
     };
-    let worked = lobby_loop(sock, peer, gate, &mut server, &account, &mut replaced).await;
-    gate.online.leave(account.id, conn);
-    worked
+    drop(place);
+    // Gives the online place back however the lobby loop ends, a panic included.
+    let _online = Leave {
+        online: &gate.online,
+        account: account.id,
+        conn,
+    };
+    lobby_loop(sock, peer, gate, &mut server, &account, &mut replaced).await
+}
+
+struct Leave<'a> {
+    online: &'a Online,
+    account: i64,
+    conn: u64,
+}
+
+impl Drop for Leave<'_> {
+    fn drop(&mut self) {
+        self.online.leave(self.account, self.conn);
+    }
+}
+
+/// Writes `bytes`, or fails once `deadline` passes: a client that stops reading ends its
+/// connection instead of holding it.
+async fn send(sock: &mut TcpStream, bytes: &[u8], deadline: Duration) -> anyhow::Result<()> {
+    match tokio::time::timeout(deadline, sock.write_all(bytes)).await {
+        Ok(written) => Ok(written?),
+        Err(_) => bail!("the client stopped reading: a write took over {deadline:?}"),
+    }
+}
+
+/// Half-closes, then reads until the client closes or `LINGER` passes, so what was just sent isn't
+/// lost to a reset.
+async fn linger(sock: &mut TcpStream) {
+    let _ = sock.shutdown().await;
+    let mut buf = [0u8; 1024];
+    let _ = tokio::time::timeout(LINGER, async {
+        while matches!(sock.read(&mut buf).await, Ok(n) if n > 0) {}
+    })
+    .await;
 }
 
 /// Reads until the auth message is complete. `None` when the client hangs up first.
@@ -293,13 +345,8 @@ fn login_fields(payload: &[u8]) -> Option<(String, String)> {
 /// isn't lost to a reset.
 async fn refuse(sock: &mut TcpStream, server: &mut Server, reason: &str) -> anyhow::Result<()> {
     let out = server.reject(reason.as_bytes(), &StoredCodec)?;
-    sock.write_all(&out).await?;
-    sock.shutdown().await?;
-    let mut buf = [0u8; 1024];
-    let _ = tokio::time::timeout(LINGER, async {
-        while matches!(sock.read(&mut buf).await, Ok(n) if n > 0) {}
-    })
-    .await;
+    send(sock, &out, LINGER).await?;
+    linger(sock).await;
     Ok(())
 }
 
@@ -311,14 +358,15 @@ async fn lobby_loop(
     account: &Account,
     replaced: &mut oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
+    let deadline = gate.limits.write_deadline;
     let mut out = server.accept(&StoredCodec)?;
     out.extend(server.begin_work(&StoredCodec)?);
-    sock.write_all(&out).await?;
+    send(sock, &out, deadline).await?;
     tracing::info!(%peer, account = %account.username, "in the lobby");
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         tokio::select! {
-            read = tokio::time::timeout(IDLE, sock.read(&mut buf)) => {
+            read = tokio::time::timeout(gate.limits.idle, sock.read(&mut buf)) => {
                 let n = match read {
                     Ok(n) => n?,
                     Err(_) => {
@@ -334,7 +382,7 @@ async fn lobby_loop(
                     if let Event::Message(m) = event {
                         for reply in on_message(gate, account, m.ty, &m.body).await {
                             let bytes = script_out(server, &reply)?;
-                            sock.write_all(&bytes).await?;
+                            send(sock, &bytes, deadline).await?;
                         }
                     }
                 }
@@ -342,7 +390,8 @@ async fn lobby_loop(
             Ok(()) = &mut *replaced => {
                 tracing::info!(%peer, account = %account.username, "replaced by a newer login");
                 let bytes = server.send(Stc::Close.to_u8(), DUPLICATE_LOGIN.as_bytes(), &StoredCodec)?;
-                sock.write_all(&bytes).await?;
+                send(sock, &bytes, deadline).await?;
+                linger(sock).await;
                 return Ok(());
             }
         }
