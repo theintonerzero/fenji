@@ -18,9 +18,13 @@ use tokio::sync::Semaphore;
 use crate::clock::Clock;
 use crate::config::AuthConfig;
 
-/// The limiter's name for registrations: a NUL first, so no username can match it. Failed
-/// registrations count against their address like failed sign-ins.
-const REGISTER: &str = "\0register";
+/// The limiter's name for a registration: the username asked for, behind a prefix no username can
+/// have (a NUL), so registrations and sign-ins keep separate counts per name. Failed registrations
+/// count against their network like failed sign-ins; there is no shared registration count, which
+/// would let a few networks hold up everyone's registration.
+fn register_key(username: &str) -> String {
+    format!("\0register\0{username}")
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AccountsError {
@@ -89,7 +93,7 @@ impl std::fmt::Debug for GameGrant {
 pub struct Accounts {
     store: Store,
     limiter: Mutex<Limiter>,
-    hashing: Semaphore,
+    hashing: Arc<Semaphore>,
     hashes: AtomicU64,
     cfg: AuthConfig,
     clock: Arc<dyn Clock>,
@@ -100,7 +104,7 @@ impl Accounts {
         Self {
             store,
             limiter: Mutex::new(Limiter::new(LimiterConfig::default())),
-            hashing: Semaphore::new(4),
+            hashing: Arc::new(Semaphore::new(4)),
             hashes: AtomicU64::new(0),
             cfg,
             clock,
@@ -136,20 +140,24 @@ impl Accounts {
         }
     }
 
-    /// Runs argon2 work on the blocking pool, at most four at a time.
+    /// Runs argon2 work on the blocking pool, at most four at a time. The permit goes into the
+    /// blocking task, so a request that gives up (a client hanging up, or the API's timeout) keeps
+    /// its slot until its hash ends.
     async fn hashing<T: Send + 'static>(
         &self,
         f: impl FnOnce() -> T + Send + 'static,
     ) -> Result<T, AccountsError> {
-        let _permit = self
-            .hashing
-            .acquire()
+        let permit = Arc::clone(&self.hashing)
+            .acquire_owned()
             .await
             .map_err(|e| AccountsError::Internal(e.to_string()))?;
         self.hashes.fetch_add(1, Ordering::Relaxed);
-        tokio::task::spawn_blocking(f)
-            .await
-            .map_err(|e| AccountsError::Internal(e.to_string()))
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            f()
+        })
+        .await
+        .map_err(|e| AccountsError::Internal(e.to_string()))
     }
 
     /// Creates an account with an invite. The invite is checked before the username, and before
@@ -161,7 +169,7 @@ impl Accounts {
         password_: &str,
         addr: IpAddr,
     ) -> Result<i64, AccountsError> {
-        let attempt = self.begin(REGISTER, addr)?;
+        let attempt = self.begin(&register_key(username), addr)?;
         let code = InviteCode::parse(invite).ok_or(AccountsError::InvalidInvite)?;
         let now = self.clock.now_ms();
         if !self.store.invite_is_open(&code.hash(), now).await? {
@@ -357,6 +365,69 @@ mod tests {
                 .await,
             Err(AccountsError::TryLater(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_registrations_elsewhere_dont_hold_up_a_newcomer() {
+        let (_d, a, _c, code) = setup().await;
+        for n in 0..12u8 {
+            let addr = IpAddr::V4(Ipv4Addr::new(10, 9, n, 1));
+            let name = format!("guess{n}");
+            let _ = a
+                .register("0000-0000-0000-0000", &name, "a long password", addr)
+                .await;
+        }
+        a.register(&code, "tester", "a long password", ADDR)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn bad_invites_count_against_the_network_whatever_the_username() {
+        let (_d, a, _c, _code) = setup().await;
+        for n in 0..20 {
+            let name = format!("guess{n}");
+            let _ = a
+                .register("0000-0000-0000-0000", &name, "a long password", ADDR)
+                .await;
+        }
+        assert!(matches!(
+            a.register("0000-0000-0000-0000", "another", "a long password", ADDR)
+                .await,
+            Err(AccountsError::TryLater(_))
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancelled_request_keeps_its_hashing_slot_until_its_hash_ends() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+
+        let (_d, a, _c, _code) = setup().await;
+        let mut release = Vec::new();
+        for _ in 0..4 {
+            let (tx, rx) = mpsc::channel::<()>();
+            release.push(tx);
+            let busy = a.hashing(move || {
+                let _ = rx.recv();
+            });
+            // The request gives up (a client hanging up, or the API's timeout); its hash runs on.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), busy)
+                    .await
+                    .is_err()
+            );
+        }
+        let ran = Arc::new(AtomicBool::new(false));
+        let r = ran.clone();
+        let fifth = a.hashing(move || r.store(true, Ordering::SeqCst));
+        let waited = tokio::time::timeout(Duration::from_millis(300), fifth).await;
+        assert!(
+            waited.is_err() && !ran.load(Ordering::SeqCst),
+            "a fifth hash ran beside four"
+        );
+        drop(release);
+        a.hashing(|| ()).await.unwrap();
     }
 
     #[tokio::test]
