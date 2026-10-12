@@ -2,7 +2,7 @@
 
 Clean-room private server emulator for Swords of Legends Online (SoLO: the Western build of 古剑奇谭网络版, Steam app 1418100; servers shut down 2023-06-30), in Rust, for a small invited group on the owner's VPS. Built by reverse engineering the owner's own licensed client. Design: `docs/superpowers/specs/2026-10-11-fenji-design.md`. Docs index: `docs/README.md`. Fenji replaces the halted Caphras project (Black Desert Online) and keeps its tooling and process.
 
-**Status:** M1 (data layer) released as v0.2.0; summary in `docs/re/m1-summary.md`. M2 (transport + handshake) is next and has no plan yet.
+**Status:** M2 (transport + handshake) released as v0.3.0; summary in `docs/re/m2-summary.md`. Next: the public-repo community files, then the open M0–M2 issues (v0.3.1), then M3 (login + lobby), which has no plan yet.
 
 ## Ground rules (never break these)
 

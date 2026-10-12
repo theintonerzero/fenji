@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-12
+
+### Added
+
+- **proto:** Add fenji-proto with the inner header and the stored codec (#74)
+- **proto:** Add frame keys and frames for both directions (#75)
+- **proto:** Build and check the hello, and add the AES-128 variant (#76)
+- **proto:** Add the server handshake and a client simulator (#77)
+- **tools:** Let fenji-stub speak the client's handshake (#78)
+- **proto:** Decode the client's first packets after auth (#81)
+- **data:** Decode Oodle blocks with the client's DLL in a sandboxed helper (#82)
+- **data:** Decode _index and map paths to archive records (#83)
+- **data:** Read the client's tables and dump them (#85)
+
+### Fixed
+
+- **tools:** Keep M2's run artefacts out of git (#87)
+
+### Documentation
+
+- **re:** The launcher's login path, with an English interface (#55)
+- Add the M2 transport design spec and implementation plan (#56)
+- **re:** Write up the client's transport and handshake (#71)
+- **re:** Settle the evidence norm for gujianol.exe and read AurogonEngine's exports (#73)
+- **re:** Take the real client through the hello and auth (#79)
+- **re:** Read what follows the client's auth: dispatch, opcodes, payloads (#80)
+- **re:** Summarise M2 and update the spec (#86)
+
 ## [0.2.0] - 2026-10-12
 
 ### Added
