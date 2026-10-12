@@ -3,7 +3,7 @@
 [![CI](https://github.com/theintonerzero/fenji/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/theintonerzero/fenji/actions/workflows/ci.yml)
 [![Licence: AGPL-3.0-or-later](https://img.shields.io/badge/licence-AGPL--3.0--or--later-blue.svg)](LICENSE)
 
-Fenji is a clean-room private server emulator for **Swords of Legends Online** (SoLO), written in Rust. SoLO is the Western release of 古剑奇谭网络版 (Gujian Online). Gameforge ran it from 2021 until its servers shut down on 30 June 2023, and the game was delisted from Steam a month earlier. Fenji's goal is modest: let a small group of invited friends, each with their own copy of the game, play together again on a server one of them hosts.
+Fenji is a clean-room private server emulator for **Swords of Legends Online** (SoLO), written in Rust. SoLO is the Western release of 古剑奇谭网络版 (Gujian Online). Gameforge ran it from 2021 until its servers shut down on 30 June 2023, and the game was delisted from Steam a month earlier. Fenji's goal is modest: anyone can host a Fenji server and invite their friends, each with their own copy of the game, to play together again.
 
 Everything here comes from studying our own licensed copies of the client and from watching it talk to our own test server, inside a sandbox. No leaked server code or files are used, and no game files are in this repository.
 
