@@ -4,7 +4,7 @@ Fenji is a small volunteer project, so there is no bug bounty and no team on cal
 
 ## Supported versions
 
-Security fixes go into `dev` and ship in the next release. Older releases don't get backports.
+Security fixes go into `dev` and ship in the next release, or in a hotfix release if they're urgent. Older releases don't get backports.
 
 | Version | Supported |
 |---|---|
@@ -22,7 +22,7 @@ A good report says:
 - how to reproduce it, ideally with a minimal input;
 - what an attacker could do with it.
 
-We'll acknowledge it within a week, keep you posted while we fix it, and agree a disclosure date with you. We credit reporters in the advisory unless you'd rather we didn't.
+We'll acknowledge it within about a week, keep you posted while we fix it, and agree a disclosure date with you. We credit reporters in the advisory unless you'd rather we didn't.
 
 ## Scope
 

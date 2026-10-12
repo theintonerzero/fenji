@@ -1,5 +1,5 @@
 # Dependabot: the GitHub Actions pins (SHAs with version comments) monthly, in one grouped PR; Cargo
-# security updates only, since version bumps stay deliberate `chore(deps)` changes (docs/development.md).
+# security updates only, since version bumps stay deliberate `chore(deps)` changes (CLAUDE.md, "Pinned software").
 # Titles use a Conventional Commit prefix so CI's PR-title check passes.
 version: 2
 updates:

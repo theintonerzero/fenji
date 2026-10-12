@@ -15,7 +15,7 @@ Success for v1: invited friends sign in through the Fenji launcher, each with th
 
 ## 2. Ground rules (non-negotiable)
 
-1. **Legitimate copies only.** Every player and the server host needs their own legitimately obtained copy of the SoLO client. That means Steam (app 1418100 already in their library, since it was delisted) or Gameforge's own launcher while SoLO was distributed there. Fenji never distributes the client, never points to unofficial copies, and never supports cracked or modified clients. There is no automated ownership check: the owner vets everyone they invite (rule 5).
+1. **Legitimate copies only.** Every player and the server host needs their own legitimately obtained copy of the SoLO client. That means Steam (app 1418100 already in their library, since it was delisted) or Gameforge's own launcher while SoLO was distributed there. Fenji never distributes the client, never points to unofficial copies, and never supports cracked or modified clients. There is no automated ownership check: the host vets everyone they invite (rule 5).
 2. **Clean room.** Everything is derived from our own analysis of our own licensed client, and from watching it run against our own server. Leaked server files, server binaries, server scripts or server source for SoLO / 古剑奇谭网络版 are never used, referenced or accepted in contributions, and neither is anything derived from them. That covers:
    - write-ups based on such leaks, for example the GuJian Online "server RE report" circulated on RaGEZONE, recorded as rejected in `docs/re/sources.md`;
    - anything from the unofficial servers that appeared after the shutdown.
@@ -284,8 +284,7 @@ M5 may add or rename rates once SoLO's progression systems are mapped.
 
 ## 8. Deployment (VPS)
 
-Anyone can host Fenji. The reference setup below is a small Linux VPS; any machine that runs the release binary works the same way.
-
+Anyone can host Fenji. The reference setup below is a small Linux VPS; a host can adapt it to their own machine.
 
 - A release binary run by systemd: `StateDirectory=fenji`, `ProtectSystem=strict`, `NoNewPrivileges=yes`, `PrivateTmp=yes`. Secrets (the token-signing key) come via `EnvironmentFile=/etc/fenji/secrets.env`. No Docker.
 - Caddy 2.11 reverse-proxies the account API with automatic HTTPS.
@@ -313,7 +312,7 @@ Anyone can host Fenji. The reference setup below is a small Linux VPS; any machi
 | M1 | Data layer | `archive` lists archives and dumps items, skills, monsters, XP curve and maps. `luatool` disassembles the embedded Lua and decompiles enough to read the protocol and combat scripts. How much server-side logic the scripts carry is measured. The Oodle-for-archives path is decided |
 | M2 | Transport + handshake | The stub completes the real client's gate handshake and decodes its first packets with `fenji-proto`. The Oodle Network path is decided |
 | M3 | Login + lobby | Invite accounts, launcher (verify, launch), ticket handoff, and character list/create/delete in the real client |
-| M4 | Social sandbox + VPS | Friends enter the starting zone, move, see each other and chat; admin commands; the reference VPS deployment (§8), which anyone can follow to host their own server |
+| M4 | Social sandbox + VPS | Friends enter the starting zone, move, see each other and chat; admin commands; the reference deployment (§8), written up so anyone can host their own server |
 | M5 | Grind loop (v1) | Monsters, AI, combat (hybrid decision per system), XP, loot, inventory, persistence, live-tunable rates |
 
 **M1 update** ([`m1-summary.md`](../../re/m1-summary.md)). M1 delivered:

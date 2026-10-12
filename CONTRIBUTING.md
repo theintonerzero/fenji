@@ -10,26 +10,26 @@ These come from the design spec ([§2](docs/superpowers/specs/2026-10-11-fenji-d
 2. **Clean room.** Never use, reference or submit leaked server files, server binaries, server scripts or server source for Swords of Legends Online / 古剑奇谭网络版, or anything derived from them. That includes write-ups based on leaks and anything from the unofficial servers. [`docs/re/sources.md`](docs/re/sources.md) lists the sources we use and the ones we rejected.
 3. **No game content in the repository.** No game binaries or data archives, no extracted assets, no extracted or decompiled scripts, no middleware libraries (Oodle or others), no packet captures, no stub logs, no analysis databases or evidence bundles. They stay on your machine, in the git-ignored `re/` folder. `scripts/check-forbidden-files.sh` checks every PR.
 4. **Never touch official services.** Don't point a modified or instrumented client, or any Fenji tool, at a live service: the game still runs in China, and Gameforge's, Steam's and Epic's services are live. Every client run happens inside the sandbox (`scripts/spike/run-client.sh`), against our own stub or server.
-5. **Private and non-commercial.** Fenji servers are invite-only and never monetised.
+5. **Private and non-commercial.** Fenji is for private, invite-only, unlisted, non-commercial servers. Contributions that add public server listings, payments or monetisation won't be accepted.
 6. **Some steps need the maintainer's decision first:** patching the client on disk or in memory, circumventing any protection, anything that could load the client's kernel driver, and using proprietary middleware outside its licence. If your work reaches one, stop and open a **Decision gate** issue.
 7. **No third-party credentials.** Fenji never handles Steam or Gameforge passwords.
 
 ## Who may do reverse engineering
 
-If you have ever read material rule 2 rules out (for example the rejected sources in `docs/re/sources.md`), you can still contribute. Code that doesn't depend on the client's internals is welcome: tooling, CI, the launcher's interface, docs, review. But please don't do reverse engineering or protocol work on the client, and that includes running it. Tell us in your PR if this applies to you; nobody will think less of you for it.
+If you have ever read material rule 2 rules out (for example the rejected sources in `docs/re/sources.md`), you can still contribute. Work that doesn't depend on the client's internals is welcome: tooling, CI, the launcher's interface, and docs and reviews that don't touch the client's internals. But please don't do reverse engineering or protocol work on the client, and that includes running it. Tell us in your PR if this applies to you; nobody will think less of you for it.
 
 By opening a pull request you confirm that it contains nothing that rule 2 or rule 3 rules out.
 
 ## Getting set up
 
-[`docs/development.md`](docs/development.md) covers it: `scripts/bootstrap.sh` installs every pinned tool on macOS or Linux, and the doc explains the machines, branches and release process. Reverse-engineering work also needs [`docs/re/README.md`](docs/re/README.md): the pinned client build, the analysis setup, the sandbox, and how findings cite their evidence.
+Building and testing needs only Rust (through rustup; `rust-toolchain.toml` pins the version) and a C compiler. [`docs/development.md`](docs/development.md) covers the rest: `scripts/bootstrap.sh` sets up the whole reverse-engineering environment on macOS or Linux (it installs system packages and asks before using `sudo` or editing your shell's start-up file), and the doc explains the branches and the release process. Reverse-engineering work also needs [`docs/re/README.md`](docs/re/README.md): the pinned client build, the analysis setup, the sandbox, and how findings cite their evidence.
 
 ## How work flows
 
-- **Start from an issue.** Bugs, tasks, reverse-engineering questions and decision gates each have an issue template. For anything bigger than a small fix, open or comment on an issue first so we can agree the approach.
+- **Start from an issue.** Bugs, tasks, questions, reverse-engineering questions and decision gates each have an issue template. For anything bigger than a small fix, open or comment on an issue first so we can agree the approach.
 - **Branch from `dev`**, named `feat/<scope>-<issue>-<topic>`, `fix/…`, `docs/…` or `chore/…`, for example `feat/proto-12-handshake-state-machine`.
 - **One concern per pull request**, into `dev`, with `Closes #N`. Don't mix refactoring with behaviour changes.
-- **Conventional Commits.** Titles look like `feat(proto): add the hello check`. The `commit-msg` hook (in `.githooks/`) and CI enforce it; the scopes are listed in `docs/development.md`. The changelog is generated from these, so don't edit `CHANGELOG.md` by hand.
+- **Conventional Commits.** Titles look like `feat(proto): add the hello check`. The `commit-msg` hook in `.githooks/` (enable it with `git config core.hooksPath .githooks`; bootstrap does this) and CI enforce it; the scopes are listed in `docs/development.md`. The changelog is generated from these, so don't edit `CHANGELOG.md` by hand.
 - **Tests first** for code: write the failing test, then the fix. Code that parses bytes from the network or from files must never panic on bad input; it returns an error.
 - **Before you push:**
 
@@ -45,7 +45,7 @@ By opening a pull request you confirm that it contains nothing that rule 2 or ru
 
 ## Reverse-engineering findings
 
-Findings go in `docs/protocol/` or `docs/re/` as prose and tables, never as decompiled code or disassembly listings. Addresses, constants and function names are fine. Tag each finding **Observed**, **Inferred** or **Unknown**, and cite its evidence: an REA Evidence ID with the exact call, or a pinned-exe address ([`docs/re/README.md`](docs/re/README.md), "Evidence for `gujianol.exe`"). New dependencies must use a licence `deny.toml` allows.
+Findings go in `docs/protocol/` or `docs/re/` as prose and tables, never as decompiled code or disassembly listings. Addresses, constants and function names are fine. Tag each finding **Observed**, **Inferred** or **Unknown**, and cite its evidence: an Evidence ID from REA (the reverse-engineering tool the project uses through MCP) with the exact call, or a pinned-exe address ([`docs/re/README.md`](docs/re/README.md), "Evidence for `gujianol.exe`"). New dependencies must use a licence `deny.toml` allows.
 
 ## AI coding assistants
 

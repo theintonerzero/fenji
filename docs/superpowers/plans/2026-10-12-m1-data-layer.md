@@ -220,7 +220,7 @@ Expected: 14 issue URLs. Task 9 duplicates #17, so close #17 as a duplicate of T
 ```bash
 git switch dev && git pull --ff-only && git switch -c docs/re-<issue>-script-format
 mkdir -p re/m1/probes re/m1/evidence
-cp /tmp/claude-1000/-home-jdarkovski-projects-fenji/*/scratchpad/m1/probe_*.py re/m1/probes/ 2>/dev/null || true
+cp <scratchpad>/m1/probe_*.py re/m1/probes/ 2>/dev/null || true
 ```
 
 If the scratchpad copies are gone, rewrite the two probes that matter as stdlib-only scripts in `re/m1/probes/`:
