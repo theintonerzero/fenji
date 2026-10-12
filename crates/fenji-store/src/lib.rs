@@ -48,6 +48,16 @@ impl Store {
         self.pool.close().await;
     }
 
+    /// Holds the write lock for `d`, then lets go without writing: for tests of what other writers
+    /// see while a server's transaction is open.
+    #[doc(hidden)]
+    pub async fn hold_write_lock(&self, d: Duration) -> Result<()> {
+        let tx = self.begin().await?;
+        tokio::time::sleep(d).await;
+        tx.rollback().await?;
+        Ok(())
+    }
+
     async fn begin(&self) -> Result<Transaction<'static, Sqlite>> {
         Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
     }

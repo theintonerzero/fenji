@@ -60,6 +60,21 @@ impl Store {
         Ok(r.rows_affected() == 1)
     }
 
+    /// Whether an invite could be redeemed now: known, unspent, unrevoked and unexpired. It spends
+    /// nothing; `redeem_invite` checks again in its transaction. The account API asks first, so a
+    /// fake code costs no password hashing (M3 plan, Amendment A).
+    pub async fn invite_is_open(&self, code_hash: &[u8; 32], now: i64) -> Result<bool> {
+        let open: Option<(i64,)> = sqlx::query_as(
+            "SELECT id FROM invites WHERE code_hash = ? AND redeemed_at IS NULL \
+             AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)",
+        )
+        .bind(&code_hash[..])
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(open.is_some())
+    }
+
     /// Spends the invite and creates its account in one transaction, and returns the account's id.
     /// The invite is checked first, so only someone holding a valid invite learns whether a
     /// username is taken (M3 spec D12).
@@ -208,5 +223,22 @@ mod tests {
         assert_eq!(x.is_ok() as u8 + y.is_ok() as u8, 1);
         assert!(matches!(x.err().or(y.err()), Some(Error::InviteInvalid)));
         assert_eq!(s.list_accounts().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn invite_is_open_answers_without_spending() {
+        let (_d, s) = store().await;
+        assert!(!s.invite_is_open(&h(1), NOW).await.unwrap(), "unknown");
+        s.create_invite(&h(1), None, NOW, Some(NOW + 10))
+            .await
+            .unwrap();
+        assert!(s.invite_is_open(&h(1), NOW + 9).await.unwrap());
+        assert!(!s.invite_is_open(&h(1), NOW + 10).await.unwrap(), "expired");
+        assert!(s.invite_is_open(&h(1), NOW).await.unwrap(), "still unspent");
+        s.redeem_invite(&h(1), "bob", "$p", NOW).await.unwrap();
+        assert!(!s.invite_is_open(&h(1), NOW).await.unwrap(), "spent");
+        let id = s.create_invite(&h(2), None, NOW, None).await.unwrap();
+        s.revoke_invite(id, NOW).await.unwrap();
+        assert!(!s.invite_is_open(&h(2), NOW).await.unwrap(), "revoked");
     }
 }

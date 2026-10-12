@@ -1,0 +1,30 @@
+[package]
+name = "fenji-server"
+description = "Fenji's server: the game gate, the account API and the admin commands"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+fenji-auth.workspace = true
+fenji-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
