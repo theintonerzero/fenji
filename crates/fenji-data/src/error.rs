@@ -25,6 +25,8 @@ pub enum Error {
     BadEntry { va: u64, reason: String },
     #[error("archive: {0}")]
     BadArchive(String),
+    #[error("table cache: {0}")]
+    BadCache(String),
     #[error("output directory: {0}")]
     OutDir(String),
     #[error(transparent)]
