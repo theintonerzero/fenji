@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["tools/stub"]
+members = ["tools/stub", "tools/luatool", "tools/archive", "crates/fenji-data", "crates/fenji-lua"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.97"
 publish = false
@@ -11,7 +11,14 @@ publish = false
 [workspace.dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+fenji-data = { path = "crates/fenji-data" }
+fenji-lua = { path = "crates/fenji-lua" }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
+mlua = { version = "0.12.2", features = ["lua53", "vendored"] }
+sha1 = "0.11.0"
+sha2 = "0.11.0"
 tempfile = "3.27.0"
+thiserror = "2.0.21"
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "io-util", "signal", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

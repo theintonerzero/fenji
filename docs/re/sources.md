@@ -6,8 +6,9 @@ Every outside source we take hints from (design spec §2 rule 2, §4 C). Only cl
 
 | Source (URL) | Licence | Provenance checked | What we used it for | Date |
 |---|---|---|---|---|
-
-No external sources used yet.
+| [Lua 5.3](https://www.lua.org) (vendored by [mlua](https://github.com/mlua-rs/mlua) 0.12.2) | MIT | Yes: upstream Lua, built from source by the `lua-src` crate | Test-only: compiles our own Lua source into stock 5.3 bytecode fixtures at test time (M1 Task 4) | 2026-10-12 |
+| [unluac](https://sourceforge.net/projects/unluac/) `unluac_2025_12_23.jar` | MIT (project page) | Yes: a general Lua 5.0–5.4 decompiler by its author; nothing SoLO-specific | External tool: decompiles our normalised copies of the client's own scripts; output only in `re/` (M1 Task 7) | 2026-10-12 |
+| [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) GE-Proton11-7 | BSD-3-Clause (Proton) with Wine's LGPL and other bundled licences | Yes: a public Proton fork | External runtime for sandboxed client runs, never redistributed (M1 Task 9) | 2026-10-12 |
 
 ## Rejected
 

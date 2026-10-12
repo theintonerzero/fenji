@@ -33,7 +33,9 @@ ENV_FILE="$HOME/.config/fenji/env.sh"
 GHIDRA_DIR="$TOOLS_DIR/ghidra_${GHIDRA_VERSION}_PUBLIC"
 DD_DIR="$TOOLS_DIR/DepotDownloader-$DEPOTDOWNLOADER_VERSION"
 UMU_DIR="$TOOLS_DIR/umu-$UMU_LAUNCHER_VERSION"
+GE_PROTON_DIR="$TOOLS_DIR/$GE_PROTON_VERSION"
 JDK_DIR="$TOOLS_DIR/jdk-$TEMURIN_VERSION"
+UNLUAC_JAR="$TOOLS_DIR/unluac/unluac_${UNLUAC_VERSION}.jar"
 MISMATCH=0
 export PATH="$BIN_DIR:$HOME/.cargo/bin:$PATH"
 
@@ -76,7 +78,10 @@ download_verified() {
   curl -fsSL -o "$3" "$1"
   local got
   got=$(sha256_of "$3")
-  [ "$got" = "$2" ] || die "checksum mismatch for $1 (expected $2, got $got)"
+  if [ "$got" != "$2" ]; then
+    rm -f "$3" # never leave an unverified download behind
+    die "checksum mismatch for $1 (expected $2, got $got)"
+  fi
 }
 
 # ---------------------------------------------------------------- platform
@@ -161,9 +166,11 @@ check_all() {
   jh=$(java_home)
   report java "$JAVA_MAJOR" "$([ -n "$jh" ] && "$jh/bin/java" -version 2>&1 | awk -F'"' '/version/ {print $2}')"
   report ghidra "$GHIDRA_VERSION" "$([ -x "$GHIDRA_DIR/support/analyzeHeadless" ] && echo "$GHIDRA_VERSION")"
+  report unluac "$UNLUAC_VERSION" "$([ -f "$UNLUAC_JAR" ] && echo "$UNLUAC_VERSION")"
   report DepotDownloader "$DEPOTDOWNLOADER_VERSION" "$([ -x "$DD_DIR/DepotDownloader" ] && echo "$DEPOTDOWNLOADER_VERSION")"
   if [ "$PLATFORM" = linux ]; then
     report umu-launcher "$UMU_LAUNCHER_VERSION" "$([ -n "$(find "$UMU_DIR" -name umu-run -type f 2>/dev/null | head -n 1)" ] && echo "$UMU_LAUNCHER_VERSION")"
+    report GE-Proton "$GE_PROTON_VERSION" "$([ -x "$GE_PROTON_DIR/proton" ] && echo "$GE_PROTON_VERSION")"
     printf '  %-18s %s\n' tcpdump "$(tcpdump --version 2>&1 | head -n 1 || echo missing)"
     printf '  %-18s %s\n' tshark "$(tshark --version 2>/dev/null | head -n 1 || echo missing)"
   fi
@@ -339,6 +346,17 @@ if [ ! -x "$DD_DIR/DepotDownloader" ]; then
 fi
 ln -sf "$DD_DIR/DepotDownloader" "$BIN_DIR/DepotDownloader"
 
+if [ ! -f "$UNLUAC_JAR" ]; then
+  log "unluac $UNLUAC_VERSION (SHA-256 verified)"
+  tmp=$(mktemp -d)
+  download_verified \
+    "https://downloads.sourceforge.net/project/unluac/Unstable/unluac_${UNLUAC_VERSION}.jar" \
+    "$UNLUAC_SHA256" "$tmp/unluac.jar"
+  mkdir -p "$(dirname "$UNLUAC_JAR")"
+  mv "$tmp/unluac.jar" "$UNLUAC_JAR" # only a verified jar reaches its final path
+  rm -rf "$tmp"
+fi
+
 if [ "$PLATFORM" = linux ]; then
   if [ ! -d "$UMU_DIR" ]; then
     log "umu-launcher $UMU_LAUNCHER_VERSION (zipapp, SHA-256 verified)"
@@ -352,6 +370,26 @@ if [ "$PLATFORM" = linux ]; then
   fi
   umu_run=$(find "$UMU_DIR" -type f -name umu-run | head -n 1)
   if [ -n "$umu_run" ]; then ln -sf "$umu_run" "$BIN_DIR/umu-run"; else warn "umu-run not found in $UMU_DIR"; fi
+  if [ "$(uname -m)" = x86_64 ] && [ ! -x "$GE_PROTON_DIR/proton" ]; then
+    log "GE-Proton $GE_PROTON_VERSION (SHA-256 verified)"
+    # A directory without a working proton is a partial install; mv would nest the new one inside it.
+    if [ -e "$GE_PROTON_DIR" ] || [ -L "$GE_PROTON_DIR" ]; then
+      die "$GE_PROTON_DIR exists but has no executable proton (a partial install?); remove it and re-run"
+    fi
+    mkdir -p "$TOOLS_DIR"
+    tmp=$(mktemp -d "$TOOLS_DIR/.ge-proton.XXXXXX") # same filesystem, so the final mv is one rename
+    # The archive's top directory is <version>-x86_64; it is installed under the pinned name. The
+    # temporary directory goes whichever way this ends.
+    if ! (download_verified \
+      "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/${GE_PROTON_VERSION}/${GE_PROTON_VERSION}-x86_64.tar.gz" \
+      "$GE_PROTON_SHA256_x86_64" "$tmp/ge-proton.tar.gz" &&
+      tar -xzf "$tmp/ge-proton.tar.gz" -C "$tmp" &&
+      mv "$tmp/${GE_PROTON_VERSION}-x86_64" "$GE_PROTON_DIR"); then
+      rm -rf -- "$tmp"
+      die "GE-Proton $GE_PROTON_VERSION was not installed"
+    fi
+    rm -rf -- "$tmp"
+  fi
 fi
 
 # ---------------------------------------------------------------- 6. shell environment

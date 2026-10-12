@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-12
+
+### Added
+
+- **data:** Read the client's blob format and its embedded file system (#40)
+- **lua:** Parse and write the client's Lua 5.3 chunks (#42)
+- **lua:** Disassemble the client's Lua chunks (#43)
+- **tools:** Add luatool to list, extract and disassemble the embedded scripts (#44)
+- **lua:** Normalise client chunks to stock Lua 5.3 and decompile them with unluac (#45)
+- **lua:** Measure server-side logic in the client's scripts (#46)
+- **data:** Read the archives' structure without decompression (#47)
+- **re:** Track the client runner and AGT watchdog, and pin GE-Proton (#48)
+- **re:** Connect the real client to fenji-stub (#49)
+
+### Fixed
+
+- **re:** Close the M1 final review's findings (#52)
+
+### Documentation
+
+- Add the M1 data-layer design spec (#22)
+- Add the M1 data-layer implementation plan (#23)
+- **re:** Write up the client's embedded script format (#38)
+- **re:** Trace how the client finds its server (#41)
+- **re:** Summarise M1 and update the spec (#50)
+
 ## [0.1.0] - 2026-10-11
 
 ### Added

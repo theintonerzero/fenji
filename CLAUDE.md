@@ -2,7 +2,7 @@
 
 Clean-room private server emulator for Swords of Legends Online (SoLO: the Western build of 古剑奇谭网络版, Steam app 1418100; servers shut down 2023-06-30), in Rust, for a small invited group on the owner's VPS. Built by reverse engineering the owner's own licensed client. Design: `docs/superpowers/specs/2026-10-11-fenji-design.md`. Docs index: `docs/README.md`. Fenji replaces the halted Caphras project (Black Desert Online) and keeps its tooling and process.
 
-**Status:** M0 (dev environment + spike) released as v0.1.0; findings in `docs/re/spike-0.md`. M1 (data layer) is next and has no plan yet.
+**Status:** M1 (data layer) released as v0.2.0; summary in `docs/re/m1-summary.md`. M2 (transport + handshake) is next and has no plan yet.
 
 ## Ground rules (never break these)
 
@@ -20,7 +20,7 @@ Clean-room private server emulator for Swords of Legends Online (SoLO: the Weste
 - **Reverse engineering:** use the `reverse-engineer-anything` skill, the shared Ghidra GUI project and the `rea` MCP server. Static analysis first. The Ghidra project is the main surface for `gujianol.exe`, because REA's full auto-analysis of its ~52,000 functions is too slow. REA records Evidence IDs for targeted functions. Cite REA Evidence IDs (or pinned-exe addresses where REA can't reach) in `docs/protocol/` and in packet type doc comments. Separate observation, inference and unknown. Close REA sessions when done.
 - **Clean-room hygiene:** anyone, person or agent, who has read material listed as rejected in `docs/re/sources.md` does no RE or protocol work on the client; client runs, diagnostic ones included, count as RE work. They may coordinate, review process and write code that doesn't depend on client internals.
 - **Ghidra GUI project (`ghidra` MCP):** canonical names, types and structs for the pinned binary, shared with the owner live. Leave `GHIDRA_MCP_ALLOW_SCRIPTS` unset (script execution off) and the server on 127.0.0.1. Never use its `debugger_*` tools on the SoLO client: attaching a debugger is a decision gate.
-- **Client runs:** only inside `scripts/spike/isolated-run.sh` (loopback only; a nested display with `--x11 N`; non-root with `--no-root`; `--cpu-topology` for Wine's processor information). Quit Steam first, bind only directories that belong to the run, and keep the pinned copy outside any Steam library.
+- **Client runs:** only inside `scripts/spike/isolated-run.sh` (loopback only; a nested display with `--x11 N`; non-root with `--no-root`; `--cpu-topology` for Wine's processor information). Use `scripts/spike/run-client.sh`, which adds fenji-stub and the AGT driver watchdog. Quit Steam first, bind only directories that belong to the run, and keep the pinned copy outside any Steam library.
 - **Launcher UI** (`apps/launcher`, Tauri 2): use the `impeccable` skill for design work.
 - **Library/API docs:** use `context7` rather than memory for crate and tool APIs (Tauri, Bevy, sqlx, axum, binrw).
 - **Live server inspection:** `brp` MCP against a local `fenji-server` (BRP binds to localhost only).
@@ -65,11 +65,13 @@ Source of truth: `scripts/versions.env` (bootstrap reads it). Keep this table id
 | pnpm | 12.11.2 | `npm install -g --prefix ~/.local` |
 | rea-agents | 6.3.0 | REA MCP server + skill (skill metadata version 34) |
 | Ghidra | 12.1.4 (build 20260921) | official release zip, SHA-256 pinned; `GHIDRA_INSTALL_DIR=~/.local/share/fenji/tools/ghidra_12.1.4_PUBLIC` |
+| unluac | 2025_12_23 | Lua 5.0–5.4 decompiler jar (MIT), SHA-256 pinned, `~/.local/share/fenji/tools/unluac/`; external tool, output only in `re/` |
 | uv | ≥ 0.12 | installs the ghidra-mcp bridge (`uv tool`); macOS: Homebrew, Fedora: dnf |
 | ghidra-mcp | 7.0.0-rc.2 (bridge 7.0.0) | GhidraMCP extension zip + `bridge-mcp-ghidra` wheel, SHA-256 pinned; only release built for Ghidra 12.1.4; bump to 7.0.0 final when it ships |
 | Java | 21 | macOS: Temurin 21 cask; Linux: Temurin tarball (`TEMURIN_VERSION`, SHA-256 pinned; Fedora 44 dropped JDK 21). Ghidra runtime |
 | DepotDownloader | 3.4.0 | GitHub release, SHA-256 pinned, `~/.local/bin` |
 | umu-launcher | 1.4.4 | Fedora only, zipapp, SHA-256 pinned, `~/.local/bin/umu-run` |
+| GE-Proton | GE-Proton11-7 | Linux x86_64, SHA-256 pinned, `~/.local/share/fenji/tools/GE-Proton11-7`; every sandboxed client run (`scripts/spike/run-client.sh`) |
 | Caddy | 2.11.7 | VPS only |
 
 Hopper is optional. The Hopper demo can't handle a binary this size, so use Ghidra.

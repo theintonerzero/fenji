@@ -1,0 +1,22 @@
+[package]
+name = "fenji-data"
+description = "Reads the SoLO client's own data: the engine's blob format, the file system embedded in gujianol.exe and the archives' structure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Synthetic PE images and blobs for tests in this and other crates: never game bytes.
+test-util = []
+
+[dependencies]
+lz4_flex.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
