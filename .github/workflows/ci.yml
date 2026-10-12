@@ -42,6 +42,11 @@ jobs:
         run: scripts/check-forbidden-files.sh
       - name: Commit-subject check tests
         run: scripts/test-check-commit-subject.sh
+      - name: A Turkish locale for the locale-proofing tests
+        # Its dotless-i lowercasing is what the forbidden-file and MIT-SHM tests guard against.
+        run: |
+          sudo locale-gen tr_TR.UTF-8
+          locale -a | grep -qi '^tr_TR.utf8$'
       - name: Forbidden-file check tests
         run: scripts/test-check-forbidden-files.sh
       - name: Watchdog and runner tests

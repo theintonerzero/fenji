@@ -49,13 +49,19 @@ put() {
 # bigfile PATH: writes a file one byte over the 5 MiB limit.
 bigfile() { head -c $((5 * 1024 * 1024 + 1)) /dev/zero > "$1"; }
 
-# stage PATH FORMAT: a fresh repo with only PATH staged; prints its directory.
+# stage PATH FORMAT: a fresh repo with only PATH staged; prints its directory. It runs inside $(...),
+# where errexit is off, so a refused file prints a path that isn't a repo instead: the case then
+# fails, rather than passing on an empty index.
 stage() {
   local d
   d=$(newrepo)
   put "$d" "$1" "$2"
-  git --literal-pathspecs -C "$d" add -f -- "$1"
-  echo "$d"
+  if git --literal-pathspecs -C "$d" add -f -- "$1" &&
+    [ -n "$(git --literal-pathspecs -C "$d" ls-files -- "$1")" ]; then
+    echo "$d"
+  else
+    echo "$root/setup-failed"
+  fi
 }
 
 # commit DIR MESSAGE: commits what is staged, skipping hooks.
@@ -104,6 +110,17 @@ rejected() { expect_reject "$(stage "$1" "$2")" "$3 ($(printf '%q' "$1"))" --sta
 # ---- ordinary content is accepted
 
 expect_accept "$(stage docs/notes.md '# notes\n')" "an ordinary file" --staged
+
+# ---- a case whose setup fails must fail, not pass: stage prints a path that isn't a repo when git
+# refuses the file, so the checker never runs on an empty index.
+before=$failed
+expect_accept "$(stage .git/x 'x' 2>/dev/null)" "(a case whose setup fails)" --staged 2>/dev/null
+if [ "$failed" -eq $((before + 1)) ]; then
+  failed=$before
+  ok "a case whose setup fails is a failure, not a vacuous pass"
+else
+  fail "a case whose setup fails passed vacuously"
+fi
 expect_accept "$(stage 文档/说明.md 'x')" "an ordinary file with a non-ASCII name" --staged
 expect_accept "$(stage "$(printf 'a\nb.txt')" 'x')" "an ordinary file with a newline in its name" --staged
 expect_accept "$(stage docs/re/README.md 'x')" "a file under docs/re/ (only a top-level re/ is the RE workspace)" --staged
@@ -127,6 +144,21 @@ rejected cap/session.pcapng 'x' "a capture by name"
 rejected cap/blob.bin '\012\015\015\012' "a pcapng capture by magic"
 rejected re/notes.txt 'x' "anything under re/"
 rejected ghidra/fenji.gpr 'x' "a Ghidra project"
+rejected data/DATA042 'x' "a data archive, upper case"
+rejected data/_INDEX 'x' "the archive index, upper case"
+rejected ghidra/fenji.rep/idx 'x' "Ghidra project data"
+
+# ---- the checker judges names in the C locale, whatever the caller's. A Turkish locale lowercases
+# I to a dotless i, so without LC_ALL=C "_INDEX" would not become "_index".
+
+if [ "$(printf I | LC_ALL=tr_TR.UTF-8 tr '[:upper:]' '[:lower:]' 2>/dev/null)" = I ]; then
+  LC_ALL=tr_TR.UTF-8 rejected data/_INDEX 'x' "the archive index, upper case, in a Turkish locale"
+  LC_ALL=tr_TR.UTF-8 rejected bin64/fenji.I64 'x' "an IDA database, upper case, in a Turkish locale"
+elif [ -n "${CI:-}" ]; then
+  fail "the tr_TR.UTF-8 locale is missing in CI (the workflow generates it)"
+else
+  echo "skip - no tr_TR.UTF-8 locale, can't test that names are judged in the C locale"
+fi
 
 # ---- M2's run and decode artefacts, wherever they land (a stub started outside the repo root, a
 # copy made by hand); the real client's auth capture holds the machine's MAC and fingerprint
@@ -138,6 +170,31 @@ rejected dump/items.jsonl '{"key":1}' "a table dump"
 rejected spool/in/0123456789abcdef0123456789abcdef01234567-524288.bin 'x' "an Oodle spool block"
 expect_accept "$(stage crates/fenji-proto/tests/fixtures/r4b-up.hex '00')" "a hex fixture" --staged
 expect_accept "$(stage docs/handshake-1.bin 'x')" "a .bin whose name isn't a spool block's" --staged
+expect_accept "$(stage spool/0123456789abcdef0123456789abcdef0123456-1.bin 'x')" "a .bin with 39 hex digits" --staged
+expect_accept "$(stage spool/0123456789abcdef0123456789abcdef012345678-1.bin 'x')" "a .bin with 41 hex digits" --staged
+expect_accept "$(stage spool/0123456789abcdef0123456789abcdef01234567-x.bin 'x')" "a .bin whose length isn't digits" --staged
+rejected logs/1791772292581-7800-127.0.0.1_51234.log '# fenji-stub session\n' "a stub session log (it holds the client's auth frame)"
+expect_accept "$(stage docs/build.log 'x')" "a .log whose name isn't a stub session's" --staged
+
+# ---- native libraries and Oodle's SDK (the middleware ground rule 3 keeps out)
+
+rejected sdk/oo2core_9_win64.lib 'x' "an import library"
+rejected sdk/liboo2corelinux64.a 'x' "a static library"
+rejected sdk/oodle2.h 'x' "an Oodle SDK header"
+rejected sdk/oodle2net.h 'x' "an Oodle Network SDK header"
+rejected tools/fat64 '\312\376\272\277' "a fat-64 Mach-O binary by magic"
+expect_accept "$(stage crates/x/src/oodle.rs 'x')" "a source file that only mentions Oodle" --staged
+
+# ---- .gitignore keeps the same artefacts out wherever they land, and leaves fixtures alone
+
+repo_root=$(cd "$(dirname "$0")/.." && pwd)
+for path in tools/stub/re/stub-logs/x.log logs/x.auth.bin logs/x.events caches/all_tables.new_cache \
+  dump/items.jsonl x/oodle-spool/in/b.bin; do
+  if git -C "$repo_root" check-ignore -q --no-index -- "$path"; then ok "ignores $path"; else fail "ignores $path"; fi
+done
+for path in crates/fenji-proto/tests/fixtures/r4b-up.hex docs/re/README.md; do
+  if git -C "$repo_root" check-ignore -q --no-index -- "$path"; then fail "doesn't ignore $path"; else ok "doesn't ignore $path"; fi
+done
 
 d=$(stage big.txt 'x')
 bigfile "$d/big.txt"

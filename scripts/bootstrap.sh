@@ -172,8 +172,6 @@ check_all() {
   if [ "$PLATFORM" = linux ]; then
     report umu-launcher "$UMU_LAUNCHER_VERSION" "$([ -n "$(find "$UMU_DIR" -name umu-run -type f 2>/dev/null | head -n 1)" ] && echo "$UMU_LAUNCHER_VERSION")"
     report GE-Proton "$GE_PROTON_VERSION" "$([ -x "$GE_PROTON_DIR/proton" ] && echo "$GE_PROTON_VERSION")"
-    printf '  %-18s %s\n' tcpdump "$(tcpdump --version 2>&1 | head -n 1 || echo missing)"
-    printf '  %-18s %s\n' tshark "$(tshark --version 2>/dev/null | head -n 1 || echo missing)"
   fi
   echo "  GHIDRA_INSTALL_DIR should be: $GHIDRA_DIR (env now: ${GHIDRA_INSTALL_DIR:-unset})"
   echo "  git hooks: $(git -C "$ROOT" config core.hooksPath || echo 'not set')"
@@ -195,7 +193,7 @@ fi
 # ---------------------------------------------------------------- 1. system packages
 
 FEDORA_PACKAGES="gcc gcc-c++ make pkgconf-pkg-config openssl-devel webkit2gtk4.1-devel libxdo-devel \
-libappindicator-gtk3-devel librsvg2-devel alsa-lib-devel curl file unzip git tcpdump wireshark-cli bubblewrap \
+libappindicator-gtk3-devel librsvg2-devel alsa-lib-devel curl file unzip git bubblewrap \
 nodejs${NODE_MAJOR} nodejs${NODE_MAJOR}-npm uv ${MINGW_FEDORA_PACKAGE}"
 
 case "$DISTRO" in
@@ -215,7 +213,7 @@ case "$DISTRO" in
     export PATH="$NODE_BIN:$PATH"
     ;;
   fedora)
-    log "Fedora packages (build tools, Tauri prerequisites, packet capture, Java $JAVA_MAJOR, Node $NODE_MAJOR, MinGW-w64)"
+    log "Fedora packages (build tools, Tauri prerequisites, Java $JAVA_MAJOR, Node $NODE_MAJOR, MinGW-w64)"
     echo "  sudo dnf install -y $FEDORA_PACKAGES"
     if ask "Run this with sudo?"; then
       # shellcheck disable=SC2086
@@ -422,9 +420,6 @@ fi
 # shellcheck disable=SC1090
 . "$ENV_FILE"
 
-if [ "$PLATFORM" = linux ] && have tcpdump; then
-  echo "  Packet capture without sudo (optional): sudo setcap cap_net_raw,cap_net_admin=eip \"$(command -v tcpdump)\""
-fi
 
 # ---------------------------------------------------------------- 7. git hooks
 
