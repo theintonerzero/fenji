@@ -38,10 +38,23 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # a PR's commits, and dev's, for the session-link check
       - name: No game content or RE artefacts
         run: scripts/check-forbidden-files.sh
       - name: Commit-subject check tests
         run: scripts/test-check-commit-subject.sh
+      - name: Session-link check tests
+        run: scripts/test-check-no-session-links.sh
+      - name: No session links in the PR's title, description or new commits
+        # In this job, not pr-title, because this one is a required check on dev and main.
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/check-pr-session-links.sh "$BASE_SHA" "$HEAD_SHA" origin/dev
       - name: A Turkish locale for the locale-proofing tests
         # Its dotless-i lowercasing is what the forbidden-file and MIT-SHM tests guard against.
         run: |

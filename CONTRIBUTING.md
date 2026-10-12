@@ -29,7 +29,7 @@ Building and testing needs only Rust (through rustup; `rust-toolchain.toml` pins
 - **Start from an issue.** Bugs, tasks, questions, reverse-engineering questions and decision gates each have an issue template. For anything bigger than a small fix, open or comment on an issue first so we can agree the approach.
 - **Branch from `dev`**, named `feat/<scope>-<issue>-<topic>`, `fix/…`, `docs/…` or `chore/…`, for example `feat/proto-12-handshake-state-machine`.
 - **One concern per pull request**, into `dev`, with `Closes #N`. Don't mix refactoring with behaviour changes.
-- **Conventional Commits.** Titles look like `feat(proto): add the hello check`. The `commit-msg` hook in `.githooks/` (enable it with `git config core.hooksPath .githooks`; bootstrap does this) and CI enforce it; the scopes are listed in `docs/development.md`. The changelog is generated from these, so don't edit `CHANGELOG.md` by hand.
+- **Conventional Commits.** Titles look like `feat(proto): add the hello check`. The `commit-msg` hook in `.githooks/` (enable it with `git config core.hooksPath .githooks`; bootstrap does this) and CI enforce it; the scopes are listed in `docs/development.md`. The changelog is generated from these, so don't edit `CHANGELOG.md` by hand. If an AI tool helps you, leave its session links out of commit messages and PR descriptions (CI refuses them); a `Co-Authored-By:` line is welcome.
 - **Tests first** for code: write the failing test, then the fix. Code that parses bytes from the network or from files must never panic on bad input; it returns an error.
 - **Before you push:**
 
