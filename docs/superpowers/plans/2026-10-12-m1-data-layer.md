@@ -51,7 +51,7 @@ Every task's requirements implicitly include these.
   - Conventional Commits with scopes `data`, `lua`, `tools`, `re`, `docs` and `deps`.
   - One issue → one branch → one PR per task (`Closes #N`), squash-merged into `dev` once CI is green and the task's checks pass (owner's standing instruction).
   - `main`, tags and releases need the owner's go-ahead.
-  - Commit messages end with the `Co-Authored-By` and `Claude-Session` trailers; PR bodies end with the Claude Code line and the session URL.
+  - Commit messages end with the `Co-Authored-By` trailer; PR bodies end with the Claude Code line. (Since 2026-10-12, no session links or IDs in commits or PR descriptions: CLAUDE.md.)
 
 ## Review Focus
 
@@ -281,8 +281,7 @@ If any number differs, the registry probe is the authority. Record the real numb
 ```bash
 scripts/check-forbidden-files.sh
 git add docs/re/m1-script-format.md docs/README.md
-git commit -m "docs(re): write up the client's embedded script format" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "docs(re): write up the client's embedded script format" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -1270,8 +1269,7 @@ Expected: all pass; `cargo deny` prints `licenses ok`.
 ```bash
 scripts/check-forbidden-files.sh --staged
 git add Cargo.toml Cargo.lock crates/fenji-data
-git commit -m "feat(data): read the client's blob format and its embedded file system" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "feat(data): read the client's blob format and its embedded file system" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -2047,8 +2045,7 @@ Expected: all pass. If `cargo deny` flags a licence in mlua's dependency tree th
 ```bash
 scripts/check-forbidden-files.sh --staged
 git add Cargo.toml Cargo.lock crates/fenji-lua docs/re/sources.md
-git commit -m "feat(lua): parse and write the client's Lua 5.3 chunks" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "feat(lua): parse and write the client's Lua 5.3 chunks" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -2258,8 +2255,7 @@ Expected: clean.
 
 ```bash
 git add crates/fenji-lua
-git commit -m "feat(lua): disassemble the client's Lua chunks" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "feat(lua): disassemble the client's Lua chunks" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -2854,8 +2850,7 @@ Run: `cargo fmt --all --check && cargo clippy --workspace --all-targets --locked
 ```bash
 scripts/check-forbidden-files.sh --staged
 git add Cargo.toml Cargo.lock tools/luatool docs/re/m1-script-format.md
-git commit -m "feat(tools): add luatool to list, extract and disassemble the embedded scripts" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "feat(tools): add luatool to list, extract and disassemble the embedded scripts" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -3461,8 +3456,7 @@ Run: `cargo fmt --all --check && cargo clippy --workspace --all-targets --locked
 
 ```bash
 git add crates/fenji-lua tools/luatool scripts/versions.env scripts/bootstrap.sh CLAUDE.md docs/development.md docs/re/sources.md docs/re/m1-script-format.md
-git commit -m "feat(lua): normalise client chunks to stock Lua 5.3 and decompile them with unluac" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "feat(lua): normalise client chunks to stock Lua 5.3 and decompile them with unluac" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -3539,8 +3533,7 @@ Add to `docs/README.md`:
 ```bash
 scripts/check-forbidden-files.sh
 git add docs/protocol/login.md docs/README.md
-git commit -m "docs(re): trace how the client finds its server" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "docs(re): trace how the client finds its server" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -4116,8 +4109,7 @@ If the exit is 3, inspect `watchdog-trigger.txt` before anything else:
 scripts/check-forbidden-files.sh --staged
 git add scripts/spike/run-client.sh scripts/spike/watchdog.py scripts/spike/test-watchdog.py .github/workflows/ci.yml \
   scripts/versions.env scripts/bootstrap.sh CLAUDE.md docs/development.md docs/re/README.md docs/re/sources.md
-git commit -m "feat(re): track the client runner and AGT watchdog, and pin GE-Proton" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "feat(re): track the client runner and AGT watchdog, and pin GE-Proton" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -4180,8 +4172,7 @@ If no run connects within the cap: write what was learned, open an `RE investiga
 
 ```bash
 git add docs/protocol/login.md
-git commit -m "docs(re): record the client's first connection to the stub" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "docs(re): record the client's first connection to the stub" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -4522,8 +4513,7 @@ Run: `cargo fmt --all --check && cargo clippy --workspace --all-targets --locked
 
 ```bash
 git add crates/fenji-lua tools/luatool docs/re/m1-script-census.md docs/README.md
-git commit -m "feat(lua): measure server-side logic in the client's scripts" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "feat(lua): measure server-side logic in the client's scripts" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 
@@ -5038,8 +5028,7 @@ Run: `cargo fmt --all --check && cargo clippy --workspace --all-targets --locked
 
 ```bash
 git add Cargo.toml Cargo.lock crates/fenji-data tools/archive docs/re/m1-archives.md docs/README.md
-git commit -m "feat(data): read the archives' structure without decompression" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014j8e76oH1TnqWYHP2fuyy1"
+git commit -m "feat(data): read the archives' structure without decompression" -m "Closes #<issue>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin HEAD && gh pr create --base dev --fill
 ```
 

@@ -59,7 +59,7 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 - Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
 - Scopes: `proto`, `data`, `lua`, `auth`, `store`, `server`, `launcher`, `tools`, `content`, `deploy`, `docs`, `re`, `deps`, `release`.
 - `!` or a `BREAKING CHANGE:` footer marks a breaking change.
-- No session links: a commit message or PR description never carries an AI agent's session link or ID (a `Claude-Session:` trailer, a claude.ai session or chat URL). The hook refuses them in commit messages, and CI in a PR's description and in its commits that aren't in `dev` yet (`scripts/check-no-session-links.sh`). `Co-Authored-By:` attribution is fine.
+- No session links: a commit message or PR description never carries an AI agent's session link or ID (a `Claude-Session:` trailer, a claude.ai session or chat URL). The hook refuses them in commit messages, and CI in a PR's title, description and commits that aren't in `dev` yet (`scripts/check-no-session-links.sh`, `scripts/check-pr-session-links.sh`, in the required `repo-hygiene` job). `Co-Authored-By:` attribution is fine.
 
 ## Versioning: SemVer 2.0.0
 

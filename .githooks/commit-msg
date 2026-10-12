@@ -5,5 +5,12 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 "$root/scripts/check-commit-subject.sh" "$(head -n 1 "$1")"
-# Only what git keeps: no comment lines, and nothing below the scissors line `git commit -v` adds.
-awk '/^# -+ >8 -+$/ { exit } !/^#/' "$1" | "$root/scripts/check-no-session-links.sh"
+# Every line counts (git commit -m and -F keep lines starting with #), except what follows git's
+# own scissors block, which git commit -v writes and git drops: a line of dashes around ">8",
+# then "Do not modify or remove the line above.", whatever the comment string.
+awk '
+  held != "" { if ($0 ~ /Do not modify or remove the line above\.$/) { held = ""; exit } print held; held = "" }
+  /^[^[:space:]]+ -+ >8 -+$/ { held = $0; next }
+  { print }
+  END { if (held != "") print held }
+' "$1" | "$root/scripts/check-no-session-links.sh"
