@@ -4,6 +4,7 @@
 |---|---|
 | [`superpowers/specs/2026-10-11-fenji-design.md`](superpowers/specs/2026-10-11-fenji-design.md) | The project design: ground rules, architecture, milestones. Start here. |
 | [`superpowers/specs/2026-10-12-m1-data-layer-design.md`](superpowers/specs/2026-10-12-m1-data-layer-design.md) | M1 design: Lua tooling, the login hunt and first connection, the script census, archives and the Oodle gate. |
+| [`superpowers/specs/2026-10-12-m2-transport-design.md`](superpowers/specs/2026-10-12-m2-transport-design.md) | M2 design: the transport reading, `fenji-proto`, the stub's handshake ladder, the Oodle wire test and the archive helper. |
 | `superpowers/plans/` | One implementation plan per milestone (M0–M5), written before that milestone starts. |
 | [`development.md`](development.md) | Machine setup (macOS/Linux), branches, Conventional Commits, SemVer, changelog, releases. |
 | [`re/README.md`](re/README.md) | Reverse-engineering workflow: pinned build, analysis setup, sandboxed client runs, what may be committed. |
