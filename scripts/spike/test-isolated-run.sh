@@ -3,6 +3,11 @@
 # Self-test for isolated-run.sh: proves nothing inside can reach the network, directly or through
 # a host daemon. Linux only; needs bwrap. Run locally on Fedora and in CI.
 # Every check runs; failures are reported as `FAIL -` lines and make the exit status 1.
+#
+# Mutation runs: a mutant of isolated-run.sh that removes isolation (a namespace, the seccomp
+# filter, a refusal) lets these checks reach the real network and host daemons. Run such mutants
+# only in a throwaway VM or container, or against a local stand-in target, never on a host you
+# use: one such run reached 1.1.1.1 and example.com and ran the host's request-key helper.
 set -euo pipefail
 exec </dev/null   # a socket on stdin makes the wrapper warn on stderr, which several checks capture
 
@@ -41,11 +46,19 @@ export FENJI_ISOLATED_RUN_ALLOW_STEAM=1
 # --- network: only loopback ----------------------------------------------------------------
 # These helpers take extra wrapper options last (the --no-root checks reuse them). The negative
 # ones print what happened inside, so a wrapper that fails to start can't pass them.
+# One run that waits up to 5 s for lo's addresses: they appear as lo comes up, and a loaded host was
+# once seen to start the command before ::1 was there.
 t_links() {
-  [ "$("$run" "$@" -- ip -o link show | awk -F': ' '{print $2}')" = lo ] &&
-    "$run" "$@" -- ip -o addr show dev lo | grep -q 'inet 127.0.0.1/8' &&
-    "$run" "$@" -- ip -o addr show dev lo | grep -q 'inet6 ::1/128' &&
-    "$run" "$@" -- ip -o link show dev lo | grep -q ',UP'
+  local out
+  out=$("$run" "$@" -- bash -c '
+    for _ in $(seq 50); do
+      links=$(ip -o link show | awk -F": " "{print \$2}") addrs=$(ip -o addr show dev lo)
+      if [ "$links" = lo ] && grep -q "inet 127.0.0.1/8" <<<"$addrs" && grep -q "inet6 ::1/128" <<<"$addrs" &&
+         ip -o link show dev lo | grep -q ",UP"; then echo ok; exit; fi
+      sleep 0.1
+    done
+    echo "links: $links; lo: $addrs"' 2>&1) || true
+  [ "$out" = ok ] || { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
 }
 t_no_tcp() {  # HOST PORT [OPTION...]
   local host=$1 port=$2
@@ -76,9 +89,18 @@ check "loopback services inside are reachable (stub + client can talk)" "$run" -
   kill "$pid"; exit 1'
 
 check "uid 0 inside can bind privileged ports (127.0.0.1:443, [::1]:80)" "$run" -- python3 -I -c '
-import socket
+import errno, socket, time
 a = socket.socket(); a.bind(("127.0.0.1", 443))
-b = socket.socket(socket.AF_INET6); b.bind(("::1", 80))'
+b = socket.socket(socket.AF_INET6)
+for _ in range(50):                    # ::1 may come a moment after the command starts (t_links)
+    try:
+        b.bind(("::1", 80))
+        break
+    except OSError as e:
+        if e.errno != errno.EADDRNOTAVAIL: raise
+        time.sleep(0.1)
+else:
+    b.bind(("::1", 80))'
 
 # --- usage errors exit 2 before running anything -------------------------------------------
 t_usage() {
@@ -110,7 +132,8 @@ t_refuse_binds() {
   for argv in "--bind /run" "--ro-bind /" "--bind /tmp" "--ro-bind /etc" "--ro-bind /var" \
               "--bind $tmp/fakehome-parent" "--ro-bind /dev/pts" "--bind $fh/.steam" "--ro-bind $fh/.ssh" \
               "--bind $fh/.local/share/Steam/steamapps" "--ro-bind $fh/.local/share" \
-              "--bind $fh/.var/app/com.valvesoftware.Steam/data"; do
+              "--bind $fh/.var/app/com.valvesoftware.Steam/data" "--ro-bind /sys" "--bind /sys/fs/cgroup" \
+              "--ro-bind /sys/devices/system/cpu"; do
     set +e
     # shellcheck disable=SC2086 # word splitting intended
     HOME=$tmp/fakehome-parent/home "$run" $argv -- true >/dev/null 2>&1
@@ -119,7 +142,7 @@ t_refuse_binds() {
     [ "$rc" -eq 2 ] || { echo "  '$argv' exited $rc" >&2; return 1; }
   done
 }
-check "binding a dir that holds or sits in host socket dirs (/run, /, /tmp, /etc, /var, HOME's parent, /dev, ~/.steam, ~/.ssh, ~/.local/share/Steam, Flatpak Steam) is refused" t_refuse_binds
+check "binding a dir that holds or sits in host socket dirs (/run, /, /tmp, /etc, /var, HOME's parent, /dev, ~/.steam, ~/.ssh, ~/.local/share/Steam, Flatpak Steam), or /sys or anything in it, is refused" t_refuse_binds
 
 # Any socket or fifo in a bind dir, at any depth, gets it refused.
 mkdir -p "$tmp/sockdir/deep/er" "$tmp/fifodir/sub"
@@ -140,6 +163,25 @@ t_refuse_socket_binds() {
   done
 }
 check "binding a dir containing a socket or fifo (at any depth) is refused" t_refuse_socket_binds
+
+# A bind dir find can't fully read could hide a socket: find's failure, carried by pipefail, refuses
+# it. Root reads anything, so this needs another uid.
+t_refuse_unscannable() {
+  local rc err
+  mkdir -p "$tmp/noscan/locked"
+  chmod 000 "$tmp/noscan/locked"
+  set +e
+  err=$("$run" --ro-bind "$tmp/noscan" -- true 2>&1 >/dev/null)
+  rc=$?
+  set -e
+  chmod 755 "$tmp/noscan/locked"
+  [ "$rc" -eq 2 ] && [[ $err == *"can't scan all of it"* ]] || { echo "  exited $rc: $err" >&2; return 1; }
+}
+if [ "$uid" -ne 0 ]; then
+  check "binding a dir with a part find can't read is refused" t_refuse_unscannable
+else
+  echo "skip - running as root, which reads any dir: can't test refusing a dir find can't fully read"
+fi
 
 ibus=$HOME/.cache/ibus
 if [ -n "$(find "$ibus" -type s -print -quit 2>/dev/null)" ]; then
@@ -364,7 +406,7 @@ echo "a font library without font-server support" > "$tmp/xfont/libXfont2.so.2"
 if [ -d /tmp/.X11-unix ] && [ -w /tmp/.X11-unix ] && xn=$(x11_free) && xm=$(x11_free "$xn"); then
   : > "$tmp/fake-x.out"   # exists before the loop below reads it, however late the job starts
   python3 -I -c "$fake_x_py" "/tmp/.X$xn-lock" "/tmp/.X11-unix/X$xn" "$tmp/xfont/libXfont2.so.2" \
-    -extension MIT-SHM > "$tmp/fake-x.out" 2>&1 &
+    -extension MIT-SHM -shm > "$tmp/fake-x.out" 2>&1 &
   fake_x_pid=$!
   for _ in $(seq 50); do
     line=$(head -n 1 "$tmp/fake-x.out")
@@ -467,6 +509,28 @@ t_x11_noroot() {
     { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
 }
 
+# The flags as scripts/spike/run-client.sh passes them, all in one run: each still does its job
+# next to the others.
+mkdir -p "$tmp/as-run-rw" "$tmp/as-run-ro"
+t_as_run() {
+  local out online
+  online=$(cat /sys/devices/system/cpu/online) || return 1
+  out=$(DISPLAY=:$xm "$run" --no-root --x11 "$xn" --cpu-topology --hosts "$tmp/hosts" --bind "$tmp/as-run-rw" \
+          --ro-bind "$tmp/as-run-ro" -- bash -c '
+    [ "$(id -u)" = "$3" ] && echo uid=caller
+    [ "$DISPLAY" = ":$1" ] && python3 -I -c "$2" "/tmp/.X11-unix/X$1" && echo x11=connects
+    [ "$(cat /sys/devices/system/cpu/online)" = "$4" ] && echo cpu=host
+    [ "$(getent hosts login.fenji.test | cut -d" " -f1)" = 127.0.0.1 ] && echo hosts=mapped
+    echo hi > "$5/file" && echo rw=writable
+    touch "$6/file" 2>/dev/null || echo ro=readonly
+    [ "$(ip -o link show | awk -F": " "{print \$2}")" = lo ] && echo links=lo
+    (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null || echo tcp=blocked
+    getent hosts example.com >/dev/null 2>&1 || echo dns=blocked' \
+          _ "$xn" "$x11_probe" "$uid" "$online" "$tmp/as-run-rw" "$tmp/as-run-ro" 2>&1) || true
+  [ "$out" = "$(printf '%s\n' uid=caller x11=connects cpu=host hosts=mapped rw=writable ro=readonly links=lo \
+                  tcp=blocked dns=blocked)" ] || { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+}
+
 if [ -n "$x11_host" ]; then
   check "--x11 N: DISPLAY=:N and no XAUTHORITY inside; the nested server's socket takes connections, its abstract twin is out of reach" \
     t_x11_inside
@@ -478,6 +542,8 @@ if [ -n "$x11_host" ]; then
     t_x11_session
   check "--no-root --x11 N: COMMAND runs as the caller's uid with DISPLAY=:N, and the nested server's socket takes connections" \
     t_x11_noroot
+  check "the flags as run-client.sh passes them, in one run (--no-root --x11 N --cpu-topology --hosts --bind --ro-bind): each still does its job" \
+    t_as_run
 elif [ -n "$fake_x_pid" ]; then
   fail "a fake X server starts in /tmp/.X11-unix (the --x11 checks against it need one): $(head -c 300 "$tmp/fake-x.out")"
 else
@@ -524,13 +590,14 @@ private_tmp='
   }
 '
 # Accepted: a nested Xwayland or Xephyr of yours with MIT-SHM off (the server matches extension
-# names in any case). Refused: a regular file, or a symlink to a good socket, where the socket
-# should be; a missing, symlinked or garbled lock file, or one naming a dead process, a compositor
-# (GNOME's gnome-shell holds the locks of :0 and :1, both its Xwayland), a -rootless Xwayland or
-# one with MIT-SHM still on.
+# names in any case) and glamor off (Xwayland's -shm or -glamor off; Xephyr's default). Refused: a
+# regular file, or a symlink to a good socket, where the socket should be; a missing, symlinked or
+# garbled lock file, or one naming a dead process, a compositor (GNOME's gnome-shell holds the locks
+# of :0 and :1, both its Xwayland), a -rootless Xwayland, one with MIT-SHM still on, one with glamor
+# on (DRI3 would hand the client a GPU device fd), and one with -enable-ei-portal.
 t_x11_refused() {
   unshare -rm bash -c "$private_tmp"'
-    server Xwayland -extension MIT-SHM || exit 1
+    server Xwayland -extension MIT-SHM -shm || exit 1
     good=$pid
     xsock 5; xlock 5 "$good"
     "$run" --x11 5 -- true || { echo "  control: a nested Xwayland was refused" >&2; exit 1; }
@@ -550,15 +617,26 @@ t_x11_refused() {
     xsock 14; xlock 14 "$pid"; refused 14 "-rootless" || exit 1
     server Xwayland -extension GLX || exit 1
     xsock 15; xlock 15 "$pid"; refused 15 "MIT-SHM" || exit 1
-    server Xwayland -extension MIT-SHM +extension mit-shm || exit 1
-    xsock 16; xlock 16 "$pid"; refused 16 "MIT-SHM" || exit 1' _ "$(dirname "$run")"
+    server Xwayland -extension MIT-SHM -shm +extension mit-shm || exit 1
+    xsock 16; xlock 16 "$pid"; refused 16 "MIT-SHM" || exit 1
+    server Xwayland -extension MIT-SHM || exit 1
+    xsock 17; xlock 17 "$pid"; refused 17 "glamor" || exit 1
+    server Xwayland -extension MIT-SHM -shm -glamor es || exit 1
+    xsock 18; xlock 18 "$pid"; refused 18 "glamor" || exit 1
+    server Xephyr -extension MIT-SHM -glamor || exit 1
+    xsock 19; xlock 19 "$pid"; refused 19 "glamor" || exit 1
+    server Xwayland -extension MIT-SHM -shm -enable-ei-portal || exit 1
+    xsock 20; xlock 20 "$pid"; refused 20 "-enable-ei-portal" || exit 1
+    server Xwayland -extension MIT-SHM -glamor off || exit 1
+    xsock 21; xlock 21 "$pid"
+    "$run" --x11 21 -- true || { echo "  control: a nested Xwayland with -glamor off was refused" >&2; exit 1; }' _ "$(dirname "$run")"
 }
 
 # Other sockets, and a non-socket, in /tmp/.X11-unix must not come along.
 t_x11_alone() {
   local out
   out=$(unshare -rm bash -c "$private_tmp"'
-    server Xwayland -extension MIT-SHM || exit 1
+    server Xwayland -extension MIT-SHM -shm || exit 1
     xsock 5; xlock 5 "$pid"; xsock 6; xsock 7; : > /tmp/.X11-unix/X8
     "$run" --x11 5 -- find /tmp/.X11-unix -mindepth 1' _ "$(dirname "$run")" 2>&1) || true
   [ "$out" = /tmp/.X11-unix/X5 ] || { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
@@ -571,17 +649,20 @@ for s in /run/systemd/journal/stdout /run/systemd/journal/socket /run/dbus/syste
 done
 t_x11_foreign() {
   unshare -rm bash -c "$private_tmp"'
-    server Xwayland -extension MIT-SHM || exit 1
+    server Xwayland -extension MIT-SHM -shm || exit 1
     : > /tmp/.X11-unix/X5 && mount --bind "$2" /tmp/.X11-unix/X5 || exit 1
     xlock 5 "$pid"
     refused 5 "belongs to uid"' _ "$(dirname "$run")" "$rootsock"
 }
 
 # Font-server support: a libXfont that looks up host names (getaddrinfo, gethostbyname) connects
-# wherever a client's font path says, from the host. Refused: either name in a mapped libXfont,
-# also next to a clean one (which maps lists first, as it is mapped last, at a lower address);
-# no libXfont mapped; one deleted, or hidden by a mount, since it was mapped; one grep fails on
-# (a stub exiting 2).
+# wherever a client's font path says, from the host, and one with only the unix transport (socket,
+# connect) to any socket the host can reach. Refused: any of those names in a mapped libXfont, also
+# next to a clean one (which maps lists first, as it is mapped last, at a lower address); no
+# libXfont mapped; one deleted, or hidden by a mount, since it was mapped; one grep fails on (a stub
+# exiting 2); and one whose path holds a font-server build for the server but a clean file in the
+# wrapper's mount namespace, as for a server in a container: the wrapper reads it through
+# /proc/PID/root.
 t_x11_fonts() {
   unshare -rm bash -c "$private_tmp"'
     mkdir /tmp/lib/tcp /tmp/lib/old /tmp/lib/gone /tmp/lib/hidden /tmp/stub &&
@@ -589,22 +670,34 @@ t_x11_fonts() {
       printf "\0gethostbyname\0" > /tmp/lib/old/libXfont.so.1 &&
       cp /tmp/lib/libXfont2.so.2 /tmp/lib/gone/ && cp /tmp/lib/libXfont2.so.2 /tmp/lib/hidden/ &&
       printf "#!/bin/sh\nexit 2\n" > /tmp/stub/grep && chmod +x /tmp/stub/grep || exit 1
-    server Xwayland -extension MIT-SHM || exit 1
+    server Xwayland -extension MIT-SHM -shm || exit 1
     xsock 5; xlock 5 "$pid"
     "$run" --x11 5 -- true || { echo "  control: a server with a clean libXfont was refused" >&2; exit 1; }
     PATH=/tmp/stub:$PATH refused 5 "grep failed" || exit 1
-    fontlibs=/tmp/lib/tcp/libXfont2.so.2 server Xwayland -extension MIT-SHM || exit 1
+    fontlibs=/tmp/lib/tcp/libXfont2.so.2 server Xwayland -extension MIT-SHM -shm || exit 1
     xsock 6; xlock 6 "$pid"; refused 6 "with font-server support" || exit 1
-    fontlibs=/tmp/lib/old/libXfont.so.1:/tmp/lib/libXfont2.so.2 server Xwayland -extension MIT-SHM || exit 1
+    fontlibs=/tmp/lib/old/libXfont.so.1:/tmp/lib/libXfont2.so.2 server Xwayland -extension MIT-SHM -shm || exit 1
     xsock 7; xlock 7 "$pid"; refused 7 "with font-server support" || exit 1
-    fontlibs= server Xwayland -extension MIT-SHM || exit 1
+    fontlibs= server Xwayland -extension MIT-SHM -shm || exit 1
     xsock 8; xlock 8 "$pid"; refused 8 "maps no libXfont" || exit 1
-    fontlibs=/tmp/lib/gone/libXfont2.so.2 server Xwayland -extension MIT-SHM || exit 1
+    fontlibs=/tmp/lib/gone/libXfont2.so.2 server Xwayland -extension MIT-SHM -shm || exit 1
     rm /tmp/lib/gone/libXfont2.so.2 || exit 1
     xsock 9; xlock 9 "$pid"; refused 9 "restart the server" || exit 1
-    fontlibs=/tmp/lib/hidden/libXfont2.so.2 server Xwayland -extension MIT-SHM || exit 1
+    fontlibs=/tmp/lib/hidden/libXfont2.so.2 server Xwayland -extension MIT-SHM -shm || exit 1
     mount -t tmpfs fenji-test /tmp/lib/hidden || exit 1
-    xsock 10; xlock 10 "$pid"; refused 10 "not a readable file here" || exit 1' _ "$(dirname "$run")"
+    xsock 10; xlock 10 "$pid"; refused 10 "not a readable file here" || exit 1
+    mkdir /tmp/lib/unix && printf "\0socket\0connect\0" > /tmp/lib/unix/libXfont2.so.2 || exit 1
+    fontlibs=/tmp/lib/unix/libXfont2.so.2 server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 11; xlock 11 "$pid"; refused 11 "with font-server support" || exit 1
+    mkdir /tmp/lib/ns && printf "\0getaddrinfo\0" > /tmp/lib/ns/libXfont2.so.2 || exit 1
+    fontlibs=/tmp/lib/ns/libXfont2.so.2 server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 12; xlock 12 "$pid"
+    err=$(unshare -m bash -c "mount -t tmpfs fenji-test /tmp/lib/ns && cp /tmp/lib/libXfont2.so.2 /tmp/lib/ns/ &&
+      exec \"\$1\" --x11 12 -- true" _ "$run" 2>&1 >/dev/null)
+    rc=$?
+    if ! { [ "$rc" -eq 2 ] && [[ $err == *"with font-server support"* ]]; }; then
+      echo "  a clean file in the wrapper'"'"'s mount namespace only: exited $rc: $err" >&2; exit 1
+    fi' _ "$(dirname "$run")"
 }
 
 # The server matches extension names ignoring ASCII case, whatever the locale. A locale whose
@@ -628,7 +721,7 @@ t_x11_locale() {
 # someone else could swap XN after the check (bwrap's bind follows symlinks).
 t_x11_dir() {
   unshare -rm bash -c "$private_tmp"'
-    server Xwayland -extension MIT-SHM || exit 1
+    server Xwayland -extension MIT-SHM -shm || exit 1
     xsock 5; xlock 5 "$pid"
     "$run" --x11 5 -- true || { echo "  control: a good /tmp/.X11-unix was refused" >&2; exit 1; }
     chmod 0777 /tmp/.X11-unix && refused 5 "sticky" && chmod 1777 /tmp/.X11-unix || exit 1
@@ -649,7 +742,7 @@ t_x11_dir_foreign() {
 }
 
 if unshare -rm true 2>/dev/null; then
-  check "--x11 N is refused unless XN is a socket (not a symlink) and /tmp/.XN-lock names a running rootful Xwayland, Xephyr or Xvfb with MIT-SHM off" \
+  check "--x11 N is refused unless XN is a socket (not a symlink) and /tmp/.XN-lock names a running rootful Xwayland, Xephyr or Xvfb with MIT-SHM and glamor off and no -enable-ei-portal" \
     t_x11_refused
   check "--x11 N: only XN appears inside, whatever else /tmp/.X11-unix holds" t_x11_alone
   if [ -n "$rootsock" ]; then
@@ -657,7 +750,7 @@ if unshare -rm true 2>/dev/null; then
   else
     echo "skip - no root-owned socket in /run to stand in for another user's X server"
   fi
-  check "--x11 N is refused unless every libXfont the server maps is a readable file without font-server support (getaddrinfo, gethostbyname)" \
+  check "--x11 N is refused unless every libXfont the server maps, read as the server sees it, is a readable file without font-server support (getaddrinfo, gethostbyname, socket, connect)" \
     t_x11_fonts
   if [ -n "$turkish" ]; then
     check "--x11 N matches MIT-SHM in ASCII under LC_ALL=$turkish: re-enabled is refused, the recipe accepted" t_x11_locale
@@ -683,9 +776,16 @@ check "display, bus and runtime variables are not passed; BROWSER=/bin/false" \
            DBUS_SYSTEM_BUS_ADDRESS PULSE_SERVER SSH_AUTH_SOCK; do [ -z "${!v+x}" ] || exit 1; done
   [ "$BROWSER" = /bin/false ]'
 
-# An fd the caller left open (no close-on-exec) must not reach the command.
-t_fds() { "$run" -- bash -c '[ ! -e /proc/self/fd/7 ]' 7<"$tmp/hosts"; }
-check "inherited file descriptors above stderr are closed" t_fds
+# An fd the caller left open (no close-on-exec) must not reach the command, and nor may any of the
+# wrapper's own (the data fds bwrap reads, a process substitution's pipe): inside, the command has
+# exactly 0, 1 and 2. The glob reads /proc/self/fd through an fd of its own, gone once it is done.
+t_fds() {
+  local out
+  out=$("$run" -- bash -c 'for f in /proc/self/fd/*; do [ ! -e "$f" ] || printf "%s " "${f##*/}"; done' 7<"$tmp/hosts") ||
+    return 1
+  [ "$out" = "0 1 2 " ] || { echo "  open inside: $out" >&2; return 1; }
+}
+check "inside, the command has exactly stdin, stdout and stderr open: inherited and the wrapper's own fds are closed" t_fds
 
 # The command must have no controlling terminal (TIOCSTI typing into the host terminal needs one).
 check "no controlling terminal inside, even when started from one (no TIOCSTI injection)" python3 -I -c '
@@ -805,17 +905,27 @@ t_keys() {  # WANT ABI [OPTION...]
   local out want=$1 abi=$2
   shift 2
   out=$("$run" "$@" -- python3 -I -c "$key_probe" "$abi" 2>&1) || true
-  if [ "$out" = no-ia32 ]; then echo "  (no i386 ABI on this kernel)" >&2; return 2; fi
+  if [ "$out" = no-ia32 ]; then echo "  the i386 ABI works on the host but not inside" >&2; return 1; fi
   if [ "$(grep -c '=EPERM$' <<<"$out")" -ne "$want" ] || grep -qv '=EPERM$' <<<"$out"; then
     echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1
   fi
 }
 check "add_key, request_key and keyctl fail with EPERM inside (x86_64 and x32 syscall numbers)" t_keys 6 64
-set +e; t_keys 3 i386 2>/dev/null; rc=$?; set -e
-if [ "$rc" -eq 2 ]; then
-  echo "skip - the kernel has no i386 syscall ABI, can't test it at runtime (the BPF check covers it)"
-else
+# Whether the kernel has the i386 ABI is decided out here, where no filter runs: inside, a filter
+# that broke i386 would look the same as a kernel without it, and must fail, not skip.
+host_ia32=$(python3 -I -c '
+import ctypes, mmap, os, struct
+buf = mmap.mmap(-1, 4096, prot=mmap.PROT_READ | mmap.PROT_WRITE | mmap.PROT_EXEC)
+buf.write(b"\x53\xb8" + struct.pack("<I", 20) + b"\xcd\x80\x5b\xc3")   # getpid via int 0x80
+fn = ctypes.CFUNCTYPE(ctypes.c_int)(ctypes.addressof(ctypes.c_char.from_buffer(buf)))
+pid = os.fork()
+if pid == 0:
+    os._exit(0 if fn() == os.getpid() else 3)
+print("yes" if os.waitpid(pid, 0)[1] == 0 else "no")' 2>/dev/null) || host_ia32=no
+if [ "$host_ia32" = yes ]; then
   check "add_key, request_key and keyctl fail with EPERM inside (i386 ABI via int 0x80)" t_keys 3 i386
+else
+  echo "skip - the kernel has no i386 syscall ABI, can't test it at runtime (the BPF check covers it)"
 fi
 
 if command -v keyctl >/dev/null; then
@@ -885,7 +995,8 @@ check "a nested bwrap sandbox works inside and still sees only lo" t_nested_bwra
 # --- --no-root: the caller's uid and gid, no capabilities, isolation unchanged ----------------
 # For tools that refuse to run as uid 0 (umu-run). Inside, the generated passwd and group name the
 # caller as id does on the host, or user and users when a name is empty, starts with '-' or has
-# anything but letters, digits, '.', '_' and '-'.
+# anything but ASCII letters, digits, '.', '_' and '-'. want_name is isolated-run.sh's entry_name:
+# change the two together.
 want_name() {  # NAME FALLBACK
   case "$1" in
     ""|-*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) printf '%s\n' "$2" ;;
@@ -915,6 +1026,9 @@ t_noroot_caps() {
 }
 check "--no-root: no capabilities inside (CapPrm, CapEff and CapAmb are all zero)" t_noroot_caps
 
+# With --no-root, COMMAND runs in a user namespace nested in the one that owns the network
+# namespace, so even a CAP_NET_BIND_SERVICE that leaked into it couldn't bind port 80 here: this
+# check shows the ports behave as expected, and t_noroot_caps (no capabilities at all) is the guard.
 check "--no-root: binding 127.0.0.1:80 fails, while a listener on a high loopback port takes connections" \
   "$run" --no-root -- python3 -I -c '
 import socket, sys
@@ -985,9 +1099,9 @@ t_noroot_names() {
   printf 'g-1.x_y' > "$tmp/id-shim/group"
   out=$(PATH=$tmp/id-shim:$PATH "$run" --no-root -- bash -c 'id -un; id -gn' 2>&1) || true
   [ "$out" = "$(printf '%s\n' A.b_c-9 g-1.x_y)" ] ||
-    { echo "  names of letters, digits, '.', '_' and '-': got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+    { echo "  names of ASCII letters, digits, '.', '_' and '-': got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
 }
-check "--no-root names the caller user and users when id gives no name, or one that starts with '-' or has characters other than letters, digits, '.', '_' and '-'" \
+check "--no-root names the caller user and users when id gives no name, or one that starts with '-' or has characters other than ASCII letters, digits, '.', '_' and '-'" \
   t_noroot_names
 
 # --- --cpu-topology: the host's /sys/devices/system/cpu, read-only, nothing else of /sys --------
@@ -1091,8 +1205,42 @@ if pgrep -x steam >/dev/null 2>&1 || pgrep -x steamwebhelper >/dev/null 2>&1 ||
    pgrep -f com.valvesoftware.Steam >/dev/null 2>&1; then
   check "refuses to run while the host Steam client (native or Flatpak) is running" bash -c '
     set +e; env -u FENJI_ISOLATED_RUN_ALLOW_STEAM "$1" -- true 2>/dev/null; [ $? -eq 2 ]' _ "$run"
+  echo "skip - Steam is running, so the stand-in checks would pass for the wrong reason"
 else
-  echo "skip - Steam is not running, can't test the refusal"
+  # Stand-ins, one at a time: processes named steam and steamwebhelper, and one whose command line
+  # names com.valvesoftware.Steam, as Flatpak Steam's do. The wrapper's own arguments naming it
+  # don't count.
+  t_steam_standins() {
+    local spec kind name err rc standin
+    for spec in "comm steam" "comm steamwebhelper" "argv com.valvesoftware.Steam"; do
+      read -r kind name <<<"$spec"
+      if [ "$kind" = comm ]; then
+        python3 -I -c 'import ctypes, sys, time; ctypes.CDLL(None).prctl(15, sys.argv[1].encode(), 0, 0, 0); time.sleep(30)' \
+          "$name" &
+      else
+        python3 -I -c 'import time; time.sleep(30)' "$name" &
+      fi
+      standin=$!
+      for _ in $(seq 50); do
+        if [ "$kind" = comm ]; then [ "$(cat "/proc/$standin/comm" 2>/dev/null)" = "$name" ] && break
+        else grep -qaF "$name" "/proc/$standin/cmdline" 2>/dev/null && break; fi
+        sleep 0.1
+      done
+      set +e
+      err=$(env -u FENJI_ISOLATED_RUN_ALLOW_STEAM "$run" -- true 2>&1 >/dev/null)
+      rc=$?
+      set -e
+      kill "$standin" 2>/dev/null; wait "$standin" 2>/dev/null || true
+      if ! { [ "$rc" -eq 2 ] && [[ $err == *"quit Steam first"* ]]; }; then
+        echo "  with a stand-in ($kind $name): exited $rc: $err" >&2
+        return 1
+      fi
+    done
+    env -u FENJI_ISOLATED_RUN_ALLOW_STEAM "$run" -- true com.valvesoftware.Steam ||
+      { echo "  refused because its own arguments name com.valvesoftware.Steam" >&2; return 1; }
+  }
+  check "refuses to run while a process named steam or steamwebhelper, or a Flatpak Steam, runs (stand-ins); its own arguments don't count" \
+    t_steam_standins
 fi
 
 check "host /etc/hosts and /etc/resolv.conf are unchanged" \
