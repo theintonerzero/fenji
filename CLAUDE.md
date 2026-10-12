@@ -17,7 +17,7 @@ Clean-room private server emulator for Swords of Legends Online (SoLO: the Weste
 ## How to work here
 
 - **Process (superpowers plugin):** `brainstorming` → spec → `writing-plans` → `subagent-driven-development` or `executing-plans`; `test-driven-development` for code; `systematic-debugging` for bugs; `verification-before-completion` before claiming done. One implementation plan per milestone in `docs/superpowers/plans/`.
-- **Reverse engineering:** use the `reverse-engineer-anything` skill, the shared Ghidra GUI project and the `rea` MCP server. Static analysis first. The Ghidra project is the main surface for `gujianol.exe`, because REA's full auto-analysis of its ~52,000 functions is too slow. REA records Evidence IDs for targeted functions. Cite REA Evidence IDs (or pinned-exe addresses where REA can't reach) in `docs/protocol/` and in packet type doc comments. Separate observation, inference and unknown. Close REA sessions when done.
+- **Reverse engineering:** use the `reverse-engineer-anything` skill, the shared Ghidra GUI project and the `rea` MCP server. Static analysis first. The Ghidra project is the main surface for `gujianol.exe`: REA analyses the whole ~52,000-function exe once per session (about four minutes, then seconds per query) and doesn't see the project's names, so it is the evidence ledger, not the exploration surface (`docs/re/README.md`). Cite REA Evidence IDs (or pinned-exe addresses where REA can't reach) in `docs/protocol/` and in packet type doc comments. Separate observation, inference and unknown. Close REA sessions when done.
 - **Clean-room hygiene:** anyone, person or agent, who has read material listed as rejected in `docs/re/sources.md` does no RE or protocol work on the client; client runs, diagnostic ones included, count as RE work. They may coordinate, review process and write code that doesn't depend on client internals.
 - **Ghidra GUI project (`ghidra` MCP):** canonical names, types and structs for the pinned binary, shared with the owner live. Leave `GHIDRA_MCP_ALLOW_SCRIPTS` unset (script execution off) and the server on 127.0.0.1. Never use its `debugger_*` tools on the SoLO client: attaching a debugger is a decision gate.
 - **Client runs:** only inside `scripts/spike/isolated-run.sh` (loopback only; a nested display with `--x11 N`; non-root with `--no-root`; `--cpu-topology` for Wine's processor information). Use `scripts/spike/run-client.sh`, which adds fenji-stub and the AGT driver watchdog. Quit Steam first, bind only directories that belong to the run, and keep the pinned copy outside any Steam library.
@@ -104,7 +104,7 @@ Declared in `.claude/settings.json` (plugins) and `.mcp.json` (MCP servers). `sc
 
 | MCP server | Defined in | Version |
 |---|---|---|
-| `rea` | `.mcp.json` → `scripts/rea-mcp.sh` (loads `~/.config/fenji/env.sh`, runs `npx -y rea-agents@$REA_AGENTS_VERSION mcp`) | 6.3.0 |
+| `rea` | `.mcp.json` → `scripts/rea-mcp.sh` (loads `~/.config/fenji/env.sh`, raises Ghidra's startup deadline to 600 s unless `REA_GHIDRA_STARTUP_TIMEOUT_MS` is set, runs `npx -y rea-agents@$REA_AGENTS_VERSION mcp`) | 6.3.0 |
 | `ghidra` | `.mcp.json` (`bridge-mcp-ghidra`) | 7.0.0-rc.2; needs Ghidra GUI running with the plugin |
 | `brp` | `.mcp.json` (`bevy_brp_mcp`) | 0.23.0 |
 | `context7` | context7 plugin | plugin |

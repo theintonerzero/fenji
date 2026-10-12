@@ -211,7 +211,7 @@ M2 plan Tasks 8 and 10 ran the pinned client against `fenji-stub --speak` inside
 
 ## 10. After auth
 
-From `QUEUE` on, the client's inbound messages go to its scripts, and one script message moves it to `WORK`. Opcode values are in [`opcodes.md`](opcodes.md), and the pickle format is in [`payloads.md`](payloads.md).
+From `QUEUE` on, the client's inbound messages go to its scripts, and one script message moves it to `WORK`. Opcode values are in [`opcodes.md`](opcodes.md), and the pickle format is in [`payloads.md`](payloads.md). This section was written after the evidence norm ([`../re/README.md`](../re/README.md#the-norm)), so each function it cites was also read through REA; the Evidence IDs are in [REA Evidence IDs](#rea-evidence-ids).
 
 | # | Finding | Tag | Evidence |
 |---|---|---|---|
@@ -258,3 +258,24 @@ From `QUEUE` on, the client's inbound messages go to its scripts, and one script
 | M2R5 | `re/stub-logs/m2-r5/` (`.auth.bin`: the compressed payload), `re/runs/out/m2-r5/` (`gujianol.log` line 57), `re/m2/m2-r5.console` | Run m2-r5: the server-list path to `WORK` |
 | L3 | `re/m2/runs.md` | Each run's prediction, written before it, and its outcome |
 | L4 | `re/m2/scrub_r2.py`, `re/m2/scrub_r2_fields.py`, `re/m2/fixtures_r4b.py` | The independent decryption (Python and `openssl`) and the scrubbing that made the fixtures |
+
+### REA Evidence IDs
+
+Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in one session on 2026-10-12, after the findings had been written from the shared Ghidra project; each reading shows the function in the role the finding gives it. An ID covers its call exactly as sent, so anyone can check it by repeating the call ([`../re/README.md`](../re/README.md#how-to-cite)). §1–§8 were written before the norm and cite addresses only.
+
+| Function | Cited in | Call | Evidence ID |
+|---|---|---|---|
+| FUN_1400B5670 | 10.6 | `procedure_pseudo_code {procedure: "0x1400b5670"}` | `ev_e4d239dda720e5580ed62c813105dd1dcdea5560add029ee03244a3181ff3f18` |
+| FUN_1400D54F0 | 10.5 | `procedure_pseudo_code {procedure: "0x1400d54f0"}` | `ev_72d7da265dc773a97706666c71deea2e6186b049b477a6ffccb8e4432d1d7fef` |
+| FUN_1402218C0 | 10.3 | `procedure_pseudo_code {procedure: "0x1402218c0"}` | `ev_9d5d317f8f2abf8669aca96f484b314f1d1309218660364ebd97064035194884` |
+| FUN_140221940 | 10.5 | `procedure_pseudo_code {procedure: "0x140221940"}` | `ev_df70f99b7d9001ad43b2e331b1ce2368470ed55534010b42780506ecc795c047` |
+| FUN_140221A00 | 10.5 | `procedure_pseudo_code {procedure: "0x140221a00"}` | `ev_b88b93181e1a9ba5a8e782085daa916772b3fd53bebdefdfd36bcf0a682e4e7e` |
+| FUN_140221AC0 | 10.6 | `procedure_pseudo_code {procedure: "0x140221ac0"}` | `ev_7e98809795a3c282a3c1ee14214a407b4ac57c8f3191f598ebd6c1338832d2c0` |
+| FUN_1402226B0 | 10.5 | `procedure_pseudo_code {procedure: "0x1402226b0"}` | `ev_a2818646bcaa9860c1f5dd596f7ff052dfb3c66429aed40f8a50776a83cd13d2` |
+| FUN_140222AD0 | 10.1 | `procedure_pseudo_code {procedure: "0x140222ad0"}` | `ev_7fbfea4b9c45a9e18cb197b3b170c9bcbdaf0e4259909d04beb2590833e55d58` |
+| FUN_140222E00 | 10.1, 10.6 | `procedure_pseudo_code {procedure: "0x140222e00"}` | `ev_4656519e08dab96fa5ad38e228a578375ef1b30907fb075530e4d9e15b4d3d20` |
+| FUN_1402234D0 | 10.1, 10.3 | `procedure_pseudo_code {procedure: "0x1402234d0"}` | `ev_d1ad9b7dfee67fc633ddfad3893990aa26d82423ba7721aae5003404d6605265` |
+| FUN_140246DF0 | 10.6 | `procedure_pseudo_code {procedure: "0x140246df0"}` | `ev_ff26bda31a559b266bf9c76aa57609e86683b59d9e6da2e92792783e2baf9ee2` |
+| FUN_140246E40 | 10.6 | `procedure_pseudo_code {procedure: "0x140246e40"}` | `ev_78fd18c547e3f5295e4932305b24ef66983f282d989ef4b53396e87395255086` |
+| FUN_14029ABE0 | 10.1 | `procedure_pseudo_code {procedure: "0x14029abe0"}` | `ev_a89bf5f5a28af7ab566b36ce8eae1902b05c6f0fc1f73c56fbc86ef28f9d2115` |
+| FUN_14029AD60 | 10.3 | `procedure_pseudo_code {procedure: "0x14029ad60"}` | `ev_052e4ea36db94fadada2c61b9b0e04365011884591041df91483adfed64860d5` |

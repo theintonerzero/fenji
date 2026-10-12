@@ -2,7 +2,7 @@
 
 The inner message header's type byte ([`transport.md`](transport.md) §7) is the opcode. The client names its opcodes in two enums, `STC_PROTOCOL_*` (server to client) and `CTS_PROTOCOL_*` (client to server), listed in [spike-0](../re/spike-0.md) 4.12. This ledger gives each one's wire value. Most game traffic rides on the two script opcodes, `STC_PROTOCOL_SCRIPT` and `CTS_PROTOCOL_GATE_SCRIPT` / `CTS_PROTOCOL_SCRIPT`, whose bodies are pickled values: a script message id first, then its arguments ([`payloads.md`](payloads.md)).
 
-**Method.** This ledger reads the pinned build 10015727 (`bin64/gujianol.exe`, SHA-256 `3fdc6394de85c1224b91312d62bf2e57251625b49e8d0f3960accf8dfe5f0678`) in the shared Ghidra project, read-only, together with the client's own scripts disassembled and decompiled locally by `luatool` (M1). Script evidence cites the script's engine path. Runs are the sandboxed ones in [`transport.md`](transport.md) §9, cited by their evidence keys there. It was written by a session that has not read any source rejected in [`../re/sources.md`](../re/sources.md). Statuses follow [`README.md`](README.md): `named` (the client's name is known, the payload isn't mapped), `schema` (payload mapped from the client's code), `verified` (seen against the real client in a sandboxed run and covered by a test).
+**Method.** This ledger reads the pinned build 10015727 (`bin64/gujianol.exe`, SHA-256 `3fdc6394de85c1224b91312d62bf2e57251625b49e8d0f3960accf8dfe5f0678`) in the shared Ghidra project, read-only, together with the client's own scripts disassembled and decompiled locally by `luatool` (M1). Each function the findings O.1–O.3 cite was also read through REA, after the evidence norm ([`../re/README.md`](../re/README.md#the-norm)); the Evidence IDs are in [REA Evidence IDs](#rea-evidence-ids). Script evidence cites the script's engine path. Runs are the sandboxed ones in [`transport.md`](transport.md) §9, cited by their evidence keys there. It was written by a session that has not read any source rejected in [`../re/sources.md`](../re/sources.md). Statuses follow [`README.md`](README.md): `named` (the client's name is known, the payload isn't mapped), `schema` (payload mapped from the client's code), `verified` (seen against the real client in a sandboxed run and covered by a test).
 
 ## How the values were found
 
@@ -63,3 +63,22 @@ Script message ids are numbers that the scripts' protocol enum assigns at load t
 | 414 | S→C, `STC_PROTOCOL_SCRIPT` | `PROTOG2C_SET_NET_CONNECTED` (the handler logs this name) | Moves the client to `WORK`: it stores billing fields, calls `set_working`, fires `EVENT_NET_CONNECTED` and sends 402 ([`transport.md`](transport.md) §10) | **Inferred**; its effect **Observed** | `data/core/modules/net/net.luac` (the handler at id 414); M2R4, M2R4B, M2R5 |
 | 402 | C→S, `CTS_PROTOCOL_GATE_SCRIPT` | Unknown | Sent with no arguments once 414 is handled: in each run, 2.3 s after we sent 414 | **Observed**; the name **Unknown** | net.luac; M2R4, M2R4B, M2R5 |
 | 556 | S→C | — | The server sends a chunk of Lua bytecode; the client runs it and answers with 278 and the chunk's MD5. Not needed by Fenji | **Inferred** | `data/core/client/net_manager.luac` |
+
+## REA Evidence IDs
+
+Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in one session on 2026-10-12, after the findings had been written from the shared Ghidra project; each reading shows the function in the role the finding gives it. An ID covers its call exactly as sent, so anyone can check it by repeating the call ([`../re/README.md`](../re/README.md#how-to-cite)). The handlers in the tables (`named`) are cited by address only: their role comes from FUN_140222E00's switch (O.1).
+
+| Function | Cited in | Call | Evidence ID |
+|---|---|---|---|
+| FUN_1400D5850 | O.1 | `procedure_pseudo_code {procedure: "0x1400d5850"}` | `ev_af1c4fbf5d6aed889b7d529dd45f721617274b50f2625f323d3038aae2e57c64` |
+| FUN_140221940 | O.2 | `procedure_pseudo_code {procedure: "0x140221940"}` | `ev_df70f99b7d9001ad43b2e331b1ce2368470ed55534010b42780506ecc795c047` |
+| FUN_140221A00 | O.2 | `procedure_pseudo_code {procedure: "0x140221a00"}` | `ev_b88b93181e1a9ba5a8e782085daa916772b3fd53bebdefdfd36bcf0a682e4e7e` |
+| FUN_140221AC0 | O.2 | `procedure_pseudo_code {procedure: "0x140221ac0"}` | `ev_7e98809795a3c282a3c1ee14214a407b4ac57c8f3191f598ebd6c1338832d2c0` |
+| FUN_140221BB0 | O.2 | `procedure_pseudo_code {procedure: "0x140221bb0"}` | `ev_cecccd177df87001878f48ca00d2f3afac79247d8791f6627bb9c732374b329c` |
+| FUN_140221CB0 | O.2 | `procedure_pseudo_code {procedure: "0x140221cb0"}` | `ev_7b2afb8ab324db3148928a4fe549ce4628cf49b458566e0a9be3939fdb81d3f6` |
+| FUN_140221D30 | O.2 | `procedure_pseudo_code {procedure: "0x140221d30"}` | `ev_eba0244ecb8c94a02f7e0ad89c87cc89fc99e5e9a426d10e11f69e7a85bd3b30` |
+| FUN_1402226B0 | O.2 | `procedure_pseudo_code {procedure: "0x1402226b0"}` | `ev_a2818646bcaa9860c1f5dd596f7ff052dfb3c66429aed40f8a50776a83cd13d2` |
+| FUN_140222E00 | O.1 | `procedure_pseudo_code {procedure: "0x140222e00"}` | `ev_4656519e08dab96fa5ad38e228a578375ef1b30907fb075530e4d9e15b4d3d20` |
+| FUN_1402234D0 | O.1 | `procedure_pseudo_code {procedure: "0x1402234d0"}` | `ev_d1ad9b7dfee67fc633ddfad3893990aa26d82423ba7721aae5003404d6605265` |
+| FUN_14029A870 | O.1 | `procedure_pseudo_code {procedure: "0x14029a870"}` | `ev_4287eb1c9108d48b68771d0a270f2344b05732bb6c87fa64aff4e688271065a1` |
+| FUN_14029AC60 | O.2, O.3 | `procedure_pseudo_code {procedure: "0x14029ac60"}` | `ev_000ec1319aee8193de7f61d599aff5a47f5ca4c72c89233c9892d8d247c99816` |

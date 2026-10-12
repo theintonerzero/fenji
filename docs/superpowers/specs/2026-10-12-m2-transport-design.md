@@ -1,6 +1,6 @@
 # M2: Transport and handshake — Design Spec
 
-**Status:** approved in brainstorming (sections 1–5) on 2026-10-12; awaiting written-spec review.
+**Status:** implemented in M2 (v0.3.0); see [`docs/re/m2-summary.md`](../../re/m2-summary.md).
 **Parent:** [Fenji design spec](2026-10-11-fenji-design.md) §4, §6.2 and §10 (M2), the M0 findings in [`docs/re/spike-0.md`](../../re/spike-0.md) §4, and M1's [`docs/protocol/login.md`](../../protocol/login.md) and [`docs/re/m1-summary.md`](../../re/m1-summary.md).
 
 ## 1. Purpose and priority
@@ -80,7 +80,7 @@ A new crate, `crates/fenji-proto`. It does no I/O and has no `tokio`: byte buffe
 **Errors and limits:**
 - Malformed input returns an error; nothing panics.
 - Lengths are checked before any allocation (a 24-bit length caps at 16 MiB).
-- Every type that stands for a wire structure cites its evidence in a doc comment: pinned-exe addresses, or REA Evidence IDs where #18 makes REA usable.
+- Every type that stands for a wire structure cites its evidence in a doc comment: pinned-exe addresses, or REA Evidence IDs where #18 makes REA usable (the norm #18 settled: [`docs/re/README.md`](../../re/README.md#the-norm)).
 
 **Dependencies:** `thiserror` (already in the workspace). The crate adds no new crate unless the plan justifies one.
 
@@ -154,7 +154,7 @@ If a rung fails, we go back to the static reading. A rung's run count isn't capp
 - Execution follows the owner's choice when the plan is approved.
 - Rulings made without the owner go in the ledger for ratification. Decision gates stop the affected work and go to the owner as issues.
 - **Clean-room hygiene (CLAUDE.md):** Ghidra work, reading disassembly or decompiled output, and every client run go only to agents that have never read rejected material. Writing `fenji-proto` from the documented findings is ordinary code work.
-- **Evidence:** pinned-exe addresses, plus REA Evidence IDs where #18 makes REA usable. `transport.md` separates **Observed**, **Inferred** and **Unknown**.
+- **Evidence:** pinned-exe addresses, plus REA Evidence IDs where #18 makes REA usable ([`docs/re/README.md`](../../re/README.md#the-norm)). `transport.md` separates **Observed**, **Inferred** and **Unknown**.
 
 ## 10. Done when
 
