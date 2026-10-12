@@ -3,15 +3,16 @@
 //! limit, and per username, which only slows down to one attempt every `slow_interval`: so nobody
 //! can lock a player out by knowing their username.
 //!
-//! An attempt counts the moment it begins, and a success takes it back, so attempts made in
-//! parallel are counted before their password checks finish. Addresses count by network: an IPv4
-//! address alone, an IPv6 address by its /64, which one subscriber usually holds whole.
+//! An attempt counts the moment it begins, so attempts made in parallel are counted before their
+//! password checks finish; a success takes back exactly its own attempt, so successes on one
+//! account can't launder failures on another. Addresses count by network: an IPv4 address alone,
+//! an IPv6 address by its /64, which one subscriber usually holds whole.
 //!
-//! The limiter never asks whether an account exists, so its answers can't tell. A username's
-//! slow-down counts in one of [`NAME_BUCKETS`] buckets, chosen by a hash keyed with a secret drawn
-//! per process: every name is treated alike, the table stays bounded, and nobody can aim names at
-//! another's bucket. A bucket's few other names share its slow-down, which is the price of the
-//! bound.
+//! The limiter never asks whether an account exists, so its answers can't tell. Usernames are held
+//! by a hash keyed with a secret drawn per process, so a name of any length takes the same few
+//! bytes and nobody can aim names at another's slot. A username's slow-down counts in one of
+//! [`NAME_BUCKETS`] buckets of that hash: every name is treated alike and the table stays
+//! bounded; a bucket's few other names share its slow-down, which is the price of the bound.
 //!
 //! Memory and work stay bounded without a global lockout: stale entries are dropped at most once
 //! per `prune_every`; an entry with an attempt in the window is never dropped; and past four times
@@ -55,16 +56,25 @@ impl Default for LimiterConfig {
     }
 }
 
+/// An allowed attempt, which [`Limiter::succeed`] takes back if the password was right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attempt {
+    name: u64,
+    net: IpAddr,
+    seq: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    Allow,
+    Allow(Attempt),
     Locked { retry_after: Duration },
     SlowDown { retry_after: Duration },
 }
 
 #[derive(Default)]
 struct Entry {
-    attempts: VecDeque<Instant>,
+    /// Each attempt's time and sequence number, oldest first.
+    attempts: VecDeque<(Instant, u64)>,
     last_attempt: Option<Instant>,
 }
 
@@ -73,7 +83,7 @@ impl Entry {
         while self
             .attempts
             .front()
-            .is_some_and(|t| now.duration_since(*t) >= window)
+            .is_some_and(|(t, _)| now.duration_since(*t) >= window)
         {
             self.attempts.pop_front();
         }
@@ -83,8 +93,14 @@ impl Entry {
     /// keeps it there leaves.
     fn locked_for(&mut self, now: Instant, window: Duration, max: usize) -> Option<Duration> {
         self.trim(now, window);
-        let held = *self.attempts.get(self.attempts.len().checked_sub(max)?)?;
+        let (held, _) = *self.attempts.get(self.attempts.len().checked_sub(max)?)?;
         Some(window.saturating_sub(now.duration_since(held)))
+    }
+
+    fn take_back(&mut self, seq: u64) {
+        if let Some(i) = self.attempts.iter().position(|(_, s)| *s == seq) {
+            self.attempts.remove(i);
+        }
     }
 }
 
@@ -100,8 +116,8 @@ fn net_key(addr: IpAddr) -> IpAddr {
     }
 }
 
-/// The hash that picks a name's bucket.
-enum BucketKey {
+/// The hash that holds usernames.
+enum NameKey {
     /// SipHash with a key drawn per process.
     Secret(RandomState),
     /// A fixed key, so tests are repeatable.
@@ -111,25 +127,26 @@ enum BucketKey {
 
 pub struct Limiter {
     cfg: LimiterConfig,
-    pairs: HashMap<(String, IpAddr), Entry>,
+    pairs: HashMap<(u64, IpAddr), Entry>,
     addrs: HashMap<IpAddr, Entry>,
     names: HashMap<u64, Entry>,
     last_prune: Option<Instant>,
     sweeps: u64,
-    key: BucketKey,
+    next_seq: u64,
+    key: NameKey,
 }
 
 impl Limiter {
     pub fn new(cfg: LimiterConfig) -> Self {
-        Self::with_key(cfg, BucketKey::Secret(RandomState::new()))
+        Self::with_key(cfg, NameKey::Secret(RandomState::new()))
     }
 
     #[cfg(test)]
     fn fixed(cfg: LimiterConfig) -> Self {
-        Self::with_key(cfg, BucketKey::Fixed)
+        Self::with_key(cfg, NameKey::Fixed)
     }
 
-    fn with_key(cfg: LimiterConfig, key: BucketKey) -> Self {
+    fn with_key(cfg: LimiterConfig, key: NameKey) -> Self {
         Self {
             cfg,
             pairs: HashMap::new(),
@@ -137,22 +154,24 @@ impl Limiter {
             names: HashMap::new(),
             last_prune: None,
             sweeps: 0,
+            next_seq: 0,
             key,
         }
     }
 
-    fn bucket(&self, lower: &str) -> u64 {
-        let h = match &self.key {
-            BucketKey::Secret(state) => state.hash_one(lower),
+    /// The keyed hash of a username, ASCII case folded.
+    fn name_hash(&self, username: &str) -> u64 {
+        let lower = username.to_ascii_lowercase();
+        match &self.key {
+            NameKey::Secret(state) => state.hash_one(lower),
             #[cfg(test)]
-            BucketKey::Fixed => {
+            NameKey::Fixed => {
                 use std::hash::{DefaultHasher, Hasher};
                 let mut h = DefaultHasher::new();
                 lower.hash(&mut h);
                 h.finish()
             }
-        };
-        h % NAME_BUCKETS
+        }
     }
 
     /// Starts an attempt to sign in as `username` from `addr`. It is refused while its pair or its
@@ -160,13 +179,11 @@ impl Limiter {
     /// counts as a failure until [`Limiter::succeed`] takes it back.
     pub fn begin(&mut self, username: &str, addr: IpAddr, now: Instant) -> Verdict {
         self.prune(now);
-        let user = username.to_ascii_lowercase();
-        let (bucket, net) = (self.bucket(&user), net_key(addr));
+        let (name, net) = (self.name_hash(username), net_key(addr));
         let cfg = &self.cfg;
-        let pair = (user, net);
         let pair_lock = self
             .pairs
-            .get_mut(&pair)
+            .get_mut(&(name, net))
             .and_then(|e| e.locked_for(now, cfg.window, cfg.pair_max));
         let addr_lock = self
             .addrs
@@ -175,7 +192,7 @@ impl Limiter {
         if let Some(retry_after) = pair_lock.into_iter().chain(addr_lock).max() {
             return Verdict::Locked { retry_after };
         }
-        let n = self.names.entry(bucket).or_default();
+        let n = self.names.entry(name % NAME_BUCKETS).or_default();
         n.trim(now, cfg.window);
         if n.attempts.len() >= cfg.name_max
             && let Some(since) = n.last_attempt.map(|last| now.duration_since(last))
@@ -185,25 +202,25 @@ impl Limiter {
                 retry_after: cfg.slow_interval - since,
             };
         }
-        n.attempts.push_back(now);
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        n.attempts.push_back((now, seq));
         n.last_attempt = Some(now);
         let hard = cfg.max_keys.saturating_mul(4);
-        count(&mut self.pairs, pair, now, hard);
-        count(&mut self.addrs, net, now, hard);
-        Verdict::Allow
+        count(&mut self.pairs, (name, net), (now, seq), hard);
+        count(&mut self.addrs, net, (now, seq), hard);
+        Verdict::Allow(Attempt { name, net, seq })
     }
 
-    /// The attempt to sign in as `username` succeeded: its pair starts afresh, and its address and
-    /// name get the attempt back.
-    pub fn succeed(&mut self, username: &str, addr: IpAddr) {
-        let user = username.to_ascii_lowercase();
-        let (bucket, net) = (self.bucket(&user), net_key(addr));
-        self.pairs.remove(&(user, net));
-        if let Some(a) = self.addrs.get_mut(&net) {
-            a.attempts.pop_back();
+    /// The attempt's password was right: its pair starts afresh, and its network and name bucket
+    /// get exactly this attempt back.
+    pub fn succeed(&mut self, attempt: Attempt) {
+        self.pairs.remove(&(attempt.name, attempt.net));
+        if let Some(a) = self.addrs.get_mut(&attempt.net) {
+            a.take_back(attempt.seq);
         }
-        if let Some(n) = self.names.get_mut(&bucket) {
-            n.attempts.pop_back();
+        if let Some(n) = self.names.get_mut(&(attempt.name % NAME_BUCKETS)) {
+            n.take_back(attempt.seq);
         }
     }
 
@@ -241,11 +258,11 @@ impl Limiter {
 }
 
 /// Counts an attempt for `key`; a key not yet held past `hard` keys isn't counted on its own.
-fn count<K: Eq + Hash>(map: &mut HashMap<K, Entry>, key: K, now: Instant, hard: usize) {
+fn count<K: Eq + Hash>(map: &mut HashMap<K, Entry>, key: K, attempt: (Instant, u64), hard: usize) {
     if let Some(e) = map.get_mut(&key) {
-        e.attempts.push_back(now);
+        e.attempts.push_back(attempt);
     } else if map.len() < hard {
-        map.entry(key).or_default().attempts.push_back(now);
+        map.entry(key).or_default().attempts.push_back(attempt);
     }
 }
 
@@ -287,10 +304,10 @@ mod tests {
         let mut l = limiter();
         let t = Instant::now();
         for _ in 0..5 {
-            assert_eq!(l.begin("alice", ip(1), t), Verdict::Allow);
+            assert!(matches!(l.begin("alice", ip(1), t), Verdict::Allow(_)));
         }
         assert!(matches!(l.begin("alice", ip(1), t), Verdict::Locked { .. }));
-        assert_eq!(l.begin("alice", ip(2), t), Verdict::Allow);
+        assert!(matches!(l.begin("alice", ip(2), t), Verdict::Allow(_)));
     }
 
     #[test]
@@ -301,13 +318,15 @@ mod tests {
             l.begin("bob", ip(1), t);
         }
         let later = t + Duration::from_secs(15 * 60 + 1);
-        for _ in 0..5 {
-            assert_eq!(l.begin("bob", ip(1), later), Verdict::Allow);
+        for _ in 0..4 {
+            assert!(matches!(l.begin("bob", ip(1), later), Verdict::Allow(_)));
         }
-        l.succeed("bob", ip(1));
-        assert_eq!(
-            l.begin("bob", ip(1), later),
-            Verdict::Allow,
+        let Verdict::Allow(ok) = l.begin("bob", ip(1), later) else {
+            panic!("the fifth is allowed")
+        };
+        l.succeed(ok);
+        assert!(
+            matches!(l.begin("bob", ip(1), later), Verdict::Allow(_)),
             "the success cleared the pair"
         );
     }
@@ -323,7 +342,7 @@ mod tests {
             l.begin("someone", ip(9), t),
             Verdict::Locked { .. }
         ));
-        assert_eq!(l.begin("someone", ip(8), t), Verdict::Allow);
+        assert!(matches!(l.begin("someone", ip(8), t), Verdict::Allow(_)));
     }
 
     #[test]
@@ -338,10 +357,10 @@ mod tests {
             l.begin("carol", ip(100), t),
             Verdict::SlowDown { .. }
         ));
-        assert_eq!(
+        assert!(matches!(
             l.begin("carol", ip(100), t + Duration::from_secs(2)),
-            Verdict::Allow
-        );
+            Verdict::Allow(_)
+        ));
         assert!(matches!(
             l.begin("carol", ip(101), t + Duration::from_secs(3)),
             Verdict::SlowDown { .. }
@@ -375,7 +394,7 @@ mod tests {
         assert!(
             others
                 .iter()
-                .any(|n| l.begin(n, ip(101), t) == Verdict::Allow),
+                .any(|n| matches!(l.begin(n, ip(101), t), Verdict::Allow(_))),
             "other names have buckets of their own"
         );
     }
@@ -400,9 +419,8 @@ mod tests {
         }
         let later = t + Duration::from_secs(15 * 60);
         l.begin("erin", ip(1), later);
-        assert_eq!(
-            l.begin("erin", ip(1), later),
-            Verdict::Allow,
+        assert!(
+            matches!(l.begin("erin", ip(1), later), Verdict::Allow(_)),
             "the four old ones left the window"
         );
     }
@@ -414,7 +432,7 @@ mod tests {
         let mut l = limiter();
         let t = Instant::now();
         for _ in 0..5 {
-            assert_eq!(l.begin("frank", ip(1), t), Verdict::Allow);
+            assert!(matches!(l.begin("frank", ip(1), t), Verdict::Allow(_)));
         }
         assert!(matches!(l.begin("frank", ip(1), t), Verdict::Locked { .. }));
     }
@@ -424,12 +442,13 @@ mod tests {
         let mut l = limiter();
         let t = Instant::now();
         for _ in 0..20 {
-            assert_eq!(l.begin("gina", ip(1), t), Verdict::Allow);
-            l.succeed("gina", ip(1));
+            let Verdict::Allow(a) = l.begin("gina", ip(1), t) else {
+                panic!("allowed")
+            };
+            l.succeed(a);
         }
-        assert_eq!(
-            l.begin("gina", ip(1), t),
-            Verdict::Allow,
+        assert!(
+            matches!(l.begin("gina", ip(1), t), Verdict::Allow(_)),
             "successes never lock"
         );
     }
@@ -447,7 +466,7 @@ mod tests {
             Verdict::Locked { .. }
         ));
         let other_net = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 3, 0, 0, 0, 1));
-        assert_eq!(l.begin("other", other_net, t), Verdict::Allow);
+        assert!(matches!(l.begin("other", other_net, t), Verdict::Allow(_)));
     }
 
     #[test]
@@ -490,7 +509,7 @@ mod tests {
             "both tables at four times max_keys"
         );
         let newcomer = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
-        assert_eq!(l.begin("newbie", newcomer, t), Verdict::Allow);
+        assert!(matches!(l.begin("newbie", newcomer, t), Verdict::Allow(_)));
     }
 
     #[test]
@@ -522,9 +541,44 @@ mod tests {
         }
         let addr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
         for _ in 0..5 {
-            assert_eq!(l.begin("target", addr, t), Verdict::Allow);
+            assert!(matches!(l.begin("target", addr, t), Verdict::Allow(_)));
         }
         assert!(matches!(l.begin("target", addr, t), Verdict::Locked { .. }));
+    }
+
+    #[test]
+    fn a_success_refunds_only_its_own_attempt() {
+        // An invited player can't launder failures on someone else through successes of their
+        // own: each success takes back exactly its own attempt, so the failures stay counted and
+        // the address fills up.
+        let mut l = limiter();
+        let t = Instant::now();
+        for i in 0..30 {
+            if let Verdict::Allow(mine) = l.begin("insider", ip(1), t) {
+                l.begin(&format!("victim{i}"), ip(1), t);
+                l.succeed(mine);
+            }
+        }
+        let first = l.begin("victim-a", ip(1), t);
+        let second = l.begin("victim-b", ip(1), t);
+        assert!(
+            matches!(first, Verdict::Locked { .. }) || matches!(second, Verdict::Locked { .. }),
+            "{first:?} {second:?}"
+        );
+    }
+
+    #[test]
+    fn a_long_username_is_held_by_its_hash() {
+        let mut l = limiter();
+        let t = Instant::now();
+        let long = "x".repeat(16 * 1024);
+        for _ in 0..5 {
+            l.begin(&long, ip(1), t);
+        }
+        assert!(matches!(
+            l.begin(&long.to_uppercase(), ip(1), t),
+            Verdict::Locked { .. }
+        ));
     }
 
     #[test]
