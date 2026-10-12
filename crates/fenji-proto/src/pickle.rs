@@ -474,6 +474,17 @@ mod tests {
     }
 
     #[test]
+    fn encode_compressed_starts_at_exactly_0x80_bytes() {
+        // A string of n bytes packs to n + 3 bytes (count, tag, length) when n < 256.
+        let below = vec![Value::Str(vec![b'a'; 124])];
+        assert_eq!(encode(&below).unwrap().len(), 127);
+        assert_eq!(encode_compressed(&below).unwrap(), encode(&below).unwrap());
+        let at = vec![Value::Str(vec![b'a'; 125])];
+        assert_eq!(encode(&at).unwrap().len(), 128);
+        assert_eq!(encode_compressed(&at).unwrap()[0], 0xFF);
+    }
+
+    #[test]
     fn encode_compressed_keeps_the_plain_form_when_lz4_doesnt_help() {
         let noise: Vec<u8> = (0..200u32)
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)

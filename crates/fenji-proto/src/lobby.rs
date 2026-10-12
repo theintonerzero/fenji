@@ -22,12 +22,14 @@ pub const DELETE_ACTOR: i64 = 166;
 pub const CHANGE_SLOT: i64 = 321;
 /// `PROTOC2G_HOTPATCH_INIT (revision)` (hotpatch_system.luac `0.4`); never answered.
 pub const HOTPATCH_INIT: i64 = 370;
-/// `PROTOC2G_GM_SCRIPTS ()`, sent with 370 by a shipping client; never answered.
+/// `PROTOC2G_GM_SCRIPTS ()`, sent after 370 when `is_shipping_client()` (hotpatch_system.luac
+/// `0.4`); never answered, since its reply, 216, replaces scripts ([`NEVER_SEND`]).
 pub const GM_SCRIPTS: i64 = 496;
 /// `PROTOC2G_SERVER_LIST ()`, sent by the `SET_NET_CONNECTED` handler (net.luac `0.29`). Its
 /// reply, 495, only sets the server-name label.
 pub const SERVER_LIST: i64 = 402;
-/// `PROTOC2S_CLIENT_EXIT`: the client is quitting.
+/// `PROTOC2S_CLIENT_EXIT ()`: the client is quitting. It quits 5 s later whatever the server does
+/// (UIMain.luac `RequestQuitGame`), so the server only closes the connection.
 pub const CLIENT_EXIT: i64 = 392;
 
 /// `PROTOG2C_ROLE_LIST (last_pid, list, extra)` (net.luac `0.32`).
@@ -39,9 +41,7 @@ pub const ROLE_DELETE: i64 = 84;
 /// `PROTOS2C_ERROR_CODE (code)` (err.luac `0.8`): the client prints it and fires
 /// `EVENT_SERVER_ERROR`.
 pub const ERROR_CODE: i64 = 270;
-/// Never sent (ground rule 6; lobby.md §2). 556 runs Lua bytecode, 243 and 216 replace scripts and
-/// layouts, 627 patches tables, 729 writes a file to the player's disk, and 720 and 598 open URLs.
-pub const NEVER_SEND: [i64; 7] = [556, 243, 216, 627, 729, 720, 598];
+pub use crate::packet::NEVER_SEND;
 /// The select screen shows `9 + role_num` places (locale/common ActorSelect.luac `0.3`).
 pub const ROLE_SLOTS: u32 = 9;
 
@@ -82,7 +82,8 @@ pub const SHOW_FLAGS: [&str; 11] = [
 pub const NAME_BYTES: RangeInclusive<usize> = 2..=24;
 /// The face string's limit. The client's own run to about 1–2 KiB (lobby.md §5).
 pub const FACE_MAX: usize = 4096;
-/// The portrait a character without one gets: the select screen's own default (`25 << 16`).
+/// The portrait a character without one gets: the select screen's own default, `25 << 16`
+/// (ActorFrame.luac `0.1.7`), as `portrait_id << 16 | frame`.
 pub const DEFAULT_PORTRAIT: i64 = 25 << 16;
 
 /// Why a create request is refused, and the client's code for it.
@@ -119,6 +120,9 @@ pub struct Appearance {
     pub portrait: i64,
 }
 
+/// Message 304 as the server accepts it: a name that keeps to the Western rule, a vocation with
+/// one of its skeletons, and the appearance fields typed and bounded. Fields the server doesn't
+/// keep are ignored (lobby.md §5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateRequest {
     pub name: String,
@@ -150,12 +154,13 @@ pub fn skeleton_allowed(vocation: i64, skeleton: i64) -> bool {
 }
 
 /// The letters with diacritics the Western server allowed (the English text of
-/// `ERR_ROLE_NAME_ALLCHINESE`): umlauts, grave and acute accents, and cedillas.
-const DIACRITICS: &str = "äëïöüÿÄËÏÖÜàèìòùÀÈÌÒÙáéíóúýÁÉÍÓÚÝçÇ";
+/// `ERR_ROLE_NAME_ALLCHINESE`), in both cases: umlauts on a, e, i, o, u and y, grave accents on
+/// a, e, i, o and u, acute accents on a, e, i, o, u and y, and the cedilla on c.
+const DIACRITICS: &str = "äëïöüÿÄËÏÖÜŸàèìòùÀÈÌÒÙáéíóúýÁÉÍÓÚÝçÇ";
 
-/// The Western server's characters (the English text of `ERR_ROLE_NAME_ALLCHINESE`): letters a–z,
-/// letters with umlauts, grave or acute accents or cedillas, full stops (not first or last),
-/// hyphens and underscores.
+/// The Western server's characters (the English text of `ERR_ROLE_NAME_ALLCHINESE`): the letters
+/// A–Z in either case, the letters in [`DIACRITICS`], full stops (not first or last), hyphens and
+/// underscores.
 fn name_chars_ok(name: &str) -> bool {
     let ok =
         |c: char| c.is_ascii_alphabetic() || DIACRITICS.contains(c) || matches!(c, '.' | '-' | '_');
@@ -179,6 +184,9 @@ impl CreateRequest {
         for (k, v) in &t.hash {
             match key(k) {
                 Some("prop_base_name") => match v {
+                    Value::Str(b) if !NAME_BYTES.contains(&b.len()) => {
+                        return Err(Refusal::NameLength);
+                    }
                     Value::Str(b) => {
                         name = Some(String::from_utf8(b.clone()).map_err(|_| Refusal::NameChars)?)
                     }
@@ -198,6 +206,7 @@ impl CreateRequest {
                     a.base_face = int(v).map_or(1, |x| x.clamp(1, 2))
                 }
                 Some("prop_sys_avatar_feature_face") => match v {
+                    Value::Str(b) if b.is_empty() => {}
                     Value::Str(b) if b.len() <= FACE_MAX && b.iter().all(u8::is_ascii_graphic) => {
                         a.face = Some(String::from_utf8(b.clone()).map_err(|_| Refusal::Malformed)?)
                     }
@@ -216,9 +225,6 @@ impl CreateRequest {
             }
         }
         let name = name.ok_or(Refusal::Malformed)?;
-        if !NAME_BYTES.contains(&name.len()) {
-            return Err(Refusal::NameLength);
-        }
         if !name_chars_ok(&name) {
             return Err(Refusal::NameChars);
         }

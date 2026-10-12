@@ -76,7 +76,7 @@ fn names_follow_the_western_rule() {
             "{why}"
         );
     }
-    for ok in ["Äöüé", "Àlà", "Ýves", "Íñ".replace('ñ', "i").as_str()] {
+    for ok in ["Äöüé", "Àlà", "Ýves", "Íri", "Ÿves", "ÿy"] {
         assert!(CreateRequest::parse(&request(ok, 0, 1)).is_ok(), "{ok}");
     }
     // Only the diacritics the Western rule names: umlauts, grave and acute accents, cedillas.
@@ -143,11 +143,68 @@ fn shapes_no_client_sends_are_refused() {
         CreateRequest::parse(&no_vocation).unwrap_err(),
         Refusal::Malformed
     );
+    for (index, what) in [(0, "name"), (2, "skeleton")] {
+        let mut r = request("Lin", 0, 1);
+        if let Value::Table(t) = &mut r[0] {
+            t.hash.remove(index);
+        }
+        assert_eq!(
+            CreateRequest::parse(&r).unwrap_err(),
+            Refusal::Malformed,
+            "no {what}"
+        );
+    }
     let ref_name = with(request("Lin", 0, 1), 0, Value::Ref(0));
     assert_eq!(
         CreateRequest::parse(&ref_name).unwrap_err(),
         Refusal::Malformed
     );
+}
+
+#[test]
+fn an_over_long_name_is_refused_for_its_length_before_it_is_read() {
+    let long = Value::Str(vec![0xFF; 25]);
+    let r = with(request("Lin", 0, 1), 0, long);
+    assert_eq!(CreateRequest::parse(&r).unwrap_err(), Refusal::NameLength);
+}
+
+#[test]
+fn voice_base_face_and_face_may_be_absent() {
+    // The create panel leaves them out when their panels never initialised (lobby.md §5).
+    let mut r = request("Lin", 0, 1);
+    if let Value::Table(t) = &mut r[0] {
+        t.hash.retain(|(k, _)| {
+            ![
+                "prop_sys_player_voice",
+                "prop_sys_avatar_feature",
+                "prop_sys_avatar_feature_face",
+            ]
+            .iter()
+            .any(|n| *k == s(n))
+        });
+    }
+    let a = CreateRequest::parse(&r).unwrap().appearance;
+    assert_eq!((a.voice, a.base_face, a.face), (None, 1, None));
+}
+
+#[test]
+fn numbers_may_arrive_as_floats() {
+    let mut r = request("Lin", 0, 2);
+    if let Value::Table(t) = &mut r[0] {
+        for (_, v) in t.hash.iter_mut() {
+            if let Value::Int(i) = v {
+                *v = Value::Float(*i as f64);
+            }
+        }
+    }
+    let got = CreateRequest::parse(&r).unwrap();
+    assert_eq!(got, CreateRequest::parse(&request("Lin", 0, 2)).unwrap());
+}
+
+#[test]
+fn an_empty_face_string_is_no_face() {
+    let r = with(request("Lin", 0, 1), 5, s(""));
+    assert_eq!(CreateRequest::parse(&r).unwrap().appearance.face, None);
 }
 
 #[test]
@@ -242,7 +299,13 @@ fn role_list_is_last_pid_list_and_extras() {
     for k in ["rename_num", "reborn_num", "change_gender_num", "role_num"] {
         assert_eq!(get(extra, k), Some(&Value::Int(0)), "{k}");
     }
-    let v = pickle::decode(&lobby::role_list(7, &[lin(), lin()], &extras).unwrap()).unwrap();
+    let v = pickle::decode(
+        &lobby::role_list(7, &[lin(), lin()], &AccountExtras { role_num: 3 }).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v[1], Value::Int(7));
+    let Value::Table(extra) = &v[3] else { panic!() };
+    assert_eq!(get(extra, "role_num"), Some(&Value::Int(3)));
     let Value::Table(list) = &v[2] else { panic!() };
     let Value::Table(second) = &list.array[1] else {
         panic!()
@@ -284,4 +347,12 @@ fn nothing_the_lobby_builds_is_on_the_never_send_list() {
     ] {
         assert!(!lobby::NEVER_SEND.contains(&id));
     }
+}
+
+#[test]
+fn script_body_refuses_the_ids_that_are_never_sent() {
+    for id in lobby::NEVER_SEND {
+        assert!(fenji_proto::packet::script_body(id, &[]).is_err(), "{id}");
+    }
+    assert!(fenji_proto::packet::script_body(lobby::ROLE_LIST, &[]).is_ok());
 }

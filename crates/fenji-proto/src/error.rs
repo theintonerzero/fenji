@@ -19,6 +19,8 @@ pub enum Error {
     BadAuth(String),
     #[error("pickle: {0}")]
     Pickle(String),
+    #[error("script message {0} is never sent (ground rule 6; docs/protocol/packets/lobby.md §2)")]
+    NeverSend(i64),
     #[error("can't {action} in state {state}")]
     WrongState {
         action: &'static str,

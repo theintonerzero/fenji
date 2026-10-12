@@ -50,8 +50,17 @@ impl Up {
     }
 }
 
-/// The body of an `STC_PROTOCOL_SCRIPT` message: the pickle of `id`, then `args`.
+/// Script messages the server never sends (ground rule 6; lobby.md §2). 556 runs Lua bytecode,
+/// 243 and 216 replace scripts and layouts, 627 patches tables, 729 writes a file to the player's
+/// disk, and 720 and 598 open URLs.
+pub const NEVER_SEND: [i64; 7] = [556, 243, 216, 627, 729, 720, 598];
+
+/// The body of an `STC_PROTOCOL_SCRIPT` message: the pickle of `id`, then `args`. Every script
+/// message the server sends is built here, so this is where [`NEVER_SEND`] is refused.
 pub fn script_body(id: i64, args: &[Value]) -> Result<Vec<u8>> {
+    if NEVER_SEND.contains(&id) {
+        return Err(Error::NeverSend(id));
+    }
     let mut values = Vec::with_capacity(1 + args.len());
     values.push(Value::Int(id));
     values.extend_from_slice(args);
