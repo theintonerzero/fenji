@@ -82,6 +82,27 @@ fn err<T>(what: impl Into<String>) -> Result<T> {
     Err(Error::Pickle(what.into()))
 }
 
+/// What the client's packers do with a finished packet (FUN_1400D53D0, payloads.md P.5): from
+/// 0x80 bytes up, LZ4-compress it and keep the result when it and its 4-byte header are shorter:
+/// `FF`, the raw size as a 24-bit big-endian number, then the block (P.1). Fenji's server writes
+/// plain packets; this is for the client simulator, so tests send what the real client sends.
+pub fn encode_compressed(values: &[Value]) -> Result<Vec<u8>> {
+    let plain = encode(values)?;
+    if plain.len() < 0x80 || plain.len() > MAX_UNZIPPED {
+        return Ok(plain);
+    }
+    let block = lz4_flex::block::compress(&plain);
+    if block.len() + 4 >= plain.len() {
+        return Ok(plain);
+    }
+    let raw = u32::try_from(plain.len()).expect("at most MAX_UNZIPPED");
+    let mut out = Vec::with_capacity(block.len() + 4);
+    out.push(0xFF);
+    out.extend_from_slice(&raw.to_be_bytes()[1..]);
+    out.extend_from_slice(&block);
+    Ok(out)
+}
+
 /// Encodes `values` with the shortest integer, string and reference forms. A packet with a
 /// [`Value::Ref`] gets the header's table count, as the client's packer writes it (every table
 /// counted); one without keeps the one-byte count.
@@ -432,6 +453,35 @@ impl Reader<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn encode_compressed_matches_the_clients_rule() {
+        let small = vec![Value::Str(b"short".to_vec())];
+        assert_eq!(
+            encode_compressed(&small).unwrap(),
+            encode(&small).unwrap(),
+            "under 0x80: plain"
+        );
+        let big = vec![Value::Str(vec![b'a'; 300])];
+        let z = encode_compressed(&big).unwrap();
+        assert_eq!(z[0], 0xFF);
+        let raw = encode(&big).unwrap();
+        assert_eq!(
+            u32::from_be_bytes([0, z[1], z[2], z[3]]) as usize,
+            raw.len()
+        );
+        assert!(z.len() < raw.len());
+        assert_eq!(decode(&z).unwrap(), big);
+    }
+
+    #[test]
+    fn encode_compressed_keeps_the_plain_form_when_lz4_doesnt_help() {
+        let noise: Vec<u8> = (0..200u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        let v = vec![Value::Str(noise)];
+        assert_eq!(encode_compressed(&v).unwrap(), encode(&v).unwrap());
+    }
+
     use super::*;
 
     fn s(b: &str) -> Value {

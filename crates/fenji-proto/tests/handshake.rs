@@ -135,6 +135,25 @@ fn oversized_inbound_message_is_refused() {
 }
 
 #[test]
+fn the_simulator_takes_server_messages_larger_than_the_servers_own_limit() {
+    // The real client keeps no smaller limit for server messages than the header's 24 bits
+    // (transport.md 7.1), so the simulator mustn't apply the server's MAX_INBOUND to them.
+    let (mut server, mut client) = to_work(41);
+    let big = vec![7u8; MAX_INBOUND + 1];
+    let bytes = server.send(0, &big, &StoredCodec).unwrap();
+    let (events, _) = client.receive(&bytes).unwrap();
+    assert!(matches!(&events[..], [ClientEvent::Message(m)] if m.body.len() == big.len()));
+}
+
+#[test]
+fn a_closed_simulator_sends_no_time_syncs() {
+    let (mut server, mut client) = to_work(42);
+    let close = server.send(1, b"bye", &StoredCodec).unwrap();
+    client.receive(&close).unwrap();
+    assert!(client.time_sync(5).is_empty());
+}
+
+#[test]
 fn an_empty_reject_reason_is_refused() {
     // The client looks at its first message only once 5 bytes have arrived (transport.md 6.6), so
     // a bare 4-byte header would leave it waiting. The session can still answer.

@@ -97,11 +97,11 @@ impl State {
 }
 
 /// Splits whole messages off the front of `stream`. Refuses a header that announces more than
-/// `MAX_INBOUND` bytes before waiting for them.
-pub(crate) fn drain_messages(stream: &mut Vec<u8>) -> Result<Vec<Message>> {
+/// `limit` bytes before waiting for them: `MAX_INBOUND` on the server's side.
+pub(crate) fn drain_messages(stream: &mut Vec<u8>, limit: usize) -> Result<Vec<Message>> {
     let mut out = Vec::new();
     let mut at = 0;
-    while let Some((h, body, used)) = split_message(&stream[at..], MAX_INBOUND)? {
+    while let Some((h, body, used)) = split_message(&stream[at..], limit)? {
         out.push(Message {
             ty: h.ty(),
             body: body.to_vec(),
@@ -187,7 +187,7 @@ impl Server {
                 Frame::Data(mut body) => {
                     self.up_cipher.decrypt(&mut body);
                     self.stream_in.extend_from_slice(&body);
-                    for m in drain_messages(&mut self.stream_in)? {
+                    for m in drain_messages(&mut self.stream_in, MAX_INBOUND)? {
                         events.push(self.take(m)?);
                     }
                 }
