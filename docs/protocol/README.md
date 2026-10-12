@@ -8,7 +8,7 @@ Our own written findings about the pinned client's network protocol. No decompil
 |---|---|---|
 | [`transport.md`](transport.md) | Framing, header scramble, Oodle Network codec, gate handshake and variant selection | M2 |
 | [`opcodes.md`](opcodes.md) | Opcode ledger (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`), with wire values; script message ids | M2 onward |
-| [`payloads.md`](payloads.md) | The client's pickle format (script messages, the auth payload) | M2 |
+| [`payloads.md`](payloads.md) | The client's pickle format (script messages, the auth payload), compressed or not | M2 |
 | `properties.md` | The synced-property (`prop_*`) schema, and how sync packets carry it | M2–M4 |
 | `packets/<area>.md` | Per-opcode payload tables (`login`, `lobby`, `world`, `combat`, …) | M2–M5 |
 

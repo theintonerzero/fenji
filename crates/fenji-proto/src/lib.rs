@@ -7,6 +7,9 @@ pub mod frame;
 pub mod handshake;
 pub mod header;
 pub mod hello;
+pub mod opcode;
+pub mod packet;
+pub mod pickle;
 pub mod scramble;
 pub mod variant;
 

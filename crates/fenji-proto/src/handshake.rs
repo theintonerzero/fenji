@@ -6,6 +6,8 @@ use crate::codec::StreamCodec;
 use crate::frame::{DownWriter, Frame, SEND_CHUNK, UpReader};
 use crate::header::{HEADER_LEN, split_message, write_message};
 use crate::hello::{CLIENT_MAGIC, HELLO_LEN, Variants, build};
+use crate::opcode::Stc;
+use crate::packet::set_net_connected;
 use crate::variant::Cipher;
 use crate::{Error, Result};
 
@@ -71,6 +73,8 @@ pub enum State {
     AwaitAuth,
     Authed,
     Queued,
+    /// After `begin_work`: the client has been told to go to `WORK` (transport.md 10.3).
+    Work,
     Closed,
 }
 
@@ -80,6 +84,7 @@ impl State {
             Self::AwaitAuth => "AwaitAuth",
             Self::Authed => "Authed",
             Self::Queued => "Queued",
+            Self::Work => "Work",
             Self::Closed => "Closed",
         }
     }
@@ -201,7 +206,7 @@ impl Server {
                 Ok(Event::Auth(AuthMessage::parse(&m.body)?))
             }
             State::AwaitAuth => Err(Error::BadAuth(format!("first message has type {}", m.ty))),
-            State::Queued => Ok(Event::Message(m)),
+            State::Queued | State::Work => Ok(Event::Message(m)),
             _ => Err(self.wrong("take a message")),
         }
     }
@@ -231,9 +236,21 @@ impl Server {
         Ok(out)
     }
 
-    /// One message to a client in `Queued`.
-    pub fn send(&mut self, ty: u8, body: &[u8], codec: &dyn StreamCodec) -> Result<Vec<u8>> {
+    /// Moves the client from `QUEUE` to `WORK`: `PROTOG2C_SET_NET_CONNECTED` as an
+    /// `STC_PROTOCOL_SCRIPT` message (transport.md 10.3–10.4). The client answers with script
+    /// message 402 to the gate.
+    pub fn begin_work(&mut self, codec: &dyn StreamCodec) -> Result<Vec<u8>> {
         if self.state != State::Queued {
+            return Err(self.wrong("begin work"));
+        }
+        let out = self.write(Stc::Script.to_u8(), &set_net_connected(), codec)?;
+        self.state = State::Work;
+        Ok(out)
+    }
+
+    /// One message to a client in `Queued` or `Work`.
+    pub fn send(&mut self, ty: u8, body: &[u8], codec: &dyn StreamCodec) -> Result<Vec<u8>> {
+        if !matches!(self.state, State::Queued | State::Work) {
             return Err(self.wrong("send"));
         }
         self.write(ty, body, codec)

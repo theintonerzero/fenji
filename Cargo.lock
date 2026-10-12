@@ -296,6 +296,7 @@ name = "fenji-proto"
 version = "0.2.0"
 dependencies = [
  "aes",
+ "lz4_flex",
  "thiserror",
 ]
 

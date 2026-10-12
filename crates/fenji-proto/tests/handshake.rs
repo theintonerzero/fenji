@@ -4,6 +4,8 @@ use fenji_proto::frame::{SEND_CHUNK, UpWriter};
 use fenji_proto::handshake::{AuthMessage, Event, MAX_INBOUND, Message, Server, State};
 use fenji_proto::header::write_message;
 use fenji_proto::hello::Variants;
+use fenji_proto::packet::{script_body, set_net_connected};
+use fenji_proto::pickle::{Table, Value, decode};
 use fenji_proto::variant::{AES128, Cipher};
 
 const V: Variants = Variants {
@@ -37,6 +39,20 @@ fn connect(seed: u8) -> (Server, Client, AuthMessage) {
     (server, client, a.clone())
 }
 
+/// Runs hello, auth, `accept` and `begin_work`: both sides in WORK.
+fn to_work(seed: u8) -> (Server, Client) {
+    let (mut server, mut client, _) = connect(seed);
+    let (events, _) = client
+        .receive(&server.accept(&StoredCodec).unwrap())
+        .unwrap();
+    assert_eq!(events, [ClientEvent::Accepted]);
+    let (events, _) = client
+        .receive(&server.begin_work(&StoredCodec).unwrap())
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    (server, client)
+}
+
 #[test]
 fn hello_auth_ok() {
     let (mut server, mut client, a) = connect(1);
@@ -58,9 +74,7 @@ fn reject_carries_the_reason() {
 
 #[test]
 fn large_messages_cross_frames_both_ways() {
-    let (mut server, mut client, _) = connect(3);
-    let down = server.accept(&StoredCodec).unwrap();
-    client.receive(&down).unwrap();
+    let (mut server, mut client) = to_work(3);
     let big: Vec<u8> = (0..10_000u32).map(|i| (i * 31) as u8).collect();
     let down = server.send(9, &big, &StoredCodec).unwrap();
     let (events, _) = client.receive(&down).unwrap();
@@ -109,9 +123,7 @@ fn byte_at_a_time_matches_one_read() {
 
 #[test]
 fn oversized_inbound_message_is_refused() {
-    let (mut server, mut client, _) = connect(6);
-    let down = server.accept(&StoredCodec).unwrap();
-    client.receive(&down).unwrap();
+    let (mut server, mut client) = to_work(6);
     let up = client.send(1, &vec![0; MAX_INBOUND + 1]).unwrap();
     assert!(server.receive(&up).is_err());
 }
@@ -192,4 +204,85 @@ fn a_frame_boundary_inside_a_header_and_several_messages_per_frame() {
             "one_read {one_read}"
         );
     }
+}
+
+#[test]
+fn begin_work_sends_set_net_connected() {
+    let (mut server, mut client, _) = connect(10);
+    let down = server.accept(&StoredCodec).unwrap();
+    assert_eq!(client.receive(&down).unwrap().0, [ClientEvent::Accepted]);
+    let down = server.begin_work(&StoredCodec).unwrap();
+    assert_eq!(server.state(), State::Work);
+    let (events, _) = client.receive(&down).unwrap();
+    assert_eq!(
+        events,
+        [ClientEvent::Message(Message {
+            ty: 0,
+            body: set_net_connected()
+        })]
+    );
+    // transport.md 10.3: (414, nil, the billing table, nil), the billing fields all 0.
+    let billing = Table {
+        array: vec![],
+        hash: [
+            "times_remain",
+            "coins_remain",
+            "bind_coins_remain",
+            "cards_endtime",
+        ]
+        .iter()
+        .map(|k| (Value::Str(k.as_bytes().to_vec()), Value::Int(0)))
+        .collect(),
+    };
+    assert_eq!(
+        decode(&set_net_connected()).unwrap(),
+        [
+            Value::Int(414),
+            Value::Nil,
+            Value::Table(billing),
+            Value::Nil
+        ]
+    );
+    // In WORK the client's messages still arrive as messages.
+    let up = client.send(0xff, &[0x01, 0x04, 0x92, 0x01]).unwrap();
+    assert_eq!(
+        server.receive(&up).unwrap(),
+        [Event::Message(Message {
+            ty: 0xff,
+            body: vec![0x01, 0x04, 0x92, 0x01]
+        })]
+    );
+}
+
+#[test]
+fn the_client_sends_only_in_work() {
+    // transport.md 7.3 and 10.3: the real client sends only in WORK, which the scripts' handler
+    // for 414 starts.
+    let gateway_402 = [0x01, 0x04, 0x92, 0x01];
+    let (mut server, mut client, _) = connect(12);
+    client
+        .receive(&server.accept(&StoredCodec).unwrap())
+        .unwrap();
+    assert!(client.send(0xff, &gateway_402).is_err(), "in QUEUE");
+    let other = script_body(415, &[]).unwrap();
+    client
+        .receive(&server.send(0, &other, &StoredCodec).unwrap())
+        .unwrap();
+    assert!(
+        client.send(0xff, &gateway_402).is_err(),
+        "after another script message"
+    );
+    client
+        .receive(&server.begin_work(&StoredCodec).unwrap())
+        .unwrap();
+    assert!(client.send(0xff, &gateway_402).is_ok(), "in WORK");
+}
+
+#[test]
+fn begin_work_needs_queued() {
+    let (mut server, _, _) = connect(11);
+    assert!(server.begin_work(&StoredCodec).is_err(), "before accept");
+    server.accept(&StoredCodec).unwrap();
+    server.begin_work(&StoredCodec).unwrap();
+    assert!(server.begin_work(&StoredCodec).is_err(), "twice");
 }

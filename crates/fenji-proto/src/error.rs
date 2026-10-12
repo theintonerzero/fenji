@@ -17,6 +17,8 @@ pub enum Error {
     Unsupported(u32),
     #[error("auth message: {0}")]
     BadAuth(String),
+    #[error("pickle: {0}")]
+    Pickle(String),
     #[error("can't {action} in state {state}")]
     WrongState {
         action: &'static str,
