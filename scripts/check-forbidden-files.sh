@@ -67,6 +67,23 @@ while IFS= read -r -d '' f <&3; do
       fail "$f" "native library (Oodle and other middleware ship as .so and .dylib)"; continue ;;
     *.rep/*)
       fail "$f" "Ghidra project data"; continue ;;
+    # M2's artefacts, wherever they land: a stub started outside the repo root, or a copy by hand.
+    *.auth.bin|*.events)
+      fail "$f" "a stub capture (the client's auth holds the machine's MAC and fingerprint)"; continue ;;
+    *.new_cache|*.jsonl)
+      fail "$f" "a decoded table cache or table dump"; continue ;;
+  esac
+  # An Oodle spool block: <SHA-1 in 40 hex digits>-<raw length>.bin (fenji_data::oodle_spool).
+  base=${lower##*/}
+  case "$base" in
+    *-*.bin)
+      sha=${base%%-*}
+      len=${base#*-}
+      len=${len%.bin}
+      if [ ${#sha} -eq 40 ] && [ -z "${sha//[0123456789abcdef]/}" ] &&
+        [ -n "$len" ] && [ -z "${len//[0123456789]/}" ]; then
+        fail "$f" "an Oodle spool block"; continue
+      fi ;;
   esac
 
   # A submodule or an unmerged path has no blob at stage 0, so there is nothing to read (the name
