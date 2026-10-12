@@ -204,7 +204,7 @@ fn a_grant_that_would_bend_the_login_fields_is_refused() {
 }
 
 #[test]
-fn play_without_print_starts_nothing_yet() {
+fn play_without_print_needs_a_client_folder() {
     let out = launch(
         &[
             "play",
@@ -217,9 +217,148 @@ fn play_without_print_starts_nothing_yet() {
     );
     assert_eq!(out.status.code(), Some(2));
     assert!(
-        text(&out.stderr).contains("--print"),
+        text(&out.stderr).contains("--client"),
         "{}",
         text(&out.stderr)
+    );
+}
+
+#[test]
+fn play_refuses_a_client_folder_that_isnt_the_pinned_build() {
+    let (server, seen) = canned(Box::new(usual));
+    let d = tempfile::tempdir().unwrap();
+    let out = launch(
+        &[
+            "play",
+            "--server",
+            &server,
+            "--username",
+            "tester",
+            "--client",
+            d.path().to_str().unwrap(),
+        ],
+        &[("FENJI_PASSWORD", "a long password")],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("isn't the pinned build"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "nothing is sent for a bad folder"
+    );
+}
+
+/// Starting the client: the folder is checked, the prefix is made ready before the token is taken,
+/// and the client gets the ticket in its environment only, run from bin64.
+#[cfg(unix)]
+#[test]
+fn play_prepares_the_prefix_then_starts_the_client_with_the_ticket_in_its_environment() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let d = tempfile::tempdir().unwrap();
+    let client = d.path().join("client");
+    std::fs::create_dir_all(client.join("bin64")).unwrap();
+    std::fs::write(client.join("bin64/gujianol.exe"), b"exe!").unwrap();
+    let manifest = d.path().join("m.tsv");
+    let made = launch(
+        &[
+            "manifest",
+            "--client",
+            client.to_str().unwrap(),
+            "--out",
+            manifest.to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert!(made.status.success());
+    let log = d.path().join("log");
+    // A fake umu-run that records its arguments, folder and the variables a launch sets.
+    let fake = d.path().join("umu-run");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\n{{ echo \"umu $*\"; echo \"cwd $(pwd)\"; env | grep -E '^(gj_|WINEPREFIX=|GAMEID=)' | sort; }} >> {}\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let api_log = log.clone();
+    let (server, _seen) = canned(Box::new(move |m, p| {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&api_log)
+            .unwrap();
+        writeln!(f, "api {m} {p}").unwrap();
+        usual(m, p)
+    }));
+    let prefix = d.path().join("prefix");
+    let out = launch(
+        &[
+            "play",
+            "--server",
+            &server,
+            "--username",
+            "tester",
+            "--client",
+            client.to_str().unwrap(),
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "--umu-run",
+            fake.to_str().unwrap(),
+            "--prefix",
+            prefix.to_str().unwrap(),
+        ],
+        &[("FENJI_PASSWORD", "a long password")],
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(out.stdout.is_empty(), "nothing on stdout when starting");
+    let ticket = format!("fenji1-{}", "ab".repeat(32));
+    let seen = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = seen.lines().collect();
+    let wineboot = lines
+        .iter()
+        .position(|l| *l == "umu wineboot -u")
+        .expect("prepared");
+    let sign_in = lines
+        .iter()
+        .position(|l| *l == "api POST /api/v1/sessions")
+        .unwrap();
+    let start = lines
+        .iter()
+        .position(|l| l.starts_with("umu ") && l.contains("gujianol.exe"))
+        .expect("started");
+    assert!(wineboot < sign_in && sign_in < start, "{seen}");
+    // Before the token: no login variables at all.
+    assert!(
+        !lines[wineboot..sign_in]
+            .iter()
+            .any(|l| l.starts_with("gj_")),
+        "{seen}"
+    );
+    // The client: run from bin64, the --fs argument, the ticket only in the environment.
+    assert_eq!(
+        lines[start],
+        format!(
+            "umu {}/bin64/gujianol.exe --fs=data:_index:_index",
+            client.display()
+        )
+    );
+    assert!(!lines[start].contains(&ticket));
+    let cwd = format!("cwd {}/bin64", client.display());
+    assert!(lines[start..].contains(&cwd.as_str()), "{seen}");
+    let pair = format!("gj_ticket={ticket}");
+    assert!(lines[start..].contains(&pair.as_str()), "{seen}");
+    assert!(lines[start..].contains(&"GAMEID=umu-1418100"), "{seen}");
+    let wp = format!("WINEPREFIX={}", prefix.display());
+    assert!(lines[start..].contains(&wp.as_str()), "{seen}");
+    assert!(
+        !text(&out.stderr).contains(&ticket),
+        "the ticket is never printed"
     );
 }
 

@@ -60,6 +60,32 @@ pub fn config_dir() -> Option<PathBuf> {
     config_dir_for(os, |k| std::env::var_os(k).map(PathBuf::from))
 }
 
+/// The launcher's data directory on this machine (its Wine prefix lives there on Linux).
+pub fn data_dir() -> Option<PathBuf> {
+    let os = if cfg!(windows) {
+        Os::Windows
+    } else if cfg!(target_os = "macos") {
+        Os::MacOs
+    } else {
+        Os::Linux
+    };
+    data_dir_for(os, |k| std::env::var_os(k).map(PathBuf::from))
+}
+
+/// `$XDG_DATA_HOME/fenji-launcher` or `$HOME/.local/share/fenji-launcher` (Linux), the config
+/// directory elsewhere. Relative or empty variables are ignored.
+pub fn data_dir_for(os: Os, var: impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    match os {
+        Os::Linux => {
+            let abs = |k: &str| var(k).filter(|p| p.is_absolute() || p.has_root());
+            let base =
+                abs("XDG_DATA_HOME").or_else(|| abs("HOME").map(|h| h.join(".local/share")))?;
+            Some(base.join("fenji-launcher"))
+        }
+        other => config_dir_for(other, var),
+    }
+}
+
 /// `$XDG_CONFIG_HOME/fenji-launcher` or `$HOME/.config/fenji-launcher` (Linux),
 /// `$HOME/Library/Application Support/fenji-launcher` (macOS), `%APPDATA%\fenji-launcher`
 /// (Windows). Relative or empty variables are ignored.
@@ -117,6 +143,22 @@ mod tests {
         let win = config_dir_for(Os::Windows, vars(&[("APPDATA", "/appdata")]));
         assert_eq!(win, Some(PathBuf::from("/appdata/fenji-launcher")));
         assert_eq!(config_dir_for(Os::Linux, vars(&[])), None);
+    }
+
+    #[test]
+    fn the_data_folder_follows_xdg_on_linux() {
+        let d = data_dir_for(Os::Linux, vars(&[("HOME", "/home/p")]));
+        assert_eq!(
+            d,
+            Some(PathBuf::from("/home/p/.local/share/fenji-launcher"))
+        );
+        let x = data_dir_for(
+            Os::Linux,
+            vars(&[("HOME", "/home/p"), ("XDG_DATA_HOME", "/d")]),
+        );
+        assert_eq!(x, Some(PathBuf::from("/d/fenji-launcher")));
+        let w = data_dir_for(Os::Windows, vars(&[("APPDATA", "/appdata")]));
+        assert_eq!(w, Some(PathBuf::from("/appdata/fenji-launcher")));
     }
 
     #[test]

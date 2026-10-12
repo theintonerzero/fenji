@@ -7,11 +7,12 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use fenji_launcher::api::ApiClient;
-use fenji_launcher::launch::{LaunchSpec, resolve_ipv4};
+use fenji_launcher::launch::{LaunchSpec, Platform, base_spec, resolve_ipv4};
 use fenji_launcher::login_path::available;
 use fenji_launcher::manifest::{HEADER, Manifest};
+use fenji_launcher::start::{check_client, prepare_spec, run as run_spec};
 use fenji_launcher::verify::{Level, verify};
-use fenji_launcher::{invite_link, manifest};
+use fenji_launcher::{invite_link, manifest, settings};
 
 #[derive(Parser)]
 #[command(
@@ -57,8 +58,9 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Signs in, takes a game token and signs out; with --print, prints the login path's
-    /// environment as KEY=VALUE lines.
+    /// Starts the game: checks the client folder, gets the Wine prefix ready (Linux), signs in,
+    /// takes a game token, signs out and starts the client with the token in its environment.
+    /// With --print, prints the login path's environment as KEY=VALUE lines instead.
     Play {
         #[arg(long)]
         server: String,
@@ -68,6 +70,21 @@ enum Command {
         password_file: Option<PathBuf>,
         #[arg(long)]
         print: bool,
+        /// The client folder, which holds bin64/ and data/.
+        #[arg(long)]
+        client: Option<PathBuf>,
+        /// Another manifest than the pinned build's.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+        /// Linux: umu-run (by default the one on PATH).
+        #[arg(long)]
+        umu_run: Option<PathBuf>,
+        /// Linux: the launcher's Wine prefix (by default fenji-launcher/prefix in the data folder).
+        #[arg(long)]
+        prefix: Option<PathBuf>,
+        /// Linux: a Proton build for PROTONPATH (by default umu-run's choice).
+        #[arg(long)]
+        proton: Option<PathBuf>,
     },
 }
 
@@ -165,24 +182,45 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             username,
             password_file,
             print,
+            client,
+            manifest,
+            umu_run,
+            prefix,
+            proton,
         } => {
             let paths = available();
             let Some(path) = paths.first() else {
                 bail!("this build has no login path");
             };
-            if !print {
-                eprintln!(
-                    "M3 doesn't start the client from here (the sandboxed runner does); use --print \
-                     to get the login environment"
-                );
-                return Ok(ExitCode::from(2));
-            }
+            // Starting: the folder and the machine first, all before any password is sent.
+            let start = if print {
+                None
+            } else {
+                let Some(client) = client else {
+                    eprintln!(
+                        "fenji-launch: give the client folder with --client (or use --print)"
+                    );
+                    return Ok(ExitCode::from(2));
+                };
+                let m = load_manifest(manifest.as_deref())?;
+                check_client(&client, &m)?;
+                Some((client, platform(umu_run, prefix, proton)?))
+            };
             let pw = password(password_file.as_deref())?;
             let api = ApiClient::new(&server)?;
             let rt = runtime()?;
             // The gate must be usable before any password is sent (M3 spec §4).
             let info = rt.block_on(api.server_info())?;
             let gate = resolve_ipv4(&info.gate_host, info.gate_port)?;
+            if let Some((_, platform)) = &start
+                && let Some(prep) = prepare_spec(platform)
+            {
+                // The token lives 60 s: the prefix and umu's runtime are made ready before it.
+                let status = run_spec(&prep).context("running umu-run")?;
+                if !status.success() {
+                    bail!("getting the Wine prefix ready failed ({status})");
+                }
+            }
             let session = rt.block_on(api.sign_in(&username, &pw))?;
             let grant = rt.block_on(api.game_token(&session));
             // The ticket is all the client needs; the session ends here either way.
@@ -195,19 +233,76 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             {
                 bail!("the server named one gate in its info and another in the game token");
             }
-            let mut spec = LaunchSpec {
-                program: PathBuf::new(),
-                args: Vec::new(),
-                env: Vec::new(),
-                cwd: PathBuf::new(),
+            let Some((client, platform)) = start else {
+                let mut spec = LaunchSpec {
+                    program: PathBuf::new(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: PathBuf::new(),
+                };
+                path.apply(&grant, gate, &mut spec);
+                for (k, v) in spec.env.iter().filter(|(k, _)| k.starts_with("gj_")) {
+                    println!("{k}={v}");
+                }
+                return Ok(ExitCode::SUCCESS);
             };
+            let mut spec = base_spec(&client, &platform);
             path.apply(&grant, gate, &mut spec);
-            for (k, v) in spec.env.iter().filter(|(k, _)| k.starts_with("gj_")) {
-                println!("{k}={v}");
-            }
-            Ok(ExitCode::SUCCESS)
+            eprintln!("fenji-launch: starting the client for {username}");
+            let status = run_spec(&spec).context("starting the client")?;
+            Ok(match status.code() {
+                Some(0) => ExitCode::SUCCESS,
+                Some(c) => ExitCode::from(u8::try_from(c).unwrap_or(1)),
+                None => ExitCode::FAILURE,
+            })
         }
     }
+}
+
+fn load_manifest(file: Option<&Path>) -> anyhow::Result<Manifest> {
+    match file {
+        Some(f) => manifest::Manifest::parse(
+            &std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?,
+        ),
+        None => Ok(Manifest::pinned()),
+    }
+}
+
+/// Where the client runs: Windows directly, Linux through umu-run in the launcher's own prefix.
+fn platform(
+    umu_run: Option<PathBuf>,
+    prefix: Option<PathBuf>,
+    proton: Option<PathBuf>,
+) -> anyhow::Result<Platform> {
+    if cfg!(windows) {
+        return Ok(Platform::Windows);
+    }
+    if !cfg!(target_os = "linux") {
+        bail!("the client runs on Linux (through umu-run) or Windows");
+    }
+    let umu_run = match umu_run {
+        Some(p) => p,
+        None => on_path("umu-run").context(
+            "umu-run isn't on PATH: install umu-launcher, or give its path with --umu-run",
+        )?,
+    };
+    let prefix = match prefix {
+        Some(p) => p,
+        None => settings::data_dir()
+            .context("no data folder ($XDG_DATA_HOME or $HOME): give --prefix")?
+            .join("prefix"),
+    };
+    Ok(Platform::Linux {
+        umu_run,
+        prefix,
+        proton,
+    })
+}
+
+fn on_path(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
 }
 
 fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
