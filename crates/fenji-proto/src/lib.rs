@@ -4,6 +4,8 @@ pub mod codec;
 mod error;
 pub mod frame;
 pub mod header;
+pub mod hello;
 pub mod scramble;
+pub mod variant;
 
 pub use error::{Error, Result};
