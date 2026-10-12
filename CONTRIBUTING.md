@@ -1,0 +1,60 @@
+# Contributing to Fenji
+
+Thanks for your interest. Fenji is a clean-room server emulator for Swords of Legends Online, written in Rust and built by studying our own licensed copies of the game client. The rules below protect the project, so please read them before you open an issue or a pull request.
+
+## The ground rules
+
+These come from the design spec ([§2](docs/superpowers/specs/2026-10-11-fenji-design.md#2-ground-rules-non-negotiable)). A contribution that breaks one can't be accepted, however good it is.
+
+1. **Your own legitimate copy of the game.** If your work needs the client, use your own copy: Steam (app 1418100, which you can download only if it's already in your library, since it was delisted) or Gameforge's launcher from when it was distributed. Never share a copy, link to one, ask for one, or work with cracked or modified clients.
+2. **Clean room.** Never use, reference or submit leaked server files, server binaries, server scripts or server source for Swords of Legends Online / 古剑奇谭网络版, or anything derived from them. That includes write-ups based on leaks and anything from the unofficial servers. [`docs/re/sources.md`](docs/re/sources.md) lists the sources we use and the ones we rejected.
+3. **No game content in the repository.** No game binaries or data archives, no extracted assets, no extracted or decompiled scripts, no middleware libraries (Oodle or others), no packet captures, no stub logs, no analysis databases or evidence bundles. They stay on your machine, in the git-ignored `re/` folder. `scripts/check-forbidden-files.sh` checks every PR.
+4. **Never touch official services.** Don't point a modified or instrumented client, or any Fenji tool, at a live service: the game still runs in China, and Gameforge's, Steam's and Epic's services are live. Every client run happens inside the sandbox (`scripts/spike/run-client.sh`), against our own stub or server.
+5. **Private and non-commercial.** Fenji servers are invite-only and never monetised.
+6. **Some steps need the maintainer's decision first:** patching the client on disk or in memory, circumventing any protection, anything that could load the client's kernel driver, and using proprietary middleware outside its licence. If your work reaches one, stop and open a **Decision gate** issue.
+7. **No third-party credentials.** Fenji never handles Steam or Gameforge passwords.
+
+## Who may do reverse engineering
+
+If you have ever read material rule 2 rules out (for example the rejected sources in `docs/re/sources.md`), you can still contribute. Code that doesn't depend on the client's internals is welcome: tooling, CI, the launcher's interface, docs, review. But please don't do reverse engineering or protocol work on the client, and that includes running it. Tell us in your PR if this applies to you; nobody will think less of you for it.
+
+By opening a pull request you confirm that it contains nothing that rule 2 or rule 3 rules out.
+
+## Getting set up
+
+[`docs/development.md`](docs/development.md) covers it: `scripts/bootstrap.sh` installs every pinned tool on macOS or Linux, and the doc explains the machines, branches and release process. Reverse-engineering work also needs [`docs/re/README.md`](docs/re/README.md): the pinned client build, the analysis setup, the sandbox, and how findings cite their evidence.
+
+## How work flows
+
+- **Start from an issue.** Bugs, tasks, reverse-engineering questions and decision gates each have an issue template. For anything bigger than a small fix, open or comment on an issue first so we can agree the approach.
+- **Branch from `dev`**, named `feat/<scope>-<issue>-<topic>`, `fix/…`, `docs/…` or `chore/…`, for example `feat/proto-12-handshake-state-machine`.
+- **One concern per pull request**, into `dev`, with `Closes #N`. Don't mix refactoring with behaviour changes.
+- **Conventional Commits.** Titles look like `feat(proto): add the hello check`. The `commit-msg` hook (in `.githooks/`) and CI enforce it; the scopes are listed in `docs/development.md`. The changelog is generated from these, so don't edit `CHANGELOG.md` by hand.
+- **Tests first** for code: write the failing test, then the fix. Code that parses bytes from the network or from files must never panic on bad input; it returns an error.
+- **Before you push:**
+
+  ```bash
+  cargo fmt --all --check
+  cargo clippy --workspace --all-targets -- -D warnings
+  cargo test --workspace
+  cargo deny check
+  scripts/check-forbidden-files.sh
+  ```
+
+- **Review and merge.** A maintainer reviews, and once CI is green the PR is squash-merged into `dev`. Releases go to `main`, tagged, by the maintainer.
+
+## Reverse-engineering findings
+
+Findings go in `docs/protocol/` or `docs/re/` as prose and tables, never as decompiled code or disassembly listings. Addresses, constants and function names are fine. Tag each finding **Observed**, **Inferred** or **Unknown**, and cite its evidence: an REA Evidence ID with the exact call, or a pinned-exe address ([`docs/re/README.md`](docs/re/README.md), "Evidence for `gujianol.exe`"). New dependencies must use a licence `deny.toml` allows.
+
+## AI coding assistants
+
+The repository is set up for Claude Code (`CLAUDE.md`, `.claude/`, `.mcp.json`). If you use an assistant, the same rules apply to it, and you're responsible for what it submits.
+
+## Licence of contributions
+
+Fenji is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE). By contributing, you agree that your contribution is licensed under the same terms, and you confirm that you have the right to submit it.
+
+## Conduct and security
+
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md). Report security problems privately, as [SECURITY.md](SECURITY.md) explains, never in a public issue.

@@ -1,0 +1,22 @@
+# Dependabot: the GitHub Actions pins (SHAs with version comments) monthly, in one grouped PR; Cargo
+# security updates only, since version bumps stay deliberate `chore(deps)` changes (docs/development.md).
+# Titles use a Conventional Commit prefix so CI's PR-title check passes.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    # 0 disables version updates; security updates still open.
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "chore(deps)"
