@@ -1,5 +1,5 @@
-//! The 4-byte inner message header (spike-0 4.29; written by FUN_14029C330, read by FUN_14029ADD0;
-//! docs/protocol/transport.md §7). `len` counts the body only.
+//! The 4-byte inner message header (spike-0 4.29; written by FUN_14029AC60 and, for the auth message,
+//! FUN_14029C330; read by FUN_14029ABE0; docs/protocol/transport.md 7.1). `len` counts the body only.
 use crate::{Error, Result};
 
 /// Bytes in a header.
@@ -86,6 +86,15 @@ mod tests {
                 assert_eq!(Header::from_bytes(h.to_bytes()), h, "ty {ty} len {len}");
             }
         }
+    }
+
+    #[test]
+    fn a_length_over_255_uses_all_four_bytes() {
+        // transport.md §7: len 0x012345 -> byte 0 = 0x01, byte 2 = 0x45, byte 3 = 0x23;
+        // (len >> 1) = 0x0091a2, so byte 1 = 0x2a ^ 0xa2 = 0x88.
+        let h = Header::new(0x2a, 0x01_2345).unwrap();
+        assert_eq!(h.to_bytes(), [0x01, 0x88, 0x45, 0x23]);
+        assert_eq!(Header::from_bytes([0x01, 0x88, 0x45, 0x23]), h);
     }
 
     #[test]
