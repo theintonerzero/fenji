@@ -272,3 +272,33 @@ fn cli_census_writes_its_tables() {
     assert!(tsv.lines().any(|l| l.starts_with("(all)\t")));
     assert!(repo.path().join("re/c/census-server-chunks.tsv").is_file());
 }
+
+#[cfg(unix)]
+#[test]
+fn cli_never_writes_a_summary_file_through_a_link() {
+    // A symlink and a hard link where the per-run summaries go, both to a file outside re/.
+    let (repo, exe) = setup();
+    std::fs::create_dir(repo.path().join("docs")).unwrap();
+    let tracked = repo.path().join("docs/tracked.md");
+    std::fs::write(&tracked, "keep").unwrap();
+    std::fs::create_dir_all(repo.path().join("re/x")).unwrap();
+    std::os::unix::fs::symlink(&tracked, repo.path().join("re/x/extract-failures.tsv")).unwrap();
+    std::fs::hard_link(&tracked, repo.path().join("re/x/census.tsv")).unwrap();
+    for command in ["extract", "census"] {
+        let ok = luatool(repo.path(), &exe)
+            .args([command, "--out", "re/x"])
+            .status()
+            .unwrap();
+        assert!(ok.success(), "{command}");
+    }
+    assert_eq!(std::fs::read_to_string(&tracked).unwrap(), "keep");
+    let failures = repo.path().join("re/x/extract-failures.tsv");
+    assert!(!failures.is_symlink());
+    assert!(
+        std::fs::read_to_string(&failures)
+            .unwrap()
+            .starts_with("path\treason\n")
+    );
+    let census = std::fs::read_to_string(repo.path().join("re/x/census.tsv")).unwrap();
+    assert!(census.starts_with("area\t"), "{census}");
+}

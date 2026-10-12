@@ -341,5 +341,46 @@ class SandboxWritableFiles(unittest.TestCase):
         self.assertTrue(all("\n" not in n for n in notes), notes)
 
 
+class GateEventRecord(unittest.TestCase):
+    """Final review Minor 5: a trigger record that can't be written must not turn a gate event
+    (exit 3) into a watchdog failure (exit 4)."""
+
+    def test_a_gate_event_stays_exit_3_when_its_record_cant_be_written(self):
+        import json
+        import subprocess
+        import types
+        with tempfile.TemporaryDirectory() as tmp:
+            root, out = pathlib.Path(tmp, "root"), pathlib.Path(tmp, "out")
+            root.mkdir()
+            out.mkdir()
+            (out / "watchdog-baseline.json").write_text(json.dumps({"sys": {}, "services": [], "service_info": {}}))
+            (root / "agt.sys").write_bytes(b"MZ")  # S1 at the first poll
+            (out / "watchdog-trigger.txt").mkdir()  # so the record can't be written
+            child = subprocess.Popen(["sleep", "30"])  # stands in for the sandbox; the watchdog kills it
+            try:
+                a = types.SimpleNamespace(root=str(root), out=str(out), sandbox_pid=child.pid,
+                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"))
+                rc = wd.cmd_watch(a)
+            finally:
+                child.kill()
+                child.wait()
+            self.assertEqual(rc, 3)
+            self.assertIn("GATE EVENT", (out / "watchdog.log").read_text())
+
+class LogNeverRaises(unittest.TestCase):
+    """Scoped re-review: a full disk must not make the watchdog's own log raise, or a gate event
+    would end as an uncaught error (exit 1) instead of exit 3."""
+
+    def test_a_failed_log_write_falls_back_and_does_not_raise(self):
+        class Full:
+            def write(self, _):
+                raise OSError(28, "No space left on device")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = wd.Log(str(pathlib.Path(tmp, "watchdog.log")))
+            log.f.close()
+            log.f = Full()
+            log("GATE EVENT: S1 new .sys file: /x/agt.sys")  # must not raise
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)

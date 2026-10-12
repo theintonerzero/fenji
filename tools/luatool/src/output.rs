@@ -44,13 +44,7 @@ impl Out {
         if let Some(dir) = target.parent() {
             make_dirs_inside(&self.root, dir)?;
         }
-        // A link already at the target (symlink or hard link) is replaced, never written through.
-        match std::fs::symlink_metadata(&target) {
-            Ok(_) => std::fs::remove_file(&target)
-                .with_context(|| format!("replacing {}", target.display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
+        remove_existing(&target)?;
         Ok(Some(target))
     }
 
@@ -59,9 +53,41 @@ impl Out {
         let Some(target) = self.target(path, suffix)? else {
             return Ok(None);
         };
-        std::fs::write(&target, bytes).with_context(|| format!("writing {}", target.display()))?;
+        create_fresh(&target, bytes)?;
         Ok(Some(target))
     }
+
+    /// Writes one of a command's own files (a summary or a failure list) at the top of the output
+    /// directory, the same way as [`Out::write`]: never through a link already there.
+    pub fn write_summary(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+        let target = self.root.join(name);
+        remove_existing(&target)?;
+        create_fresh(&target, bytes)?;
+        Ok(target)
+    }
+}
+
+/// Removes whatever is at `path` (a symlink or a hard link included) so that a write replaces it
+/// instead of writing through it.
+fn remove_existing(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {
+            std::fs::remove_file(path).with_context(|| format!("replacing {}", path.display()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Creates `path` anew and writes `bytes`; fails if anything appeared there since it was removed.
+fn create_fresh(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    std::fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(bytes))
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// Creates `dir` (inside `root`, which exists) one component at a time, refusing to pass through a

@@ -104,7 +104,16 @@ class Log:
         self.f = open(path, "a", buffering=1)
 
     def __call__(self, msg):
-        self.f.write(f"{now()} {msg}\n")
+        line = f"{now()} {msg}\n"
+        try:
+            self.f.write(line)
+        except OSError:
+            # A full disk must not turn a gate event into an uncaught error: fall back to stderr
+            # (the runner's watchdog.err), and drop the line if that fails too.
+            try:
+                sys.stderr.write(line)
+            except OSError:
+                pass
 
 
 # --- *.sys files -------------------------------------------------------------------------------
@@ -729,22 +738,26 @@ def cmd_watch(a):
                 except OSError:
                     pass
             time.sleep(0.1)
-        with open(os.path.join(a.out, "watchdog-trigger.txt"), "w") as fh:
-            fh.write(f"GATE EVENT at {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t_trig))}\n")
-            fh.write(f"client pid {client_pid} start {client_start} (clock ticks since boot)\n\n")
-            for kind, what, detail in found:
-                fh.write(f"{kind}: {what}\n")
-                if isinstance(what, str) and what.startswith("/"):
-                    try:
-                        fh.write(f"  {describe_file(what)}\n")
-                    except OSError as e:
-                        fh.write(f"  unreadable: {e}\n")
-                if detail is not None:
-                    fh.write(f"  {json.dumps(detail, default=str)}\n")
-            fh.write("\nsandbox processes at the trigger (frozen with SIGSTOP, then SIGKILL):\n")
-            for info in snap:
-                fh.write(json.dumps(info, default=str) + "\n")
-            fh.write(f"\nprocesses left after the kill: {left}; bwrap alive: {alive(spid)}\n")
+        # The record is best effort: failing to write it must not turn exit 3 into 4.
+        try:
+            with open(os.path.join(a.out, "watchdog-trigger.txt"), "w") as fh:
+                fh.write(f"GATE EVENT at {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t_trig))}\n")
+                fh.write(f"client pid {client_pid} start {client_start} (clock ticks since boot)\n\n")
+                for kind, what, detail in found:
+                    fh.write(f"{kind}: {what}\n")
+                    if isinstance(what, str) and what.startswith("/"):
+                        try:
+                            fh.write(f"  {describe_file(what)}\n")
+                        except OSError as e:
+                            fh.write(f"  unreadable: {e}\n")
+                    if detail is not None:
+                        fh.write(f"  {json.dumps(detail, default=str)}\n")
+                fh.write("\nsandbox processes at the trigger (frozen with SIGSTOP, then SIGKILL):\n")
+                for info in snap:
+                    fh.write(json.dumps(info, default=str) + "\n")
+                fh.write(f"\nprocesses left after the kill: {left}; bwrap alive: {alive(spid)}\n")
+        except OSError as e:
+            log(f"could not write {a.out}/watchdog-trigger.txt: {e}")
         log(f"GATE EVENT: {found[0][0]}: {found[0][1]} -> sandbox frozen and killed; left {left}")
 
     try:
@@ -796,13 +809,13 @@ def cmd_watch(a):
                 live = [f"{p}:{i['comm']}" for p, i in seen.items() if i.get("alive")]
                 log(f"heartbeat: poll {polls}, log {tail.off} bytes, live {live}")
             time.sleep(max(0.0, a.interval - (time.monotonic() - t)))
-    except BaseException as e:  # fail safe: no watchdog, no run
-        log(f"WATCHDOG FAILURE {type(e).__name__}: {e}; killing the sandbox")
+    except BaseException as e:  # fail safe: no watchdog, no run. Kill first, then say why.
         for p in ((descendants(init) if init else []) + [spid]):
             try:
                 os.kill(p, signal.SIGKILL)
             except OSError:
                 pass
+        log(f"WATCHDOG FAILURE {type(e).__name__}: {e}; the sandbox was killed")
         raise SystemExit(4)
 
 
