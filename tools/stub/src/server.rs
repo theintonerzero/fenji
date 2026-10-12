@@ -8,10 +8,20 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::session::SessionLog;
 
-/// Accepts connections forever, logging each one to its own file in `out_dir`.
-/// Never writes to the client. Transient accept errors (e.g. too many open files) are logged
-/// and retried rather than stopping the server.
-pub async fn serve(listener: TcpListener, out_dir: PathBuf) -> io::Result<()> {
+/// What the stub does with a connection.
+#[derive(Debug, Clone)]
+pub enum Mode {
+    /// Log what the client sends and never write (M0–M1 behaviour).
+    Listen,
+    /// Speak the transport: hello, auth, reply (M2 spec §5).
+    Speak(crate::speak::SpeakOpts),
+}
+
+/// Accepts connections forever, logging each one to its own file in `out_dir`. In
+/// `Mode::Listen` it never writes to the client; in `Mode::Speak` it speaks the transport.
+/// Transient accept errors (e.g. too many open files) are logged and retried rather than
+/// stopping the server.
+pub async fn serve(listener: TcpListener, out_dir: PathBuf, mode: Mode) -> io::Result<()> {
     let local = listener.local_addr()?;
     loop {
         let (stream, peer) = match listener.accept().await {
@@ -23,8 +33,15 @@ pub async fn serve(listener: TcpListener, out_dir: PathBuf) -> io::Result<()> {
             }
         };
         let out_dir = out_dir.clone();
+        let mode = mode.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle(stream, local, peer, &out_dir).await {
+            let result = match mode {
+                Mode::Listen => handle(stream, local, peer, &out_dir).await,
+                Mode::Speak(opts) => {
+                    crate::speak::handle(stream, local, peer, &out_dir, opts).await
+                }
+            };
+            if let Err(error) = result {
                 tracing::warn!(%peer, %error, "session ended with error");
             }
         });
