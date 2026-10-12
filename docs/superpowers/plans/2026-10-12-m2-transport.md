@@ -3475,3 +3475,84 @@ The RE part (Steps 1–3) needs a clean session.
   - check `git diff --cached --stat`;
   - the release notes name the pinned build;
   - close the release issue and the milestone.
+
+---
+
+## Amendment A: Task 10's code (from Task 9)
+
+Written by Task 9 from `docs/protocol/transport.md` §10, `docs/protocol/opcodes.md` and `docs/protocol/payloads.md`. Ruling (Task 9): the implementer is the same inline session, so this amendment pins the interfaces, the byte vectors, the test cases and the run steps, and the code is written test-first in Task 10, where its review sees it. All facts below cite those three documents.
+
+**Files:**
+- Create: `crates/fenji-proto/src/pickle.rs`, `crates/fenji-proto/src/opcode.rs`, `crates/fenji-proto/src/packet.rs`
+- Modify: `crates/fenji-proto/src/{lib,handshake,client}.rs`, `crates/fenji-proto/tests/handshake.rs`, `crates/fenji-proto/tests/fixtures.rs`, `crates/fenji-proto/tests/fixtures/r2-up.hex`
+- Modify: `tools/stub/src/speak.rs`, `tools/stub/tests/speak.rs`
+- Modify: `docs/protocol/transport.md` (§9 runs R4–R5), `docs/protocol/opcodes.md` (statuses)
+
+**Interfaces:**
+
+```rust
+// pickle (payloads.md P.1–P.2): the client's own format
+pub enum pickle::Value { Nil, Bool(bool), Int(i64), Float(f64), Str(Vec<u8>), Table(Table), Null }
+pub struct pickle::Table { pub array: Vec<Value>, pub hash: Vec<(Value, Value)> }
+pub const pickle::MAX_DEPTH: usize = 32;
+pub fn pickle::decode(bytes: &[u8]) -> Result<Vec<Value>>;   // refuses FF header, ref counts, 0D magic, 0E–10 refs
+pub fn pickle::encode(values: &[Value]) -> Result<Vec<u8>>;  // shortest integer and string forms; < 0x80 values
+// opcode (opcodes.md)
+#[non_exhaustive] pub enum opcode::Stc { Script = 0, Close = 1, TimeSync = 2, … MoveFormular = 29 }  // + from_u8/to_u8
+#[non_exhaustive] pub enum opcode::Cts { GateScript /*0xFF*/, Script /*0*/, GmChannel /*1*/, TimeSync /*2*/,
+    ClientEnter /*3*/, ClientLeave /*4*/, SyncFilterSet /*5*/, QueryActorPos /*6*/, QueryActorMoveCmd /*7*/,
+    MoveDir /*8*/, MoveCombat /*9*/, MoveFinishCharge /*10*/, MoveDebug /*11*/ }               // + from_u8/to_u8
+// packet
+pub enum packet::Up { Script { gateway: bool, id: pickle::Value, args: Vec<pickle::Value> },
+                      Unknown { opcode: u8, bytes: Vec<u8> } }
+pub fn packet::Up::decode(ty: u8, body: &[u8]) -> Result<Up>;      // 0xFF/0 → Script, others → Unknown
+pub fn packet::script_body(id: i64, args: &[pickle::Value]) -> Result<Vec<u8>>;  // for STC SCRIPT
+pub const packet::SET_NET_CONNECTED: i64 = 414;
+pub fn packet::set_net_connected() -> Vec<u8>;   // == 04 04 9E 01 00 0B 00 00 00 00 00 00
+// handshake (deviation D3 closes here)
+enum handshake::State { AwaitAuth, Authed, Queued, Work, Closed }
+pub fn handshake::Server::begin_work(&mut self, codec: &dyn StreamCodec) -> Result<Vec<u8>>; // Queued → Work: sends type 0 set_net_connected()
+```
+
+**Tests (write each first and watch it fail):**
+- **`pickle`, hand-derived vectors** (payloads.md):
+  - `[Int(414), Nil, Table(empty), Nil]` encodes to `04 04 9E 01 00 0B 00 00 00 00 00 00`;
+  - `[Int(402)]` encodes to `01 04 92 01`;
+  - integer widths at the boundaries: −128 / 127 → `03`, −129 / 128 → `04`, 32768 → `05`, 2^31 → `06`;
+  - `Float(1.5)` → `07` and 8 bytes LE;
+  - strings of 255 / 256 / 65536 bytes → tags `08` / `09` / `0A`;
+  - a table with array `[1, "a"]` and hash `{"k": true}` → `0B 02 00 00 00 03 01 08 01 61 08 01 6B 01 00`.
+- **`pickle`, decoding:**
+  - every vector above decodes back;
+  - every truncation of each vector is an error;
+  - refused: tags `0D`, `0E`, `0F`, `10` and unknown tags; a leading `FF`; a count byte ≥ 0x80; trailing bytes; nesting deeper than 32;
+  - an array count larger than the remaining bytes is refused before allocating;
+  - 200 junk inputs never panic.
+- **`pickle`, the real auth payload:** in `tests/fixtures.rs`, the R2 fixture's payload (re-scrubbed, below) decodes to 10 values with a 20-byte zeroed fingerprint at index 8.
+- **`opcode`:**
+  - `Cts::from_u8(0xFF) == GateScript`, `Cts::from_u8(0) == Script`, `Stc::from_u8(29) == MoveFormular`;
+  - unknown values round-trip through `Unknown(n)`.
+- **`packet`:**
+  - `Up::decode(0xFF, 01 04 92 01) == Script { gateway: true, id: Int(402), args: [] }`;
+  - type 4 with an empty body → `Unknown { opcode: 4, .. }`;
+  - a script body whose first value isn't a number or string is refused.
+- **`handshake`:**
+  - after `accept`, `begin_work` produces frames that the client simulator decodes to `Message { ty: 0, body: set_net_connected() }`, and the server's state is `Work`;
+  - `begin_work` before `accept` is refused;
+  - the server's events in `Work` are still `Message`s.
+
+**The fixture, re-scrubbed by field.** Rebuild `r2-up.hex` with `re/m2/scrub_r2.py`: keep the real payload, except the 20-byte fingerprint (payload value 9), which becomes 20 zero bytes of the same length, so the encoding doesn't change. The ticket, account and ids in it are the run's own synthetic `gj_uinfo`/`gj_ticket` values. `fixture_is_scrubbed` then checks that the machine bytes are `02 00 00 00 00 01`, and that value 9 is 20 zero bytes, not that the whole payload is zero.
+
+**The stub.**
+- With `--auth-reply=ok`, `--speak` follows `ok` with `begin_work` (SET_NET_CONNECTED).
+- Each inbound `Message` is logged decoded: `call gateway|script id=<id> args=<n>` for script opcodes, `message ty=<n> len=<n>` otherwise.
+- `tools/stub/tests/speak.rs` asserts the `sent work` event and the decoded call when the simulator sends `send(…)`.
+
+**Runs (client runs: clean session, inside `run-client.sh`, prediction first in `re/m2/runs.md`):**
+- **R4** (`m2-r4`): the launcher path as m2-r1, with `--stub-arg --speak`. Expected:
+  - after `sent ok` and `sent work`, a `call gateway id=402 args=0` event within about a second;
+  - then whatever the client sends next, each decoded;
+  - the watchdog clean.
+- **R5** (`m2-r5`): the server-list path, `login.md` §3: `--gf-sdk=mocked`, `serverlist_url=file:///Z:/…/serverlist.json` via `--client-file`, and the two clicks. Same expectation as R4.
+- **Records:** both go into transport.md §9's table.
+- **opcodes.md:** `STC_PROTOCOL_SCRIPT` and `CTS_PROTOCOL_GATE_SCRIPT` move to `verified`, with the R4 evidence key and the fixture or handshake tests that cover them.

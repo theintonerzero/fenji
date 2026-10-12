@@ -165,13 +165,13 @@ The length counts the body only, up to 0xFFFFFF.
 | 7.2 | Messages and frames are independent. The client's outbound messages form one stream, which it cuts into frames (4.5); the server's decoded frames append to one inbound stream (5.3), which the client splits into messages. A message can span frames, and a frame can hold several messages. | **Inferred** | T11, T13, T15 |
 | 7.3 | The client queues an outbound message only in state 3 `WORK`: FUN_14029AC60 returns without sending in any other state. The NetClientLua method table (0x143114860) names `__gc`, `destroy`, `set_working`, `send_gateway`, `send`, `send_time_sync`, `send_enter`, `send_leave`, `send_sync_filter` and `fetch_ping_delay`. `send_time_sync` (FUN_140221AC0) posts a 13-byte message of type 2 through the network thread. | Names **Observed**; the rest **Inferred** | T15, T16 |
 | 7.4 | Inbound, in states 2 and 3, the network thread reads each complete message. Type 1 closes the connection (FUN_14029A870): the body becomes the close reason (255 bytes kept), the socket closes and the state is 5. Every other type goes to the scripts as type and body, through `net_client_dispatch`. | **Inferred** | T4, T15 |
-| 7.5 | Task 9 adds what the scripts do with each type, the opcode numbers (spike-0 4.12–4.14), the payload encoding, and what makes the scripts call `set_working` (§8). | | |
 
 ## 8. Open questions
 
-- **`QUEUE` → `WORK`.** In native code, the NetClientLua method `set_working` (FUN_1402218C0) posts a command that turns state 2 into 3 (FUN_14029AD60, the only code found that sets 3). It also marks the client in DAT_1431F3ED0, so that `net_client_dispatch` reports an already posted state-2 event as 3. What makes the scripts call it is Task 9's question.
-- **Payload encoding.** The auth payload (`ks.pickle_pack`, 6.4) and the game messages (spike-0 4.9). Task 9.
-- **Server time syncs.** Nothing in the transport waits for one; they only set the ping value `fetch_ping_delay` returns (4.4). Whether the scripts need them, or the message-level `send_time_sync` (7.3), is Task 9's question.
+- **`QUEUE` → `WORK`.** Answered: the script message `PROTOG2C_SET_NET_CONNECTED` (§10).
+- **Payload encoding.** Answered for the script opcodes and the auth payload: the client's pickle ([`payloads.md`](payloads.md)). The other opcodes' bodies are per-type native formats ([`opcodes.md`](opcodes.md)).
+- **Server time syncs.** Nothing found waits for one (§10).
+- **Script message 402,** sent after `WORK`: its name and what the gate answers.
 - **R3.** Answered as far as tested: stored packets decode (5.8, §9).
 - **The 16 auth bytes.** Zero in every run (§9); whether that means the stand-in dictionary is open (6.3).
 - **The real server's choices.** The `ok` message's type (6.7), and what the server did with the 16 bytes and the MAC address.
@@ -205,6 +205,20 @@ M2 plan Task 8 ran the pinned client against `fenji-stub --speak` inside `script
 - **Later and longer stored packets, and the server's key step** (0xD736, 4.3): each run sent one short stored packet, the first on its connection, under key 0. Task 10's first multi-frame run checks them.
 
 **The fixture is scrubbed.** It keeps the real hello, frame length, inner header and 16 dictionary bytes. The 6 machine bytes are replaced with `02 00 00 00 00 01`, and the 73-byte payload, which carries the login fields, with zeros. Then it is re-encrypted with the same hello. `tests/fixtures.rs` checks both the decoding and the scrubbing.
+
+## 10. After auth
+
+From `QUEUE` on, the client's inbound messages go to its scripts, and one script message moves it to `WORK`. Opcode values are in [`opcodes.md`](opcodes.md), and the pickle format is in [`payloads.md`](payloads.md).
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 10.1 | **Dispatch.** In states 2 and 3 the network thread (FUN_1402234D0) splits each inbound message off the stream (FUN_14029ABE0). Type 1 closes the connection (7.4). Every other message is posted to the scripts' queue as an event. `net_client_dispatch` (FUN_140222AD0) turns each event into a call `handler(client, type, values…)`: FUN_140222E00 pushes the type and decodes the body for it (a type-0 body is unpickled). The handler is the function `net_manager_update` passes in (`data/core/client/net_manager.luac`). | **Inferred** | T1, T4, T15; FUN_1402234D0, FUN_140222E00; net_manager.luac |
+| 10.2 | **Script messages.** For type 0, `STC_PROTOCOL_SCRIPT`, the handler takes the first unpickled value as a message id and calls the script handler registered for it, with the remaining values as its arguments. An id with no handler is logged ("[net]not find script msg handle:"). Other types go to a second table of handlers by type. | **Inferred** | net_manager.luac |
+| 10.3 | **`QUEUE` → `WORK`.** The script handler for id 414 logs `----PROTOG2C_SET_NET_CONNECTED--------`. It then stores the billing fields from its second argument and the user id from its third, and passes its first (a time-zone offset) to `ks.time_zone_offset_setup` when it isn't `nil`. Next it calls `net_manager_set_working`, the NetClientLua method `set_working` (FUN_1402218C0): the network thread then sets state 3 (FUN_14029AD60). Finally it logs "[net]net connected...", fires `EVENT_NET_CONNECTED` and sends script message 402 to the gate (`CTS_PROTOCOL_GATE_SCRIPT`). | **Inferred** | `data/core/modules/net/net.luac`; T16; FUN_1402234D0 |
+| 10.4 | **So the server moves the client to `WORK`** by sending, after `ok`, one message of type 0 whose body is the pickle of (414, time-zone offset or `nil`, a table, user id or `nil`). The smallest such body is `04 04 9E 01 00 0B 00 00 00 00 00 00` ([`payloads.md`](payloads.md), Script messages). The client should answer with a type-0xFF message whose body is the pickle of (402), `01 04 92 01`. | **Inferred**; to be checked in R4 (Task 10) | 10.2, 10.3 |
+| 10.5 | **Client sends.** `send_gateway` and `send` pickle the message id and arguments (FUN_1400D54F0), refusing an id that isn't a number or a string ("script PT type error: %d"), and post them with type 0xFF or 0. `send_time_sync`, `send_enter`, `send_leave` and `send_sync_filter` post fixed-size bodies of types 2, 3, 4 and 5 ([`opcodes.md`](opcodes.md)). The network thread sends them only in `WORK` (7.3). | **Inferred**; type constants **Observed** | FUN_140221940, FUN_140221A00, FUN_1402226B0, T16 |
+| 10.6 | **Time sync.** Nothing in the transport or in `net_manager_update` waits for a server time sync. An inbound `STC_PROTOCOL_TIME_SYNC` (type 2) only updates the smoothed ping and the server-time estimate that `net_client_get_server_time` returns (FUN_140222E00, case 2). The 2-second transport-level time-sync frames (4.6) are separate from these messages. | **Inferred** | FUN_140222E00, T12 |
+| 10.7 | **Script message 556** carries a chunk of Lua bytecode from the server, which the client loads and runs, answering with message 278 and the chunk's MD5. Fenji has no use for it. | **Inferred** | net_manager.luac |
 
 ## Evidence index
 
