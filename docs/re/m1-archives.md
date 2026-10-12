@@ -111,7 +111,7 @@ Paths are relative to the repo root. `re/` is git-ignored, so these files exist 
 | AP | `re/m1/archive-probe.tsv`, `re/m1/archive-notes.md` (probes `re/m1/probes/zfs_probe.py`, `zfs_probe2.py`; `archive list` for 2.7) | Record fields and CRCs, statuses, deleted ranges, tiling, stored blob shape, the key and `check` tests, the spike-0 reconciliation | 1.4, 2.4–2.9 |
 | AK | `re/m1/archive-stored-kinds.txt`, `re/m1/archive-stored-sizes.txt` (probe `re/m1/probes/stored_kinds.py`) | Stored files by first bytes and size | 4.1, 4.2 |
 | AC | `re/m1/archive-notes.md` (probes `re/m1/probes/sp_probe.py`, `sp_probe2.py`) | The two containers | 4.3, 4.4 |
-| AO | `re/m2/oodle-helper-run2.log` (`scripts/spike/run-oodle-helper.sh`), `re/m2/index-check.txt`, `re/oodle-spool/` | The first decode with the client's DLL, and the shape of the joined `_index` | 3.4 |
+| AO | `re/m2/oodle-helper-run2.log` (`scripts/spike/run-oodle-helper.sh`), `re/m2/index-check.txt` (from `re/m2/probes/check_index.rs`, run as a `fenji-data` example), `re/oodle-spool/` | The first decode with the client's DLL, and the shape of the joined `_index` | 3.4 |
 | G1 | FUN_1400BF780, magic at 0x142EFC778; FUN_1400C0A90 (`%s/data%03u` at 0x142EFC7E8) | Opens part N and checks or writes `ZFS\0`; builds the part paths | 1.1 |
 | G2 | FUN_1400C0FE0, FUN_1400BFF10; `[IX]` at 0x142EFC77C; CRC table 0x142EF7EC0; messages at 0x142EFC788, 0x142EFC7A8, 0x142EFC7C8 | Loads every part's index chain: record fields, CRC, status, the key table | 1.2, 1.4–1.6 |
 | G3 | FUN_1400BE960, FUN_1400BE4A0 | Loads `_index` through the blob stream and parses its lines | 1.7, 3.2, 3.3 |

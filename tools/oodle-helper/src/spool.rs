@@ -31,19 +31,30 @@ pub fn oodle_stream(block: &[u8], raw_len: usize) -> Option<&[u8]> {
     (u32::from_le_bytes(*head) as usize == raw_len).then_some(stream)
 }
 
-/// Inputs in `spool/in` without an output in `spool/out`, sorted by name.
-pub fn pending(spool: &Path) -> io::Result<Vec<(String, usize)>> {
-    let mut out = Vec::new();
+/// What `pending` found in `spool/in`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Pending {
+    /// Inputs without an output in `spool/out`, with their raw lengths, sorted by name.
+    pub jobs: Vec<(String, usize)>,
+    /// `.bin` names that aren't spool names, or ask for more than `MAX_RAW`: reported, not decoded.
+    pub refused: Vec<String>,
+}
+
+/// The inputs in `spool/in` that wait for an output. Other files (temporary files, say) are ignored.
+pub fn pending(spool: &Path) -> io::Result<Pending> {
+    let mut p = Pending::default();
     for entry in fs::read_dir(spool.join("in"))? {
         let name = entry?.file_name().to_string_lossy().into_owned();
-        if let Some(raw) = parse_name(&name)
-            && !spool.join("out").join(&name).exists()
-        {
-            out.push((name, raw));
+        match parse_name(&name) {
+            Some(raw) if !spool.join("out").join(&name).exists() => p.jobs.push((name, raw)),
+            Some(_) => {}
+            None if name.ends_with(".bin") => p.refused.push(name),
+            None => {}
         }
     }
-    out.sort();
-    Ok(out)
+    p.jobs.sort();
+    p.refused.sort();
+    Ok(p)
 }
 
 /// Writes `dir/name` through a temporary file, so a reader never sees a partial output.
@@ -96,8 +107,16 @@ mod tests {
         fs::write(tmp.path().join("in").join(&a), b"x").unwrap();
         fs::write(tmp.path().join("in").join(&b), b"y").unwrap();
         fs::write(tmp.path().join("in").join("notes.txt"), b"z").unwrap();
+        let too_big = format!("{H}-{}.bin", MAX_RAW + 1);
+        fs::write(tmp.path().join("in").join(&too_big), b"w").unwrap();
         write_atomic(&tmp.path().join("out"), &a, b"1").unwrap();
-        assert_eq!(pending(tmp.path()).unwrap(), [(b, 2)]);
+        let p = pending(tmp.path()).unwrap();
+        assert_eq!(p.jobs, [(b, 2)]);
+        assert_eq!(
+            p.refused,
+            [too_big],
+            "a .bin name it can't take is reported, not skipped"
+        );
         assert!(!tmp.path().join("out").join(format!(".{a}.tmp")).exists());
     }
 }

@@ -22,15 +22,22 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let jobs = match spool::pending(spool_dir) {
-        Ok(j) => j,
+    let pending = match spool::pending(spool_dir) {
+        Ok(p) => p,
         Err(e) => {
             eprintln!("{}: {e}", spool_dir.display());
             return ExitCode::from(1);
         }
     };
-    let (mut done, mut failed) = (0usize, 0usize);
-    for (name, raw_len) in &jobs {
+    for name in &pending.refused {
+        eprintln!(
+            "{name}: not a spool name, or more than {} bytes: not decoded",
+            spool::MAX_RAW
+        );
+    }
+    let jobs = &pending.jobs;
+    let (mut done, mut failed) = (0usize, pending.refused.len());
+    for (name, raw_len) in jobs {
         let input = match std::fs::read(spool_dir.join("in").join(name)) {
             Ok(b) => b,
             Err(e) => {

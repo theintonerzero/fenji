@@ -9,6 +9,10 @@ pub enum Error {
     CodecUnavailable(u16),
     #[error("Oodle block {0} is spooled: run scripts/spike/run-oodle-helper.sh, then retry")]
     OodlePending(String),
+    #[error(
+        "Oodle output {path}: {problem}; delete it and run scripts/spike/run-oodle-helper.sh again"
+    )]
+    OodleBadOutput { path: String, problem: String },
     #[error("LZ4 block {index}: {reason}")]
     Lz4 { index: usize, reason: String },
     #[error("decoded {got} bytes where the header says {want}")]

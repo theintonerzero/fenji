@@ -16,10 +16,19 @@ pub struct OodleSpool {
     dir: PathBuf,
 }
 
-/// Writes `path` through a temporary file, so a reader never sees a partial file.
+/// Writes `path` through a temporary file, so a reader never sees a partial file. Whatever already
+/// sits at the temporary path (a link, say) is replaced, never written through.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    let mut f = fs::File::create(&tmp)?;
+    match fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let mut f = fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;
     fs::rename(&tmp, path)?;
@@ -78,12 +87,23 @@ impl Decompressor for OodleSpool {
             return BuiltinCodecs.decompress_block(codec, input, raw_len, index);
         }
         let name = Self::name(input, raw_len);
-        match fs::read(self.dir.join("out").join(&name)) {
+        let out = self.dir.join("out").join(&name);
+        let bad = |problem: String| Error::OodleBadOutput {
+            path: out.display().to_string(),
+            problem,
+        };
+        // out/ is written from inside the sandbox: only a regular file there counts.
+        let read = match fs::symlink_metadata(&out) {
+            Ok(m) if !m.file_type().is_file() => return Err(bad("not a regular file".into())),
+            Ok(_) => fs::read(&out),
+            Err(e) => Err(e),
+        };
+        match read {
             Ok(bytes) if bytes.len() == raw_len => Ok(bytes),
-            Ok(bytes) => Err(Error::SizeMismatch {
-                got: bytes.len() as u64,
-                want: raw_len as u64,
-            }),
+            Ok(bytes) => Err(bad(format!(
+                "{} bytes, the block decodes to {raw_len}",
+                bytes.len()
+            ))),
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 let inp = self.dir.join("in").join(&name);
                 if !inp.exists() {
@@ -140,10 +160,45 @@ mod tests {
         let (tmp, s) = spool();
         let name = OodleSpool::name(b"packed", 4);
         fs::write(tmp.path().join("out").join(&name), b"raw").unwrap();
-        assert!(matches!(
-            s.decompress_block(Codec::Oodle, b"packed", 4, 0),
-            Err(Error::SizeMismatch { got: 3, want: 4 })
-        ));
+        let err = s
+            .decompress_block(Codec::Oodle, b"packed", 4, 0)
+            .unwrap_err();
+        let Error::OodleBadOutput { path, problem } = err else {
+            panic!("{err:?}")
+        };
+        assert!(path.ends_with(&name), "{path}");
+        assert!(problem.starts_with("3 bytes"), "{problem}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_temp_link_is_replaced_not_followed() {
+        // The sandboxed helper can't write in/, but should anything put a link where the spool
+        // writes its temporary file, the link is replaced, never written through.
+        let (tmp, s) = spool();
+        let victim = tmp.path().join("victim");
+        fs::write(&victim, b"keep").unwrap();
+        let name = OodleSpool::name(b"packed", 4);
+        let link = tmp.path().join("in").join(&name).with_extension("tmp");
+        std::os::unix::fs::symlink(&victim, link).unwrap();
+        let _ = s.decompress_block(Codec::Oodle, b"packed", 4, 0);
+        assert_eq!(fs::read(&victim).unwrap(), b"keep");
+        assert_eq!(
+            fs::read(tmp.path().join("in").join(&name)).unwrap(),
+            b"packed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_output_is_refused() {
+        // out/ is the sandbox's to write: only a regular file there counts as an output.
+        let (tmp, s) = spool();
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::write(&elsewhere, b"raw!").unwrap();
+        let name = OodleSpool::name(b"packed", 4);
+        std::os::unix::fs::symlink(&elsewhere, tmp.path().join("out").join(&name)).unwrap();
+        assert!(s.decompress_block(Codec::Oodle, b"packed", 4, 0).is_err());
     }
 
     #[test]

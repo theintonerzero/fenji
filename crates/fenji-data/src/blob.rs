@@ -178,7 +178,14 @@ pub fn blocks(bytes: &[u8], at: u64) -> Result<(BlobHeader, Vec<Block<'_>>)> {
 /// Decodes a whole blob. `bytes` starts at its header and holds at least `stored_size` bytes.
 pub fn decode(bytes: &[u8], at: u64, codecs: &dyn Decompressor) -> Result<Vec<u8>> {
     let (h, blocks) = blocks(bytes, at)?;
-    let mut out = Vec::with_capacity(h.raw_size.min(MAX_PREALLOC) as usize);
+    // One block is the whole output: keep its buffer instead of copying it.
+    let single = blocks.len() == 1;
+    let reserve = if single {
+        0
+    } else {
+        h.raw_size.min(MAX_PREALLOC)
+    };
+    let mut out = Vec::with_capacity(reserve as usize);
     for b in blocks {
         let decoded = codecs.decompress_block(h.codec, b.input, b.raw_len, b.index)?;
         if decoded.len() != b.raw_len {
@@ -187,7 +194,11 @@ pub fn decode(bytes: &[u8], at: u64, codecs: &dyn Decompressor) -> Result<Vec<u8
                 want: b.raw_len as u64,
             });
         }
-        out.extend_from_slice(&decoded);
+        if single {
+            out = decoded;
+        } else {
+            out.extend_from_slice(&decoded);
+        }
     }
     if out.len() as u64 != h.raw_size {
         return Err(Error::SizeMismatch {

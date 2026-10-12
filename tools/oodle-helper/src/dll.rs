@@ -1,4 +1,4 @@
-//! The one place this workspace calls foreign code: OodleLZ_Decompress in the client's own
+//! The one place this workspace writes `unsafe` FFI: OodleLZ_Decompress in the client's own
 //! oo2core_6_win64.dll, with the arguments the client itself passes (FUN_14024E060; M2 plan F8).
 #![allow(unsafe_code)]
 
