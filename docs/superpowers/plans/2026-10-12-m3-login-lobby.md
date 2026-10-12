@@ -3996,4 +3996,4 @@ The owner decided two questions during execution (#114). Where this amendment an
 
 CLAUDE.md's client-run rule says this. Implementation choice, not part of the decision: the guarded runner runs from a throwaway reflink copy of the pinned copy, as `run-client.sh` does, so the client never writes into the pinned copy. Rungs that pass `--gf-sdk=mocked` (L1–L5, L7) stay in the sandbox, since gate #11 allows the mocked SDK only there. L6 (no SDK flag, the player's own path) may also run bare-metal, which tests what the sandbox can't: umu's runtime container and the real GPU.
 
-**Still open:** whether the AGT driver loads on native Windows on the launcher path. A static reading of that path comes first. Its result goes to the owner (ground rule 6) before Windows players are offered the Play button or told anything about the driver.
+**Still open:** whether the AGT driver loads on native Windows on the launcher path. A static reading of that path comes first. Its result goes to the owner (ground rule 6) before Windows players are offered a way to start the client (the Play button or `fenji-launch play`) or told anything about the driver.

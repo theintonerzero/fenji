@@ -118,4 +118,4 @@ If the same plugins are also enabled at user scope from another marketplace (e.g
 
 ## Machines
 
-macOS (Ghidra/REA + Rust), Fedora Linux game box (the client via GE-Proton inside the sandbox, Rust; REA works too), VPS (deploy). Claude's auto-memory does not travel between machines: anything that matters goes in this file or `docs/`. Per-OS setup: `docs/development.md`.
+macOS (Ghidra/REA + Rust), Fedora Linux game box (the client via GE-Proton inside the sandbox, plus guarded bare-metal play tests, Rust; REA works too), VPS (deploy). Claude's auto-memory does not travel between machines: anything that matters goes in this file or `docs/`. Per-OS setup: `docs/development.md`.
