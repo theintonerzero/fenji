@@ -1,7 +1,7 @@
 //! archive: the SoLO data archives' structure (M1 spec §5, docs/re/m1-archives.md). Oodle (codec 4)
 //! is read only through the spool that scripts/spike/run-oodle-helper.sh decodes (M2 plan Task 11):
-//! `paths` decodes `_index` that way; `extract` still writes stored files only. Writes only under
-//! re/.
+//! `paths` decodes `_index` that way, and `dump` the design tables' cache (docs/re/m2-tables.md);
+//! `extract` still writes stored files only. Writes only under re/.
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -14,7 +14,7 @@ use fenji_data::archive::{
     CONTAINER_MAGIC, Record, STATUS_USED, read_blob_header, read_part_header,
 };
 use fenji_data::oodle_spool::OodleSpool;
-use fenji_data::{Codec, FIXED_LEN, index};
+use fenji_data::{Codec, FIXED_LEN, cache, index};
 use sha1::{Digest, Sha1};
 
 /// The SoLO data archives, read without decompression. Writes only under re/.
@@ -56,6 +56,20 @@ enum Command {
     /// holds the key. OUT and the spool must be inside re/. Exit 3: blocks wait for
     /// scripts/spike/run-oodle-helper.sh (not a gate event).
     Paths {
+        #[arg(long, default_value = "re/oodle-spool")]
+        spool: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Write one sheet of the design tables' cache as OUT/TABLE.jsonl, one row per line
+    ///
+    /// TABLE is items, skills, monsters, xp or maps (the sheets items, skill, npcs, upgrade and
+    /// maps; docs/re/m2-tables.md §3), or any sheet's name. Each line is a JSON object: "$key",
+    /// then the row's fields with its defaults merged in. OUT and the spool must be inside re/.
+    /// Exit 3: blocks wait for scripts/spike/run-oodle-helper.sh (not a gate event).
+    Dump {
+        #[arg(long)]
+        table: String,
         #[arg(long, default_value = "re/oodle-spool")]
         spool: PathBuf,
         #[arg(long)]
@@ -104,6 +118,7 @@ fn main() -> Result<ExitCode> {
         Command::Info => info(&client),
         Command::List { part } => list(&client, part),
         Command::Paths { spool, out } => return paths(&client, &spool, &out),
+        Command::Dump { table, spool, out } => return dump(&client, &table, &spool, &out),
         Command::Extract {
             part,
             stored_only,
@@ -111,7 +126,7 @@ fn main() -> Result<ExitCode> {
         } => {
             if !stored_only {
                 bail!(
-                    "only --stored-only is available: Oodle (codec 4) waits on decision gate #39"
+                    "only --stored-only is available: Oodle files are read through the spool by paths and dump"
                 );
             }
             extract_stored(&client, part, &out)
@@ -143,34 +158,64 @@ struct Place {
     codec: &'static str,
 }
 
-/// Decodes `_index` through the spool, then writes OUT/paths.tsv. Exits 3 when blocks wait for the
-/// helper.
-fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
+/// The output directory and the spool, both inside re/ (the spool holds the client's compressed
+/// blocks).
+fn out_and_spool(out: &Path, spool: &Path) -> Result<(PathBuf, OodleSpool)> {
     let repo = fenji_data::re_dir::find_repo_root(&std::env::current_dir()?)?;
     let out = fenji_data::re_dir::resolve_out_dir(&repo, out)?;
-    // The spool holds the client's compressed blocks, so it stays under re/ too.
     let spool = OodleSpool::new(&fenji_data::re_dir::resolve_out_dir(&repo, spool)?)?;
-    let index_path = client.join("data").join("_index");
-    let bytes = std::fs::read(&index_path).with_context(|| index_path.display().to_string())?;
-    let queued = spool.spool_blob(&bytes, 0)?;
+    Ok((out, spool))
+}
+
+/// A blob decoded through the spool, or the exit status (3) to stop with while its blocks wait for
+/// the helper.
+fn decode_spooled(
+    bytes: &[u8],
+    at: u64,
+    spool: &OodleSpool,
+) -> Result<std::result::Result<Vec<u8>, ExitCode>> {
+    let queued = spool.spool_blob(bytes, at)?;
     if queued > 0 {
         println!("{queued} blocks spooled: run scripts/spike/run-oodle-helper.sh, then re-run");
-        return Ok(ExitCode::from(3));
+        return Ok(Err(ExitCode::from(3)));
     }
-    let raw = match fenji_data::decode_blob(&bytes, 0, &spool) {
-        Ok(raw) => raw,
+    match fenji_data::decode_blob(bytes, at, spool) {
+        Ok(raw) => Ok(Ok(raw)),
         Err(fenji_data::Error::OodlePending(name)) => {
             println!(
                 "{name} and maybe more wait in the spool: run scripts/spike/run-oodle-helper.sh, then re-run"
             );
-            return Ok(ExitCode::from(3));
+            Ok(Err(ExitCode::from(3)))
         }
-        Err(e) => return Err(e.into()),
-    };
-    let map = index::build(&raw);
+        Err(e) => Err(e.into()),
+    }
+}
 
-    let (mut places, mut live, mut repeated, mut unreadable) =
-        (HashMap::new(), 0usize, 0usize, 0usize);
+/// `_index` decoded through the spool, or the exit status to stop with.
+fn decoded_index(
+    client: &Path,
+    spool: &OodleSpool,
+) -> Result<std::result::Result<index::PathMap, ExitCode>> {
+    let index_path = client.join("data").join("_index");
+    let bytes = std::fs::read(&index_path).with_context(|| index_path.display().to_string())?;
+    Ok(decode_spooled(&bytes, 0, spool)?.map(|raw| index::build(&raw)))
+}
+
+/// Every live record's place by key (the first part's wins), with counts for `paths`' summary.
+struct Places {
+    by_key: HashMap<[u8; 20], Place>,
+    live: usize,
+    repeated: usize,
+    unreadable: usize,
+}
+
+fn live_places(client: &Path) -> Result<Places> {
+    let mut p = Places {
+        by_key: HashMap::new(),
+        live: 0,
+        repeated: 0,
+        unreadable: 0,
+    };
     for n in 0..1000 {
         let path = part_path(client, n);
         if !path.exists() {
@@ -179,19 +224,19 @@ fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
         let h = read_part_header(&path).with_context(|| path.display().to_string())?;
         let mut f = File::open(&path)?;
         for r in h.live() {
-            live += 1;
-            if places.contains_key(&r.key) {
-                repeated += 1;
+            p.live += 1;
+            if p.by_key.contains_key(&r.key) {
+                p.repeated += 1;
                 continue;
             }
             let codec = match read_blob_header(&mut f, u64::from(r.offset)) {
                 Ok(b) => b.codec.name(),
                 Err(_) => {
-                    unreadable += 1;
+                    p.unreadable += 1;
                     "bad-header"
                 }
             };
-            places.insert(
+            p.by_key.insert(
                 r.key,
                 Place {
                     part: n,
@@ -202,13 +247,24 @@ fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
             );
         }
     }
+    Ok(p)
+}
 
+/// Decodes `_index` through the spool, then writes OUT/paths.tsv. Exits 3 when blocks wait for the
+/// helper.
+fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
+    let (out, spool) = out_and_spool(out, spool)?;
+    let map = match decoded_index(client, &spool)? {
+        Ok(map) => map,
+        Err(code) => return Ok(code),
+    };
+    let places = live_places(client)?;
     let tsv = out.join("paths.tsv");
     let mut w = BufWriter::new(create_replacing(&tsv)?);
     writeln!(w, "key\tpath\tpart\toffset\tsize\tcodec")?;
     let mut found = 0usize;
     for (path, key) in &map.by_path {
-        match places.get(key) {
+        match places.by_key.get(key) {
             Some(p) => {
                 found += 1;
                 writeln!(
@@ -226,14 +282,86 @@ fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
     }
     w.flush()?;
     println!(
-        "{} paths ({} containers); {} bad lines, {} lines not UTF-8, {} paths named again; {found} found in a part, {} not found; {live} live records, {repeated} repeating a key, {unreadable} with an unreadable blob header; wrote {}",
+        "{} paths ({} containers); {} bad lines, {} lines not UTF-8, {} paths named again; {found} found in a part, {} not found; {} live records, {} repeating a key, {} with an unreadable blob header; wrote {}",
         map.by_path.len(),
         map.containers.len(),
         map.bad_lines,
         map.non_utf8_lines,
         map.replaced,
         map.by_path.len() - found,
+        places.live,
+        places.repeated,
+        places.unreadable,
         tsv.display()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The design tables' cache (docs/re/m2-tables.md §1).
+const TABLE_CACHE: &str = "data/caches/all_tables.new_cache";
+
+/// `dump`'s names for the five sheets M2 dumps (docs/re/m2-tables.md §3); any other name is a
+/// sheet's own.
+fn sheet_name(table: &str) -> &str {
+    match table {
+        "skills" => "skill",
+        "monsters" => "npcs",
+        "xp" => "upgrade",
+        other => other,
+    }
+}
+
+/// Writes one sheet of the table cache as OUT/TABLE.jsonl. Exits 3 when blocks wait for the helper.
+fn dump(client: &Path, table: &str, spool: &Path, out: &Path) -> Result<ExitCode> {
+    // The name becomes a file name.
+    if table.is_empty()
+        || !table
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        bail!("a table name is letters, digits and '_': {table:?}");
+    }
+    let (out, spool) = out_and_spool(out, spool)?;
+    let map = match decoded_index(client, &spool)? {
+        Ok(map) => map,
+        Err(code) => return Ok(code),
+    };
+    let key = map
+        .by_path
+        .get(TABLE_CACHE)
+        .with_context(|| format!("_index doesn't name {TABLE_CACHE}"))?;
+    let places = live_places(client)?;
+    let p = places
+        .by_key
+        .get(key)
+        .with_context(|| format!("no live record holds {TABLE_CACHE}"))?;
+    let part = part_path(client, p.part);
+    let mut f = File::open(&part).with_context(|| part.display().to_string())?;
+    f.seek(SeekFrom::Start(u64::from(p.offset)))?;
+    let mut blob = vec![0; p.size as usize];
+    f.read_exact(&mut blob)
+        .with_context(|| format!("{TABLE_CACHE} in {}", part.display()))?;
+    let raw = match decode_spooled(&blob, u64::from(p.offset), &spool)? {
+        Ok(raw) => raw,
+        Err(code) => return Ok(code),
+    };
+    let unzipped = cache::unzip(&raw)?;
+    let c = cache::read(unzipped.as_deref().unwrap_or(&raw))?;
+    let name = sheet_name(table);
+    let id = c
+        .sheet(name)
+        .with_context(|| format!("the table cache has no sheet {name:?}"))?;
+    let rows = cache::json::rows(&c, id);
+    let file = out.join(format!("{table}.jsonl"));
+    let mut w = BufWriter::new(create_replacing(&file)?);
+    for r in &rows {
+        writeln!(w, "{r}")?;
+    }
+    w.flush()?;
+    println!(
+        "{} rows of {name} written to {}",
+        rows.len(),
+        file.display()
     );
     Ok(ExitCode::SUCCESS)
 }

@@ -3556,3 +3556,71 @@ pub fn handshake::Server::begin_work(&mut self, codec: &dyn StreamCodec) -> Resu
 - **R5** (`m2-r5`): the server-list path, `login.md` §3: `--gf-sdk=mocked`, `serverlist_url=file:///Z:/…/serverlist.json` via `--client-file`, and the two clicks. Same expectation as R4.
 - **Records:** both go into transport.md §9's table.
 - **opcodes.md:** `STC_PROTOCOL_SCRIPT` and `CTS_PROTOCOL_GATE_SCRIPT` move to `verified`, with the R4 evidence key and the fixture or handshake tests that cover them.
+
+## Amendment B: table parsing and archive dump (from Task 13)
+
+Written by Task 13 from [`docs/re/m2-tables.md`](../../re/m2-tables.md). Ruling (Task 13, as Task 9's for Amendment A): the implementer is the same inline session, so this amendment pins the interfaces, the test cases and the run steps, and the code is written test-first in Step 5, where its review sees it.
+
+What changed against the plan: the design tables aren't `.tab` files but one pickle cache, `data/caches/all_tables.new_cache` (m2-tables.md §1). So `fenji_data::table` becomes `fenji_data::cache`, a reader for that cache, and the five tables are sheets in it: items `items`, skills `skill`, monsters `npcs`, the XP curve `upgrade`, maps `maps` (m2-tables.md §3).
+
+**Files:**
+- Create: `crates/fenji-data/src/cache.rs` (the reader), `crates/fenji-data/src/cache/json.rs` (rows as JSON lines)
+- Modify: `crates/fenji-data/src/lib.rs`, `tools/archive/src/main.rs`, `tools/archive/tests/cli.rs`
+- Local only: `re/m2/dump/`
+
+**Interfaces:**
+
+```rust
+// fenji_data::cache (m2-tables.md §2): the client's pickle with table references and magic objects
+pub const MAX_DEPTH: usize = 32;                       // FUN_1400D4AC0: "unpack table too depth!"
+pub const MAX_UNZIPPED: usize = 0x10_0000;             // FUN_1400D55C0
+pub struct TableId(pub usize);                         // a table's index: its order of creation
+pub enum Value<'a> { Nil, Bool(bool), Int(i64), Float(f64), Str(&'a [u8]), Table(TableId), Null,
+                     Magic { name: &'a [u8], arg: Box<Value<'a>> } }
+pub struct Table<'a> { pub array: Vec<Value<'a>>, pub hash: Vec<(Value<'a>, Value<'a>)> }
+pub struct Cache<'a> { pub tables: Vec<Table<'a>>, pub values: Vec<Value<'a>> }
+pub fn unzip(bytes: &[u8]) -> Result<Option<Vec<u8>>>; // the FF form's raw bytes; None if not compressed
+pub fn read(bytes: &[u8]) -> Result<Cache<'_>>;        // refuses a leading FF: unzip first
+impl<'a> Cache<'a> {
+    pub fn field(&self, table: &TableId, key: &str) -> Option<&Value<'a>>;  // a string key's value
+    pub fn sheet(&self, name: &str) -> Option<&TableId>;                     // in the one root table
+}
+// fenji_data::cache::json
+pub fn rows(cache: &Cache, sheet: &TableId) -> Vec<String>;  // one JSON object per row: "key", then
+                                                              // the fields, `__index` defaults merged
+pub fn value(cache: &Cache, v: &Value) -> String;            // JSON for one value
+```
+
+Errors are `Error::BadCache(String)`, a new variant.
+
+JSON forms: integers and floats as numbers (non-finite floats as `null`); strings as JSON strings (invalid UTF-8 replaced); `nil` and the null userdata as `null`; a table with only an array part as an array, any other as an object (array entries under `"1"`, `"2"`, …; other keys as their decimal or string form); a magic object as `{"<name>": <argument>}`; a table already being written further up as `{"$ref": <id>}`.
+
+**Tests (write each first and watch it fail):**
+- `cache`:
+  - a self-reference: header `81 00 00 02`, a table whose field `a` is `0E 00`, reads as `Table(0)`;
+  - a reference to a table not yet registered, or to an index at or past the declared count, is refused;
+  - only the first N tables (the header's count) can be named;
+  - magic: `0D`, a string name, an argument → `Magic`; a `nil` name → the next value; a non-string name refused;
+  - 33 nested tables refused; every truncation of every vector refused; trailing bytes, unknown tags and a leading `FF` refused by `read`;
+  - an array count past the input refused before allocating;
+  - `unzip`: an `FF` vector decompresses; a declared size over 0x100000 refused; no `FF` → `None`.
+- `cache::json`:
+  - rows merge their `__index` defaults: own fields win, `__index` itself is dropped;
+  - shapes: escaped strings (`"`, `\`, control bytes), a pure array, a mixed table, a cycle → `$ref`, `LString` and `Float4` magic, `nil`, non-finite floats.
+- `archive` CLI (synthetic client, no game bytes):
+  - `dump --table items --out re/d` writes `re/d/items.jsonl` with the synthetic sheet's rows, defaults merged, from a cache held as a stored blob in a synthetic part and named in a spooled `_index`;
+  - `dump` refuses an `--out` outside `re/`, and exits 3 while `_index` waits for the helper;
+  - an unknown sheet is an error naming it.
+- Local only, `#[ignore]`, gated on `FENJI_CLIENT_PATH`: `dump --table items` on the client copy writes 47,112 rows.
+
+**`archive dump --table <items|skills|monsters|xp|maps|SHEET> [--spool DIR] --out DIR`:**
+- the aliases map to `items`, `skill`, `npcs`, `upgrade`, `maps`; any other name is a sheet name;
+- `_index` through the spool as `paths` does (exit 3 while blocks wait); the record holding `data/caches/all_tables.new_cache`; its blob decoded through the spool (exit 3 while blocks wait); `unzip` when `FF`; `cache::read`;
+- writes `DIR/<table>.jsonl` (through `create_replacing`), and prints the row count;
+- `paths` and `dump` share the `_index` and record lookup.
+
+**Steps:**
+1. `cache.rs` and its tests, then `cache/json.rs` and its tests (`cargo test -p fenji-data cache`).
+2. `archive dump` and its CLI tests (`cargo test -p fenji-archive --test cli`).
+3. The real run: `archive dump --table <each of the five> --out re/m2/dump` (spool and helper as needed); record the row counts in m2-tables.md §3 as an "M2 update" (counts only).
+4. Gates, commit `feat(data): read the client's tables and dump them`, PR with `Closes #69` and `Closes #51`.

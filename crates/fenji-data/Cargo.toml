@@ -1,6 +1,6 @@
 [package]
 name = "fenji-data"
-description = "Reads the SoLO client's own data: the engine's blob format, the file system embedded in gujianol.exe, the archives' structure and _index's paths, and a spool for Oodle blocks"
+description = "Reads the SoLO client's own data: the engine's blob format, the file system embedded in gujianol.exe, the archives' structure and _index's paths, a spool for Oodle blocks, and the table caches"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

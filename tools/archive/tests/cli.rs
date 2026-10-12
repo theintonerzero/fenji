@@ -157,7 +157,7 @@ fn extract_refuses_without_stored_only_or_outside_re() {
         .output()
         .unwrap();
     assert!(!all.status.success());
-    assert!(String::from_utf8_lossy(&all.stderr).contains("decision gate"));
+    assert!(String::from_utf8_lossy(&all.stderr).contains("--stored-only"));
     let outside = archive(repo.path())
         .args([
             "extract",
@@ -259,17 +259,21 @@ fn paths_spools_index_and_waits_for_the_helper() {
 
 /// A repo whose _index is decoded in the spool: three paths (see `paths_maps_index_paths_to_records`).
 fn decoded_index_repo() -> tempfile::TempDir {
-    use fenji_data::oodle_spool::OodleSpool;
-    let repo = setup();
     // An _index of three paths: one stored file in data000, one Oodle file in data001, one key
-    // no part holds. Its one block stands in for Oodle data; its "decoded" output is placed in
-    // the spool as the helper would.
-    let text = format!(
+    // no part holds.
+    repo_with_index(&format!(
         "{}\tmovie/intro.bk2\n{}\tdata/x.tab\n{}\tgone/y.tab\n",
         hex(&sha1(VIDEO)),
         hex(&[9; 20]),
         hex(&[7; 20])
-    );
+    ))
+}
+
+/// A synthetic client whose _index holds `text`. Its one block stands in for Oodle data; its
+/// "decoded" output is placed in the spool as the helper would.
+fn repo_with_index(text: &str) -> tempfile::TempDir {
+    use fenji_data::oodle_spool::OodleSpool;
+    let repo = setup();
     let mut index = lz4_blob(text.as_bytes(), 0);
     index[28] = 4;
     std::fs::write(repo.path().join("client/data/_index"), &index).unwrap();
@@ -277,7 +281,7 @@ fn decoded_index_repo() -> tempfile::TempDir {
     let name = OodleSpool::name(block, text.len());
     let spool = repo.path().join("re/oodle-spool");
     std::fs::create_dir_all(spool.join("out")).unwrap();
-    std::fs::write(spool.join("out").join(name), &text).unwrap();
+    std::fs::write(spool.join("out").join(name), text).unwrap();
     repo
 }
 
@@ -347,4 +351,125 @@ fn paths_replaces_a_link_instead_of_writing_through_it() {
             .unwrap()
             .starts_with("key\tpath")
     );
+}
+
+/// A table cache (docs/re/m2-tables.md §2) with one sheet, `items`: row 7 holds its defaults
+/// table inline and overrides `b`; row 8 refers back to the same defaults.
+fn cache_bytes() -> Vec<u8> {
+    let mut b = vec![0x81, 0x00, 0x00, 0x04]; // one value; four referable tables
+    b.extend([0x0B, 0, 0, 0, 0]); // 0: root
+    b.extend([0x08, 5]);
+    b.extend(b"items");
+    b.extend([0x0B, 0, 0, 0, 0]); // 1: the sheet
+    b.extend([0x03, 7, 0x0B, 0, 0, 0, 0]); // row 7 (2)
+    b.extend([0x08, 7]);
+    b.extend(b"__index");
+    b.extend([0x0B, 0, 0, 0, 0]); // 3: the defaults
+    b.extend([0x08, 1, b'a', 0x03, 1, 0x08, 1, b'b', 0x03, 2, 0x00]);
+    b.extend([0x08, 1, b'b', 0x03, 3, 0x00]); // row 7 ends
+    b.extend([0x03, 8, 0x0B, 0, 0, 0, 0]); // row 8 (4)
+    b.extend([0x08, 7]);
+    b.extend(b"__index");
+    b.extend([0x0E, 3, 0x00]); // the defaults again; row 8 ends
+    b.extend([0x00, 0x00]); // the sheet, then the root, end
+    b
+}
+
+/// A client whose _index names the table cache, held as a stored blob in a third part.
+fn cache_repo() -> tempfile::TempDir {
+    let cache = cache_bytes();
+    let key = sha1(&cache);
+    let repo = repo_with_index(&format!(
+        "{}\tdata/caches/all_tables.new_cache\n",
+        hex(&key)
+    ));
+    let part = zfs_part(&[vec![(1, key, stored_blob(&cache))]]);
+    std::fs::write(repo.path().join("client/data/data002"), part).unwrap();
+    repo
+}
+
+#[test]
+fn dump_writes_a_sheet_as_json_lines() {
+    let repo = cache_repo();
+    let out = archive(repo.path())
+        .args(["dump", "--table", "items", "--out", "re/d"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("2 rows of items"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("re/d/items.jsonl")).unwrap(),
+        "{\"$key\":7,\"a\":1,\"b\":3}\n{\"$key\":8,\"a\":1,\"b\":2}\n"
+    );
+}
+
+#[test]
+fn dump_refuses_outside_re_and_names_an_unknown_sheet() {
+    let repo = cache_repo();
+    let outside = archive(repo.path())
+        .args(["dump", "--table", "items", "--out", "/tmp/x"])
+        .output()
+        .unwrap();
+    assert!(!outside.status.success());
+    assert!(String::from_utf8_lossy(&outside.stderr).contains("is not inside"));
+    let unknown = archive(repo.path())
+        .args(["dump", "--table", "nosuch", "--out", "re/d"])
+        .output()
+        .unwrap();
+    assert!(!unknown.status.success());
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("nosuch"),
+        "{}",
+        String::from_utf8_lossy(&unknown.stderr)
+    );
+}
+
+#[test]
+fn dump_waits_for_the_helper() {
+    // setup()'s _index is an Oodle blob nobody has decoded yet.
+    let repo = setup();
+    let out = archive(repo.path())
+        .args(["dump", "--table", "items", "--out", "re/d"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 blocks spooled"));
+}
+
+#[test]
+#[ignore = "needs the pinned client and a decoded spool: FENJI_CLIENT_PATH=~/fenji-client cargo test -p fenji-archive --test cli -- --ignored"]
+fn dump_items_from_the_client() {
+    // Run from the repository root, whose re/oodle-spool the helper has filled (M2 plan Task 13).
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let client = std::env::var_os("FENJI_CLIENT_PATH").expect("set FENJI_CLIENT_PATH");
+    let out = Command::new(env!("CARGO_BIN_EXE_archive"))
+        .current_dir(&root)
+        .arg("--client")
+        .arg(client)
+        .args(["dump", "--table", "items", "--out", "re/m2/dump-test"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines = std::fs::read_to_string(root.join("re/m2/dump-test/items.jsonl"))
+        .unwrap()
+        .lines()
+        .count();
+    assert_eq!(lines, 47_112, "docs/re/m2-tables.md 3.1");
 }
