@@ -57,8 +57,10 @@ pub struct Table {
     pub hash: Vec<(Value, Value)>,
 }
 
-/// Tables nest at most this deep ("unpack table too depth!", FUN_1400D4AC0).
-pub const MAX_DEPTH: usize = 32;
+/// Tables nest at most this deep. The client counts from 1 and refuses a table that takes the
+/// count past 32, both unpacking ("unpack table too depth!", FUN_1400D5850, FUN_1400D4AC0) and
+/// packing (FUN_1400D33F0, FUN_1400D3950): payloads.md P.2.
+pub const MAX_DEPTH: usize = 31;
 /// The largest raw size a compressed packet may declare ("pkt bad size, too large zip size",
 /// FUN_1400D55C0).
 pub const MAX_UNZIPPED: usize = 0x10_0000;
@@ -764,29 +766,36 @@ mod tests {
     }
 
     #[test]
-    fn nesting_is_bounded_at_32_tables() {
-        let mut v = Value::Nil;
-        for _ in 0..MAX_DEPTH {
-            v = Value::Table(Table {
-                array: vec![v],
-                hash: vec![],
-            });
-        }
-        let ok = encode(std::slice::from_ref(&v)).unwrap();
-        assert_eq!(decode(&ok).unwrap(), [v.clone()]);
-        let deeper = Value::Table(Table {
-            array: vec![v],
-            hash: vec![],
-        });
-        assert!(encode(std::slice::from_ref(&deeper)).is_err());
-        // The same 33 levels written by hand are refused by the decoder too.
-        let mut b = vec![0x01];
-        for _ in 0..=MAX_DEPTH {
-            b.extend([0x0B, 1, 0, 0, 0]);
-        }
-        b.push(0x00);
-        b.extend(std::iter::repeat_n(0x00, MAX_DEPTH + 1));
-        assert!(decode(&b).is_err());
+    fn tables_nest_31_deep_as_in_the_client() {
+        // FUN_1400D5850 starts the unpacker's depth at 1 (its constant at 0x142F04970), and
+        // FUN_1400D4AC0 refuses a table that takes it past 32 ("unpack table too depth!"). The
+        // packer counts the same way (FUN_1400D33F0, FUN_1400D3950). So 31 tables, not 32.
+        let nested = |n: usize| {
+            let mut v = Value::Nil;
+            for _ in 0..n {
+                v = Value::Table(Table {
+                    array: vec![v],
+                    hash: vec![],
+                });
+            }
+            v
+        };
+        let bytes = encode(&[nested(31)]).unwrap();
+        assert_eq!(decode(&bytes).unwrap(), [nested(31)]);
+        assert!(encode(&[nested(32)]).is_err());
+        // Each table's one array value is the next table, the innermost's is nil, then each
+        // table's pairs end with a nil key.
+        let by_hand = |n: usize| {
+            let mut b = vec![0x01];
+            for _ in 0..n {
+                b.extend([0x0B, 1, 0, 0, 0]);
+            }
+            b.push(0x00);
+            b.extend(std::iter::repeat_n(0x00, n));
+            b
+        };
+        assert_eq!(by_hand(31), bytes);
+        assert!(decode(&by_hand(32)).is_err());
     }
 
     #[test]
@@ -801,8 +810,8 @@ mod tests {
 
     #[test]
     fn nested_huge_array_counts_fail_cleanly() {
-        // 33 nested tables, each declaring an array count as large as the rest of a 1 MiB
-        // input: refused at depth 33, with at most PREALLOC slots reserved per level.
+        // One table more than MAX_DEPTH, each declaring an array count as large as the rest of
+        // a 1 MiB input: refused at the last, with at most PREALLOC slots reserved per level.
         let total = 1 << 20;
         let mut b = vec![0x01];
         for level in 0..=MAX_DEPTH {

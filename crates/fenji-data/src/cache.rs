@@ -8,9 +8,10 @@ use crate::{Error, Result};
 
 pub mod json;
 
-/// Tables nest at most this deep ("unpack table too depth!", FUN_1400D4AC0). Magic objects count
-/// as a level too, which keeps the recursion bounded.
-pub const MAX_DEPTH: usize = 32;
+/// Tables nest at most this deep: the client's unpacker counts from 1 and refuses a table that
+/// takes the count past 32 ("unpack table too depth!", FUN_1400D5850, FUN_1400D4AC0; payloads.md
+/// P.2). Magic objects count as a level too, which keeps the recursion bounded.
+pub const MAX_DEPTH: usize = 31;
 /// The largest raw size a compressed cache may declare ("pkt bad size, too large zip size",
 /// FUN_1400D55C0).
 pub const MAX_UNZIPPED: usize = 0x10_0000;
@@ -351,8 +352,10 @@ mod tests {
             b.extend(std::iter::repeat_n(0x00, levels));
             b
         };
-        assert!(read(&nested(MAX_DEPTH)).is_ok());
-        assert!(read(&nested(MAX_DEPTH + 1)).is_err());
+        // The client's number: its unpacker counts from 1 and refuses a count past 32
+        // (payloads.md P.2), so 31 tables.
+        assert!(read(&nested(31)).is_ok());
+        assert!(read(&nested(32)).is_err());
         // A chain of nil-named magic objects counts too.
         let mut chain = vec![0x01];
         for _ in 0..=MAX_DEPTH {
