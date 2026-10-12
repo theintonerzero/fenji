@@ -29,6 +29,11 @@ pub struct Table {
 pub const MAX_DEPTH: usize = 32;
 /// The most values a packet without table references holds (its count byte stays below 0x80).
 pub const MAX_VALUES: usize = 0x7f;
+/// The most array slots reserved up front for a table, whatever count it declares. Nested tables
+/// may each declare a count as large as the rest of the input; reserving that much at every level
+/// would let a 1 MiB message claim gigabytes. Past this, the array grows as values are read, and
+/// every value takes at least one input byte.
+const PREALLOC: usize = 64;
 
 fn err<T>(what: impl Into<String>) -> Result<T> {
     Err(Error::Pickle(what.into()))
@@ -189,7 +194,7 @@ impl Reader<'_> {
                     ));
                 }
                 let mut t = Table {
-                    array: Vec::with_capacity(n),
+                    array: Vec::with_capacity(n.min(PREALLOC)),
                     hash: Vec::new(),
                 };
                 for _ in 0..n {
@@ -375,6 +380,21 @@ mod tests {
             hash: vec![(Value::Nil, Value::Int(1))],
         };
         assert!(encode(&[Value::Table(nil_key)]).is_err());
+    }
+
+    #[test]
+    fn nested_huge_array_counts_fail_cleanly() {
+        // 33 nested tables, each declaring an array count as large as the rest of a 1 MiB
+        // input: refused at depth 33, with at most PREALLOC slots reserved per level.
+        let total = 1 << 20;
+        let mut b = vec![0x01];
+        for level in 0..=MAX_DEPTH {
+            let rest = total - (1 + 5 * (level + 1));
+            b.push(0x0B);
+            b.extend_from_slice(&(rest as u32).to_le_bytes());
+        }
+        b.resize(total, 0x00);
+        assert!(decode(&b).is_err());
     }
 
     #[test]
