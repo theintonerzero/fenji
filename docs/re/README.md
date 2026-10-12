@@ -12,7 +12,7 @@ How we analyse the pinned SoLO client without breaking the ground rules (design 
 | Our own findings in prose | `docs/protocol/`, `docs/re/` | Yes |
 | Rust definitions citing evidence | `crates/fenji-proto/`, `crates/fenji-data/`, `crates/fenji-lua/` | Yes |
 
-`scripts/check-forbidden-files.sh` (run in CI and by the pre-commit hook) rejects game binaries, archives, Lua bytecode, captures and analysis databases.
+`scripts/check-forbidden-files.sh` (run in CI and by the pre-commit hook) rejects game binaries, archives, native libraries and Oodle's SDK, Lua bytecode, captures and analysis databases, and the tools' run and decode artefacts wherever they are staged: stub session logs and auth captures, Oodle spool blocks, table caches and dumps.
 
 ## Getting the pinned build
 
