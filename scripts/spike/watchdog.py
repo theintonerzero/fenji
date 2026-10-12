@@ -729,22 +729,26 @@ def cmd_watch(a):
                 except OSError:
                     pass
             time.sleep(0.1)
-        with open(os.path.join(a.out, "watchdog-trigger.txt"), "w") as fh:
-            fh.write(f"GATE EVENT at {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t_trig))}\n")
-            fh.write(f"client pid {client_pid} start {client_start} (clock ticks since boot)\n\n")
-            for kind, what, detail in found:
-                fh.write(f"{kind}: {what}\n")
-                if isinstance(what, str) and what.startswith("/"):
-                    try:
-                        fh.write(f"  {describe_file(what)}\n")
-                    except OSError as e:
-                        fh.write(f"  unreadable: {e}\n")
-                if detail is not None:
-                    fh.write(f"  {json.dumps(detail, default=str)}\n")
-            fh.write("\nsandbox processes at the trigger (frozen with SIGSTOP, then SIGKILL):\n")
-            for info in snap:
-                fh.write(json.dumps(info, default=str) + "\n")
-            fh.write(f"\nprocesses left after the kill: {left}; bwrap alive: {alive(spid)}\n")
+        # The record is best effort: failing to write it must not turn exit 3 into 4.
+        try:
+            with open(os.path.join(a.out, "watchdog-trigger.txt"), "w") as fh:
+                fh.write(f"GATE EVENT at {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t_trig))}\n")
+                fh.write(f"client pid {client_pid} start {client_start} (clock ticks since boot)\n\n")
+                for kind, what, detail in found:
+                    fh.write(f"{kind}: {what}\n")
+                    if isinstance(what, str) and what.startswith("/"):
+                        try:
+                            fh.write(f"  {describe_file(what)}\n")
+                        except OSError as e:
+                            fh.write(f"  unreadable: {e}\n")
+                    if detail is not None:
+                        fh.write(f"  {json.dumps(detail, default=str)}\n")
+                fh.write("\nsandbox processes at the trigger (frozen with SIGSTOP, then SIGKILL):\n")
+                for info in snap:
+                    fh.write(json.dumps(info, default=str) + "\n")
+                fh.write(f"\nprocesses left after the kill: {left}; bwrap alive: {alive(spid)}\n")
+        except OSError as e:
+            log(f"could not write {a.out}/watchdog-trigger.txt: {e}")
         log(f"GATE EVENT: {found[0][0]}: {found[0][1]} -> sandbox frozen and killed; left {left}")
 
     try:

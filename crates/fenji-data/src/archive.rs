@@ -83,7 +83,8 @@ pub struct PartHeader {
 }
 
 impl PartHeader {
-    /// The records the engine loads.
+    /// The records the engine loads: in use, with a good CRC. The engine also drops a record whose
+    /// key repeats one it has already loaded; no live key repeats in the pinned build's parts.
     pub fn live(&self) -> impl Iterator<Item = &Record> {
         self.records.iter().filter(|r| r.is_live())
     }

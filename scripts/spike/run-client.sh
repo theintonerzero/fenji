@@ -47,7 +47,7 @@ CHANNELS_DEFAULT=+timestamp,+pid,+tid,+threadname,+seh,+debugstr,+loaddll,+winso
 # (the driver's resource type), services, debug strings, and errors (LoadDriver).
 CHANNELS_WATCHDOG=+timestamp,+pid,+tid,+process,+loaddll,+resource,+service,+debugstr,err+all
 # Environment the runner sets and the watchdog depends on; --env may not override it.
-ENV_RESERVED=" WINEDEBUG WINEPREFIX WINESERVER PROTON_LOG PROTON_LOG_DIR STEAM_COMPAT_DATA_PATH STEAM_COMPAT_CLIENT_INSTALL_PATH HOME "
+ENV_RESERVED=" WINEDEBUG WINEPREFIX WINESERVER PROTON_LOG PROTON_LOG_DIR STEAM_COMPAT_DATA_PATH STEAM_COMPAT_CLIENT_INSTALL_PATH HOME SteamGameId SteamAppId "
 
 usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0" >&2; exit 2; } # the header above
 die() { echo "run-client: $*" >&2; exit 1; }
@@ -128,6 +128,16 @@ cmd_run() {
   local OUT="$WORK/out/$run" IO="$WORK/io/$run" STUB="$REPO/re/stub-logs/$run" PFX="$WORK/compat/pfx"
   if [ ! -d "$WORK/client/bin64" ] || [ ! -f "$PFX/system.reg" ]; then die "no workspace; run: $0 setup"; fi
   if [ -e "$OUT" ] || [ -e "$IO" ] || [ -e "$STUB" ]; then die "run $run exists already; pick a new name"; fi
+  # A run whose evidence couldn't be collected leaves its entries in the copy; never start from them.
+  local left
+  for left in "$WORK/client"/* "$WORK/client"/.[!.]*; do
+    if [ -e "$left" ] || [ -L "$left" ]; then
+      case "${left##*/}" in
+        bin64 | data | tools) ;;
+        *) die "leftover ${left##*/} at the client copy's install root (an earlier run's); move it first" ;;
+      esac
+    fi
+  done
   need_display "$display"
   [ -f "$hosts" ] || die "hosts file missing: $hosts"
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
@@ -304,37 +314,45 @@ verdict() {
 # The evidence, copied out of what the sandbox could write without following any link. Uses
 # cmd_run's run, OUT, IO, STUB and PFX.
 collect_evidence() {
-  python3 -I "$WATCHDOG" collect --src "$IO" --dest "$OUT/io" --exclude stub --exclude .go
-  python3 -I "$WATCHDOG" collect --src "$IO/stub" --dest "$STUB"
-  [ ! -f "$OUT/io/steam-1418100.log" ] || mv "$OUT/io/steam-1418100.log" "$OUT/wine.log"
-  python3 -I "$WATCHDOG" collect --src "$WORK/client/bin64" --dest "$OUT" \
-    --name gujianol.log --name Log_gujianol.htm
-  rm -f -- "$WORK/client/bin64/gujianol.log" "$WORK/client/bin64/Log_gujianol.htm"
+  # Called from an || list, where set -e is off: every step records its own failure, and nothing is
+  # deleted unless it was copied first.
+  local bad=0 e r
+  python3 -I "$WATCHDOG" collect --src "$IO" --dest "$OUT/io" --exclude stub --exclude .go || bad=1
+  python3 -I "$WATCHDOG" collect --src "$IO/stub" --dest "$STUB" || bad=1
+  if [ -f "$OUT/io/steam-1418100.log" ]; then mv "$OUT/io/steam-1418100.log" "$OUT/wine.log" || bad=1; fi
+  if python3 -I "$WATCHDOG" collect --src "$WORK/client/bin64" --dest "$OUT" \
+    --name gujianol.log --name Log_gujianol.htm; then
+    rm -f -- "$WORK/client/bin64/gujianol.log" "$WORK/client/bin64/Log_gujianol.htm" || bad=1
+  else
+    bad=1
+  fi
   # Entries the client creates at its install root (settings/, ExportFace/, ExportPrefab/) and this
   # run's --client-file inputs go into the evidence and out of the copy, so every run starts from
-  # the same copy.
-  python3 -I "$WATCHDOG" collect --src "$WORK/client" --dest "$OUT/client-files" \
-    --exclude bin64 --exclude data --exclude tools
-  local e
-  for e in "$WORK/client"/* "$WORK/client"/.[!.]*; do
-    if [ -e "$e" ] || [ -L "$e" ]; then
-      case "${e##*/}" in
-        bin64 | data | tools) ;;
-        *) rm -rf -- "$e" ;;
-      esac
-    fi
-  done
-  find "$PFX" -iname '*.sys' -printf '%P\t%y\t%l\t%s\t%T@\n' | sort > "$OUT/sys-after.tsv"
-  diff "$OUT/sys-before.tsv" "$OUT/sys-after.tsv" > "$OUT/sys-diff.txt" || true
-  python3 -I "$WATCHDOG" collect --src "$PFX" --dest "$OUT/reg-after" --name system.reg --name user.reg
-  grep -o '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\[^]\\]*' "$OUT/reg-after/system.reg" | sort -u > "$OUT/services-after.txt" || true
-  diff "$OUT/services-before.txt" "$OUT/services-after.txt" > "$OUT/services-diff.txt" || true
-  local r
+  # the same copy. If they can't be copied they stay, and the next run refuses to start.
+  if python3 -I "$WATCHDOG" collect --src "$WORK/client" --dest "$OUT/client-files" \
+    --exclude bin64 --exclude data --exclude tools; then
+    for e in "$WORK/client"/* "$WORK/client"/.[!.]*; do
+      if [ -e "$e" ] || [ -L "$e" ]; then
+        case "${e##*/}" in
+          bin64 | data | tools) ;;
+          *) rm -rf -- "$e" || bad=1 ;;
+        esac
+      fi
+    done
+  else
+    bad=1
+  fi
+  find "$PFX" -iname '*.sys' -printf '%P\t%y\t%l\t%s\t%T@\n' | sort > "$OUT/sys-after.tsv" || bad=1
+  diff "$OUT/sys-before.tsv" "$OUT/sys-after.tsv" > "$OUT/sys-diff.txt"
+  python3 -I "$WATCHDOG" collect --src "$PFX" --dest "$OUT/reg-after" --name system.reg --name user.reg || bad=1
+  grep -o '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\[^]\\]*' "$OUT/reg-after/system.reg" | sort -u > "$OUT/services-after.txt"
+  diff "$OUT/services-before.txt" "$OUT/services-after.txt" > "$OUT/services-diff.txt"
   for r in system user; do
-    diff "$OUT/reg-before/$r.reg" "$OUT/reg-after/$r.reg" > "$OUT/reg-$r.diff" || true
+    diff "$OUT/reg-before/$r.reg" "$OUT/reg-after/$r.reg" > "$OUT/reg-$r.diff"
   done
   find "$WORK/client" "$PFX/drive_c" "$WORK/home" -newer "$OUT/.start" -type f -not -path '*/mesa_shader_cache/*' \
-    -printf '%TT\t%s\t%p\n' 2>/dev/null | sort > "$OUT/new-files.txt" || true
+    -printf '%TT\t%s\t%p\n' 2>/dev/null | sort > "$OUT/new-files.txt"
+  return "$bad"
 }
 
 # Sourced by test-run-client.sh for its functions; run as a command otherwise.

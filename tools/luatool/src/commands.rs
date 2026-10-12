@@ -46,7 +46,7 @@ impl Summary {
         for (path, why) in &self.failures {
             text.push_str(&format!("{path}\t{}\n", why.replace(['\t', '\n'], " ")));
         }
-        std::fs::write(out.root().join(format!("{command}-failures.tsv")), text)?;
+        out.write_summary(&format!("{command}-failures.tsv"), text.as_bytes())?;
         Ok(())
     }
 }
@@ -258,7 +258,7 @@ pub fn decompile(
     for (a, [n, ok, refused, failed, timeout]) in &areas {
         tsv.push_str(&format!("{a}\t{n}\t{ok}\t{refused}\t{failed}\t{timeout}\n"));
     }
-    std::fs::write(out.root().join("decompile-summary.tsv"), tsv)?;
+    out.write_summary("decompile-summary.tsv", tsv.as_bytes())?;
     Ok(s)
 }
 
@@ -328,7 +328,7 @@ pub fn census(fs: &ExeFs, prefix: &str, out: &mut Out) -> Result<Summary> {
         tsv.push_str(&census_row(a, c));
     }
     tsv.push_str(&census_row("(all)", &total));
-    std::fs::write(out.root().join("census.tsv"), tsv)?;
-    std::fs::write(out.root().join("census-server-chunks.tsv"), server_chunks)?;
+    out.write_summary("census.tsv", tsv.as_bytes())?;
+    out.write_summary("census-server-chunks.tsv", server_chunks.as_bytes())?;
     Ok(s)
 }
