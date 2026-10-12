@@ -64,7 +64,9 @@ pub const MAX_DEPTH: usize = 31;
 /// The largest raw size a compressed packet may declare ("pkt bad size, too large zip size",
 /// FUN_1400D55C0).
 pub const MAX_UNZIPPED: usize = 0x10_0000;
-/// The most top-level values a packet holds (the count byte's low 7 bits).
+/// The most top-level values a packet holds (the count byte's low 7 bits). With the table count
+/// (a packet with a [`Value::Ref`]), one fewer: its header byte, `0x80 | 127`, would be `FF`, the
+/// compressed marker (payloads.md P.1).
 pub const MAX_VALUES: usize = 0x7f;
 /// The most values one packet decodes into, every value read counting, a table's end marker
 /// included (#84). A compressed packet of a few KiB can unzip to [`MAX_UNZIPPED`] bytes, about a
@@ -92,6 +94,11 @@ pub fn encode(values: &[Value]) -> Result<Vec<u8>> {
         registered: 0,
     };
     if values.iter().any(has_ref) {
+        if values.len() == MAX_VALUES {
+            return err(format!(
+                "{MAX_VALUES} values with table references: the header byte would be FF, which reads as compressed"
+            ));
+        }
         let n = tables(values).len();
         let Some(n) = u32::try_from(n).ok().filter(|&n| n < 1 << 24) else {
             return err(format!("{n} tables, at most 2^24 - 1"));
@@ -190,8 +197,12 @@ impl Writer {
                     self.put(a, depth + 1)?;
                 }
                 for (k, v) in &t.hash {
-                    if *k == Value::Nil {
-                        return err("a nil key would end the table");
+                    match k {
+                        Value::Nil => return err("a nil key would end the table"),
+                        Value::Float(f) if f.is_nan() => {
+                            return err("a NaN key, which Lua refuses as a table index");
+                        }
+                        _ => {}
                     }
                     self.put(k, depth + 1)?;
                     self.put(v, depth + 1)?;
@@ -796,6 +807,32 @@ mod tests {
         };
         assert_eq!(by_hand(31), bytes);
         assert!(decode(&by_hand(32)).is_err());
+    }
+
+    #[test]
+    fn with_references_a_packet_holds_at_most_126_values() {
+        // The header byte is 0x80 | count, so 127 would make it FF: the compressed marker, which
+        // both our decoder and the client's (FUN_1400D56D0) would try to unzip. The client's own
+        // packer packs at most 32 values (payloads.md P.3), so only ours could get there.
+        let mut v = vec![table(vec![(s("a"), Value::Ref(0))])];
+        v.extend(vec![Value::Nil; 125]);
+        let bytes = encode(&v).unwrap();
+        assert_eq!(bytes[0], 0x80 | 126);
+        assert_eq!(decode(&bytes).unwrap(), v);
+        v.push(Value::Nil);
+        assert!(encode(&v).is_err());
+        // Without a reference, 127 values keep the one-byte count.
+        assert_eq!(encode(&vec![Value::Nil; 127]).unwrap()[0], 0x7F);
+    }
+
+    #[test]
+    fn a_nan_key_is_refused() {
+        // Lua refuses NaN as a table index ("table index is NaN"), so the client couldn't unpack it.
+        let nan_key = Table {
+            array: vec![],
+            hash: vec![(Value::Float(f64::NAN), Value::Int(1))],
+        };
+        assert!(encode(&[Value::Table(nan_key)]).is_err());
     }
 
     #[test]
