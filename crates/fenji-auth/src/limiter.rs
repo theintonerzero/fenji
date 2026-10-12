@@ -56,12 +56,22 @@ impl Default for LimiterConfig {
     }
 }
 
-/// An allowed attempt, which [`Limiter::succeed`] takes back if the password was right.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// An allowed attempt, which [`Limiter::succeed`] takes back if the password was right. Its
+/// `Debug` leaves out the name's keyed hash, which would map names to their buckets.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Attempt {
     name: u64,
     net: IpAddr,
     seq: u64,
+}
+
+impl std::fmt::Debug for Attempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attempt")
+            .field("net", &self.net)
+            .field("seq", &self.seq)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -565,6 +575,59 @@ mod tests {
             matches!(first, Verdict::Locked { .. }) || matches!(second, Verdict::Locked { .. }),
             "{first:?} {second:?}"
         );
+    }
+
+    #[test]
+    fn a_success_refunds_its_own_attempt_not_the_latest() {
+        // Taking back the latest attempt instead of the success's own would let an older
+        // success make a newer failure leave the window early.
+        let mut l = Limiter::fixed(LimiterConfig {
+            addr_max: 2,
+            ..LimiterConfig::default()
+        });
+        let t = Instant::now();
+        let Verdict::Allow(mine) = l.begin("insider", ip(1), t) else {
+            panic!("allowed")
+        };
+        assert!(matches!(
+            l.begin("victim", ip(1), t + Duration::from_secs(600)),
+            Verdict::Allow(_)
+        ));
+        l.succeed(mine);
+        let later = t + Duration::from_secs(960);
+        assert!(matches!(l.begin("x", ip(1), later), Verdict::Allow(_)));
+        assert!(
+            matches!(l.begin("y", ip(1), later), Verdict::Locked { .. }),
+            "the victim's failure is still in the window"
+        );
+    }
+
+    #[test]
+    fn a_second_success_of_one_attempt_takes_nothing_back() {
+        let mut l = limiter();
+        let t = Instant::now();
+        let Verdict::Allow(mine) = l.begin("insider", ip(1), t) else {
+            panic!("allowed")
+        };
+        for i in 0..18 {
+            l.begin(&format!("n{i}"), ip(1), t);
+        }
+        l.succeed(mine);
+        l.succeed(mine);
+        let allowed = (0..5)
+            .take_while(|i| matches!(l.begin(&format!("m{i}"), ip(1), t), Verdict::Allow(_)))
+            .count();
+        assert_eq!(allowed, 2, "18 failures + 2 = the address's 20");
+    }
+
+    #[test]
+    fn an_attempt_never_shows_its_name_hash() {
+        let mut l = limiter();
+        let Verdict::Allow(a) = l.begin("someone", ip(1), Instant::now()) else {
+            panic!("allowed")
+        };
+        let shown = format!("{a:?}");
+        assert!(!shown.contains("name"), "{shown}");
     }
 
     #[test]
