@@ -49,10 +49,12 @@ enum Command {
     },
     /// The _index blob header
     Index,
-    /// Decode _index through the Oodle spool and write OUT/paths.tsv (key, path, part as 3
-    /// digits, offset in hex, size, codec; `-` in the last four where no live record holds the
-    /// key); OUT and the spool must be inside re/. Exit 3: blocks wait for
-    /// scripts/spike/run-oodle-helper.sh (not a gate event)
+    /// Decode _index through the Oodle spool and write OUT/paths.tsv
+    ///
+    /// Columns: key, path, part (3 digits), offset (hex), size, codec (stored, lz4, oodle, unknown,
+    /// or bad-header when the blob header can't be read); `-` in the last four where no live record
+    /// holds the key. OUT and the spool must be inside re/. Exit 3: blocks wait for
+    /// scripts/spike/run-oodle-helper.sh (not a gate event).
     Paths {
         #[arg(long, default_value = "re/oodle-spool")]
         spool: PathBuf,
