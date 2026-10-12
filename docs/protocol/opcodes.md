@@ -56,7 +56,7 @@ The type-0 message the client sends during auth ([`transport.md`](transport.md) 
 
 ## Script messages
 
-Script message ids are numbers that the scripts' protocol enum assigns at load time (`data/core/share/enum_protocols.luac` sets each `PROTOG2C_*`, `PROTOC2G_*`, `PROTOS2C_*` and `PROTOC2S_*` name from a global, not a literal), so the names don't follow their order in that file. `data/core/share/enums.luac` takes each id and name from the client's own protocol table, `data/caches/protocol_ver.new_cache`, which is where the names below come from ([`packets/lobby.md`](packets/lobby.md) 2.1). Client messages go as `CTS_PROTOCOL_GATE_SCRIPT` and server messages as `STC_PROTOCOL_SCRIPT`. Statuses are those of the tables above. The ids used so far:
+Script message ids are numbers. In a shipping client, `data/core/share/enums.luac` takes each id and name from the client's own protocol table (`enum_protocols.luac`, which sets each `PROTOG2C_*`, `PROTOC2G_*`, `PROTOS2C_*` and `PROTOC2S_*` name from a global, is the developer path; [`packets/lobby.md`](packets/lobby.md) 2.1), so the names don't follow their order in that file. That table, `data/caches/protocol_ver.new_cache`, is where the names below come from ([`packets/lobby.md`](packets/lobby.md) 2.1). Client messages go as `CTS_PROTOCOL_GATE_SCRIPT` and server messages as `STC_PROTOCOL_SCRIPT`. Statuses are those of the tables above. The ids used so far:
 
 | Id | Direction | Name | What it does | Status | Tag | Evidence |
 |---|---|---|---|---|---|---|
@@ -80,13 +80,13 @@ Script message ids are numbers that the scripts' protocol enum assigns at load t
 | 509 | S→C | `PROTOG2C_ROLE_SLOT` | Two values, only logged. Not sent | `named` | **Observed** (the handler) | [`packets/lobby.md`](packets/lobby.md) §2 |
 | 368 | S→C | `PROTOS2C_PLATFORM_BILLING_REMAIN` | Six billing values. Not sent | `named` | **Observed** (the handler) | [`packets/lobby.md`](packets/lobby.md) §2 |
 | 786 | S→C | `PROTOG2C_QUEUE_WAIT_TIME` | Two values for the login queue's display. Not sent | `named` | **Observed** (the handler) | [`packets/lobby.md`](packets/lobby.md) §2 |
-| 243 | S→C | `PROTOG2C_HOTPATCH_INIT` | A revision and files that replace scripts and layouts. Never sent | `schema` | **Inferred** | [`packets/lobby.md`](packets/lobby.md) 2.3 |
-| 216 | S→C | `PROTOG2C_GM_SCRIPTS` | Files that replace scripts and layouts. Never sent | `schema` | **Inferred** | [`packets/lobby.md`](packets/lobby.md) 2.3 |
-| 556 | S→C | `PROTOS2C_GM_SCRIPT_INVOKE` | The server sends a chunk of Lua bytecode; the client runs it and answers with 278 (`PROTOC2S_GM_SCRIPT_REPORT`) and the chunk's MD5. Never sent | `schema` | **Inferred** | `data/core/client/net_manager.luac` `0.14`, `0.15`; [`packets/lobby.md`](packets/lobby.md) 2.3 |
-| 627 | S→C | `PROTOG2C_SHEET_HOTPATCH` | Patches the client's content tables. Never sent | `named` | **Inferred** | [`packets/lobby.md`](packets/lobby.md) 2.3 |
-| 729 | S→C | `PROTOG2C_USER_DETAIL` | Writes a file to the player's disk. Never sent | `named` | **Inferred** | [`packets/lobby.md`](packets/lobby.md) 2.3 |
-| 720 | S→C | `PROTOS2C_CUSTOMER_FEEDBACK_URL` | A URL the client opens in the default browser. Never sent | `schema` | **Inferred** | [`packets/lobby.md`](packets/lobby.md) 2.3 |
-| 598 | S→C | `PROTOS2C_GAMEFORGE_SEND_RECHARGE_URL` | A URL the client opens in the Gameforge overlay. Never sent | `schema` | **Inferred** | [`packets/lobby.md`](packets/lobby.md) 2.3 |
+| 243 | S→C | `PROTOG2C_HOTPATCH_INIT` | A revision and files that replace scripts and layouts. Never sent | `schema` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
+| 216 | S→C | `PROTOG2C_GM_SCRIPTS` | Files that replace scripts and layouts. Never sent | `schema` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
+| 556 | S→C | `PROTOS2C_GM_SCRIPT_INVOKE` | The server sends a chunk of Lua bytecode; the client runs it and answers with 278 (`PROTOC2S_GM_SCRIPT_REPORT`) and the chunk's MD5. Never sent | `schema` | **Observed** (the name), **Inferred** (the effect) | `data/core/client/net_manager.luac` `0.14`, `0.15`; [`packets/lobby.md`](packets/lobby.md) 2.3 |
+| 627 | S→C | `PROTOG2C_SHEET_HOTPATCH` | Patches the client's content tables. Never sent | `named` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
+| 729 | S→C | `PROTOG2C_USER_DETAIL` | Writes a file to the player's disk. Never sent | `named` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
+| 720 | S→C | `PROTOS2C_CUSTOMER_FEEDBACK_URL` | A URL the client opens in the default browser. Never sent | `schema` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
+| 598 | S→C | `PROTOS2C_GAMEFORGE_SEND_RECHARGE_URL` | A URL the client opens in the Gameforge overlay. Never sent | `schema` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
 
 ## REA Evidence IDs
 
