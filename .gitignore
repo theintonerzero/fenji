@@ -5,6 +5,18 @@
 # Local reverse-engineering workspace: Ghidra/REA sessions, evidence bundles, decompiled output,
 # extracted scripts, sandbox runs and stub logs. NEVER commit.
 /re/
+# The same tools' output wherever it lands outside re/ (scripts/check-forbidden-files.sh rejects it
+# too): stub captures (the client's auth holds the machine's MAC and fingerprint), Oodle spools,
+# decoded table caches and dumps.
+stub-logs/
+oodle-spool/
+*.auth.bin
+*.events
+*.new_cache
+*.jsonl
+
+# Claude Code's agent worktrees
+/.claude/worktrees/
 
 # Game content must never enter the repo (ground rule: no redistribution)
 *.exe

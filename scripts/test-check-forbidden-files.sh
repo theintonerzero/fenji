@@ -128,6 +128,17 @@ rejected cap/blob.bin '\012\015\015\012' "a pcapng capture by magic"
 rejected re/notes.txt 'x' "anything under re/"
 rejected ghidra/fenji.gpr 'x' "a Ghidra project"
 
+# ---- M2's run and decode artefacts, wherever they land (a stub started outside the repo root, a
+# copy made by hand); the real client's auth capture holds the machine's MAC and fingerprint
+
+rejected tools/stub/re/stub-logs/m2-x/127.0.0.1_7800-1.auth.bin 'x' "a stub auth capture outside re/"
+rejected logs/m2-x/127.0.0.1_7800-1.events 'x' "a stub events log"
+rejected caches/all_tables.new_cache 'x' "a table cache"
+rejected dump/items.jsonl '{"key":1}' "a table dump"
+rejected spool/in/0123456789abcdef0123456789abcdef01234567-524288.bin 'x' "an Oodle spool block"
+expect_accept "$(stage crates/fenji-proto/tests/fixtures/r4b-up.hex '00')" "a hex fixture" --staged
+expect_accept "$(stage docs/handshake-1.bin 'x')" "a .bin whose name isn't a spool block's" --staged
+
 d=$(stage big.txt 'x')
 bigfile "$d/big.txt"
 git -C "$d" add -f big.txt
