@@ -5,6 +5,7 @@ use fenji_proto::client::{Client, ClientEvent};
 use fenji_proto::handshake::{AuthMessage, Message};
 use fenji_proto::hello::Variants;
 use fenji_proto::packet::set_net_connected;
+use fenji_proto::pickle::{Value, decode, encode};
 use fenji_proto::variant::AES128;
 use fenji_stub::server::{Mode, serve};
 use fenji_stub::speak::{AuthReply, SpeakOpts};
@@ -12,6 +13,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 async fn start(dir: &Path, auth_reply: AuthReply) -> std::net::SocketAddr {
+    start_with(dir, auth_reply, 0).await
+}
+
+async fn start_with(dir: &Path, auth_reply: AuthReply, work_pad: usize) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let opts = SpeakOpts {
@@ -20,6 +25,7 @@ async fn start(dir: &Path, auth_reply: AuthReply) -> std::net::SocketAddr {
             up: AES128,
         },
         auth_reply,
+        work_pad,
     };
     tokio::spawn(serve(listener, dir.to_path_buf(), Mode::Speak(opts)));
     addr
@@ -164,6 +170,31 @@ async fn undecodable_script_messages_and_other_opcodes_are_logged() {
     assert!(ev.contains("\tmessage\tty=4 len=0 head=\n"), "{ev}");
     assert!(ev.contains("\tcall\tgateway id=402 args=0"), "{ev}");
     assert!(!ev.contains("\terror\t"), "{ev}");
+}
+
+#[tokio::test]
+async fn the_work_message_can_carry_padding() {
+    // --work-pad: a fifth argument, which the handler ignores, makes the message long enough
+    // for the stored packet's FC prefix (transport.md 5.2, #88). The client still reaches WORK.
+    let tmp = tempfile::tempdir().unwrap();
+    let addr = start_with(tmp.path(), AuthReply::Ok, 300).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let mut client = Client::new(auth());
+    let mut values = decode(&set_net_connected()).unwrap();
+    values.push(Value::Str(vec![b'.'; 300]));
+    let body = encode(&values).unwrap();
+    assert!(4 + body.len() >= 0xFC, "past the one-byte prefix");
+    let line = format!("\tsent\twork (SET_NET_CONNECTED, {}-byte body)", body.len());
+    let work = ClientEvent::Message(Message { ty: 0, body });
+    let events = pump_until(&mut s, &mut client, 5000, |e| e.contains(&work)).await;
+    assert_eq!(events, [ClientEvent::Accepted, work]);
+    // In WORK, so the client may answer.
+    s.write_all(&client.send(0xff, &[0x01, 0x04, 0x92, 0x01]).unwrap())
+        .await
+        .unwrap();
+    let ev = events_with(tmp.path(), &[&line, "\tcall\tgateway id=402 args=0"], 5000).await;
+    assert!(ev.contains(&line), "{ev}");
+    assert!(ev.contains("\tcall\tgateway id=402 args=0"), "{ev}");
 }
 
 #[tokio::test]

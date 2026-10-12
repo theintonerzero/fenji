@@ -30,6 +30,10 @@ struct Args {
     /// Reply to the auth message: ok or reject (each in a stored frame), or none
     #[arg(long, default_value = "ok", value_parser = ["ok", "reject", "none"])]
     auth_reply: String,
+    /// Pad the work message (after ok) with a fifth argument of this many bytes, which the
+    /// client's handler ignores: 164 or more takes its stored packet to the FC prefix
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(..=4096))]
+    work_pad: u16,
 }
 
 #[tokio::main]
@@ -57,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
                 "reject" => fenji_stub::speak::AuthReply::Reject,
                 _ => fenji_stub::speak::AuthReply::None,
             },
+            work_pad: usize::from(args.work_pad),
         })
     } else {
         fenji_stub::server::Mode::Listen
