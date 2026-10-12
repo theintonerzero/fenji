@@ -1,10 +1,12 @@
 //! The account API (M3 spec D12): JSON over HTTP at `/api/v1`. TLS comes from Caddy in front of it
-//! (parent spec §8). Every error is `{"error": <code>}`, with one code for every failed sign-in,
-//! and nothing here logs a password, token or invite code.
+//! (parent spec §8). Every error from a route is `{"error": <code>}`, with one code for every failed
+//! sign-in; only the time limit's 408 has no body. Nothing here logs a password, token or invite
+//! code.
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -53,9 +55,12 @@ pub fn router(state: AppState) -> Router {
 
 /// The client's address: the peer's, or, when the peer is a trusted proxy, the last entry of
 /// `X-Forwarded-For` (the one that proxy added). An entry that doesn't parse gives the peer's.
+/// Addresses compare in canonical form, since a dual-stack listener sees an IPv4 proxy as
+/// `::ffff:a.b.c.d`.
 fn client_addr(peer: SocketAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAddr {
-    if !trusted.contains(&peer.ip()) {
-        return peer.ip();
+    let peer = peer.ip().to_canonical();
+    if !trusted.iter().any(|t| t.to_canonical() == peer) {
+        return peer;
     }
     headers
         .get_all("x-forwarded-for")
@@ -64,7 +69,7 @@ fn client_addr(peer: SocketAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> IpA
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.rsplit(',').next())
         .and_then(|last| last.trim().parse::<IpAddr>().ok())
-        .unwrap_or(peer.ip())
+        .unwrap_or(peer)
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -102,6 +107,17 @@ fn fail(e: AccountsError) -> Response {
     (status, Json(json!({ "error": code }))).into_response()
 }
 
+/// A body that isn't the route's JSON: the rejection's own status, with a JSON error.
+fn bad_body(r: JsonRejection) -> Response {
+    let status = r.status();
+    let code = if status == StatusCode::PAYLOAD_TOO_LARGE {
+        "too_large"
+    } else {
+        "bad_request"
+    };
+    (status, Json(json!({ "error": code }))).into_response()
+}
+
 #[derive(Deserialize)]
 struct RegisterBody {
     invite: String,
@@ -113,8 +129,12 @@ async fn register(
     State(s): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(b): Json<RegisterBody>,
+    body: Result<Json<RegisterBody>, JsonRejection>,
 ) -> Response {
+    let b = match body {
+        Ok(Json(b)) => b,
+        Err(r) => return bad_body(r),
+    };
     let addr = client_addr(peer, &headers, &s.trusted_proxies);
     match s
         .accounts
@@ -136,8 +156,12 @@ async fn sign_in(
     State(s): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(b): Json<SignInBody>,
+    body: Result<Json<SignInBody>, JsonRejection>,
 ) -> Response {
+    let b = match body {
+        Ok(Json(b)) => b,
+        Err(r) => return bad_body(r),
+    };
     let addr = client_addr(peer, &headers, &s.trusted_proxies);
     match s.accounts.sign_in(&b.username, &b.password, addr).await {
         Ok(g) => Json(json!({ "token": g.token, "expires_at": g.expires_at })).into_response(),

@@ -46,7 +46,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             every.tick().await;
             match purger.purge().await {
                 Ok(n) => tracing::debug!(n, "purged expired sessions and tokens"),
-                Err(e) => tracing::warn!(error = %e, "purge"),
+                Err(e) => tracing::warn!(error = ?e, "purge"),
             }
         }
     });

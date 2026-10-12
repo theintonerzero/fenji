@@ -66,16 +66,23 @@ pub enum AccountCmd {
 
 /// `30m`, `12h` or `7d`.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
-    let (n, unit) = s.split_at(s.len().saturating_sub(1));
-    let n: u64 = n
-        .parse()
-        .map_err(|_| format!("{s:?}: a number then m, h or d"))?;
-    let secs = match unit {
-        "m" => 60,
-        "h" => 3600,
-        "d" => 86_400,
-        _ => return Err(format!("{s:?}: a number then m, h or d")),
+    let bad = || format!("{s:?}: a number above 0, then m, h or d");
+    let (n, secs) = if let Some(n) = s.strip_suffix('m') {
+        (n, 60)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 3600)
+    } else if let Some(n) = s.strip_suffix('d') {
+        (n, 86_400)
+    } else {
+        return Err(bad());
     };
+    let n: u64 = n
+        .bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| n.parse().ok())
+        .flatten()
+        .filter(|&n| n > 0)
+        .ok_or_else(bad)?;
     Ok(Duration::from_secs(n.saturating_mul(secs)))
 }
 
@@ -197,7 +204,19 @@ pub async fn admin(
 
 #[cfg(test)]
 mod tests {
-    use super::time;
+    use std::time::Duration;
+
+    use super::{parse_duration, time};
+
+    #[test]
+    fn durations_take_minutes_hours_and_days_and_refuse_the_rest() {
+        assert_eq!(parse_duration("90m"), Ok(Duration::from_secs(5400)));
+        assert_eq!(parse_duration("2h"), Ok(Duration::from_secs(7200)));
+        assert_eq!(parse_duration("7d"), Ok(Duration::from_secs(604_800)));
+        for bad in ["7é", "é", "", "m", "0m", "0d", "-1h", "1w", "1.5h", "h1"] {
+            assert!(parse_duration(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn times_print_as_utc_dates() {

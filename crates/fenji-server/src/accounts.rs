@@ -175,8 +175,12 @@ impl Accounts {
         if !self.store.invite_is_open(&code.hash(), now).await? {
             return Err(AccountsError::InvalidInvite);
         }
-        rules::check_username(username).map_err(AccountsError::Rule)?;
-        rules::check_password(password_).map_err(AccountsError::Rule)?;
+        // A rule failure comes after a valid invite and costs no hashing, so it takes back its
+        // attempt: a player trying passwords against the rules isn't locked out.
+        if let Err(e) = rules::check_username(username).and(rules::check_password(password_)) {
+            self.succeed(attempt);
+            return Err(AccountsError::Rule(e));
+        }
         let pw = password_.to_owned();
         let phc = self
             .hashing(move || password::hash(&pw))
@@ -449,19 +453,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rule_failures_with_a_valid_invite_dont_count_as_attempts() {
+        let (_d, a, _c, code) = setup().await;
+        for _ in 0..8 {
+            assert!(matches!(
+                a.register(&code, "tester", "short", ADDR).await,
+                Err(AccountsError::Rule(_))
+            ));
+        }
+        a.register(&code, "tester", "a long password", ADDR)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn wrong_passwords_and_unknown_users_look_the_same() {
         let (_d, a, _c, code) = setup().await;
         a.register(&code, "tester", "a long password", ADDR)
             .await
             .unwrap();
+        let before = a.hashes();
         let e1 = a
             .sign_in("tester", "wrong password!", ADDR)
             .await
             .unwrap_err();
+        assert_eq!(
+            a.hashes(),
+            before + 1,
+            "one argon2 check for a wrong password"
+        );
         let e2 = a
             .sign_in("nobody", "wrong password!", ADDR)
             .await
             .unwrap_err();
+        assert_eq!(a.hashes(), before + 2, "and one for an unknown user");
         assert_eq!(e1.to_string(), e2.to_string());
         assert!(matches!(e2, AccountsError::BadCredentials));
     }

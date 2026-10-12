@@ -18,16 +18,18 @@ struct Api {
     _dir: tempfile::TempDir,
     app: axum::Router,
     invite: String,
+    /// A second open invite in the same store.
+    invite2: String,
 }
 
 async fn api_with(trusted: Vec<std::net::IpAddr>, peer: &str) -> Api {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("f.db")).await.unwrap();
     let code = InviteCode::generate().unwrap();
-    store
-        .create_invite(&code.hash(), None, 1, None)
-        .await
-        .unwrap();
+    let code2 = InviteCode::generate().unwrap();
+    for c in [&code, &code2] {
+        store.create_invite(&c.hash(), None, 1, None).await.unwrap();
+    }
     let accounts = Arc::new(Accounts::new(
         store,
         AuthConfig::default(),
@@ -51,6 +53,7 @@ async fn api_with(trusted: Vec<std::net::IpAddr>, peer: &str) -> Api {
         _dir: dir,
         app,
         invite: code.display(),
+        invite2: code2.display(),
     }
 }
 
@@ -220,7 +223,7 @@ async fn a_taken_username_is_reported_with_a_valid_invite_only() {
     let a = api().await;
     register_and_sign_in(&a).await;
     let code = InviteCode::generate().unwrap();
-    // A second invite isn't in this store, so it is invalid: the taken name stays unrevealed.
+    // An invite that isn't in this store is invalid: the taken name stays unrevealed.
     let (_, v) = call(
         &a.app,
         "POST",
@@ -231,6 +234,30 @@ async fn a_taken_username_is_reported_with_a_valid_invite_only() {
     )
     .await;
     assert_eq!(v["error"], "invalid_invite");
+    // With a valid invite the name is reported taken, and the invite stays open.
+    let (s, v) = call(
+        &a.app,
+        "POST",
+        "/api/v1/accounts",
+        None,
+        Some(reg(&a.invite2, "TESTER", "a long password")),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, &v["error"]),
+        (StatusCode::BAD_REQUEST, &json!("username_taken"))
+    );
+    let (s, v) = call(
+        &a.app,
+        "POST",
+        "/api/v1/accounts",
+        None,
+        Some(reg(&a.invite2, "second", "a long password")),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
 }
 
 #[tokio::test]
@@ -357,6 +384,70 @@ async fn forwarded_for_counts_only_from_a_trusted_proxy() {
 }
 
 #[tokio::test]
+async fn a_trusted_proxy_is_recognised_as_an_ipv4_mapped_peer() {
+    // A dual-stack listener sees a local IPv4 proxy as ::ffff:127.0.0.1.
+    for (trusted, peer) in [
+        ("127.0.0.1", "[::ffff:127.0.0.1]:4000"),
+        ("::ffff:127.0.0.1", "127.0.0.1:4000"),
+    ] {
+        let a = api_with(vec![trusted.parse().unwrap()], peer).await;
+        register_and_sign_in(&a).await;
+        for _ in 0..5 {
+            call(
+                &a.app,
+                "POST",
+                "/api/v1/sessions",
+                None,
+                Some(creds("tester", "wrong password")),
+                Some("203.0.113.9"),
+            )
+            .await;
+        }
+        let (s, _) = call(
+            &a.app,
+            "POST",
+            "/api/v1/sessions",
+            None,
+            Some(creds("tester", "a long password")),
+            Some("198.51.100.1"),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{trusted} vs {peer}");
+    }
+}
+
+#[tokio::test]
+async fn bad_bodies_get_json_errors() {
+    let a = api().await;
+    let raw = |body: &'static str, content_type: Option<&'static str>| {
+        let mut req = Request::builder().method("POST").uri("/api/v1/sessions");
+        if let Some(ct) = content_type {
+            req = req.header("content-type", ct);
+        }
+        req.body(Body::from(body)).unwrap()
+    };
+    for (req, status) in [
+        (
+            raw("not json", Some("application/json")),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            raw("{\"username\": \"x\"}", Some("application/json")),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (raw("{}", None), StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    ] {
+        let res = a.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), status);
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"], "bad_request", "{status}");
+    }
+}
+
+#[tokio::test]
 async fn a_bad_last_hop_falls_back_to_the_peer() {
     let a = api_with(vec!["127.0.0.1".parse().unwrap()], "127.0.0.1:4000").await;
     register_and_sign_in(&a).await;
@@ -388,8 +479,9 @@ async fn a_bad_last_hop_falls_back_to_the_peer() {
 async fn oversized_bodies_are_refused() {
     let a = api().await;
     let big = json!({"username": "x".repeat(20_000), "password": "y"});
-    let (s, _) = call(&a.app, "POST", "/api/v1/sessions", None, Some(big), None).await;
+    let (s, v) = call(&a.app, "POST", "/api/v1/sessions", None, Some(big), None).await;
     assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(v["error"], "too_large");
 }
 
 #[tokio::test]

@@ -174,6 +174,12 @@ impl Config {
         if s.name.contains(':') {
             bail!("[server] name: no colon (the client splits gj_uinfo on colons)");
         }
+        if s.name.chars().any(char::is_control) {
+            bail!("[server] name: no control characters (it goes into gj_uinfo)");
+        }
+        if s.login_bind == s.api_bind && s.login_bind.port() != 0 {
+            bail!("[server] api_bind: the same address as login_bind");
+        }
         if s.id == 0 || s.id > i32::MAX as u32 {
             bail!("[server] id: 1 to {}", i32::MAX);
         }
@@ -255,6 +261,24 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("public_host"), "{e}");
+    }
+
+    #[test]
+    fn a_name_has_no_control_characters_and_the_binds_differ() {
+        for name in ["Fen\\u0000ji", "Fen\\nji", "Fen\\u007fji"] {
+            let text = format!("[server]\nname = \"{name}\"\n");
+            let e = Config::parse(&text, Path::new("/"))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("name"), "{name}: {e}");
+        }
+        let same = "[server]\nname = \"F\"\nlogin_bind = \"127.0.0.1:7800\"\napi_bind = \"127.0.0.1:7800\"\n";
+        let e = Config::parse(same, Path::new("/")).unwrap_err().to_string();
+        assert!(e.contains("api_bind"), "{e}");
+        // Port 0 asks the system for a free port each time, so two of them don't clash.
+        let zero =
+            "[server]\nname = \"F\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n";
+        Config::parse(zero, Path::new("/")).unwrap();
     }
 
     #[test]
