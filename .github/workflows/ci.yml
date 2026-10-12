@@ -48,6 +48,7 @@ jobs:
         run: |
           python3 -I scripts/spike/test-watchdog.py
           scripts/spike/test-run-client.sh
+          scripts/spike/test-run-oodle-helper.sh
       - name: ShellCheck
         run: |
           sudo apt-get install -y shellcheck
