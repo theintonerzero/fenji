@@ -59,14 +59,21 @@ pub fn prepare_spec(platform: &Platform) -> Option<LaunchSpec> {
     }
 }
 
-/// Runs `spec` and waits: its arguments, its environment on top of this process's, its working
-/// directory. Nothing of the environment is printed.
+/// Variables of this process that must never reach umu-run, Proton or the client: the account's
+/// password, which `fenji-launch` may read from its own environment.
+pub const SECRET_ENV: [&str; 1] = ["FENJI_PASSWORD"];
+
+/// Runs `spec` and waits: its arguments, its environment on top of this process's (without
+/// [`SECRET_ENV`]), its working directory. Nothing of the environment is printed.
 pub fn run(spec: &LaunchSpec) -> std::io::Result<ExitStatus> {
     if !spec.cwd.as_os_str().is_empty() {
         std::fs::create_dir_all(&spec.cwd)?;
     }
-    Command::new(&spec.program)
-        .args(&spec.args)
+    let mut cmd = Command::new(&spec.program);
+    for k in SECRET_ENV {
+        cmd.env_remove(k);
+    }
+    cmd.args(&spec.args)
         .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(&spec.cwd)
         .status()

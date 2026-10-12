@@ -280,7 +280,7 @@ fn play_prepares_the_prefix_then_starts_the_client_with_the_ticket_in_its_enviro
     std::fs::write(
         &fake,
         format!(
-            "#!/bin/sh\n{{ echo \"umu $*\"; echo \"cwd $(pwd)\"; env | grep -E '^(gj_|WINEPREFIX=|GAMEID=)' | sort; }} >> {}\n",
+            "#!/bin/sh\n{{ echo \"umu $*\"; echo \"cwd $(pwd)\"; env | grep -E '^(gj_|WINEPREFIX=|GAMEID=|FENJI_)' | sort; }} >> {}\n",
             log.display()
         ),
     )
@@ -359,6 +359,10 @@ fn play_prepares_the_prefix_then_starts_the_client_with_the_ticket_in_its_enviro
     assert!(
         !text(&out.stderr).contains(&ticket),
         "the ticket is never printed"
+    );
+    assert!(
+        !seen.contains("FENJI_PASSWORD"),
+        "the password never reaches umu-run or the client: {seen}"
     );
 }
 

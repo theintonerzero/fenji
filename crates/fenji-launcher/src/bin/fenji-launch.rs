@@ -268,14 +268,19 @@ fn load_manifest(file: Option<&Path>) -> anyhow::Result<Manifest> {
     }
 }
 
-/// Where the client runs: Windows directly, Linux through umu-run in the launcher's own prefix.
+/// Where the client runs: Linux through umu-run in the launcher's own prefix. Windows is held back.
 fn platform(
     umu_run: Option<PathBuf>,
     prefix: Option<PathBuf>,
     proton: Option<PathBuf>,
 ) -> anyhow::Result<Platform> {
     if cfg!(windows) {
-        return Ok(Platform::Windows);
+        // Held back: whether the client's AGT driver loads on native Windows on this path is
+        // unverified, and that is the owner's decision (plan Amendment B; ground rule 6).
+        bail!(
+            "starting the client on Windows waits on the owner's decision about the AGT driver \
+             (plan Amendment B); --print still works"
+        );
     }
     if !cfg!(target_os = "linux") {
         bail!("the client runs on Linux (through umu-run) or Windows");
