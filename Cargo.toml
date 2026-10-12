@@ -3,7 +3,7 @@ resolver = "3"
 members = ["tools/stub", "tools/luatool", "tools/archive", "tools/oodle-helper", "crates/fenji-data", "crates/fenji-lua", "crates/fenji-proto"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.97"
 publish = false

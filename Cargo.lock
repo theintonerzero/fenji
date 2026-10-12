@@ -252,7 +252,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fenji-archive"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "fenji-data"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lz4_flex",
  "sha1",
@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "fenji-lua"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mlua",
  "thiserror",
@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "fenji-luatool"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "fenji-oodle-helper"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libloading",
  "tempfile",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "fenji-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes",
  "lz4_flex",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "fenji-stub"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
