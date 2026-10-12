@@ -206,3 +206,145 @@ fn index_reads_the_index_header() {
         "{text}"
     );
 }
+
+#[test]
+fn paths_refuses_outside_re() {
+    let repo = setup();
+    let out = archive(repo.path())
+        .args(["paths", "--out", "/tmp/x"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("is not inside"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let spool_outside = archive(repo.path())
+        .args(["paths", "--spool", "elsewhere", "--out", "re/p"])
+        .output()
+        .unwrap();
+    assert!(!spool_outside.status.success());
+    assert!(
+        String::from_utf8_lossy(&spool_outside.stderr).contains("elsewhere is not inside"),
+        "{}",
+        String::from_utf8_lossy(&spool_outside.stderr)
+    );
+    assert!(!repo.path().join("elsewhere").exists());
+}
+
+#[test]
+fn paths_spools_index_and_waits_for_the_helper() {
+    let repo = setup();
+    let out = archive(repo.path())
+        .args(["paths", "--out", "re/p"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("1 blocks spooled"), "{text}");
+    assert_eq!(
+        std::fs::read_dir(repo.path().join("re/oodle-spool/in"))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert!(!repo.path().join("re/p/paths.tsv").exists());
+}
+
+/// A repo whose _index is decoded in the spool: three paths (see `paths_maps_index_paths_to_records`).
+fn decoded_index_repo() -> tempfile::TempDir {
+    use fenji_data::oodle_spool::OodleSpool;
+    let repo = setup();
+    // An _index of three paths: one stored file in data000, one Oodle file in data001, one key
+    // no part holds. Its one block stands in for Oodle data; its "decoded" output is placed in
+    // the spool as the helper would.
+    let text = format!(
+        "{}\tmovie/intro.bk2\n{}\tdata/x.tab\n{}\tgone/y.tab\n",
+        hex(&sha1(VIDEO)),
+        hex(&[9; 20]),
+        hex(&[7; 20])
+    );
+    let mut index = lz4_blob(text.as_bytes(), 0);
+    index[28] = 4;
+    std::fs::write(repo.path().join("client/data/_index"), &index).unwrap();
+    let block = &index[fenji_data::FIXED_LEN + 4..];
+    let name = OodleSpool::name(block, text.len());
+    let spool = repo.path().join("re/oodle-spool");
+    std::fs::create_dir_all(spool.join("out")).unwrap();
+    std::fs::write(spool.join("out").join(name), &text).unwrap();
+    repo
+}
+
+#[test]
+fn paths_maps_index_paths_to_records() {
+    let repo = decoded_index_repo();
+    let out = archive(repo.path())
+        .args(["paths", "--out", "re/p"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let summary = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        summary.contains("3 paths") && summary.contains("2 found in a part, 1 not found"),
+        "{summary}"
+    );
+    let tsv = std::fs::read_to_string(repo.path().join("re/p/paths.tsv")).unwrap();
+    let lines: Vec<&str> = tsv.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "key\tpath\tpart\toffset\tsize\tcodec".to_string(),
+            format!(
+                "{}\tdata/x.tab\t001\t0x2000c\t{}\toodle",
+                hex(&[9; 20]),
+                oodle_blob().len()
+            ),
+            format!("{}\tgone/y.tab\t-\t-\t-\t-", hex(&[7; 20])),
+            format!(
+                "{}\tmovie/intro.bk2\t000\t0x2000c\t53\tstored",
+                hex(&sha1(VIDEO))
+            ),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn paths_replaces_a_link_instead_of_writing_through_it() {
+    let repo = decoded_index_repo();
+    std::fs::create_dir(repo.path().join("docs")).unwrap();
+    std::fs::write(repo.path().join("docs/tracked.md"), "keep").unwrap();
+    std::fs::create_dir_all(repo.path().join("re/p")).unwrap();
+    let tsv = repo.path().join("re/p/paths.tsv");
+    std::os::unix::fs::symlink(repo.path().join("docs/tracked.md"), &tsv).unwrap();
+    let ok = archive(repo.path())
+        .args(["paths", "--out", "re/p"])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("docs/tracked.md")).unwrap(),
+        "keep"
+    );
+    assert!(
+        !std::fs::symlink_metadata(&tsv)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        std::fs::read_to_string(&tsv)
+            .unwrap()
+            .starts_with("key\tpath")
+    );
+}
