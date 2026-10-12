@@ -45,8 +45,21 @@ The documents:
 | 6 | Archives | **Met, by the owner's ruling.** The format is parsed as far as it goes without decompression. At the Oodle gate the owner chose (d), defer: the table dumps leave M1 for M2. | `m1-archives.md` (#47); #39; #51 |
 | 7 | Records | **Met:** spike-0's questions above; "M1 update" notes in the parent spec's §10 and §12; the external decompiler (unluac) in `sources.md`. | this document; #45 |
 
-The AGT driver showed no sign of loading in any M1 run, the first connection included. Two of the watchdog's own acceptance runs (Task 9) stopped as gate events, and the executor judged both false positives:
+The AGT driver showed no sign of loading in any M1 run whose outcome is known, the first connection included. Two of the watchdog's own acceptance runs (Task 9) stopped as gate events, and the executor judged both false positives:
 - **m1-accept** tripped S1 on GE-Proton's built-in `.sys` files, seen through the sandbox's tmpfs pass.
 - **m1-accept2** tripped S3 when Proton re-registered its discord-bridge service before the registry baseline had been flushed.
 
-Each fix has a regression test, and m1-accept3, m1-c1 and m1-c2 then ran with no sign. Runs m1-c1 and m1-c2 also logged every resource lookup, and none was of the driver's type `PE`. The two judgements are listed for the owner to ratify.
+Each fix has a regression test, and m1-accept3, m1-c1, m1-c2 and m1-c3 then ran with no sign. Runs m1-c1, m1-c2 and m1-c3 also logged every resource lookup, and none was of the driver's type `PE`. The two judgements are listed for the owner to ratify.
+
+**Lost evidence (2026-10-12, 11:19).** While the final review's fixes were being written, a draft of `scripts/spike/test-run-client.sh` re-loaded the runner, which pointed it at the real run workspace. The draft's clean-up then deleted `re/runs`, which held:
+- the collected evidence of every run above: trigger records, watchdog and Wine logs, screenshots and registry copies;
+- the owner's own run `owner-1`.
+
+What survives:
+- the stub session logs (`re/stub-logs/`);
+- the runs' console output and notes (`re/m1/connect/`);
+- the final reviewer's reading of the run results before the deletion. m1-accept and m1-accept2 each had watchdog exit 3 and sandbox exit 137, with the triggers above. m1-accept3, m1-c1 and m1-c2 each had watchdog exit 0 and sandbox exit 124, the timeout. m1-c2's watchdog logged no sign in 489 polls.
+
+Run m1-c3 repeated m1-c2 to regenerate the first connection's evidence (`login.md` §6). The acceptance runs' records can't be regenerated.
+
+**Unplanned run `t`.** The same draft also started the runner once against the real workspace, with no client arguments, so without `--gf-sdk=mocked`. Its records went with the rest. Its exit status survives: 0. The runner returns 0 only when the watchdog exits 0 and the sandbox's client command ran to its end. So the watchdog saw no sign, and Proton's command finished. Whether the client itself got far, before the missing SDK flag stopped it as in M0's bare run, is **Unknown**. It ran in the sandbox, loopback-only, and it is outside Task 10's run count.
