@@ -48,28 +48,27 @@ pub enum Os {
     Windows,
 }
 
+impl Os {
+    /// The system this build runs on (any other Unix counts as Linux).
+    pub fn this() -> Os {
+        if cfg!(windows) {
+            Os::Windows
+        } else if cfg!(target_os = "macos") {
+            Os::MacOs
+        } else {
+            Os::Linux
+        }
+    }
+}
+
 /// The launcher's config directory on this machine.
 pub fn config_dir() -> Option<PathBuf> {
-    let os = if cfg!(windows) {
-        Os::Windows
-    } else if cfg!(target_os = "macos") {
-        Os::MacOs
-    } else {
-        Os::Linux
-    };
-    config_dir_for(os, |k| std::env::var_os(k).map(PathBuf::from))
+    config_dir_for(Os::this(), |k| std::env::var_os(k).map(PathBuf::from))
 }
 
 /// The launcher's data directory on this machine (its Wine prefix lives there on Linux).
 pub fn data_dir() -> Option<PathBuf> {
-    let os = if cfg!(windows) {
-        Os::Windows
-    } else if cfg!(target_os = "macos") {
-        Os::MacOs
-    } else {
-        Os::Linux
-    };
-    data_dir_for(os, |k| std::env::var_os(k).map(PathBuf::from))
+    data_dir_for(Os::this(), |k| std::env::var_os(k).map(PathBuf::from))
 }
 
 /// `$XDG_DATA_HOME/fenji-launcher` or `$HOME/.local/share/fenji-launcher` (Linux), the config

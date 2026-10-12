@@ -63,21 +63,12 @@ pub fn base_spec(client: &Path, platform: &Platform) -> LaunchSpec {
             umu_run,
             prefix,
             proton,
-        } => {
-            let mut env = vec![
-                ("WINEPREFIX".to_string(), prefix.display().to_string()),
-                ("GAMEID".to_string(), format!("umu-{STEAM_APP_ID}")),
-            ];
-            if let Some(p) = proton {
-                env.push(("PROTONPATH".to_string(), p.display().to_string()));
-            }
-            LaunchSpec {
-                program: umu_run.clone(),
-                args: vec![exe.display().to_string(), FS_ARG.to_string()],
-                env,
-                cwd: bin64,
-            }
-        }
+        } => LaunchSpec {
+            program: umu_run.clone(),
+            args: vec![exe.display().to_string(), FS_ARG.to_string()],
+            env: umu_env(prefix, proton.as_deref()),
+            cwd: bin64,
+        },
         Platform::Windows => LaunchSpec {
             program: exe,
             args: vec![FS_ARG.to_string()],
@@ -85,6 +76,19 @@ pub fn base_spec(client: &Path, platform: &Platform) -> LaunchSpec {
             cwd: bin64,
         },
     }
+}
+
+/// What umu-run needs to know, for the client and for preparing its prefix: the launcher's own
+/// Wine prefix, the game's id (umu picks its fixes by it) and, when given, the Proton build.
+pub fn umu_env(prefix: &Path, proton: Option<&Path>) -> Vec<(String, String)> {
+    let mut env = vec![
+        ("WINEPREFIX".to_string(), prefix.display().to_string()),
+        ("GAMEID".to_string(), format!("umu-{STEAM_APP_ID}")),
+    ];
+    if let Some(p) = proton {
+        env.push(("PROTONPATH".to_string(), p.display().to_string()));
+    }
+    env
 }
 
 /// The gate as a dotted IPv4 address: the client parses it with `inet_addr` (transport.md 1.1).
