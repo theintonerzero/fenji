@@ -175,7 +175,10 @@ t_refuse_unscannable() {
   rc=$?
   set -e
   chmod 755 "$tmp/noscan/locked"
-  [ "$rc" -eq 2 ] && [[ $err == *"can't scan all of it"* ]] || { echo "  exited $rc: $err" >&2; return 1; }
+  if ! { [ "$rc" -eq 2 ] && [[ $err == *"can't scan all of it"* ]]; }; then
+    echo "  exited $rc: $err" >&2
+    return 1
+  fi
 }
 if [ "$uid" -ne 0 ]; then
   check "binding a dir with a part find can't read is refused" t_refuse_unscannable

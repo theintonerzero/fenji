@@ -202,7 +202,7 @@ fi
 # COMMAND), and doesn't count; pgrep never lists itself.
 steam_running() {
   local p
-  pgrep -x steam >/dev/null || pgrep -x steamwebhelper >/dev/null && return 0
+  if pgrep -x steam >/dev/null || pgrep -x steamwebhelper >/dev/null; then return 0; fi
   for p in $(pgrep -f com.valvesoftware.Steam); do [ "$p" = "$$" ] || return 0; done
   return 1
 }
