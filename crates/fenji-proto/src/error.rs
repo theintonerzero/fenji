@@ -3,7 +3,9 @@
 pub enum Error {
     #[error("a message body of {0} bytes is over the limit")]
     BodyTooLong(usize),
-    #[error("a frame body of {0} bytes doesn't fit a u16 length of 1..=65535")]
+    #[error(
+        "a frame body of {0} bytes is out of range (1..=65535 on the wire, at most 0x4080 to the client)"
+    )]
     FrameLength(usize),
     #[error("raw-length prefix: {0}")]
     BadRawLength(&'static str),
