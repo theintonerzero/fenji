@@ -44,7 +44,7 @@ Where re-verification disagreed with the triage report, this document follows th
 | 1.5 | Launcher `bin64/SOLO_Launcher.exe`: PE32 (x86), "SOLO Launcher" 0.0.13.47, Gameforge, signed by Gameforge 4D GmbH through thawte at 2021-07-09 11:46:15 UTC, PDB under `F:\gitlab\runner\…\tnt\solo-launcher\`. | **Observed** | V10, V11, S |
 | 1.6 | The other executables in `bin64/`: `browserhost.exe` (the CEF host), `crashpad_handler.exe` and `AurCrashSender64.exe` ("Crash Report Delivery Module" 1.4.0.2). | **Observed** | V10 |
 | 1.7 | `tools/` holds two developer tools. `GujianOL_Editor/` has `AurogonAssetViewer.exe`, `AurogonEngine.dll` (3,209 named exports, 54,670 exception-table entries), `VisionEnginePlugin.vPlugin` (4,129 exports), `start.bat` and `ffmpeg.exe`. `GujianOL_MusicBox/` comes with its own .NET 4.5 installer. | **Observed** | V12, V13, S |
-| 1.8 | `AurogonEngine.dll`'s named exports could help name engine functions in `gujianol.exe` (M1). | **Inferred** | S |
+| 1.8 | `AurogonEngine.dll`'s named exports could help name engine functions in `gujianol.exe` (M1). **M2 answer:** partly, see [`docs/re/README.md`](README.md#naming-functions-from-aurogonenginedll-spike-0-18). | **Inferred** | S |
 
 Engine and middleware:
 
