@@ -59,6 +59,11 @@ fn reason(body: &[u8]) -> Vec<u8> {
     body[..body.len().min(MAX_REASON)].to_vec()
 }
 
+/// The largest server message the simulator takes: what the inner header's 24-bit length can say.
+/// The real client keeps no smaller limit of its own (transport.md 7.1), so the server's
+/// `MAX_INBOUND` doesn't apply here.
+pub const CLIENT_MAX_MESSAGE: usize = 0xFF_FFFF;
+
 /// One connection, from the client's side: it answers the hello with its auth message (§6), reads
 /// the reply, and sends only in `WORK` (7.3).
 pub struct Client {
@@ -142,7 +147,7 @@ impl Client {
                     if self.state == CState::InAuth && self.stream_in.len() < 5 {
                         continue;
                     }
-                    for m in drain_messages(&mut self.stream_in)? {
+                    for m in drain_messages(&mut self.stream_in, CLIENT_MAX_MESSAGE)? {
                         events.push(self.take(m)?);
                         if self.state == CState::Closed {
                             return Ok((events, out));
@@ -222,9 +227,12 @@ impl Client {
         self.flush()
     }
 
+    /// A time-sync frame (transport.md 4.6); nothing once the connection is closed.
     pub fn time_sync(&mut self, millis: u64) -> Vec<u8> {
         let mut out = Vec::new();
-        self.up.time_sync(millis, &mut out);
+        if self.state != CState::Closed {
+            self.up.time_sync(millis, &mut out);
+        }
         out
     }
 }

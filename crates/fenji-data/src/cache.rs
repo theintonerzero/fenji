@@ -2,8 +2,9 @@
 //! (docs/protocol/payloads.md P.1–P.2), with tables that later values refer back to and "magic"
 //! objects. `data/caches/all_tables.new_cache` holds the design tables this way. Reading is for the
 //! owner's local copy: the cache is large (300 MB) and read whole; nothing here comes from a peer.
-//! fenji-proto's `pickle` reads the same format for network messages, without references and
-//! magic objects (it refuses tags 0D–10); the two share the format, not code.
+//! fenji-proto's `pickle` reads the same format for network messages, references and magic
+//! objects included (since v0.3.1), into a tree per message rather than an arena; the two share
+//! the format, not code.
 use crate::{Error, Result};
 
 pub mod json;

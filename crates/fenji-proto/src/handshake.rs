@@ -20,8 +20,9 @@ pub const MAX_INBOUND: usize = 1 << 20;
 /// The client keeps at most this much of a close reason (spike-0 4.28).
 pub const MAX_REASON: usize = 255;
 
-/// The client's first message (type 0).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The client's first message (type 0). Its `Debug` shows sizes only: the payload carries the
+/// ticket, and the machine bytes a MAC address (M3 spec D3).
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuthMessage {
     /// The first 16 bytes of the `gate_dictionary.bin` image at DAT_1431FC8E0 (transport.md 6.3).
     pub dict_id: [u8; 16],
@@ -29,6 +30,16 @@ pub struct AuthMessage {
     pub machine: [u8; 6],
     /// `net_client_create`'s payload: `ks.pickle_pack` of the login fields (login.md 2.6).
     pub payload: Vec<u8>,
+}
+
+impl std::fmt::Debug for AuthMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthMessage")
+            .field("dict_id", &self.dict_id)
+            .field("machine", &"…")
+            .field("payload_len", &self.payload.len())
+            .finish()
+    }
 }
 
 impl AuthMessage {
@@ -97,11 +108,11 @@ impl State {
 }
 
 /// Splits whole messages off the front of `stream`. Refuses a header that announces more than
-/// `MAX_INBOUND` bytes before waiting for them.
-pub(crate) fn drain_messages(stream: &mut Vec<u8>) -> Result<Vec<Message>> {
+/// `limit` bytes before waiting for them: `MAX_INBOUND` on the server's side.
+pub(crate) fn drain_messages(stream: &mut Vec<u8>, limit: usize) -> Result<Vec<Message>> {
     let mut out = Vec::new();
     let mut at = 0;
-    while let Some((h, body, used)) = split_message(&stream[at..], MAX_INBOUND)? {
+    while let Some((h, body, used)) = split_message(&stream[at..], limit)? {
         out.push(Message {
             ty: h.ty(),
             body: body.to_vec(),
@@ -187,7 +198,7 @@ impl Server {
                 Frame::Data(mut body) => {
                     self.up_cipher.decrypt(&mut body);
                     self.stream_in.extend_from_slice(&body);
-                    for m in drain_messages(&mut self.stream_in)? {
+                    for m in drain_messages(&mut self.stream_in, MAX_INBOUND)? {
                         events.push(self.take(m)?);
                     }
                 }
