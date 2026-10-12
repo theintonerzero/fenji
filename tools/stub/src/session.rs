@@ -6,11 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::hexdump::hexdump;
 
-/// Hex-dump log of everything one client connection sent.
+/// Hex-dump log of everything one client connection sent, and, with `--speak`, what the stub sent.
 pub struct SessionLog {
     path: PathBuf,
     file: File,
     received: usize,
+    sent: usize,
 }
 
 impl SessionLog {
@@ -32,6 +33,7 @@ impl SessionLog {
             path,
             file,
             received: 0,
+            sent: 0,
         })
     }
 
@@ -46,6 +48,19 @@ impl SessionLog {
         self.file
             .write_all(hexdump(self.received, bytes).as_bytes())?;
         self.received += bytes.len();
+        self.file.flush()
+    }
+
+    /// Appends bytes the stub sent, offset-continuous with earlier sends.
+    pub fn record_sent(&mut self, bytes: &[u8]) -> io::Result<()> {
+        writeln!(
+            self.file,
+            "# sent {} bytes at offset {}",
+            bytes.len(),
+            self.sent
+        )?;
+        self.file.write_all(hexdump(self.sent, bytes).as_bytes())?;
+        self.sent += bytes.len();
         self.file.flush()
     }
 
@@ -111,6 +126,22 @@ mod tests {
         assert!(text.contains("# recv 3 bytes at offset 0\n00000000  61 62 63"));
         assert!(text.contains("# recv 2 bytes at offset 3\n00000003  64 65"));
         assert!(text.ends_with("# closed after 5 bytes: peer closed\n"));
+    }
+
+    #[test]
+    fn sent_bytes_have_their_own_offsets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, peer) = addrs();
+        let mut log = SessionLog::create(tmp.path(), local, peer).unwrap();
+        log.record_sent(b"hi").unwrap();
+        log.record(b"abc").unwrap();
+        log.record_sent(b"!").unwrap();
+        let path = log.path().to_path_buf();
+        log.close("peer closed").unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert!(text.contains("# sent 2 bytes at offset 0\n00000000  68 69"));
+        assert!(text.contains("# recv 3 bytes at offset 0\n00000000  61 62 63"));
+        assert!(text.contains("# sent 1 bytes at offset 2\n00000002  21"));
     }
 
     #[test]
