@@ -137,6 +137,14 @@ Read the wrapper's header before the first run.
 
 The client flags that reach the login scene in a dev run are in [spike-0 §8](spike-0.md#8-runtime-observation-isolated-stub-only) (`--gf-sdk=mocked` is dev-only, gate #11). Run the client with `scripts/spike/run-client.sh setup` once, then `run-client.sh run NAME … -- ARGS`; it adds fenji-stub and the AGT driver watchdog. Exit 3 means the watchdog saw a sign of driver activity and stopped the run: stop all runs and report. The script's header lists every exit status, and the watchdog's lists the signs.
 
+From M3, a run can use Fenji's own server and the launcher's ticket instead of the stub (`cargo build --release -p fenji-server` and `-p fenji-launcher --features dev-login-path` first):
+- `--server CONFIG` runs `fenji-server` with a copy of CONFIG (a `fenji.toml`) and waits for its gate and API ports. Its log is the run's `server.log`. A relative `[store] path` gives a fresh database per run.
+- `--server-data DIR` keeps the database between runs: DIR is a directory under `re/runs/`, and the config's `[store] path` must point inside it.
+- `--launch "ARGS"` runs `fenji-launch play --print ARGS` once the server is up. The client gets only the `gj_*` pairs it prints, and `io/launch.txt` records them with the ticket redacted. The account's password comes from `--launch-password FILE`; FILE must be alone in its directory, which is bound read-only, and it is never copied, recorded or named in the evidence.
+- `--key T:KEY` and `--type T:TEXT` press a key (an X keysym name such as `Return` or `space`) or type printable ASCII T seconds into the run, as `--click` clicks (`xkey.py`, through XTEST).
+
+If the server isn't ready or the launcher fails, the client isn't started and the run exits 7.
+
 ## Working rules
 
 - Static analysis of files on disk comes first. Runtime observation (Wine `WINEDEBUG`, the client's own log, stub sessions) happens only inside the sandbox, against our own stub or server.

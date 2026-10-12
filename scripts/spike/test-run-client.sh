@@ -133,6 +133,87 @@ else
   bad "inputs.txt records the stub's arguments"
 fi
 
+# --- M3: fenji-server, the launcher's ticket, key presses (M3 plan Task 8)
+exits 7 "a server that never got ready is exit 7" -- verdict 0 96 0 "$OUT"
+exits 7 "a launcher that failed is exit 7" -- verdict 0 95 0 "$OUT"
+
+# usage WHAT -- ARGS...: cmd_run ARGS exits 2 (a usage error).
+usage_error() {
+  local what=$1 rc
+  shift 2
+  guard
+  (cmd_run t "$@") > /dev/null 2>&1
+  rc=$?
+  if [ "$rc" = 2 ]; then ok "$what"; else bad "$what: exit $rc, want 2"; fi
+}
+printf '[server]\nname = "Fenji"\n' > "$TESTROOT/fenji.toml"
+usage_error "--launch needs --server" -- --launch "--server http://127.0.0.1:7801 --username tester"
+usage_error "--launch-password needs --launch" -- --server "$TESTROOT/fenji.toml" --launch-password "$TESTROOT/fenji.toml"
+usage_error "--server needs a readable file" -- --server "$TESTROOT/missing.toml"
+printf 'not = [toml\n' > "$TESTROOT/not.toml"
+usage_error "--server takes a config the server can read" -- --server "$TESTROOT/not.toml"
+mkdir -p "$TESTROOT/elsewhere"
+usage_error "--server-data must be under re/runs/" -- --server "$TESTROOT/fenji.toml" --server-data "$TESTROOT/elsewhere"
+usage_error "--server-data needs --server" -- --server-data "$WORK"
+usage_error "--server and --ports don't mix" -- --server "$TESTROOT/fenji.toml" --ports 7800
+usage_error "--key needs a key name" -- --key 5:
+usage_error "--key needs a time" -- --key Return
+usage_error "--type needs a time" -- --type x
+usage_error "--type takes printable ASCII" -- --type "5:$(printf 'a\tb')"
+usage_error "--launch takes words of [A-Za-z0-9=_.:/@-]" -- --server "$TESTROOT/fenji.toml" --launch '--username x;echo'
+mkdir -p "$WORK/data"
+printf '[server]\nname = "Fenji"\n[store]\npath = "/somewhere/else.db"\n' > "$TESTROOT/away.toml"
+usage_error "--server-data needs the config's store path inside it" -- --server "$TESTROOT/away.toml" --server-data "$WORK/data"
+printf '[server]\nname = "Fenji"\n[store]\npath = "%s/data/fenji.db"\n' "$WORK" > "$TESTROOT/data.toml"
+refuses "valid --server, --server-data, --launch, --key and --type pass their checks" "no workspace" -- \
+  --server "$TESTROOT/data.toml" --server-data "$WORK/data" --launch "--server http://127.0.0.1:7801 --username tester" \
+  --key 40:Return --key 41:space --type "45:Lin Two" --click 30:640,360
+
+if [ "$(redact_gj_ticket <<< 'gj_ticket=fenji1-abc gj_gates=1.2.3.4:7800')" = 'gj_ticket=<redacted> gj_gates=1.2.3.4:7800' ]; then
+  ok "redact_gj_ticket hides only the ticket"
+else
+  bad "redact_gj_ticket hides only the ticket: $(redact_gj_ticket <<< 'gj_ticket=fenji1-abc gj_gates=1.2.3.4:7800')"
+fi
+got=$(printf 'gj_uinfo=1:90:Fenji:0:tester:5\nLD_PRELOAD=/x.so\nnoise\ngj_gates=127.0.0.1:7800\ngj_ticket=fenji1-ab\n' | parse_launch_output)
+want=$(printf 'gj_uinfo=1:90:Fenji:0:tester:5\ngj_gates=127.0.0.1:7800\ngj_ticket=fenji1-ab')
+if [ "$got" = "$want" ]; then ok "parse_launch_output keeps only the gj_* pairs"; else bad "parse_launch_output keeps only the gj_* pairs: $got"; fi
+if printf 'gj_ticket=fenji1\000ab\n' | parse_launch_output > /dev/null 2>&1; then
+  bad "parse_launch_output refuses a NUL in a value"
+else
+  ok "parse_launch_output refuses a NUL in a value"
+fi
+if printf 'gj_ticket=fenji1\rab\n' | parse_launch_output > /dev/null 2>&1; then
+  bad "parse_launch_output refuses a control character in a value"
+else
+  ok "parse_launch_output refuses a control character in a value"
+fi
+if printf 'warning: nothing\n' | parse_launch_output > /dev/null 2>&1; then
+  bad "parse_launch_output refuses output with no pairs"
+else
+  ok "parse_launch_output refuses output with no pairs"
+fi
+
+# The launcher's password file is never copied, recorded or named in inputs.txt.
+if (
+  guard
+  OUT=$TESTROOT/inputs2 run=t ports=7800 tmo=9 display=99 channels=-all hosts=$TESTROOT/hosts
+  WRAP=$TESTROOT/hosts WATCHDOG=$TESTROOT/hosts PROTON=/nonexistent
+  envs=() client_files=() clicks=() stub_args=() keys=(40:Return) types=("45:Lin")
+  server_cfg=$TESTROOT/data.toml server_data=$WORK/data launch="--username tester"
+  launch_password=$TESTROOT/secret-password-file
+  echo 'hunter2-not-recorded' > "$launch_password"
+  mkdir -p "$OUT" && echo "127.0.0.1 localhost" > "$hosts"
+  record_inputs > /dev/null 2>&1
+  ! grep -q -e hunter2 -e secret-password-file "$OUT/inputs.txt" &&
+    grep -qx 'launch args: --username tester' "$OUT/inputs.txt" &&
+    grep -qx 'keys (T:KEY): 40:Return' "$OUT/inputs.txt" &&
+    grep -q 'server config:' "$OUT/inputs.txt"
+); then
+  ok "inputs.txt records the launch but never its password"
+else
+  bad "inputs.txt records the launch but never its password"
+fi
+
 case "$(watch_channels -all)" in
   -all,*+process*+loaddll*+resource*+service*err+all*) ok "the watchdog's channels follow any --channels" ;;
   *) bad "the watchdog's channels follow any --channels: $(watch_channels -all)" ;;
