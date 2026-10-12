@@ -56,7 +56,7 @@ The type-0 message the client sends during auth ([`transport.md`](transport.md) 
 
 ## Script messages
 
-Script message ids are numbers. In a shipping client, `data/core/share/enums.luac` takes each id and name from the client's own protocol table (`enum_protocols.luac`, which sets each `PROTOG2C_*`, `PROTOC2G_*`, `PROTOS2C_*` and `PROTOC2S_*` name from a global, is the developer path; [`packets/lobby.md`](packets/lobby.md) 2.1), so the names don't follow their order in that file. That table, `data/caches/protocol_ver.new_cache`, is where the names below come from ([`packets/lobby.md`](packets/lobby.md) 2.1). Client messages go as `CTS_PROTOCOL_GATE_SCRIPT` and server messages as `STC_PROTOCOL_SCRIPT`. Statuses are those of the tables above. The ids used so far:
+Script message ids are numbers. In a shipping client, `data/core/share/enums.luac` takes each id and name from the client's own protocol table; `enum_protocols.luac`, which sets each `PROTOG2C_*`, `PROTOC2G_*`, `PROTOS2C_*` and `PROTOC2S_*` name from a global, so that the names don't follow their order in that file, is used only on the paths [`packets/lobby.md`](packets/lobby.md) 2.1 describes (a source `enum_protocols.lua`, or `--cmd`). That table, `data/caches/protocol_ver.new_cache`, is where the names below come from ([`packets/lobby.md`](packets/lobby.md) 2.1). Client messages go as `CTS_PROTOCOL_GATE_SCRIPT` and server messages as `STC_PROTOCOL_SCRIPT`. Statuses are those of the tables above. The ids used so far:
 
 | Id | Direction | Name | What it does | Status | Tag | Evidence |
 |---|---|---|---|---|---|---|
