@@ -8,7 +8,7 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 
 | # | Finding | Tag | Evidence |
 |---|---|---|---|
-| O.1 | **Server to client.** The network thread (FUN_1402234D0) hands every inbound message of type 2 or more to the scripts as an event, and closes the connection on type 1 (FUN_14029A870). For each event, FUN_140222E00 pushes the type, then decodes the body by type in a switch over 0 to 29: type 0 is unpickled (FUN_1400D5850), type 1 pushed as a string, type 2 updates the ping estimate, and types 3 to 29 each have their own parser. Those cases line up with the 30 `STC_PROTOCOL_*` names in their table order (the 31st, `MAX`, is the count). | **Inferred** | FUN_1402234D0, FUN_140222E00 |
+| O.1 | **Server to client.** In states 2 and 3 the network thread (FUN_1402234D0) closes the connection on a message of type 1 (FUN_14029A870) and hands every other inbound message, type 0 included, to the scripts as an event. For each event, FUN_140222E00 pushes the type, then decodes the body by type in a switch over 0 to 29: type 0 is unpickled (FUN_1400D5850), type 1 pushed as a string, type 2 read as a `u32` and a `u64` (it also updates the ping estimate), and types 3 to 29 each have their own parser. Those cases line up with the 30 `STC_PROTOCOL_*` names in their table order (the 31st, `MAX`, is the count). | **Inferred** | FUN_1402234D0, FUN_140222E00 |
 | O.2 | **Client to server.** The NetClientLua methods post send commands to the network thread, which writes the command's type byte into the message header (FUN_14029AC60): `send_gateway` uses 0xFF, `send` 0, `send_time_sync` 2, `send_enter` 3, `send_leave` 4 and `send_sync_filter` 5. That is `CTS_PROTOCOL_GATE_SCRIPT` as −1 (0xFF as a byte) and the rest of the enum counting from 0 in table order. | **Inferred**; the type constants **Observed** | FUN_140221940, FUN_140221A00, FUN_140221AC0, FUN_140221BB0, FUN_140221CB0, FUN_140221D30, FUN_1402226B0 |
 | O.3 | The client sends only in state 3 `WORK` ([`transport.md`](transport.md) 7.3), and the scripts' senders check that state themselves (`net_manager_send_gateway`, `net_manager_send`; `data/core/client/net_manager.luac`). | **Inferred** | FUN_14029AC60; net_manager.luac |
 
@@ -18,7 +18,7 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 |---|---|---|---|---|---|
 | `0` | S→C | `STC_PROTOCOL_SCRIPT` | unpickled (FUN_1400D5850), then the scripts' handler for the message id (`data/core/client/net_manager.luac`) | `schema` | O.1, [`payloads.md`](payloads.md) |
 | `1` | S→C | `STC_PROTOCOL_CLOSE` | FUN_14029A870: the body (at most 255 bytes kept) becomes the close reason, the socket closes, state 5 | `schema` | O.1, [`transport.md`](transport.md) 7.4 |
-| `2` | S→C | `STC_PROTOCOL_TIME_SYNC` | FUN_140222E00 case 2: a `u32` and a `u64` from the body feed the ping estimate | `named` | O.1 |
+| `2` | S→C | `STC_PROTOCOL_TIME_SYNC` | FUN_140222E00 case 2: a `u32` (the client's clock, echoed) and a `u64` (the server's time) feed the ping estimate and the scripts' `time_manager_time_sync_resp` ([`transport.md`](transport.md) 10.6) | `schema` | O.1, [`transport.md`](transport.md) 10.6 |
 | `3` | S→C | `STC_PROTOCOL_TRANS_LIMIT_LV` | case 3: one `u16` | `named` | O.1 |
 | `4` | S→C | `STC_PROTOCOL_DEBUG_POS` | case 4 | `named` | O.1 |
 | `5` | S→C | `STC_PROTOCOL_GM_CHANNEL` | case 5: FUN_1401A49C0 | `named` | O.1 |
@@ -46,7 +46,7 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 | `0xFF` | C→S | `CTS_PROTOCOL_GATE_SCRIPT` | `send_gateway` (FUN_140221940): the pickled message id and arguments, for the gate | `schema` | O.2, [`payloads.md`](payloads.md) |
 | `0` | C→S | `CTS_PROTOCOL_SCRIPT` | `send` (FUN_140221A00): the pickled message id and arguments | `schema` | O.2, [`payloads.md`](payloads.md) |
 | `1` | C→S | `CTS_PROTOCOL_GM_CHANNEL` | — | `named` | O.2 |
-| `2` | C→S | `CTS_PROTOCOL_TIME_SYNC` | `send_time_sync` (FUN_140221AC0): a 13-byte body | `named` | O.2 |
+| `2` | C→S | `CTS_PROTOCOL_TIME_SYNC` | `send_time_sync` (FUN_140221AC0): a 13-byte body, sent once a second once a character is in the world ([`transport.md`](transport.md) 10.6) | `named` | O.2 |
 | `3` | C→S | `CTS_PROTOCOL_CLIENT_ENTER` | `send_enter` (FUN_140221BB0): a 21-byte body | `named` | O.2 |
 | `4` | C→S | `CTS_PROTOCOL_CLIENT_LEAVE` | `send_leave` (FUN_140221CB0): an empty body | `schema` | O.2 |
 | `5` | C→S | `CTS_PROTOCOL_SYNC_FILTER_SET` | `send_sync_filter` (FUN_140221D30): an 18-byte body | `named` | O.2 |
