@@ -173,6 +173,9 @@ usage_error "--launch takes words of [A-Za-z0-9=_.:/@-]" "takes words" -- \
 usage_error "--launch words aren't globbed" "takes words" -- \
   --server "$M3/relative.toml" --launch '--username /bi?' --launch-password "$M3/password"
 usage_error "--env can't give the launcher its password" "password or the ticket" -- --env FENJI_PASSWORD=x
+refuses "--env takes a plain variable name" "plain name" -- --env 'BASH_FUNC_export%%=() { :; }'
+usage_error "--launch takes one line of printable ASCII" "one line of printable ASCII" -- \
+  --server "$M3/relative.toml" --launch "$(printf -- '--username tester\n--password-file /x')" --launch-password "$M3/password"
 usage_error "--env can't turn on the inner shell's tracing" "password or the ticket" -- --env SHELLOPTS=xtrace
 usage_error "--server needs a readable file" "can't read" -- --server "$M3/missing.toml"
 usage_error "--server takes a config the server can read" "isn't usable" -- --server "$M3/not.toml"
@@ -240,7 +243,12 @@ else
 fi
 for out in 'printf "gj_ticket=fenji1-aa\000bb\n"' 'printf "gj_ticket=fenji1-aa\nbb\n"' 'printf "gj_ticket=a\nextra\n"' 'printf "gj_ticket=a\n"; exit 1'; do
   fake "$out"
-  if (launch_pairs "$M3/fenji-launch" x) > /dev/null 2>&1; then bad "launch_pairs refuses: $out"; else ok "launch_pairs refuses: $out"; fi
+  # In a fresh shell without pipefail, as the sandbox's inner shell runs it.
+  if bash -c "$(declare -f parse_launch_output launch_pairs); launch_pairs \"\$1\" x" _ "$M3/fenji-launch" > /dev/null 2>&1; then
+    bad "launch_pairs refuses: $out"
+  else
+    ok "launch_pairs refuses: $out"
+  fi
 done
 
 # xkey.py refuses bad input before it opens any display; a display that can't exist proves it never types.
@@ -253,6 +261,13 @@ done
 python3 -I "$XK" --display :9999 --type=-x > /dev/null 2>&1
 rc=$?
 if [ "$rc" = 1 ]; then ok "xkey.py takes text that starts with a dash"; else bad "xkey.py takes text that starts with a dash: exit $rc"; fi
+
+# The password reaches the sandbox as one line through a pipe, and nothing without --launch.
+if [ "$(launch_password=$M3/password password_line)" = "secret-for-tests" ] && [ -z "$(launch_password='' password_line)" ]; then
+  ok "the password goes to the sandbox as one line, through a pipe"
+else
+  bad "the password goes to the sandbox as one line, through a pipe"
+fi
 
 # A ticket that reached the evidence is redacted in place and listed.
 mkdir -p "$M3/out/io"

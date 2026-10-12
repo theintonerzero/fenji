@@ -93,6 +93,13 @@ parse_launch_output() {
   printf '%s\n' "${pairs[@]}"
 }
 
+# The launcher password's first line for the sandbox's standard input, or nothing. A pipe, not the
+# file: once the inner shell has read it, nothing in the sandbox can read it again (bwrap's PID 1
+# keeps its standard input open).
+password_line() {
+  if [ -n "${launch_password-}" ]; then head -n 1 -- "$launch_password"; fi
+}
+
 # launch_pairs BIN PASSWORD WORDS...: `BIN play --print WORDS` with the password in its
 # environment only, its output parsed straight from the pipe (parse_launch_output).
 launch_pairs() {
@@ -227,6 +234,8 @@ check_presses() {
 # --server, --server-data, --launch and --launch-password. Uses and sets cmd_run's variables; sets
 # login_port and api_port from the config, and launch_words.
 check_server() {
+  # Byte ranges, not the locale's collation, for the printable-ASCII checks below.
+  local LC_ALL=C
   if [ -z "$server_cfg" ]; then
     [ -z "$server_data" ] || misuse "--server-data needs --server"
     [ -z "$launch" ] || misuse "--launch needs --server"
@@ -269,6 +278,7 @@ check_server() {
   fi
   if [ -n "$launch" ]; then
     [ -n "$launch_password" ] || misuse "--launch needs --launch-password: fenji-launch signs in"
+    [[ "$launch" =~ ^[\ -~]+$ ]] || misuse "--launch takes one line of printable ASCII"
     local w
     read -r -a launch_words <<< "$launch"
     for w in "${launch_words[@]}"; do
@@ -319,7 +329,7 @@ cmd_run() {
   case "$ports" in '' | *[!0123456789\ ]*) die "--ports takes port numbers separated by spaces, not '$ports'" ;; esac
   local ev
   for ev in "${envs[@]}"; do
-    case "$ev" in [A-Za-z_]*=*) ;; *) die "--env takes VAR=VALUE, not '$ev'" ;; esac
+    [[ "$ev" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || die "--env takes VAR=VALUE with a plain name, not '$ev'"
     case "$ENV_RESERVED" in *" ${ev%%=*} "*) die "--env ${ev%%=*}: the runner sets it, and the watchdog depends on it" ;; esac
     case "$ENV_SECRET" in *" ${ev%%=*} "*) misuse "--env ${ev%%=*}: it could put the password or the ticket in the evidence" ;; esac
   done
@@ -508,7 +518,7 @@ cmd_run() {
       wait "$stub" 2>/dev/null
       exit "$rc"
     ' _ "$WORK" "$IO" "$IO/stub" "$STUBBIN" "$ports" "$tmo" "$PROTON" "${stub_args[*]}" "$server_copy" \
-    "$launch" "$login_port" "$api_port" "$@" < "${launch_password:-/dev/null}" > "$OUT/sandbox.out" 2>&1 &
+    "$launch" "$login_port" "$api_port" "$@" < <(password_line) > "$OUT/sandbox.out" 2>&1 &
   local spid=$!
   python3 -I "$WATCHDOG" watch --root "$WORK" --out "$OUT" --sandbox-pid "$spid" \
     --log "$IO/steam-1418100.log" --go "$IO/.go" "${wbinds[@]}" \

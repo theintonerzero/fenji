@@ -52,6 +52,9 @@ def main():
         return 1
     try:
         shift = x11.XKeysymToKeycode(dpy, x11.XStringToKeysym(b"Shift_L"))
+        # Every keysym is checked against the layout before the first press, so a refused one
+        # never leaves half the text typed.
+        plan = []
         for sym in syms:
             code = x11.XKeysymToKeycode(dpy, sym)
             if not code:
@@ -63,6 +66,8 @@ def main():
             if shifted and x11.XkbKeycodeToKeysym(dpy, code, 0, 1) != sym:
                 print(f"xkey: keysym {sym:#x} needs more than Shift on this layout", file=sys.stderr)
                 return 1
+            plan.append((code, shifted))
+        for code, shifted in plan:
             if shifted:
                 xtst.XTestFakeKeyEvent(dpy, shift, 1, 0)
             xtst.XTestFakeKeyEvent(dpy, code, 1, 0)
