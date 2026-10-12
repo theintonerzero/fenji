@@ -12,4 +12,8 @@ ENV_FILE="$HOME/.config/fenji/env.sh"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 [ -n "${GHIDRA_INSTALL_DIR:-}" ] || { echo "rea-mcp: GHIDRA_INSTALL_DIR unset; run scripts/bootstrap.sh" >&2; exit 1; }
 
+# The first query on gujianol.exe waits for a whole-exe Ghidra analysis: 222 s on the Fedora box,
+# against the package's 330 s default deadline (docs/re/README.md, "Evidence for gujianol.exe").
+export REA_GHIDRA_STARTUP_TIMEOUT_MS="${REA_GHIDRA_STARTUP_TIMEOUT_MS:-600000}"
+
 exec npx -y "rea-agents@$REA_AGENTS_VERSION" mcp
