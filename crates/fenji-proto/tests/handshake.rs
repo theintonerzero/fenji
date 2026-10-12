@@ -1,8 +1,10 @@
 use fenji_proto::client::{Client, ClientEvent};
 use fenji_proto::codec::StoredCodec;
+use fenji_proto::frame::{SEND_CHUNK, UpWriter};
 use fenji_proto::handshake::{AuthMessage, Event, MAX_INBOUND, Message, Server, State};
+use fenji_proto::header::write_message;
 use fenji_proto::hello::Variants;
-use fenji_proto::variant::AES128;
+use fenji_proto::variant::{AES128, Cipher};
 
 const V: Variants = Variants {
     down: AES128,
@@ -138,4 +140,56 @@ fn junk_never_panics() {
 fn send_before_accept_is_refused() {
     let (mut server, _, _) = connect(8);
     assert!(server.send(1, b"x", &StoredCodec).is_err());
+}
+
+#[test]
+fn a_frame_boundary_inside_a_header_and_several_messages_per_frame() {
+    // The real client cuts one outbound message stream into frames (transport.md 4.5, 7.2), so
+    // a header can straddle two frames and one frame can hold several messages.
+    for one_read in [true, false] {
+        let (mut server, hello) = Server::start(fill(9), V).unwrap();
+        let cipher = Cipher::new(AES128, &hello).unwrap();
+        let mut w = UpWriter::new();
+        let mut frames = |stream: &[u8]| {
+            let mut out = Vec::new();
+            for c in stream.chunks(SEND_CHUNK) {
+                let mut c = c.to_vec();
+                cipher.encrypt(&mut c);
+                w.data(&c, &mut out).unwrap();
+            }
+            out
+        };
+        let mut s = Vec::new();
+        write_message(0, &auth().to_body(), &mut s).unwrap();
+        assert_eq!(server.receive(&frames(&s)).unwrap(), [Event::Auth(auth())]);
+        server.accept(&StoredCodec).unwrap();
+        let a = vec![0xaa; SEND_CHUNK - 6]; // A (4 + 0x7fa bytes) ends 2 bytes before the cut
+        let mut s = Vec::new();
+        write_message(5, &a, &mut s).unwrap();
+        write_message(6, b"bee", &mut s).unwrap(); // B's header straddles the cut
+        write_message(7, b"", &mut s).unwrap(); // C shares B's frame
+        let up = frames(&s);
+        let got: Vec<Event> = if one_read {
+            server.receive(&up).unwrap()
+        } else {
+            up.iter()
+                .flat_map(|b| server.receive(std::slice::from_ref(b)).unwrap())
+                .collect()
+        };
+        assert_eq!(
+            got,
+            [
+                Event::Message(Message { ty: 5, body: a }),
+                Event::Message(Message {
+                    ty: 6,
+                    body: b"bee".to_vec()
+                }),
+                Event::Message(Message {
+                    ty: 7,
+                    body: vec![]
+                }),
+            ],
+            "one_read {one_read}"
+        );
+    }
 }
