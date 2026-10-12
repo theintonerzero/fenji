@@ -3914,3 +3914,65 @@ git commit -m "docs: record M3: summary, spec notes, privacy and security" -m "C
   - the deferred minors;
   - test and CI status;
   - exactly what the owner needs to do next.
+
+---
+
+## Amendment A: review fixes and execution rulings (2026-10-13)
+
+The plan's review (PR #128) and the first PR reviews changed these points. Each change is a ledgered ruling; where this amendment and a task's text differ, this amendment wins.
+
+**From the lobby reading, before execution.** Task 4 already uses the reading's values (ids from the client's protocol table, the 228/628/84/270 shapes, the actor fields, the Western create rules), so Task 1 writes the evidence for them rather than new values. The reading's script-side checks were confirmed by the controller: the client's protocol table, decoded directly, names every id Task 4 uses. Two values differ from the plan's first text, and both are fixed in Task 4's PR (#131):
+- the base face and the outfit are **clamped** to 1–2, as the client's `check_base_face` (face_verification.luac `0.36`) does: 7 gives 2;
+- names allow only the diacritics the Western rule names: umlauts, grave and acute accents, and cedillas.
+
+**Task 2, the limiter (final design, after six background security reviews; PR #129).**
+- `Limiter::begin(username, addr, now) -> Verdict` and `Limiter::succeed(Attempt)`. `Verdict::Allow(Attempt)` carries the attempt; `Locked` and `SlowDown` carry `retry_after`.
+- Every attempt counts when it begins, and a success takes back exactly its own attempt.
+- Pairs (username hash, network) lock after 5 in 15 min, and networks (IPv6 by /64) after 20.
+- A username's slow-down counts in one of 4096 buckets of a SipHash keyed per process, so the limiter never learns whether an account exists.
+- Live entries are never dropped, sweeps run at most once a second, and past 4×`max_keys` a new pair or network isn't counted on its own (ruled: no global lockout).
+
+**Task 5 (`Accounts::sign_in`).**
+- Call `limiter.begin(username, addr, now)` first, before the account lookup and the password check, and `succeed(attempt)` only on success. Map both `Locked` and `SlowDown` to the one "try again later" answer.
+- `SessionGrant` and `GameGrant` get hand-written redacting `Debug` impls, each with a `format!("{x:?}")` test (review I1).
+- `register` checks that the invite is open (a read-only `Store::invite_is_open(code_hash, now)`) before hashing the password, and keeps the transactional check. An invalid invite counts against the address through the limiter (`begin` under the invite's own key), so fake codes can't keep argon2 busy. Test: a bad invite is answered without hashing (review I4).
+- `TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, …)`; `TimeoutLayer::new` is deprecated in tower-http 0.7.
+- The client address comes from `X-Forwarded-For`'s last entry only (if it doesn't parse, the peer's address), and only from a trusted peer.
+- `retry_after_secs` is rounded up, never 0.
+- Start-up warns when `api_bind` is loopback and `trusted_proxies` is empty, since behind a local Caddy every request comes from 127.0.0.1.
+- `cli_writes_while_a_server_holds_the_database` holds a `BEGIN IMMEDIATE` on a second connection for about 200 ms while the CLI writes.
+
+**Task 6.**
+- The gate sends every script message through one function that refuses `lobby::NEVER_SEND` ids, with a test.
+- Logging (review I2):
+  - a `debug` line per 304: name, vocation, skeleton, face length, and the `Refusal` variant when refused;
+  - a `trace`-level hex dump of each inbound gateway script body after auth (never the auth message);
+  - the ticket field is never logged.
+- `RunningServer` fills `ServerInfo.gate_port` from the bound address, and the accept loop reaps finished connections (`join_next`).
+- Tests: the 64-connection pre-auth cap, a direct `lobby::handle` call without sockets (spec §4), and byte-exact 228, 628, 84 and 270 encodings (spec §6).
+- `ClientEvent::Rejected` and `Closed` carry bytes: the bot compares with `AUTH_FAILED.as_bytes()`.
+
+**Task 7.**
+- `ApiClient` builds reqwest with `redirect(Policy::none())`, so a redirect can't carry a password to `http://`.
+- `Session` and `GameGrant` get redacting `Debug` impls.
+- `play --print` needs no base spec. It prints only the login path's `gj_*` pairs, and signs out after taking the game token (S16).
+- Step 4 also runs `fenji-launch verify --client "$FENJI_CLIENT_PATH"` with and without `--full`, and records the result (Done-when 5).
+- CI gets `cargo clippy` and `cargo test` with `-p fenji-launcher --features dev-login-path`. The default-build test is `#[cfg(not(feature = "dev-login-path"))]`.
+
+**Task 8.**
+- `--launch-password FILE` is bound read-only at its own path. It is never copied into the run's I/O directory and never written to `inputs.txt`, with a test (review I3). The run account's password is random per setup.
+- The server writes `$IO/server.log`, which the runner collects. Runs use `RUST_LOG=fenji_server=trace`.
+
+**Task 9.**
+- L3's fixture keeps the real 304's shape with a synthetic face string of the same form, since the real one may be the client's built-in defaults.
+- L7's default-build test is `expired_mocked_and_garbage_tickets_are_refused` (Task 6).
+- **Stop rule:** if L3 or L5 still fails after six runs, write up what the runs showed, record it in m3-summary as open, and go on to Tasks 10–13. The release decision (Ruling R0) then reflects it.
+
+**Wording.** The stub captures the auth unless `--no-auth-capture` is given. D3's "never logs the ticket" is about Fenji's server, runner and launcher, plus the stub with that flag.
+
+**Spec deviations to record in m3-summary (Task 12).**
+- D8's value tree and cycle guard became typed scalars, because the create request carries only scalars (ruling P1).
+- D16's `[data] client_path` is parsed but not read in M3 (ruling P4: `prop_sys_equips` is empty).
+- `PRE_AUTH_CAP` is 26 + 4 + 0x4000 + 512 rather than D17's 26 + 0x4000, to allow for the header, frame lengths and time syncs.
+- The `invites` table's key is `id`, with `code_hash` unique.
+- The limiter's final design (above) replaces §4's "per username" with keyed buckets.
