@@ -417,6 +417,75 @@ fn dump_writes_a_sheet_as_json_lines() {
 }
 
 #[test]
+fn dump_refuses_a_cache_whose_sha1_isnt_its_key() {
+    // The record's key names other content: a damaged archive or a bad spool output
+    // (m2-tables.md 1.6: a file's key is the SHA-1 of its decoded content).
+    let key = [5; 20];
+    let repo = repo_with_index(&format!(
+        "{}\tdata/caches/all_tables.new_cache\n",
+        hex(&key)
+    ));
+    let part = zfs_part(&[vec![(1, key, stored_blob(&cache_bytes()))]]);
+    std::fs::write(repo.path().join("client/data/data002"), part).unwrap();
+    let out = archive(repo.path())
+        .args(["dump", "--table", "items", "--out", "re/d"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("isn't its key"), "{err}");
+    assert!(!repo.path().join("re/d/items.jsonl").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn dump_replaces_a_link_instead_of_writing_through_it() {
+    let repo = cache_repo();
+    std::fs::create_dir(repo.path().join("docs")).unwrap();
+    std::fs::write(repo.path().join("docs/tracked.md"), "keep").unwrap();
+    std::fs::create_dir_all(repo.path().join("re/d")).unwrap();
+    let file = repo.path().join("re/d/items.jsonl");
+    std::os::unix::fs::symlink(repo.path().join("docs/tracked.md"), &file).unwrap();
+    let ok = archive(repo.path())
+        .args(["dump", "--table", "items", "--out", "re/d"])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("docs/tracked.md")).unwrap(),
+        "keep"
+    );
+    assert!(
+        !std::fs::symlink_metadata(&file)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn extract_key_replaces_a_link_instead_of_writing_through_it() {
+    let repo = cache_repo();
+    std::fs::create_dir(repo.path().join("docs")).unwrap();
+    std::fs::write(repo.path().join("docs/tracked.md"), "keep").unwrap();
+    std::fs::create_dir_all(repo.path().join("re/k")).unwrap();
+    let key = hex(&sha1(&cache_bytes()));
+    let file = repo.path().join("re/k").join(&key);
+    std::os::unix::fs::symlink(repo.path().join("docs/tracked.md"), &file).unwrap();
+    let ok = archive(repo.path())
+        .args(["extract", "--key", &key, "--out", "re/k"])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("docs/tracked.md")).unwrap(),
+        "keep"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), cache_bytes());
+}
+
+#[test]
 fn dump_waits_for_the_caches_own_blocks() {
     // _index is decoded, but the cache it names is an Oodle blob nobody has decoded yet.
     let key = [6; 20];

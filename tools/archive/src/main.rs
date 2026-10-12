@@ -427,6 +427,16 @@ fn dump(client: &Path, table: &str, spool: &Path, out: &Path) -> Result<ExitCode
         Ok(raw) => raw,
         Err(code) => return Ok(code),
     };
+    // A file's key is the SHA-1 of its decoded content (m2-tables.md 1.6), so a mismatch means a
+    // damaged archive or a bad spool output, not the client's tables.
+    let sha1: [u8; 20] = Sha1::digest(&raw).into();
+    if sha1 != *key {
+        bail!(
+            "{TABLE_CACHE} decoded to {} bytes whose SHA-1 isn't its key {}: a damaged archive or a bad spool output",
+            raw.len(),
+            hex(key)
+        );
+    }
     let unzipped = cache::unzip(&raw)?;
     let c = cache::read(unzipped.as_deref().unwrap_or(&raw))?;
     let name = sheet_name(table);
