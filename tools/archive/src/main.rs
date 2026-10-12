@@ -1,7 +1,8 @@
 //! archive: the SoLO data archives' structure (M1 spec §5, docs/re/m1-archives.md). Oodle (codec 4)
 //! is read only through the spool that scripts/spike/run-oodle-helper.sh decodes (M2 plan Task 11):
-//! `paths` decodes `_index` that way, and `dump` the design tables' cache (docs/re/m2-tables.md);
-//! `extract` still writes stored files only. Writes only under re/.
+//! `paths` decodes `_index` that way, `dump` the design tables' cache (docs/re/m2-tables.md), and
+//! `extract --key` any one file; `extract --part` writes a part's stored files. Writes only under
+//! re/.
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -38,12 +39,22 @@ enum Command {
         #[arg(long)]
         part: u32,
     },
-    /// Write one part's stored (uncompressed) files under OUT/data0NN (inside re/), named by key
+    /// Write one part's stored (uncompressed) files under OUT/data0NN, named by key; or, with
+    /// --key, the one file a live record holds under that key, decoded, as OUT/KEY
+    ///
+    /// With --key the file may be Oodle: its blocks go through the spool, and exit 3 means they
+    /// wait for scripts/spike/run-oodle-helper.sh (not a gate event). OUT and the spool must be
+    /// inside re/.
     Extract {
-        #[arg(long)]
-        part: u32,
-        #[arg(long)]
+        #[arg(long, required_unless_present = "key", conflicts_with = "key")]
+        part: Option<u32>,
+        #[arg(long, conflicts_with = "key")]
         stored_only: bool,
+        /// A file's key: 40 hex digits, as `_index` and `list` print it
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long, default_value = "re/oodle-spool")]
+        spool: PathBuf,
         #[arg(long)]
         out: PathBuf,
     },
@@ -64,9 +75,10 @@ enum Command {
     /// Write one sheet of the design tables' cache as OUT/TABLE.jsonl, one row per line
     ///
     /// TABLE is items, skills, monsters, xp or maps (the sheets items, skill, npcs, upgrade and
-    /// maps; docs/re/m2-tables.md §3), or any sheet's name. Each line is a JSON object: "$key",
-    /// then the row's fields with its defaults merged in. OUT and the spool must be inside re/.
-    /// Exit 3: blocks wait for scripts/spike/run-oodle-helper.sh (not a gate event).
+    /// maps; docs/re/m2-tables.md §3), or any sheet's name, such as new_npcs. Each line is a JSON
+    /// object: "$key", then the row's own fields; an `__index` that names the row itself is left
+    /// out. OUT and the spool must be inside re/. Exit 3: blocks wait for
+    /// scripts/spike/run-oodle-helper.sh (not a gate event).
     Dump {
         #[arg(long)]
         table: String,
@@ -120,17 +132,25 @@ fn main() -> Result<ExitCode> {
         Command::Paths { spool, out } => return paths(&client, &spool, &out),
         Command::Dump { table, spool, out } => return dump(&client, &table, &spool, &out),
         Command::Extract {
-            part,
+            key: Some(key),
+            spool,
+            out,
+            ..
+        } => return extract_key(&client, &key, &spool, &out),
+        Command::Extract {
+            part: Some(part),
             stored_only,
             out,
+            ..
         } => {
             if !stored_only {
                 bail!(
-                    "only --stored-only is available: Oodle files are read through the spool by paths and dump"
+                    "with --part, only --stored-only is available: --key reads one file through the spool, Oodle included"
                 );
             }
             extract_stored(&client, part, &out)
         }
+        Command::Extract { .. } => bail!("pass --part or --key"),
         Command::Index => {
             let h = read_blob_header(&mut File::open(client.join("data").join("_index"))?, 0)?;
             println!(
@@ -250,6 +270,73 @@ fn live_places(client: &Path) -> Result<Places> {
     Ok(p)
 }
 
+/// A live record's blob, read whole once it is known to lie inside its part.
+fn read_record(client: &Path, p: &Place) -> Result<Vec<u8>> {
+    let part = part_path(client, p.part);
+    let mut f = File::open(&part).with_context(|| part.display().to_string())?;
+    let len = f.metadata()?.len();
+    if u64::from(p.offset) + u64::from(p.size) > len {
+        bail!(
+            "the record at {:#x} ({} bytes) runs past the end of {} ({len} bytes)",
+            p.offset,
+            p.size,
+            part.display()
+        );
+    }
+    f.seek(SeekFrom::Start(u64::from(p.offset)))?;
+    let mut blob = vec![0; p.size as usize];
+    f.read_exact(&mut blob)
+        .with_context(|| part.display().to_string())?;
+    Ok(blob)
+}
+
+/// A key's 20 bytes, from its 40 hex digits.
+fn parse_key(key: &str) -> Result<[u8; 20]> {
+    let digits = key.as_bytes();
+    if digits.len() != 40 || !digits.iter().all(u8::is_ascii_hexdigit) {
+        bail!("a key is 40 hex digits: {key:?}");
+    }
+    let mut k = [0; 20];
+    for (b, pair) in k.iter_mut().zip(digits.chunks_exact(2)) {
+        *b = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
+    }
+    Ok(k)
+}
+
+/// Writes the file a live record holds under `key` as OUT/KEY, decoded through the spool, and says
+/// whether its SHA-1 is the key. Exits 3 when blocks wait for the helper.
+fn extract_key(client: &Path, key: &str, spool: &Path, out: &Path) -> Result<ExitCode> {
+    let k = parse_key(key)?;
+    let (out, spool) = out_and_spool(out, spool)?;
+    let places = live_places(client)?;
+    let p = places
+        .by_key
+        .get(&k)
+        .with_context(|| format!("no live record holds {}", hex(&k)))?;
+    let blob = read_record(client, p)?;
+    let raw = match decode_spooled(&blob, u64::from(p.offset), &spool)? {
+        Ok(raw) => raw,
+        Err(code) => return Ok(code),
+    };
+    let target = out.join(hex(&k));
+    create_replacing(&target)?.write_all(&raw)?;
+    let sha1: [u8; 20] = Sha1::digest(&raw).into();
+    println!(
+        "wrote {} bytes of {} (data{:03}, {}) to {}; its SHA-1 {} the key",
+        raw.len(),
+        hex(&k),
+        p.part,
+        p.codec,
+        target.display(),
+        if sha1 == k {
+            "matches"
+        } else {
+            "doesn't match"
+        }
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Decodes `_index` through the spool, then writes OUT/paths.tsv. Exits 3 when blocks wait for the
 /// helper.
 fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
@@ -335,12 +422,7 @@ fn dump(client: &Path, table: &str, spool: &Path, out: &Path) -> Result<ExitCode
         .by_key
         .get(key)
         .with_context(|| format!("no live record holds {TABLE_CACHE}"))?;
-    let part = part_path(client, p.part);
-    let mut f = File::open(&part).with_context(|| part.display().to_string())?;
-    f.seek(SeekFrom::Start(u64::from(p.offset)))?;
-    let mut blob = vec![0; p.size as usize];
-    f.read_exact(&mut blob)
-        .with_context(|| format!("{TABLE_CACHE} in {}", part.display()))?;
+    let blob = read_record(client, p).with_context(|| TABLE_CACHE.to_string())?;
     let raw = match decode_spooled(&blob, u64::from(p.offset), &spool)? {
         Ok(raw) => raw,
         Err(code) => return Ok(code),

@@ -4,7 +4,10 @@
 //! the values, each a tag and its data, little-endian. A packet of 128 bytes or more usually
 //! arrives LZ4-compressed (payloads.md P.1, P.5). Fenji reads tags 00–0C, compressed or not, and
 //! writes them uncompressed, which the client reads too. It handles no table references and no
-//! "magic" objects, and refuses an empty packet, which the client reads as no values.
+//! "magic" objects, and refuses an empty packet, which the client reads as no values. The
+//! client's table caches use the same format with those two forms: `fenji_data::cache` reads them
+//! (docs/re/m2-tables.md §2). The two readers share the format but not code, as fenji-proto
+//! depends on nothing internal; a server that must read references from peers would join them.
 use crate::{Error, Result};
 
 /// One value.

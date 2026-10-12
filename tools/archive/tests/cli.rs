@@ -353,8 +353,9 @@ fn paths_replaces_a_link_instead_of_writing_through_it() {
     );
 }
 
-/// A table cache (docs/re/m2-tables.md §2) with one sheet, `items`: row 7 holds its defaults
-/// table inline and overrides `b`; row 8 refers back to the same defaults.
+/// A table cache (docs/re/m2-tables.md §2) with one sheet, `items`, shaped like the client's: each
+/// row's `__index` refers to the row itself (2.8). Four tables are referable; row 8's `effects`
+/// is a fifth, which isn't.
 fn cache_bytes() -> Vec<u8> {
     let mut b = vec![0x81, 0x00, 0x00, 0x04]; // one value; four referable tables
     b.extend([0x0B, 0, 0, 0, 0]); // 0: root
@@ -364,13 +365,17 @@ fn cache_bytes() -> Vec<u8> {
     b.extend([0x03, 7, 0x0B, 0, 0, 0, 0]); // row 7 (2)
     b.extend([0x08, 7]);
     b.extend(b"__index");
-    b.extend([0x0B, 0, 0, 0, 0]); // 3: the defaults
-    b.extend([0x08, 1, b'a', 0x03, 1, 0x08, 1, b'b', 0x03, 2, 0x00]);
-    b.extend([0x08, 1, b'b', 0x03, 3, 0x00]); // row 7 ends
-    b.extend([0x03, 8, 0x0B, 0, 0, 0, 0]); // row 8 (4)
+    b.extend([0x0E, 2]); // itself
+    b.extend([0x08, 1, b'a', 0x03, 1, 0x08, 1, b'b', 0x03, 2, 0x00]); // row 7 ends
+    b.extend([0x03, 8, 0x0B, 0, 0, 0, 0]); // row 8 (3)
     b.extend([0x08, 7]);
     b.extend(b"__index");
-    b.extend([0x0E, 3, 0x00]); // the defaults again; row 8 ends
+    b.extend([0x0E, 3]); // itself
+    b.extend([0x08, 1, b'a', 0x03, 5]);
+    b.extend([0x08, 7]);
+    b.extend(b"effects");
+    b.extend([0x0B, 1, 0, 0, 0, 0x03, 9, 0x00]); // 4: [9]
+    b.push(0x00); // row 8 ends
     b.extend([0x00, 0x00]); // the sheet, then the root, end
     b
 }
@@ -407,8 +412,132 @@ fn dump_writes_a_sheet_as_json_lines() {
     );
     assert_eq!(
         std::fs::read_to_string(repo.path().join("re/d/items.jsonl")).unwrap(),
-        "{\"$key\":7,\"a\":1,\"b\":3}\n{\"$key\":8,\"a\":1,\"b\":2}\n"
+        "{\"$key\":7,\"a\":1,\"b\":2}\n{\"$key\":8,\"a\":5,\"effects\":[9]}\n"
     );
+}
+
+#[test]
+fn dump_waits_for_the_caches_own_blocks() {
+    // _index is decoded, but the cache it names is an Oodle blob nobody has decoded yet.
+    let key = [6; 20];
+    let repo = repo_with_index(&format!(
+        "{}\tdata/caches/all_tables.new_cache\n",
+        hex(&key)
+    ));
+    let part = zfs_part(&[vec![(1, key, oodle_blob())]]);
+    std::fs::write(repo.path().join("client/data/data002"), part).unwrap();
+    let out = archive(repo.path())
+        .args(["dump", "--table", "items", "--out", "re/d"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 blocks spooled"));
+    assert!(!repo.path().join("re/d/items.jsonl").exists());
+}
+
+#[test]
+fn extract_key_writes_one_stored_file() {
+    let repo = cache_repo();
+    let key = hex(&sha1(&cache_bytes()));
+    let out = archive(repo.path())
+        .args(["extract", "--key", &key, "--out", "re/k"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join("re/k").join(&key)).unwrap(),
+        cache_bytes()
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("its SHA-1 matches the key"), "{text}");
+}
+
+#[test]
+fn extract_key_decodes_an_oodle_file_through_the_spool() {
+    use fenji_data::oodle_spool::OodleSpool;
+    // data001's Oodle record: its one block, decoded in the spool as the helper would.
+    let repo = setup();
+    let blob = oodle_blob();
+    let block = &blob[fenji_data::FIXED_LEN + 4..];
+    let out_dir = repo.path().join("re/oodle-spool/out");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    std::fs::write(out_dir.join(OodleSpool::name(block, 12)), b"abcabcabcabc").unwrap();
+    let key = hex(&[9; 20]);
+    let out = archive(repo.path())
+        .args(["extract", "--key", &key, "--out", "re/k"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join("re/k").join(&key)).unwrap(),
+        b"abcabcabcabc"
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("doesn't match the key"), "{text}");
+}
+
+#[test]
+fn extract_key_waits_for_the_helper() {
+    let repo = setup();
+    let out = archive(repo.path())
+        .args(["extract", "--key", &hex(&[2; 20]), "--out", "re/k"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 blocks spooled"));
+    assert!(!repo.path().join("re/k").join(hex(&[2; 20])).exists());
+}
+
+#[test]
+fn extract_key_refuses_a_bad_key_an_unknown_one_and_outside_re() {
+    let repo = setup();
+    let run = |args: &[&str]| archive(repo.path()).args(args).output().unwrap();
+    let bad = run(&["extract", "--key", "zz", "--out", "re/k"]);
+    assert!(!bad.status.success());
+    assert!(
+        String::from_utf8_lossy(&bad.stderr).contains("40 hex digits"),
+        "{}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+    let unknown_key = hex(&[7; 20]);
+    let unknown = run(&["extract", "--key", &unknown_key, "--out", "re/k"]);
+    assert!(!unknown.status.success());
+    let err = String::from_utf8_lossy(&unknown.stderr);
+    assert!(
+        err.contains(&unknown_key) && err.contains("no live record"),
+        "{err}"
+    );
+    let outside = run(&["extract", "--key", &hex(&sha1(VIDEO)), "--out", "/tmp/x"]);
+    assert!(!outside.status.success());
+    assert!(String::from_utf8_lossy(&outside.stderr).contains("is not inside"));
+    let both = run(&[
+        "extract",
+        "--key",
+        &hex(&sha1(VIDEO)),
+        "--part",
+        "0",
+        "--out",
+        "re/k",
+    ]);
+    assert!(!both.status.success(), "--key and --part together");
 }
 
 #[test]

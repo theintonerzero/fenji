@@ -1,14 +1,17 @@
 //! Rows of a cache's sheet as JSON lines (M2 plan Amendment B). Integers and finite floats are
 //! numbers, other floats `null`; strings are JSON strings (bytes that aren't UTF-8 replaced); `nil`
 //! and the null userdata are `null`; a table with only an array part is an array, any other an
-//! object (array entries under "1", "2", …); a magic object is `{"<name>": <argument>}`; a table
-//! already being written further up, or past `MAX_DEPTH` tables down, is `{"$ref": <id>}`.
+//! object (array entries under "1", "2", …; a key that isn't a string is written as its own JSON
+//! text); a magic object is `{"<name>": <argument>}`; a table already being written further up,
+//! or past `MAX_DEPTH` tables down, is `{"$ref": <id>}`.
 use std::fmt::Write;
 
 use crate::cache::{Cache, TableId, Value};
 
-/// How many tables deep a value is written out before the rest become references. Shared tables
-/// (m2-tables.md 2.2) are written in full wherever they appear, so this bounds the work too.
+/// How many tables deep a value is written out before the rest become references. A table shared
+/// within one value (m2-tables.md 2.2) is written out again wherever it appears, so a crafted
+/// cache whose tables hold each other many times over gives output that grows with every level;
+/// the client's caches have no such sharing in the dumped sheets (m2-tables.md §3).
 pub const MAX_DEPTH: usize = 64;
 
 /// JSON for one value.
@@ -18,8 +21,9 @@ pub fn value(cache: &Cache, v: &Value) -> String {
     out
 }
 
-/// One JSON object per row of `sheet`: `"$key"`, then the row's fields with its `__index`
-/// defaults merged in (m2-tables.md 2.8), the row's own winning. Rows in the array part are keyed
+/// One JSON object per row of `sheet`: `"$key"`, then the row's own fields in the cache's order.
+/// An `__index` that names the row itself (every `items` row has one, m2-tables.md 2.8) carries
+/// nothing and is left out; nothing is merged from anywhere else. Rows in the array part are keyed
 /// 1, 2, …, and `nil` ones are skipped. A row that isn't a table is `{"$key": …, "$value": …}`.
 pub fn rows(cache: &Cache, sheet: &TableId) -> Vec<String> {
     let t = &cache.tables[sheet.0];
@@ -38,11 +42,25 @@ fn row(cache: &Cache, key: &Value, v: &Value) -> String {
     write_value(cache, key, &mut Vec::new(), &mut out);
     match v {
         Value::Table(id) => {
-            for (name, fv) in merged(cache, *id) {
+            let mut path = vec![*id];
+            let t = &cache.tables[id.0];
+            let array = t
+                .array
+                .iter()
+                .enumerate()
+                .map(|(i, a)| ((i + 1).to_string(), a));
+            let mut hash = Vec::new();
+            for (k, hv) in &t.hash {
+                if *k == Value::Str(b"__index") && *hv == Value::Table(*id) {
+                    continue;
+                }
+                hash.push((key_string(cache, k, &mut path), hv));
+            }
+            for (name, fv) in array.chain(hash) {
                 out.push(',');
                 write_str(name.as_bytes(), &mut out);
                 out.push(':');
-                write_value(cache, fv, &mut vec![*id], &mut out);
+                write_value(cache, fv, &mut path, &mut out);
             }
         }
         other => {
@@ -54,41 +72,16 @@ fn row(cache: &Cache, key: &Value, v: &Value) -> String {
     out
 }
 
-/// A row's fields: its `__index` chain's first, deepest default first, then its own. A later
-/// field of the same name replaces an earlier one in place; `__index` itself is left out.
-fn merged<'c, 'a>(cache: &'c Cache<'a>, id: TableId) -> Vec<(String, &'c Value<'a>)> {
-    let mut chain = vec![id];
-    while let Some(Value::Table(next)) = cache.field(chain.last().expect("non-empty"), "__index") {
-        if chain.contains(next) || chain.len() > 8 {
-            break;
-        }
-        chain.push(*next);
-    }
-    let mut fields: Vec<(String, &Value)> = Vec::new();
-    let mut set = |name: String, v| match fields.iter_mut().find(|(n, _)| *n == name) {
-        Some(slot) => slot.1 = v,
-        None => fields.push((name, v)),
-    };
-    for t in chain.iter().rev() {
-        let table = &cache.tables[t.0];
-        for (i, v) in table.array.iter().enumerate() {
-            set((i + 1).to_string(), v);
-        }
-        for (k, v) in &table.hash {
-            let name = key_string(cache, k);
-            if name != "__index" {
-                set(name, v);
-            }
-        }
-    }
-    fields
-}
-
-/// A table key as an object member name.
-fn key_string(cache: &Cache, k: &Value) -> String {
+/// A table key as an object member name: a string as itself, anything else as its JSON text,
+/// written from where the key sits (`path`) so it gets the same cycle check and depth cap.
+fn key_string(cache: &Cache, k: &Value, path: &mut Vec<TableId>) -> String {
     match k {
         Value::Str(s) => String::from_utf8_lossy(s).into_owned(),
-        other => value(cache, other),
+        other => {
+            let mut out = String::new();
+            write_value(cache, other, path, &mut out);
+            out
+        }
     }
 }
 
@@ -140,7 +133,8 @@ fn write_value(cache: &Cache, v: &Value, path: &mut Vec<TableId>, out: &mut Stri
                     member((i + 1).to_string(), a, path, out);
                 }
                 for (k, hv) in &t.hash {
-                    member(key_string(cache, k), hv, path, out);
+                    let name = key_string(cache, k, path);
+                    member(name, hv, path, out);
                 }
                 out.push('}');
             }
@@ -244,30 +238,37 @@ mod tests {
     }
 
     #[test]
-    fn rows_merge_their_defaults() {
-        // Defaults (table 1) shared by a keyed row (2) and an array row (3) of the sheet (0);
-        // m2-tables.md 2.8.
+    fn rows_write_their_own_fields() {
+        // m2-tables.md 2.8: an `items` row's `__index` names the row itself, and is left out. A
+        // row whose `__index` names another table keeps it as an ordinary field: nothing is merged.
         let c = Cache {
             tables: vec![
+                // 0: the sheet: an array row, a nil array entry, a keyed row
                 Table {
-                    array: vec![Value::Table(TableId(3)), Value::Nil],
+                    array: vec![Value::Table(TableId(1)), Value::Nil],
                     hash: vec![(Value::Int(7), Value::Table(TableId(2)))],
                 },
-                Table {
-                    array: vec![],
-                    hash: vec![(s("a"), Value::Int(1)), (s("b"), Value::Int(2))],
-                },
+                // 1: a row naming itself
                 Table {
                     array: vec![],
                     hash: vec![
+                        (s("a"), Value::Int(1)),
                         (s("__index"), Value::Table(TableId(1))),
-                        (s("b"), Value::Int(3)),
-                        (s("c"), Value::Int(4)),
+                        (s("b"), Value::Int(2)),
                     ],
                 },
+                // 2: a row naming another table
                 Table {
                     array: vec![],
-                    hash: vec![(s("__index"), Value::Table(TableId(1)))],
+                    hash: vec![
+                        (s("__index"), Value::Table(TableId(3))),
+                        (s("c"), Value::Int(3)),
+                    ],
+                },
+                // 3
+                Table {
+                    array: vec![],
+                    hash: vec![(s("d"), Value::Int(4))],
                 },
             ],
             values: vec![],
@@ -276,8 +277,62 @@ mod tests {
             rows(&c, &TableId(0)),
             [
                 r#"{"$key":1,"a":1,"b":2}"#,
-                r#"{"$key":7,"a":1,"b":3,"c":4}"#,
+                r#"{"$key":7,"__index":{"d":4},"c":3}"#,
             ]
+        );
+    }
+
+    #[test]
+    fn a_row_that_isnt_a_table_is_a_value() {
+        let c = Cache {
+            tables: vec![Table {
+                array: vec![],
+                hash: vec![(s("k"), Value::Int(5))],
+            }],
+            values: vec![],
+        };
+        assert_eq!(rows(&c, &TableId(0)), [r#"{"$key":"k","$value":5}"#]);
+    }
+
+    #[test]
+    fn a_table_keyed_by_itself_is_a_reference() {
+        // A table key goes through the same cycle check as a value.
+        let c = Cache {
+            tables: vec![Table {
+                array: vec![],
+                hash: vec![(Value::Table(TableId(0)), Value::Int(1))],
+            }],
+            values: vec![],
+        };
+        assert_eq!(
+            value(&c, &Value::Table(TableId(0))),
+            r#"{"{\"$ref\":0}":1}"#
+        );
+    }
+
+    #[test]
+    fn tables_past_the_depth_cap_are_references() {
+        // Table i holds table i + 1 under "n"; the last one is empty.
+        let n = MAX_DEPTH + 2;
+        let tables = (0..n)
+            .map(|i| Table {
+                array: vec![],
+                hash: if i + 1 < n {
+                    vec![(s("n"), Value::Table(TableId(i + 1)))]
+                } else {
+                    vec![]
+                },
+            })
+            .collect();
+        let c = Cache {
+            tables,
+            values: vec![],
+        };
+        let json = value(&c, &Value::Table(TableId(0)));
+        assert_eq!(json.matches("{\"n\":").count(), MAX_DEPTH);
+        assert!(
+            json.contains(&format!("{{\"$ref\":{MAX_DEPTH}}}")),
+            "{json}"
         );
     }
 }

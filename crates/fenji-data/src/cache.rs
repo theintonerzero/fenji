@@ -2,6 +2,8 @@
 //! (docs/protocol/payloads.md P.1–P.2), with tables that later values refer back to and "magic"
 //! objects. `data/caches/all_tables.new_cache` holds the design tables this way. Reading is for the
 //! owner's local copy: the cache is large (300 MB) and read whole; nothing here comes from a peer.
+//! fenji-proto's `pickle` reads the same format for network messages, without references and
+//! magic objects (it refuses tags 0D–10); the two share the format, not code.
 use crate::{Error, Result};
 
 pub mod json;
@@ -54,11 +56,13 @@ pub struct Cache<'a> {
 }
 
 impl<'a> Cache<'a> {
-    /// The value of a string key in a table's other pairs.
+    /// The value of a string key in a table's other pairs. A key the cache repeats reads as its
+    /// last value, as in the client, whose unpacker sets each pair in turn (FUN_1400D4AC0).
     pub fn field(&self, table: &TableId, key: &str) -> Option<&Value<'a>> {
         self.tables[table.0]
             .hash
             .iter()
+            .rev()
             .find(|(k, _)| *k == Value::Str(key.as_bytes()))
             .map(|(_, v)| v)
     }
@@ -270,6 +274,22 @@ mod tests {
     const SELF_REF: &str = "81 00 00 02  0B 00 00 00 00  08 01 61 0E 00  08 01 62 0B 00 00 00 00 00  08 01 63 0E 01  00";
     /// `LString` around `L("x")`.
     const MAGIC: &str = "01 0D 08 07 4C 53 74 72 69 6E 67 08 06 4C 28 22 78 22 29";
+    /// A magic object with a `nil` name: the 8-bit integer 7 stands for itself.
+    const NIL_NAME: &str = "01 0D 00 03 07";
+    /// One referable table whose pairs use the wider forms: int16, int32, int64, a double, the
+    /// 16- and 32-bit string lengths, and the 16- and 32-bit references (to itself).
+    const WIDE: &str = "81 00 00 01  0B 00 00 00 00
+        08 01 61 04 FE FF
+        08 01 62 05 00 00 01 00
+        08 01 63 06 01 00 00 00 00 00 00 80
+        08 01 64 07 00 00 00 00 00 00 F8 3F
+        08 01 65 09 02 00 68 69
+        08 01 66 0A 01 00 00 00 7A
+        08 01 67 0F 00 00
+        08 01 68 10 00 00 00 00
+        00";
+    /// `unzip_reads_the_compressed_form`'s vector.
+    const PACKED: &str = "FF 00 00 18  78 01 08 15 61 62 63 64 04 00  50 57 58 59 5A 21";
 
     #[test]
     fn references_name_tables_in_creation_order() {
@@ -353,18 +373,64 @@ mod tests {
         ] {
             assert!(read(&unhex(&bytes)).is_err(), "{what}");
         }
-        for v in [SELF_REF, MAGIC] {
+        for v in [SELF_REF, MAGIC, NIL_NAME, WIDE] {
             let full = unhex(v);
             for cut in 0..full.len() {
                 assert!(read(&full[..cut]).is_err(), "cut {cut} of {v}");
             }
         }
+        // A cut compressed cache never reads back as the whole value.
+        let packed = unhex(PACKED);
+        for cut in 1..packed.len() {
+            match unzip(&packed[..cut]) {
+                Err(_) => {}
+                Ok(raw) => {
+                    let raw = raw.expect("starts with FF");
+                    assert!(read(&raw).is_err(), "cut {cut} of the compressed vector");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_wider_forms() {
+        let bytes = unhex(WIDE);
+        let c = read(&bytes).unwrap();
+        assert_eq!(
+            c.tables[0].hash,
+            [
+                (Value::Str(b"a"), Value::Int(-2)),
+                (Value::Str(b"b"), Value::Int(65_536)),
+                (Value::Str(b"c"), Value::Int(i64::MIN + 1)),
+                (Value::Str(b"d"), Value::Float(1.5)),
+                (Value::Str(b"e"), Value::Str(b"hi")),
+                (Value::Str(b"f"), Value::Str(b"z")),
+                (Value::Str(b"g"), Value::Table(TableId(0))),
+                (Value::Str(b"h"), Value::Table(TableId(0))),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_repeated_key_reads_as_its_last_value() {
+        // The unpacker sets each pair in turn, so Lua keeps the last value for a key.
+        let c = Cache {
+            tables: vec![Table {
+                array: vec![],
+                hash: vec![
+                    (Value::Str(b"a"), Value::Int(1)),
+                    (Value::Str(b"a"), Value::Int(2)),
+                ],
+            }],
+            values: vec![],
+        };
+        assert_eq!(c.field(&TableId(0), "a"), Some(&Value::Int(2)));
     }
 
     #[test]
     fn unzip_reads_the_compressed_form() {
         // m2-tables.md 2.1, payloads.md P.1: FF, a 24-bit big-endian raw size, an LZ4 block.
-        let packed = unhex("FF 00 00 18  78 01 08 15 61 62 63 64 04 00  50 57 58 59 5A 21");
+        let packed = unhex(PACKED);
         let raw = unzip(&packed).unwrap().unwrap();
         assert_eq!(raw.len(), 0x18);
         assert_eq!(
