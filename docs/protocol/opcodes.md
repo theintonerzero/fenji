@@ -2,7 +2,7 @@
 
 The inner message header's type byte ([`transport.md`](transport.md) §7) is the opcode. The client names its opcodes in two enums, `STC_PROTOCOL_*` (server to client) and `CTS_PROTOCOL_*` (client to server), listed in [spike-0](../re/spike-0.md) 4.12. This ledger gives each one's wire value. Most game traffic rides on the two script opcodes, `STC_PROTOCOL_SCRIPT` and `CTS_PROTOCOL_GATE_SCRIPT` / `CTS_PROTOCOL_SCRIPT`, whose bodies are pickled values: a script message id first, then its arguments ([`payloads.md`](payloads.md)).
 
-**Method.** This ledger reads the pinned build 10015727 (`bin64/gujianol.exe`, SHA-256 `3fdc6394de85c1224b91312d62bf2e57251625b49e8d0f3960accf8dfe5f0678`) in the shared Ghidra project, read-only, together with the client's own scripts disassembled and decompiled locally by `luatool` (M1). Script evidence cites the script's engine path. It was written by a session that has not read any source rejected in [`../re/sources.md`](../re/sources.md). Statuses follow [`README.md`](README.md): `named` (the client's name is known, the payload isn't mapped), `schema` (payload mapped from the client's code), `verified` (seen against the real client in a sandboxed run and covered by a test).
+**Method.** This ledger reads the pinned build 10015727 (`bin64/gujianol.exe`, SHA-256 `3fdc6394de85c1224b91312d62bf2e57251625b49e8d0f3960accf8dfe5f0678`) in the shared Ghidra project, read-only, together with the client's own scripts disassembled and decompiled locally by `luatool` (M1). Script evidence cites the script's engine path. Runs are the sandboxed ones in [`transport.md`](transport.md) §9, cited by their evidence keys there. It was written by a session that has not read any source rejected in [`../re/sources.md`](../re/sources.md). Statuses follow [`README.md`](README.md): `named` (the client's name is known, the payload isn't mapped), `schema` (payload mapped from the client's code), `verified` (seen against the real client in a sandboxed run and covered by a test).
 
 ## How the values were found
 
@@ -16,7 +16,7 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 
 | Value | Direction | Client name | Handler | Status | Evidence |
 |---|---|---|---|---|---|
-| `0` | S→C | `STC_PROTOCOL_SCRIPT` | unpickled (FUN_1400D5850), then the scripts' handler for the message id (`data/core/client/net_manager.luac`) | `schema` | O.1, [`payloads.md`](payloads.md) |
+| `0` | S→C | `STC_PROTOCOL_SCRIPT` | unpickled (FUN_1400D5850), then the scripts' handler for the message id (`data/core/client/net_manager.luac`) | `verified` | O.1, [`payloads.md`](payloads.md); M2R4B, `crates/fenji-proto/tests/fixtures.rs` (`r4b_the_server_sends_what_the_client_accepted`) |
 | `1` | S→C | `STC_PROTOCOL_CLOSE` | FUN_14029A870: the body (at most 255 bytes kept) becomes the close reason, the socket closes, state 5 | `schema` | O.1, [`transport.md`](transport.md) 7.4 |
 | `2` | S→C | `STC_PROTOCOL_TIME_SYNC` | FUN_140222E00 case 2: a `u32` (the client's clock, echoed) and a `u64` (the server's time) feed the ping estimate and the scripts' `time_manager_time_sync_resp` ([`transport.md`](transport.md) 10.6) | `schema` | O.1, [`transport.md`](transport.md) 10.6 |
 | `3` | S→C | `STC_PROTOCOL_TRANS_LIMIT_LV` | case 3: one `u16` | `named` | O.1 |
@@ -43,7 +43,7 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 
 | Value | Direction | Client name | Handler | Status | Evidence |
 |---|---|---|---|---|---|
-| `0xFF` | C→S | `CTS_PROTOCOL_GATE_SCRIPT` | `send_gateway` (FUN_140221940): the pickled message id and arguments, for the gate | `schema` | O.2, [`payloads.md`](payloads.md) |
+| `0xFF` | C→S | `CTS_PROTOCOL_GATE_SCRIPT` | `send_gateway` (FUN_140221940): the pickled message id and arguments, for the gate | `verified` | O.2, [`payloads.md`](payloads.md); M2R4B, `crates/fenji-proto/tests/fixtures.rs` (`r4b_client_gateway_402_decodes`) |
 | `0` | C→S | `CTS_PROTOCOL_SCRIPT` | `send` (FUN_140221A00): the pickled message id and arguments | `schema` | O.2, [`payloads.md`](payloads.md) |
 | `1` | C→S | `CTS_PROTOCOL_GM_CHANNEL` | — | `named` | O.2 |
 | `2` | C→S | `CTS_PROTOCOL_TIME_SYNC` | `send_time_sync` (FUN_140221AC0): a 13-byte body, sent once a second once a character is in the world ([`transport.md`](transport.md) 10.6) | `named` | O.2 |
@@ -60,6 +60,6 @@ Script message ids are numbers that the scripts' protocol enum assigns at load t
 
 | Id | Direction | Name | What it does | Tag | Evidence |
 |---|---|---|---|---|---|
-| 414 | S→C, `STC_PROTOCOL_SCRIPT` | `PROTOG2C_SET_NET_CONNECTED` (the handler logs this name) | Moves the client to `WORK`: it stores billing fields, calls `set_working`, fires `EVENT_NET_CONNECTED` and sends 402 ([`transport.md`](transport.md) §10) | **Inferred** | `data/core/modules/net/net.luac` (the handler at id 414) |
-| 402 | C→S, `CTS_PROTOCOL_GATE_SCRIPT` | Unknown | Sent with no arguments right after 414 | **Inferred**; the name **Unknown** | net.luac |
+| 414 | S→C, `STC_PROTOCOL_SCRIPT` | `PROTOG2C_SET_NET_CONNECTED` (the handler logs this name) | Moves the client to `WORK`: it stores billing fields, calls `set_working`, fires `EVENT_NET_CONNECTED` and sends 402 ([`transport.md`](transport.md) §10) | **Inferred**; its effect **Observed** | `data/core/modules/net/net.luac` (the handler at id 414); M2R4, M2R4B, M2R5 |
+| 402 | C→S, `CTS_PROTOCOL_GATE_SCRIPT` | Unknown | Sent with no arguments right after 414: 2.3 s after it in each run | **Observed**; the name **Unknown** | net.luac; M2R4, M2R4B, M2R5 |
 | 556 | S→C | — | The server sends a chunk of Lua bytecode; the client runs it and answers with 278 and the chunk's MD5. Not needed by Fenji | **Inferred** | `data/core/client/net_manager.luac` |
