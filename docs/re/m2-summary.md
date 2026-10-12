@@ -58,7 +58,7 @@ Also by ledgered rulings:
 | 2 | `fenji-proto` | **Met.** All the §4 modules have unit tests, plus scrubbed golden fixtures from runs m2-r1 and m2-r4b. Emulator vectors were replaced by hand-derived, independently checked vectors (above). | #59–#62, #81 |
 | 3 | The stub speaks | **Met.** In m2-r4 and m2-r4b (the launcher path) and m2-r5 (the server-list path), the client reached `WORK` and sent `GATE_SCRIPT` 402. The stub logged it decoded. The watchdog was clean in every run. | `transport.md` §9; #63, #66 |
 | 4 | Oodle Network path | **Met.** R3 and its control m2-r3b: stored packets work, so gate G2 never opened. | `transport.md` 5.8, §9; #64, #72 |
-| 5 | Archives (#51) | **Met.** The helper decodes Oodle blocks. `_index` gives 272,734 paths. The `.tab` format is read. `archive dump` writes items, skills, monsters, the XP curve and maps under `re/`. | `m1-archives.md` 3.4–3.5, `m2-tables.md`; #67–#69 |
+| 5 | Archives (#51) | **Met.** The helper decodes Oodle blocks. `_index` gives 272,734 paths. The `.tab` format is read. `archive dump` writes items, skills, monsters, the XP curve and maps under `re/`, and `archive extract --key` any one file. | `m1-archives.md` 3.4–3.5, `m2-tables.md`; #67–#69 |
 | 6 | Loose ends | **Met.** #18 closed with a norm: a new finding cites an REA Evidence ID next to the pinned-exe address, and addresses alone stay acceptable for earlier findings and where REA has no function. M2's findings written after the norm carry their IDs with the exact calls: added in Task 14 to `transport.md` §10, `opcodes.md`, `payloads.md` and `m1-archives.md`, and in Task 13's review fixes to `m2-tables.md`. Spike-0 1.8 is answered in part. | `README.md`; #58, #70 |
 | 7 | Records | **Met:** this document; "M2 update" notes in the parent spec's §6.2, §10 and §12. `sources.md` is unchanged: M2 used no outside source. | #70 |
 
@@ -78,5 +78,5 @@ The owner also ruled, before leaving M2 to run:
 
 Findings M3 inherits:
 - **The server-list path's auth payload** is LZ4-compressed, and its mocked-SDK ticket is a hex JSON object (`payloads.md` P.6).
-- **The design data:** 339 sheets in `all_tables.new_cache` (`m2-tables.md` §3).
+- **The design data:** 339 sheets in `all_tables.new_cache`, among them `new_npcs`, the NPCs' actor properties (`m2-tables.md` §3).
 - **#84:** bound the pickle decoder's memory before the server decodes client messages.
