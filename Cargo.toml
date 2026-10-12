@@ -15,6 +15,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 fenji-data = { path = "crates/fenji-data" }
 fenji-lua = { path = "crates/fenji-lua" }
 fenji-proto = { path = "crates/fenji-proto" }
+libloading = "0.9.0"
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 mlua = { version = "0.12.2", features = ["lua53", "vendored"] }
 sha1 = "0.11.0"
