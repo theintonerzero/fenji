@@ -3976,3 +3976,24 @@ The plan's review (PR #128) and the first PR reviews changed these points. Each 
 - `PRE_AUTH_CAP` is 26 + 4 + 0x4000 + 512 rather than D17's 26 + 0x4000, to allow for the header, frame lengths and time syncs.
 - The `invites` table's key is `id`, with `code_hash` unique.
 - The limiter's final design (above) replaces §4's "per username" with keyed buckets.
+
+## Amendment B: the owner's decisions of 2026-10-13
+
+The owner decided two questions during execution. Where this amendment and the tasks or Amendment A differ, this amendment wins.
+
+**Gate #114: option (a), the launcher path for players.** Spec D2's "not decided here" is settled. The launcher verifies the client files against the pinned manifest, then starts the unmodified client with `gj_uinfo`, `gj_gates` and a single-use Fenji ticket in the environment (`docs/protocol/packets/lobby.md` §12). Ownership rests on the host's vetting (ground rule 1). Consequences:
+- **Task 7:** the `dev-login-path` feature is removed, and `Uinfo` is in every build (#134).
+- **Starting the client:** `fenji-launch play` gains a mode that starts the client, using `umu-run` in the launcher's own prefix on Linux and the exe on Windows. The ticket stays in the environment. It is a new PR after #134.
+- **Task 11:** the Tauri shell's Play button starts the client through the same library, instead of explaining the gate.
+
+**Guarded bare-metal client runs on Linux.** Client runs may happen outside `isolated-run.sh`, on Linux, under these guards, all of them:
+- through `umu-run` in a dedicated prefix;
+- from a reflink copy of the pinned client (never the Steam library), with Steam not running;
+- against a local `fenji-server`;
+- with the AGT driver watchdog armed;
+- with the client's network limited to the Fenji server.
+
+CLAUDE.md's client-run rule says this. A guarded runner implements it, as a new PR after #136. Task 9's rungs may then also run bare-metal, which tests the player's own launch path (umu's runtime container, the real GPU), which the sandbox can't.
+
+**Still open:** whether the AGT driver loads on native Windows on the launcher path (ground rule 6). It gets a static reading before Windows players are told the client is safe there.
+
