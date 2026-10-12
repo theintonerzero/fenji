@@ -91,7 +91,7 @@ impl Store {
 mod tests {
     use super::NewCharacter;
     use crate::Error;
-    use crate::test_util::{NOW, account, store};
+    use crate::test_util::{NOW, account, store, warm};
 
     fn new(name: &str) -> NewCharacter {
         NewCharacter {
@@ -155,6 +155,7 @@ mod tests {
         let a = account(&s, 1, "bob").await;
         let b = account(&s, 2, "eve").await;
         let (one, two) = (new("Same"), new("same"));
+        warm(&s).await;
         let (x, y) = tokio::join!(
             s.create_character(a, &one, 4, NOW),
             s.create_character(b, &two, 4, NOW)
@@ -168,6 +169,7 @@ mod tests {
         let (_d, s) = store().await;
         let a = account(&s, 1, "bob").await;
         let (one, two) = (new("One"), new("Two"));
+        warm(&s).await;
         let (x, y) = tokio::join!(
             s.create_character(a, &one, 1, NOW),
             s.create_character(a, &two, 1, NOW)

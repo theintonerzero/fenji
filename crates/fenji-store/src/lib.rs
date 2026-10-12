@@ -69,6 +69,17 @@ pub(crate) mod test_util {
         [n; 32]
     }
 
+    /// Opens all four of the pool's connections and gives them back, so that the futures a test
+    /// then joins each get a ready connection and really run at the same time (otherwise one
+    /// waits for a new connection and the other has finished first).
+    pub async fn warm(s: &super::Store) {
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            held.push(s.pool.acquire().await.unwrap());
+        }
+        drop(held);
+    }
+
     /// A new account through a fresh invite whose hash is `h(n)`.
     pub async fn account(s: &super::Store, n: u8, name: &str) -> i64 {
         s.create_invite(&h(n), None, NOW, None).await.unwrap();

@@ -109,7 +109,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use crate::Error;
-    use crate::test_util::{NOW, h, store};
+    use crate::test_util::{NOW, h, store, warm};
 
     #[tokio::test]
     async fn an_invite_redeems_once() {
@@ -175,5 +175,38 @@ mod tests {
         let id = s.create_invite(&h(1), None, NOW, None).await.unwrap();
         s.redeem_invite(&h(1), "bob", "$p", NOW).await.unwrap();
         assert!(!s.revoke_invite(id, NOW).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_invite_works_until_it_expires() {
+        let (_d, s) = store().await;
+        s.create_invite(&h(4), None, NOW, Some(NOW + 10))
+            .await
+            .unwrap();
+        s.redeem_invite(&h(4), "early", "$p", NOW + 9)
+            .await
+            .unwrap();
+        s.create_invite(&h(5), None, NOW, Some(NOW + 10))
+            .await
+            .unwrap();
+        assert!(matches!(
+            s.redeem_invite(&h(5), "late", "$p", NOW + 1_000).await,
+            Err(Error::InviteInvalid)
+        ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_redeems_of_one_invite_make_one_account() {
+        let (_d, s) = store().await;
+        s.create_invite(&h(1), None, NOW, None).await.unwrap();
+        let code = h(1);
+        warm(&s).await;
+        let (x, y) = tokio::join!(
+            s.redeem_invite(&code, "ann", "$p", NOW),
+            s.redeem_invite(&code, "ben", "$p", NOW)
+        );
+        assert_eq!(x.is_ok() as u8 + y.is_ok() as u8, 1);
+        assert!(matches!(x.err().or(y.err()), Some(Error::InviteInvalid)));
+        assert_eq!(s.list_accounts().await.unwrap().len(), 1);
     }
 }

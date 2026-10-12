@@ -90,7 +90,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_util::{NOW, account, h, store};
+    use crate::test_util::{NOW, account, h, store, warm};
 
     #[tokio::test]
     async fn sessions_expire_and_end() {
@@ -125,6 +125,7 @@ mod tests {
         let a = account(&s, 1, "bob").await;
         s.create_game_token(&h(6), a, NOW + 60_000).await.unwrap();
         let token = h(6);
+        warm(&s).await;
         let (x, y) = tokio::join!(
             s.consume_game_token(&token, NOW),
             s.consume_game_token(&token, NOW)
@@ -141,7 +142,12 @@ mod tests {
         s.create_game_token(&h(4), a, NOW + 10).await.unwrap();
         s.create_game_token(&h(5), a, NOW + 1_000).await.unwrap();
         s.consume_game_token(&h(5), NOW).await.unwrap();
+        s.create_game_token(&h(6), a, NOW + 1_000).await.unwrap(); // live and unused: kept
         assert_eq!(s.purge_expired(NOW + 20).await.unwrap(), 3);
         assert_eq!(s.session_account(&h(3), NOW + 20).await.unwrap(), Some(a));
+        assert_eq!(
+            s.consume_game_token(&h(6), NOW + 20).await.unwrap(),
+            Some(a)
+        );
     }
 }

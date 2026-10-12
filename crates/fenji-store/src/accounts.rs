@@ -2,7 +2,8 @@ use sqlx::FromRow;
 
 use crate::{Result, Store};
 
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+/// An account. Its `Debug` leaves out the password hash, so a logged account can't put it on disk.
+#[derive(Clone, PartialEq, Eq, FromRow)]
 pub struct Account {
     pub id: i64,
     pub username: String,
@@ -10,6 +11,18 @@ pub struct Account {
     pub password_phc: String,
     pub created_at: i64,
     pub last_sign_in_at: Option<i64>,
+}
+
+impl std::fmt::Debug for Account {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Account")
+            .field("id", &self.id)
+            .field("username", &self.username)
+            .field("password_phc", &"<redacted>")
+            .field("created_at", &self.created_at)
+            .field("last_sign_in_at", &self.last_sign_in_at)
+            .finish()
+    }
 }
 
 /// An account as `account list` shows it.
@@ -125,5 +138,9 @@ mod tests {
         assert_eq!(s.account_by_username("BOB").await.unwrap().unwrap().id, a);
         let acc = s.account_by_id(a).await.unwrap().unwrap();
         assert_eq!((acc.password_phc.as_str(), acc.created_at), ("$phc", NOW));
+        assert!(
+            !format!("{acc:?}").contains("$phc"),
+            "Debug leaves out the hash"
+        );
     }
 }
