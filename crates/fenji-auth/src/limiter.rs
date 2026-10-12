@@ -5,9 +5,13 @@
 //!
 //! An attempt counts the moment it begins, and a success takes it back, so attempts made in
 //! parallel are counted before their password checks finish. Addresses count by network: an IPv4
-//! address alone, an IPv6 address by its /64, which one subscriber usually holds whole. An entry
-//! at its limit is never dropped to make room. It lives in memory, and a restart forgets it, which
-//! suits a small server.
+//! address alone, an IPv6 address by its /64, which one subscriber usually holds whole.
+//!
+//! Memory stays bounded without forgetting any count: past `max_keys` entries per kind, only the
+//! entries whose attempts have all left the window are dropped, and at four times `max_keys` a
+//! new key waits ([`Verdict::SlowDown`]) until old ones leave. During such a flood a newcomer
+//! waits too, which is the price of never letting a flood reset anyone's count. It lives in memory, and a
+//! restart forgets it, which suits a small server.
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv6Addr};
@@ -20,7 +24,7 @@ pub struct LimiterConfig {
     pub user_max: usize,
     pub window: Duration,
     pub slow_interval: Duration,
-    /// Keys kept per kind before the oldest under their limit are dropped.
+    /// Keys per kind past which stale entries are dropped; at four times this, new keys wait.
     pub max_keys: usize,
 }
 
@@ -103,6 +107,15 @@ impl Limiter {
     /// [`Limiter::succeed`] takes it back.
     pub fn begin(&mut self, username: &str, addr: IpAddr, now: Instant) -> Verdict {
         let (user, net) = (username.to_ascii_lowercase(), net_key(addr));
+        let (window, hard) = (self.cfg.window, self.cfg.max_keys.saturating_mul(4));
+        if !has_room(&mut self.pairs, &(user.clone(), net), now, window, hard)
+            || !has_room(&mut self.addrs, &net, now, window, hard)
+            || !has_room(&mut self.users, &user, now, window, hard)
+        {
+            return Verdict::SlowDown {
+                retry_after: FULL_WAIT,
+            };
+        }
         let cfg = &self.cfg;
         let pair = self.pairs.entry((user.clone(), net)).or_default();
         pair.trim(now, cfg.window);
@@ -154,23 +167,43 @@ impl Limiter {
     }
 
     fn prune(&mut self, now: Instant) {
-        let c = &self.cfg;
-        prune_map(&mut self.pairs, now, c.window, c.max_keys, c.pair_max);
-        prune_map(&mut self.addrs, now, c.window, c.max_keys, c.addr_max);
-        prune_map(&mut self.users, now, c.window, c.max_keys, c.user_max);
+        let (window, max) = (self.cfg.window, self.cfg.max_keys);
+        prune_map(&mut self.pairs, now, window, max);
+        prune_map(&mut self.addrs, now, window, max);
+        prune_map(&mut self.users, now, window, max);
     }
 }
 
-/// Keeps a map near `max` keys. Past `max`, entries whose attempts have all left the window go
-/// first, then the oldest entries under `limit`, down to three quarters of `max`, so the work is
-/// paid once per `max / 4` new keys. An entry at its limit is never dropped, so a flood of new
-/// keys can't free a locked or slowed-down one.
-fn prune_map<K: Clone + Eq + Hash>(
+/// How long a new key waits while a kind holds four times `max_keys` entries.
+const FULL_WAIT: Duration = Duration::from_secs(60);
+
+/// Whether `key` may be counted in `map`: it is there already, or the map is under `hard`, after
+/// dropping entries whose attempts have all left the window.
+fn has_room<K: Eq + Hash>(
+    map: &mut HashMap<K, Entry>,
+    key: &K,
+    now: Instant,
+    window: Duration,
+    hard: usize,
+) -> bool {
+    if map.contains_key(key) || map.len() < hard {
+        return true;
+    }
+    map.retain(|_, e| {
+        e.trim(now, window);
+        !e.attempts.is_empty()
+    });
+    map.len() < hard
+}
+
+/// Drops, past `max` keys, the entries whose attempts have all left the window. An entry with an
+/// attempt in the window is never dropped: dropping one would forget its count and let its next
+/// attempts through. [`has_room`] bounds the rest.
+fn prune_map<K: Eq + Hash>(
     map: &mut HashMap<K, Entry>,
     now: Instant,
     window: Duration,
     max: usize,
-    limit: usize,
 ) {
     if map.len() <= max {
         return;
@@ -179,18 +212,6 @@ fn prune_map<K: Clone + Eq + Hash>(
         e.trim(now, window);
         !e.attempts.is_empty()
     });
-    if map.len() > max - max / 4 {
-        let mut droppable: Vec<(K, Instant)> = map
-            .iter()
-            .filter(|(_, e)| e.attempts.len() < limit)
-            .map(|(k, e)| (k.clone(), e.attempts.back().copied().unwrap_or(now)))
-            .collect();
-        droppable.sort_by_key(|(_, t)| *t);
-        let excess = map.len() - (max - max / 4);
-        for (k, _) in droppable.into_iter().take(excess) {
-            map.remove(&k);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -376,6 +397,53 @@ mod tests {
     }
 
     #[test]
+    fn a_flood_of_locked_keys_is_capped_and_new_keys_wait() {
+        // Locked entries are kept, so they can't be freed by a flood; instead each kind holds at
+        // most four times max_keys, and a new key past that waits until old ones leave the window.
+        let mut l = Limiter::new(LimiterConfig {
+            max_keys: 10,
+            ..LimiterConfig::default()
+        });
+        let t = Instant::now();
+        for i in 0..100u32 {
+            let addr = IpAddr::V4(Ipv4Addr::from(0x0c00_0000 + i));
+            for _ in 0..5 {
+                l.begin(&format!("p{i}"), addr, t);
+            }
+        }
+        assert!(l.key_count() <= 3 * 40, "{}", l.key_count());
+        let newcomer = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        assert!(matches!(
+            l.begin("newcomer", newcomer, t),
+            Verdict::SlowDown { .. }
+        ));
+        let later = t + Duration::from_secs(15 * 60);
+        assert_eq!(l.begin("newcomer", newcomer, later), Verdict::Allow);
+    }
+
+    #[test]
+    fn a_new_pair_still_locks_when_the_map_is_crowded() {
+        // More locked pairs than max_keys: a new pair must still count up to its limit, not be
+        // dropped and start afresh on every attempt.
+        let mut l = Limiter::new(LimiterConfig {
+            max_keys: 10,
+            ..LimiterConfig::default()
+        });
+        let t = Instant::now();
+        for i in 0..15u32 {
+            let addr = IpAddr::V4(Ipv4Addr::from(0x0d00_0000 + i));
+            for _ in 0..5 {
+                l.begin(&format!("q{i}"), addr, t);
+            }
+        }
+        let addr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
+        for _ in 0..5 {
+            assert_eq!(l.begin("target", addr, t), Verdict::Allow);
+        }
+        assert!(matches!(l.begin("target", addr, t), Verdict::Locked { .. }));
+    }
+
+    #[test]
     fn the_key_count_stays_bounded() {
         let mut l = Limiter::new(LimiterConfig {
             max_keys: 100,
@@ -385,6 +453,6 @@ mod tests {
         for i in 0..10_000u32 {
             l.begin(&format!("u{i}"), IpAddr::V4(Ipv4Addr::from(i)), t);
         }
-        assert!(l.key_count() <= 3 * 100);
+        assert!(l.key_count() <= 3 * 4 * 100, "{}", l.key_count());
     }
 }
