@@ -54,7 +54,7 @@ refuses() {
 # with_failing_collect COMMAND...: COMMAND with collect_evidence failing. Only ever run inside the
 # subshell that `exits` makes, so the stub never outlives it.
 with_failing_collect() {
-  # shellcheck disable=SC2329 # called by finish_run, which "$@" runs
+  # shellcheck disable=SC2317,SC2329 # called by finish_run, which "$@" runs
   collect_evidence() { return 7; }
   "$@"
 }
