@@ -1,8 +1,10 @@
 //! The client's own serialisation format, its "pickle" (docs/protocol/payloads.md): script
 //! messages and the auth payload. FUN_1400D5850 (header FUN_1400D56D0, values FUN_1400D4AC0)
 //! unpacks it; `kslua_pickle_pack` (FUN_1400D54F0) packs it. A packet is a count of values, then
-//! the values, each a tag and its data, little-endian. Fenji reads and writes tags 00–0C only: no
-//! extension header, no table references, no "magic" objects.
+//! the values, each a tag and its data, little-endian. A packet of 128 bytes or more usually
+//! arrives LZ4-compressed (payloads.md P.1, P.5). Fenji reads tags 00–0C, compressed or not, and
+//! writes them uncompressed, which the client reads too. It handles no table references and no
+//! "magic" objects, and refuses an empty packet, which the client reads as no values.
 use crate::{Error, Result};
 
 /// One value.
@@ -27,6 +29,9 @@ pub struct Table {
 
 /// Tables nest at most this deep ("unpack table too depth!", FUN_1400D4AC0).
 pub const MAX_DEPTH: usize = 32;
+/// The largest raw size a compressed packet may declare ("pkt bad size, too large zip size",
+/// FUN_1400D55C0).
+pub const MAX_UNZIPPED: usize = 0x10_0000;
 /// The most values a packet without table references holds (its count byte stays below 0x80).
 pub const MAX_VALUES: usize = 0x7f;
 /// The most array slots reserved up front for a table, whatever count it declares. Nested tables
@@ -114,13 +119,37 @@ fn put(v: &Value, depth: usize, out: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-/// Decodes a whole packet.
+/// Decodes a whole packet, compressed or not.
 pub fn decode(bytes: &[u8]) -> Result<Vec<Value>> {
+    if bytes.first() == Some(&0xff) {
+        return values(&unzip(bytes)?);
+    }
+    values(bytes)
+}
+
+/// A compressed packet (payloads.md P.1): FF, a 24-bit big-endian raw size, then an LZ4 block
+/// that decodes into at most that many bytes (FUN_1400D55C0, FUN_1400CF400).
+fn unzip(bytes: &[u8]) -> Result<Vec<u8>> {
+    let Some(&[a, b, c]) = bytes.get(1..4) else {
+        return err("a compressed packet without its raw size");
+    };
+    let raw = u32::from_be_bytes([0, a, b, c]) as usize;
+    if raw > MAX_UNZIPPED {
+        return err(format!(
+            "a compressed packet of {raw} bytes, at most {MAX_UNZIPPED}"
+        ));
+    }
+    let mut out = vec![0; raw];
+    let n = lz4_flex::block::decompress_into(&bytes[4..], &mut out)
+        .or_else(|e| err(format!("LZ4: {e}")))?;
+    out.truncate(n);
+    Ok(out)
+}
+
+/// The count byte and the values, uncompressed.
+fn values(bytes: &[u8]) -> Result<Vec<Value>> {
     let mut r = Reader { buf: bytes, at: 0 };
     let count = r.byte()?;
-    if count == 0xff {
-        return err("the extension header (FF) isn't supported");
-    }
     if count >= 0x80 {
         return err("table references aren't supported");
     }
@@ -332,9 +361,59 @@ mod tests {
             "01 0F 00 00",       // table reference, u16
             "01 10 00 00 00 00", // table reference, u32
             "01 11",             // unknown tag
-            "FF 01 00",          // extension header
             "81 00 00 00 00",    // count with table references
             "01 00 00",          // trailing byte
+        ] {
+            assert!(decode(&unhex(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_compressed_packet_decodes() {
+        // payloads.md P.1: FF, a 24-bit big-endian raw size (0x18), then an LZ4 block. By the LZ4
+        // block format: token 0x78 (7 literals, then a match of 8 + 4 bytes); the literals
+        // `01 08 15 61 62 63 64`; offset 4, an overlapping copy that repeats "abcd" three times;
+        // then token 0x50 and the last 5 literals, "WXYZ!".
+        let packet = unhex("FF 00 00 18  78 01 08 15 61 62 63 64 04 00  50 57 58 59 5A 21");
+        assert_eq!(decode(&packet).unwrap(), [s("abcdabcdabcdabcdWXYZ!")]);
+    }
+
+    #[test]
+    fn the_raw_size_bounds_the_output() {
+        // FUN_1400D55C0 keeps the length the LZ4 decoder returns, which may be below the
+        // declared size, and the decoder refuses to write past it.
+        let block = "78 01 08 15 61 62 63 64 04 00  50 57 58 59 5A 21";
+        let roomy = unhex(&format!("FF 00 00 20 {block}"));
+        assert_eq!(decode(&roomy).unwrap(), [s("abcdabcdabcdabcdWXYZ!")]);
+        let tight = unhex(&format!("FF 00 00 17 {block}"));
+        assert!(decode(&tight).is_err());
+    }
+
+    #[test]
+    fn a_compressed_packet_may_hold_1_mib() {
+        // One string filling exactly MAX_UNZIPPED bytes with its header: accepted. One byte
+        // more is refused before decompressing, as the client does ("too large zip size").
+        for (raw, ok) in [(MAX_UNZIPPED, true), (MAX_UNZIPPED + 1, false)] {
+            let mut inner = vec![0x01, 0x0A];
+            inner.extend_from_slice(&((raw - 6) as u32).to_le_bytes());
+            inner.resize(raw, b'x');
+            let mut packet = vec![0xFF];
+            packet.extend_from_slice(&(raw as u32).to_be_bytes()[1..]);
+            packet.extend(lz4_flex::block::compress(&inner));
+            assert_eq!(decode(&packet).is_ok(), ok, "raw {raw:#x}");
+        }
+    }
+
+    #[test]
+    fn refused_compressed_forms() {
+        for bad in [
+            "FF",                                                          // no raw size
+            "FF 00 00",                                                    // a short raw size
+            "FF 00 00 18 78 01 08 15",                                     // literals cut short
+            "FF 00 00 18 78 01 08 15 61 62 63 64 00 00 50 57 58 59 5A 21", // offset 0
+            "FF 00 00 18 78 01 08 15 61 62 63 64 08 00 50 57 58 59 5A 21", // offset before the output
+            "FF 00 00 05 50 81 00 00 00 00", // inside, a count with table references
+            "FF 00 00 01 10 FF",             // inside, FF again: a count byte, not a second FF
         ] {
             assert!(decode(&unhex(bad)).is_err(), "{bad}");
         }
@@ -409,6 +488,10 @@ mod tests {
                 .map(|i| (x >> (i % 8 * 8)) as u8 ^ i as u8)
                 .collect();
             let _ = decode(&junk);
+            // The same junk as a compressed packet's block.
+            let mut packet = vec![0xFF, 0x00, 0x01, 0x00];
+            packet.extend(&junk);
+            let _ = decode(&packet);
         }
     }
 }
