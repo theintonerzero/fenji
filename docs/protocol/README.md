@@ -6,7 +6,7 @@ Our own written findings about the pinned client's network protocol. No decompil
 
 | File | Contents | Milestone |
 |---|---|---|
-| `transport.md` | Framing, header scramble, Oodle Network codec, gate handshake and variant selection | M2 |
+| [`transport.md`](transport.md) | Framing, header scramble, Oodle Network codec, gate handshake and variant selection | M2 |
 | `opcodes.md` | Opcode ledger (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`) | M2 onward |
 | `payloads.md` | Payload value encodings; which one the game uses is unknown so far ([spike-0](../re/spike-0.md) 4.8–4.9) | M2 |
 | `properties.md` | The synced-property (`prop_*`) schema, and how sync packets carry it | M2–M4 |
