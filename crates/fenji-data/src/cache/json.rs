@@ -10,8 +10,7 @@ use crate::cache::{Cache, TableId, Value};
 
 /// How many tables deep a value is written out before the rest become references. A table shared
 /// within one value (m2-tables.md 2.2) is written out again wherever it appears, so a crafted
-/// cache whose tables hold each other many times over gives output that grows with every level;
-/// the client's caches have no such sharing in the dumped sheets (m2-tables.md §3).
+/// cache whose tables hold each other many times over gives output that grows with every level.
 pub const MAX_DEPTH: usize = 64;
 
 /// JSON for one value.
