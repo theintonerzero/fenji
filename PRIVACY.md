@@ -30,7 +30,7 @@ When the game client logs in, its own login message includes, besides your accou
 
 The game client is the game developer's software, not Fenji's, and Fenji can't speak for everything it does. It ships crash-reporting components (`AurCrashRpt64.dll`, `sentry.dll`, `crashpad_handler.exe`) that may upload a report when it crashes, and it loads the Steam and Gameforge platform libraries. In the sandboxed test runs where we checked, the crash helpers didn't start; a player's own sessions haven't been examined.
 
-Developers who study the client run it only inside a sandbox, against their own stub. Those runs' logs stay on the developer's machine, in a folder git ignores. Test fixtures in this repository, which come from such runs, have the address and fingerprint replaced with made-up values, and a test checks that they are.
+Developers who study the client run it inside a sandbox, against their own stub or server; play tests outside the sandbox happen only on the project's own Linux machine, with the client's network limited to a local Fenji server. Those runs' logs stay on the developer's machine, in a folder git ignores. Test fixtures in this repository, which come from such runs, have the address and fingerprint replaced with made-up values, and a test checks that they are.
 
 ## Deleting your data
 

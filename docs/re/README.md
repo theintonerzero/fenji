@@ -121,7 +121,7 @@ How to repeat it:
 
 ## Running the client
 
-Only inside `scripts/spike/isolated-run.sh` (design spec §2 rule 4). Inside it:
+Only inside `scripts/spike/isolated-run.sh` (design spec §2 rule 4), except the guarded bare-metal play tests on the Linux game box that CLAUDE.md describes (owner's decision, 2026-10-13). Inside the sandbox:
 - the network is loopback only, and names come from a hosts file;
 - there are no host daemon sockets;
 - the display is a nested X server (`--x11 N`);
@@ -139,7 +139,7 @@ The client flags that reach the login scene in a dev run are in [spike-0 §8](sp
 
 ## Working rules
 
-- Static analysis of files on disk comes first. Runtime observation (Wine `WINEDEBUG`, the client's own log, stub sessions) happens only inside the sandbox, against our own stub or server.
+- Static analysis of files on disk comes first. Runtime observation (Wine `WINEDEBUG`, the client's own log, stub sessions) happens only inside the sandbox, against our own stub or server, or in the guarded bare-metal play tests CLAUDE.md describes.
 - Every conclusion distinguishes observation, inference and unknown, and cites evidence as set out in [Evidence for `gujianol.exe`](#evidence-for-gujianolexe). Unresolved questions go into REA with `record_unknown`.
 - Decision gates (client patching, circumventing protection, the embedded kernel driver, Oodle licensing) stop the work until the owner decides.
 - Close REA sessions (`close_binary`) when an investigation is finished. Never overwrite an evidence bundle; export to a new name.

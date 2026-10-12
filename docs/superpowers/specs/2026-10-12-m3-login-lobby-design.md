@@ -1,6 +1,8 @@
 # M3: Login and lobby — Design Spec
 
 **Status:** approved under the owner's overnight pre-approval (2026-10-12), after a self-review and a fresh reviewer's review against the parent spec and the ground rules, whose findings are folded in; every choice is a ruling in the M3 ledger.
+
+**Superseded in part (2026-10-13).** The owner decided gate #114 (option a, players use the launcher path) and allowed guarded bare-metal play tests on the Linux game box ([plan Amendment B](../plans/2026-10-12-m3-login-lobby.md#amendment-b-the-owners-decisions-of-2026-10-13)). Where this spec says otherwise, Amendment B wins: the purpose's "no build of M3 that a player would run can start the client", D1's "sandboxed developer runs only", D2, D14's "nothing in M3 starts the client except the runner", the §5.2 deviation row, `Uinfo` existing only with the `dev-login-path` feature (§4), the default-build test of §6, Done-when 5, and "starting the client outside the sandbox" in §10. Rungs that pass `--gf-sdk=mocked` still run in the sandbox (gate #11).
 **Parent:** [Fenji design spec](2026-10-11-fenji-design.md) §5 (accounts, launcher, redirect and ticket), §6.1, §6.4–§6.7, §7, §9, §10 (M3) and §12 (the ticket question), with M2's findings in [`docs/re/m2-summary.md`](../../re/m2-summary.md), [`docs/protocol/transport.md`](../../protocol/transport.md) and [`docs/protocol/payloads.md`](../../protocol/payloads.md).
 
 ## 1. Purpose and priority

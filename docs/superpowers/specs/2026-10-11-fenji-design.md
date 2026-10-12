@@ -28,7 +28,7 @@ Success for v1: invited friends sign in through the Fenji launcher, each with th
    - captures and REA evidence bundles.
 
    The server and tools read data from the operator's own installation at runtime. CI enforces this (§9).
-4. **Never touch official services with modified or instrumented clients.** The original game is still operated in China, and Gameforge, Steam and Epic services are live. Instrumented runs (Wine API logging, debuggers) happen only inside `scripts/spike/isolated-run.sh`, connected to our own stub or server.
+4. **Never touch official services with modified or instrumented clients.** The original game is still operated in China, and Gameforge, Steam and Epic services are live. Instrumented runs (Wine API logging, debuggers) happen only inside `scripts/spike/isolated-run.sh`, connected to our own stub or server. (Owner's decision, 2026-10-13, #114: guarded bare-metal play tests on the Linux game box are the one exception, under the guards in CLAUDE.md.)
 5. **Private and non-commercial.** The server is invite-only, unlisted, and never monetized.
 6. **Decision gates stop the work.** Work stops and the owner decides explicitly when a step would:
    - patch the client, on disk or in memory;
@@ -53,7 +53,7 @@ The rules keep exposure as low as possible; they don't eliminate it.
 | Machine | Role |
 |---|---|
 | macOS (arm64) dev workstation | Rust development; static analysis (Ghidra, REA) of a copy of the pinned client kept outside the repo |
-| Fedora Linux game box | Runs the pinned client through GE-Proton inside the sandbox, against the stub or dev server; Rust; analysis |
+| Fedora Linux game box | Runs the pinned client through GE-Proton inside the sandbox, against the stub or dev server (and, since 2026-10-13, guarded bare-metal play tests against a local Fenji server; CLAUDE.md); Rust; analysis |
 | VPS (Debian/Ubuntu) | Hosts `fenji-server`, Caddy, SQLite and the admin's own copy of the client data |
 
 **M0 update.** Sandboxed runs start GE-Proton's own `proton` script directly, because umu's runtime container fails inside the sandbox (seen without `--cpu-topology`; untested with it). Wine there needs `--cpu-topology` for its processor information ([spike-0 §8](../../re/spike-0.md#8-runtime-observation-isolated-stub-only)).
