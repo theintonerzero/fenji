@@ -191,6 +191,7 @@ M2 plan Task 8 ran the pinned client against `fenji-stub --speak` inside `script
 
 **Observed:**
 - **The hello passes.** The client accepted a hello built by `fenji_proto::hello::build` with w0 % 27 = w1 % 27 = 3 (§2), and answered with its auth message.
+- **The variant choice is unsigned.** m2-r3's w0 (0xFF05AA95) and m2-r3b's w1 (0x998825C7) had the top bit set, and both directions still worked: the client decoded our stored replies, and its auth decoded with variant 3. So `% 27` is taken on the unsigned word (§2, §3).
 - **The client's frames decode with our reading.** The fixture `crates/fenji-proto/tests/fixtures/r2-*.hex` holds m2-r1's real hello and auth frame, scrubbed (below). `fenji-proto` decodes it with the AES-128 variant, the key fold, the up key and the inner header (§3, §4, §7). An independent decryption with `openssl` matched before the fixture was made (L4).
 - **The auth's fixed part.** The 16 dictionary bytes were zero in all three runs (6.3). The 6 machine bytes were `FF 00 32 00 00 00`: `SendARP` failed with error 50 (`ERROR_NOT_SUPPORTED`) inside the sandbox, so no MAC address was sent (6.2). The payload was 73 bytes (6.4).
 - **Time syncs.** The client sent one every 2,000 ms, both before and after `ok` (4.6).
