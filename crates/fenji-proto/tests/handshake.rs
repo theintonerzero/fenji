@@ -4,6 +4,8 @@ use fenji_proto::frame::{SEND_CHUNK, UpWriter};
 use fenji_proto::handshake::{AuthMessage, Event, MAX_INBOUND, Message, Server, State};
 use fenji_proto::header::write_message;
 use fenji_proto::hello::Variants;
+use fenji_proto::packet::set_net_connected;
+use fenji_proto::pickle::{Table, Value, decode};
 use fenji_proto::variant::{AES128, Cipher};
 
 const V: Variants = Variants {
@@ -192,4 +194,61 @@ fn a_frame_boundary_inside_a_header_and_several_messages_per_frame() {
             "one_read {one_read}"
         );
     }
+}
+
+#[test]
+fn begin_work_sends_set_net_connected() {
+    let (mut server, mut client, _) = connect(10);
+    let down = server.accept(&StoredCodec).unwrap();
+    assert_eq!(client.receive(&down).unwrap().0, [ClientEvent::Accepted]);
+    let down = server.begin_work(&StoredCodec).unwrap();
+    assert_eq!(server.state(), State::Work);
+    let (events, _) = client.receive(&down).unwrap();
+    assert_eq!(
+        events,
+        [ClientEvent::Message(Message {
+            ty: 0,
+            body: set_net_connected()
+        })]
+    );
+    // transport.md 10.3: (414, nil, the billing table, nil), the billing fields all 0.
+    let billing = Table {
+        array: vec![],
+        hash: [
+            "times_remain",
+            "coins_remain",
+            "bind_coins_remain",
+            "cards_endtime",
+        ]
+        .iter()
+        .map(|k| (Value::Str(k.as_bytes().to_vec()), Value::Int(0)))
+        .collect(),
+    };
+    assert_eq!(
+        decode(&set_net_connected()).unwrap(),
+        [
+            Value::Int(414),
+            Value::Nil,
+            Value::Table(billing),
+            Value::Nil
+        ]
+    );
+    // In WORK the client's messages still arrive as messages.
+    let up = client.send(0xff, &[0x01, 0x04, 0x92, 0x01]).unwrap();
+    assert_eq!(
+        server.receive(&up).unwrap(),
+        [Event::Message(Message {
+            ty: 0xff,
+            body: vec![0x01, 0x04, 0x92, 0x01]
+        })]
+    );
+}
+
+#[test]
+fn begin_work_needs_queued() {
+    let (mut server, _, _) = connect(11);
+    assert!(server.begin_work(&StoredCodec).is_err(), "before accept");
+    server.accept(&StoredCodec).unwrap();
+    server.begin_work(&StoredCodec).unwrap();
+    assert!(server.begin_work(&StoredCodec).is_err(), "twice");
 }

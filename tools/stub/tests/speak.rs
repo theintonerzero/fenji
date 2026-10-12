@@ -2,8 +2,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use fenji_proto::client::{Client, ClientEvent};
-use fenji_proto::handshake::AuthMessage;
+use fenji_proto::handshake::{AuthMessage, Message};
 use fenji_proto::hello::Variants;
+use fenji_proto::packet::set_net_connected;
 use fenji_proto::variant::AES128;
 use fenji_stub::server::{Mode, serve};
 use fenji_stub::speak::{AuthReply, SpeakOpts};
@@ -52,6 +53,31 @@ async fn pump(s: &mut TcpStream, client: &mut Client, ms: u64) -> Vec<ClientEven
     }
 }
 
+/// Reads until `done` holds for the events so far, or `ms` pass; returns all events.
+async fn pump_until(
+    s: &mut TcpStream,
+    client: &mut Client,
+    ms: u64,
+    done: impl Fn(&[ClientEvent]) -> bool,
+) -> Vec<ClientEvent> {
+    let mut all = Vec::new();
+    let mut buf = [0u8; 4096];
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
+    while !done(&all) {
+        let read = tokio::time::timeout_at(deadline, s.read(&mut buf)).await;
+        let Ok(Ok(n)) = read else { break };
+        if n == 0 {
+            break;
+        }
+        let (events, out) = client.receive(&buf[..n]).unwrap();
+        if !out.is_empty() {
+            s.write_all(&out).await.unwrap();
+        }
+        all.extend(events);
+    }
+    all
+}
+
 fn read_events(dir: &Path) -> String {
     std::fs::read_dir(dir)
         .unwrap()
@@ -62,15 +88,21 @@ fn read_events(dir: &Path) -> String {
 }
 
 #[tokio::test]
-async fn speaks_hello_auth_ok() {
+async fn speaks_hello_auth_ok_then_work() {
     let tmp = tempfile::tempdir().unwrap();
     let addr = start(tmp.path(), AuthReply::Ok).await;
     let mut s = TcpStream::connect(addr).await.unwrap();
     let mut client = Client::new(auth());
-    assert_eq!(
-        pump(&mut s, &mut client, 5000).await,
-        [ClientEvent::Accepted]
-    );
+    let work = ClientEvent::Message(Message {
+        ty: 0,
+        body: set_net_connected(),
+    });
+    let events = pump_until(&mut s, &mut client, 5000, |e| e.contains(&work)).await;
+    assert_eq!(events, [ClientEvent::Accepted, work]);
+    // The client's answer: script message 402 to the gate (transport.md 10.3).
+    s.write_all(&client.send(0xff, &[0x01, 0x04, 0x92, 0x01]).unwrap())
+        .await
+        .unwrap();
     s.write_all(&client.time_sync(99)).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
     let ev = read_events(tmp.path());
@@ -82,6 +114,8 @@ async fn speaks_hello_auth_ok() {
         "{ev}"
     );
     assert!(ev.contains("\tsent\tok (stored frame)"), "{ev}");
+    assert!(ev.contains("\tsent\twork (SET_NET_CONNECTED)"), "{ev}");
+    assert!(ev.contains("\tcall\tgateway id=402 args=0"), "{ev}");
     assert!(ev.contains("\ttime_sync\tclient_ms=99"), "{ev}");
 }
 

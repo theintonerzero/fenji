@@ -11,6 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use fenji_proto::codec::StoredCodec;
 use fenji_proto::handshake::{Event, Server};
 use fenji_proto::hello::{HELLO_LEN, Variants};
+use fenji_proto::packet::Up;
+use fenji_proto::pickle::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -54,6 +56,16 @@ fn fill() -> [u8; HELLO_LEN] {
         chunk.copy_from_slice(&h.finish().to_le_bytes());
     }
     out
+}
+
+/// A script message id as the events log shows it.
+fn show(id: &Value) -> String {
+    match id {
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Str(s) => String::from_utf8_lossy(s).into_owned(),
+        other => format!("{other:?}"),
+    }
 }
 
 fn other(e: impl std::fmt::Display) -> io::Error {
@@ -131,15 +143,31 @@ pub async fn handle(
                         log.record_sent(&out)?;
                         events.line("sent", &format!("{what} (stored frame)"))?;
                     }
+                    if opts.auth_reply == AuthReply::Ok {
+                        // QUEUE -> WORK (transport.md 10.3-10.4).
+                        let out = server.begin_work(&StoredCodec).map_err(other)?;
+                        stream.write_all(&out).await?;
+                        log.record_sent(&out)?;
+                        events.line("sent", "work (SET_NET_CONNECTED)")?;
+                    }
                 }
                 Event::TimeSync(ms) => events.line("time_sync", &format!("client_ms={ms}"))?,
-                Event::Message(m) => {
-                    let head = &m.body[..m.body.len().min(32)];
-                    events.line(
-                        "message",
-                        &format!("ty={} len={} head={}", m.ty, m.body.len(), hex(head)),
-                    )?;
-                }
+                Event::Message(m) => match Up::decode(m.ty, &m.body) {
+                    Ok(Up::Script { gateway, id, args }) => {
+                        let kind = if gateway { "gateway" } else { "script" };
+                        events.line(
+                            "call",
+                            &format!("{kind} id={} args={}", show(&id), args.len()),
+                        )?;
+                    }
+                    Ok(Up::Unknown { .. }) | Err(_) => {
+                        let head = &m.body[..m.body.len().min(32)];
+                        events.line(
+                            "message",
+                            &format!("ty={} len={} head={}", m.ty, m.body.len(), hex(head)),
+                        )?;
+                    }
+                },
             }
         }
     }
