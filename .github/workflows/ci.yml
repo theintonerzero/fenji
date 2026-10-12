@@ -42,6 +42,8 @@ jobs:
         run: scripts/check-forbidden-files.sh
       - name: Commit-subject check tests
         run: scripts/test-check-commit-subject.sh
+      - name: Session-link check tests
+        run: scripts/test-check-no-session-links.sh
       - name: A Turkish locale for the locale-proofing tests
         # Its dotless-i lowercasing is what the forbidden-file and MIT-SHM tests guard against.
         run: |
@@ -74,7 +76,18 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # the PR's commits, and dev's, for the session-link check
       - name: PR title is a Conventional Commit (it becomes the squash commit)
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: scripts/check-commit-subject.sh "$TITLE"
+      - name: No session links in the PR's description or new commits
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          printf '%s\n' "$BODY" | scripts/check-no-session-links.sh
+          # Only commits not in dev yet: a release PR brings dev's history, which predates the rule.
+          git log --format=%B "$HEAD_SHA" --not "$BASE_SHA" origin/dev | scripts/check-no-session-links.sh

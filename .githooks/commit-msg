@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Enforces Conventional Commits 1.0.0 on the subject line.
-# Installed by scripts/bootstrap.sh via `git config core.hooksPath .githooks`.
+# Enforces Conventional Commits 1.0.0 on the subject line, and keeps session links out of the
+# message. Installed by scripts/bootstrap.sh via `git config core.hooksPath`; the scripts it runs
+# are the ones beside it, so a worktree on an older branch is checked by the same rules.
 set -euo pipefail
-exec "$(git rev-parse --show-toplevel)/scripts/check-commit-subject.sh" "$(head -n 1 "$1")"
+root=$(cd "$(dirname "$0")/.." && pwd -P)
+"$root/scripts/check-commit-subject.sh" "$(head -n 1 "$1")"
+# Only what git keeps: no comment lines, and nothing below the scissors line `git commit -v` adds.
+awk '/^# -+ >8 -+$/ { exit } !/^#/' "$1" | "$root/scripts/check-no-session-links.sh"
