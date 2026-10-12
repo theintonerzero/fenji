@@ -14,8 +14,9 @@ The documents:
 
 | spike-0 | Question | Answer | Where |
 |---|---|---|---|
+| 1.8 | Whether `AurogonEngine.dll`'s named exports can name engine functions in `gujianol.exe` | **Carried to M2.** M1 named the functions it needed from the exe itself. The exports should help name the network and engine functions M2 works on. | — |
 | 6.4 | The archives' record format | **Answered.** A part is `ZFS\0` followed by a chain of `[IX]` index blocks. A record holds a SHA-1 key, an offset, a size, a CRC-16 and a status. Deleted records and reused space explain why spike-0's reading didn't tile the parts. | `m1-archives.md` §1–§2 |
-| 6.7 | Whether any entry type is encrypted | **Partly.** Stored files are plain: their SHA-1s match their keys. Compressed files are carried to M2 (#51), by the owner's ruling at gate #39. | `m1-archives.md` §2, §5 |
+| 6.7 | Whether any entry type is encrypted | **Partly.** The 1,135 stored files checked are plain: their SHA-1s match their keys. The other stored files, including 14,041 that nothing identifies, weren't checked. Compressed files are carried to M2 (#51), by the owner's ruling at gate #39. | `m1-archives.md` §2, §5 |
 | 6.9 | `_index`'s format | **Structure answered:** one Oodle blob of `<sha1 hex>\t<path>` lines, by the engine's own parser. Reading it is carried to M2 (#51). | `m1-archives.md` §3 |
 | 6.16 | Which size field the chunk header drops | **Answered:** the `size_t` byte. | `m1-script-format.md` 3.3 |
 | 6.19 | Whether the VM keeps the stock opcode numbers | **Answered:** opcodes 0–46 are stock. Of the extra opcodes 47–53, only 49, 50 and 53 occur. | `m1-script-format.md` 3.8, §4 |
@@ -44,4 +45,8 @@ The documents:
 | 6 | Archives | **Met, by the owner's ruling.** The format is parsed as far as it goes without decompression. At the Oodle gate the owner chose (d), defer: the table dumps leave M1 for M2. | `m1-archives.md` (#47); #39; #51 |
 | 7 | Records | **Met:** spike-0's questions above; "M1 update" notes in the parent spec's §10 and §12; the external decompiler (unluac) in `sources.md`. | this document; #45 |
 
-The AGT driver stayed quiet through M1's runs, the first connection included. The watchdog saw no sign in any run. Runs m1-c1 and m1-c2 also logged every resource lookup, and none was of the driver's type `PE`.
+The AGT driver showed no sign of loading in any M1 run, the first connection included. Two of the watchdog's own acceptance runs (Task 9) stopped as gate events, and the executor judged both false positives:
+- **m1-accept** tripped S1 on GE-Proton's built-in `.sys` files, seen through the sandbox's tmpfs pass.
+- **m1-accept2** tripped S3 when Proton re-registered its discord-bridge service before the registry baseline had been flushed.
+
+Each fix has a regression test, and m1-accept3, m1-c1 and m1-c2 then ran with no sign. Runs m1-c1 and m1-c2 also logged every resource lookup, and none was of the driver's type `PE`. The two judgements are listed for the owner to ratify.

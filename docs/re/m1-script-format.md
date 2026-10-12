@@ -124,7 +124,7 @@ Removing a `TRYSELF` follows these rules:
 
 This is the one place normalisation is not one instruction for one instruction. With the planning default of `TRYSELF` → `SELF` instead, every method lookup comes out of the decompiler twice.
 
-Trial (NT): three client chunks normalised with this table decompile with unluac 2025_12_23 without errors. The planning run, which used `TRYSELF` → `SELF`, decompiled the same chunks too, but with each method lookup duplicated (`L2_2 = A1_2.GetScene` twice). That is 80, 70 and 96 extra lines: two per removed `TRYSELF` (40, 35 and 48). **Observed**. Because the chunks are stripped, unluac writes every register as a local (`L3_2 = A1_2`, `L2_2 = A1_2.GetScene`, `L2_2 = L2_2(L3_2)`) rather than `A1_2:GetScene()`.
+Trial (NT): three client chunks normalised with this table decompile with unluac 2025_12_23 without errors. The planning run, which used `TRYSELF` → `SELF`, decompiled the same chunks too, but with each method lookup duplicated. That is 80, 70 and 96 extra lines: two per removed `TRYSELF` (40, 35 and 48). **Observed**. Because the chunks are stripped, unluac writes every register as a numbered local and spells a method call as three steps: copy the object, look up the method, call it. It doesn't use the `object:method()` form.
 
 ### Decompile results
 

@@ -47,7 +47,7 @@ None of these inputs touches a client file; all are inputs the client already re
 
 | # | Finding | Tag | Evidence |
 |---|---|---|---|
-| 3.1 | `gj_gates` can't stand in for the list on the Gameforge path. In `NET.Login` (`net.luac` `0.60`, pc 172–184), `gates and gates:match("^(.-):(.-)$")` keeps one result of `match` (`CALL 16 3 2`), then sets the port to nil (`LOADNIL 17`), so the branch never connects. The fallback that M1's plan listed is dropped. | **Inferred** | S1 |
+| 3.1 | `gj_gates` can't stand in for the list on the Gameforge path. In `NET.Login` (`net.luac` `0.60`, pc 172–184), the code that splits `gj_gates` into a host and a port keeps only the first of the two values the pattern match returns, and leaves the port nil. So that branch never connects. The fallback that M1's plan listed is dropped. | **Inferred** | S1 |
 
 Expected port: TCP 7800 on loopback, as the list says. A literal IP needs no name resolution, though `util_gethostbyname` still runs (2.5). The same values could also come from environment variables of the same names (§1). §6 records the runs.
 
