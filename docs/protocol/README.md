@@ -7,8 +7,8 @@ Our own written findings about the pinned client's network protocol. No decompil
 | File | Contents | Milestone |
 |---|---|---|
 | [`transport.md`](transport.md) | Framing, header scramble, Oodle Network codec, gate handshake and variant selection | M2 |
-| `opcodes.md` | Opcode ledger (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`) | M2 onward |
-| `payloads.md` | Payload value encodings; which one the game uses is unknown so far ([spike-0](../re/spike-0.md) 4.8–4.9) | M2 |
+| [`opcodes.md`](opcodes.md) | Opcode ledger (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`), with wire values; script message ids | M2 onward |
+| [`payloads.md`](payloads.md) | The client's pickle format (script messages, the auth payload) | M2 |
 | `properties.md` | The synced-property (`prop_*`) schema, and how sync packets carry it | M2–M4 |
 | `packets/<area>.md` | Per-opcode payload tables (`login`, `lobby`, `world`, `combat`, …) | M2–M5 |
 
@@ -27,7 +27,7 @@ Status meanings:
 
 ## Payload table format (`packets/<area>.md`)
 
-Which encoding the game's payloads use is not known yet. The client carries `cjson`, `cmsgpack` and `pickle_pack` codecs, and the `pickle` framing the triage saw belongs to its built-in remote debugger, not the game transport ([spike-0](../re/spike-0.md) 4.8–4.9, 4.32). For each opcode, give:
+Script messages use the client's own pickle format ([`payloads.md`](payloads.md)); the other opcodes have per-type native layouts ([`opcodes.md`](opcodes.md)). For each opcode, give:
 - the value and direction, and a one-line purpose;
 - a field table (`key`, `type`, `meaning`, `notes`);
 - the evidence, and the golden-test fixture name if one exists.
