@@ -3,9 +3,19 @@
 //! depending on FILE's name.
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use fenji_luatool::decompile::{Outcome, Unluac};
+
+/// These tests write an executable stand-in and then run it. If one test forked a child while
+/// another's stand-in was still open for writing, the child would hold that write handle until its
+/// exec, and running the stand-in would fail with ETXTBSY ("Text file busy"). So the tests in this
+/// binary run one at a time.
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn fake_java(dir: &Path) -> PathBuf {
     let p = dir.join("fake-java");
@@ -26,6 +36,7 @@ fn unluac(dir: &Path, timeout: Duration) -> Unluac {
 
 #[test]
 fn outcomes_and_outputs() {
+    let _serial = one_at_a_time();
     let t = tempfile::tempdir().unwrap();
     let u = unluac(t.path(), Duration::from_secs(5));
     let jobs: Vec<(PathBuf, PathBuf)> = ["ok", "fail", "ok2"]
@@ -57,6 +68,7 @@ fn outcomes_and_outputs() {
 
 #[test]
 fn a_hanging_decompile_is_stopped() {
+    let _serial = one_at_a_time();
     let t = tempfile::tempdir().unwrap();
     let u = unluac(t.path(), Duration::from_millis(500));
     let started = Instant::now();
@@ -69,6 +81,7 @@ fn a_hanging_decompile_is_stopped() {
 
 #[test]
 fn a_missing_jar_is_reported() {
+    let _serial = one_at_a_time();
     let t = tempfile::tempdir().unwrap();
     let err = Unluac::locate(
         Some("java".into()),
@@ -84,6 +97,7 @@ fn a_missing_jar_is_reported() {
 #[test]
 #[ignore = "needs Java and the pinned unluac jar (scripts/bootstrap.sh)"]
 fn real_unluac_decompiles_a_stripped_chunk() {
+    let _serial = one_at_a_time();
     let t = tempfile::tempdir().unwrap();
     let lua = mlua::Lua::new();
     let chunk = lua
@@ -105,6 +119,7 @@ fn real_unluac_decompiles_a_stripped_chunk() {
 
 #[test]
 fn a_planted_err_link_is_not_written_through() {
+    let _serial = one_at_a_time();
     // A symlink where unluac's stderr goes, to a file elsewhere.
     let t = tempfile::tempdir().unwrap();
     let u = unluac(t.path(), Duration::from_secs(5));
