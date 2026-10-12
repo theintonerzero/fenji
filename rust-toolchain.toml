@@ -1,3 +1,5 @@
 [toolchain]
 channel = "1.97.1"
 components = ["rustfmt", "clippy", "rust-analyzer"]
+# tools/oodle-helper is a Windows program, linked with MinGW-w64 (scripts/versions.env).
+targets = ["x86_64-pc-windows-gnu"]

@@ -56,6 +56,7 @@ Source of truth: `scripts/versions.env` (bootstrap reads it). Keep this table id
 |---|---|---|
 | Claude Code | ≥ 2.1.296 | also `minimumVersion` in `.claude/settings.json` |
 | Rust | 1.97.1 | `rust-toolchain.toml` (rustfmt, clippy, rust-analyzer) |
+| MinGW-w64 | distro package | Fedora mingw64-gcc, Homebrew mingw-w64; linker for tools/oodle-helper (x86_64-pc-windows-gnu target in rust-toolchain.toml) |
 | tauri-cli | 2.12.2 | `cargo install --locked` |
 | git-cliff | 2.14.2 | changelog |
 | cargo-deny | 0.20.2 | licences/advisories |
