@@ -50,24 +50,20 @@ impl Cipher {
 
     /// The client's send transform: whole blocks encrypted, then the tail.
     pub fn encrypt(&self, buf: &mut [u8]) {
-        let mut blocks = buf.chunks_exact_mut(16);
-        for chunk in &mut blocks {
-            let mut b: [u8; 16] = (&*chunk).try_into().expect("16 bytes");
-            self.aes.encrypt_block((&mut b).into());
-            chunk.copy_from_slice(&b);
+        let (blocks, rest) = buf.as_chunks_mut::<16>();
+        for b in blocks {
+            self.aes.encrypt_block(b.into());
         }
-        tail(blocks.into_remainder(), AES_TAIL);
+        tail(rest, AES_TAIL);
     }
 
     /// The client's receive transform: whole blocks decrypted, then the tail.
     pub fn decrypt(&self, buf: &mut [u8]) {
-        let mut blocks = buf.chunks_exact_mut(16);
-        for chunk in &mut blocks {
-            let mut b: [u8; 16] = (&*chunk).try_into().expect("16 bytes");
-            self.aes.decrypt_block((&mut b).into());
-            chunk.copy_from_slice(&b);
+        let (blocks, rest) = buf.as_chunks_mut::<16>();
+        for b in blocks {
+            self.aes.decrypt_block(b.into());
         }
-        tail(blocks.into_remainder(), AES_TAIL);
+        tail(rest, AES_TAIL);
     }
 }
 

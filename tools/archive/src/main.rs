@@ -297,7 +297,7 @@ fn parse_key(key: &str) -> Result<[u8; 20]> {
         bail!("a key is 40 hex digits: {key:?}");
     }
     let mut k = [0; 20];
-    for (b, pair) in k.iter_mut().zip(digits.chunks_exact(2)) {
+    for (b, pair) in k.iter_mut().zip(digits.as_chunks::<2>().0) {
         *b = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
     }
     Ok(k)
