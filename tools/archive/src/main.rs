@@ -49,8 +49,10 @@ enum Command {
     },
     /// The _index blob header
     Index,
-    /// Decode _index through the Oodle spool and write OUT/paths.tsv (key, path, part, offset,
-    /// size, codec); OUT and the spool must be inside re/
+    /// Decode _index through the Oodle spool and write OUT/paths.tsv (key, path, part as 3
+    /// digits, offset in hex, size, codec; `-` in the last four where no live record holds the
+    /// key); OUT and the spool must be inside re/. Exit 3: blocks wait for
+    /// scripts/spike/run-oodle-helper.sh (not a gate event)
     Paths {
         #[arg(long, default_value = "re/oodle-spool")]
         spool: PathBuf,
@@ -146,7 +148,8 @@ fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
     let out = fenji_data::re_dir::resolve_out_dir(&repo, out)?;
     // The spool holds the client's compressed blocks, so it stays under re/ too.
     let spool = OodleSpool::new(&fenji_data::re_dir::resolve_out_dir(&repo, spool)?)?;
-    let bytes = std::fs::read(client.join("data").join("_index"))?;
+    let index_path = client.join("data").join("_index");
+    let bytes = std::fs::read(&index_path).with_context(|| index_path.display().to_string())?;
     let queued = spool.spool_blob(&bytes, 0)?;
     if queued > 0 {
         println!("{queued} blocks spooled: run scripts/spike/run-oodle-helper.sh, then re-run");
@@ -164,7 +167,8 @@ fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
     };
     let map = index::build(&raw);
 
-    let (mut places, mut live, mut repeated) = (HashMap::new(), 0usize, 0usize);
+    let (mut places, mut live, mut repeated, mut unreadable) =
+        (HashMap::new(), 0usize, 0usize, 0usize);
     for n in 0..1000 {
         let path = part_path(client, n);
         if !path.exists() {
@@ -180,7 +184,10 @@ fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
             }
             let codec = match read_blob_header(&mut f, u64::from(r.offset)) {
                 Ok(b) => b.codec.name(),
-                Err(_) => "bad-header",
+                Err(_) => {
+                    unreadable += 1;
+                    "bad-header"
+                }
             };
             places.insert(
                 r.key,
@@ -195,7 +202,7 @@ fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
     }
 
     let tsv = out.join("paths.tsv");
-    let mut w = BufWriter::new(File::create(&tsv)?);
+    let mut w = BufWriter::new(create_replacing(&tsv)?);
     writeln!(w, "key\tpath\tpart\toffset\tsize\tcodec")?;
     let mut found = 0usize;
     for (path, key) in &map.by_path {
@@ -217,11 +224,12 @@ fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
     }
     w.flush()?;
     println!(
-        "{} paths ({} containers); {} bad lines, {} lines not UTF-8; {found} found in a part, {} not found; {live} live records, {repeated} repeating a key; wrote {}",
+        "{} paths ({} containers); {} bad lines, {} lines not UTF-8, {} paths named again; {found} found in a part, {} not found; {live} live records, {repeated} repeating a key, {unreadable} with an unreadable blob header; wrote {}",
         map.by_path.len(),
         map.containers.len(),
         map.bad_lines,
         map.non_utf8_lines,
+        map.replaced,
         map.by_path.len() - found,
         tsv.display()
     );
@@ -337,20 +345,26 @@ fn extract_stored(client: &Path, part: u32, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copies `len` bytes at `at` to a new file at `target` and returns their SHA-1. Whatever is at
-/// `target` already (a symlink or hard link included) is replaced, never written through.
-fn copy_out(f: &mut File, at: u64, len: u64, target: &Path) -> Result<[u8; 20]> {
+/// A new file at `target`. Whatever is there already (a symlink or hard link included) is replaced,
+/// never written through.
+fn create_replacing(target: &Path) -> Result<File> {
     match std::fs::symlink_metadata(target) {
         Ok(_) => std::fs::remove_file(target)
             .with_context(|| format!("replacing {}", target.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    let mut out = File::options()
+    File::options()
         .write(true)
         .create_new(true)
         .open(target)
-        .with_context(|| format!("writing {}", target.display()))?;
+        .with_context(|| format!("writing {}", target.display()))
+}
+
+/// Copies `len` bytes at `at` to a new file at `target` and returns their SHA-1. Whatever is at
+/// `target` already (a symlink or hard link included) is replaced, never written through.
+fn copy_out(f: &mut File, at: u64, len: u64, target: &Path) -> Result<[u8; 20]> {
+    let mut out = create_replacing(target)?;
     f.seek(SeekFrom::Start(at))?;
     let (mut hasher, mut buf, mut left) = (Sha1::new(), vec![0; 1 << 20], len);
     while left > 0 {

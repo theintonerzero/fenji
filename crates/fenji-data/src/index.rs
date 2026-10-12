@@ -33,7 +33,8 @@ pub fn parse_line(line: &str) -> Option<Line<'_>> {
         return (!path.is_empty()).then_some(Line::Remove { path });
     }
     let (hex, path) = line.split_once('\t')?;
-    if path.is_empty() {
+    // paths.tsv gives the path one column.
+    if path.is_empty() || path.contains('\t') {
         return None;
     }
     Some(Line::Add {
@@ -51,6 +52,8 @@ pub struct PathMap {
     pub bad_lines: usize,
     /// Lines that aren't UTF-8, so not parsed.
     pub non_utf8_lines: usize,
+    /// Lines that named a path an earlier line had already added (the later key wins).
+    pub replaced: usize,
 }
 
 /// Applies `_index`'s lines in order. Blank lines are skipped.
@@ -69,7 +72,9 @@ pub fn build(raw: &[u8]) -> PathMap {
                 if path.ends_with("$$") {
                     m.containers.insert(path.to_string());
                 }
-                m.by_path.insert(path.to_string(), key);
+                if m.by_path.insert(path.to_string(), key).is_some() {
+                    m.replaced += 1;
+                }
             }
             Some(Line::Remove { path }) => {
                 m.by_path.remove(path);
@@ -114,6 +119,20 @@ mod tests {
             parse_line(&format!("{K}\tp")),
             Some(Line::Add { path: "p", .. })
         ));
+    }
+
+    #[test]
+    fn a_path_with_a_tab_is_a_bad_line() {
+        // paths.tsv puts the path in one column.
+        assert!(parse_line(&format!("{K}\tdata/a\tb.tab")).is_none());
+    }
+
+    #[test]
+    fn a_repeated_path_is_counted() {
+        let other = "ffffffffffffffffffffffffffffffffffffffff";
+        let m = build(format!("{K}\tdata/a.tab\n{other}\tdata/a.tab\n").as_bytes());
+        assert_eq!(m.by_path["data/a.tab"], [0xff; 20], "the later line wins");
+        assert_eq!(m.replaced, 1);
     }
 
     #[test]
