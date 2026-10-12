@@ -110,6 +110,21 @@ mod tests {
     }
 
     #[test]
+    fn build_matches_a_hand_built_hello() {
+        // Fill words 0 and 1 are 0 and 1; down 3, up 5: w0 = 0 * 27 + 3 = 3, w1 = 1 * 27 + 5 = 32,
+        // idx = 32 % 14 + 2 = 6 (w0 would give 5), w6 = 0xE62F7B30 ^ 32 ^ 3 = 0xE62F7B13.
+        let mut fill = [0u8; 64];
+        fill[4] = 1;
+        let mut want = [0u8; 64];
+        want[0] = 3;
+        want[4] = 32;
+        want[24..28].copy_from_slice(&0xe62f_7b13u32.to_le_bytes());
+        let v = Variants { down: 3, up: 5 };
+        assert_eq!(build(fill, v, CLIENT_MAGIC).unwrap(), want);
+        assert_eq!(check(&want, CLIENT_MAGIC), Ok(v));
+    }
+
+    #[test]
     fn variant_out_of_range_is_refused() {
         let r = build([0; 64], Variants { down: 27, up: 0 }, CLIENT_MAGIC);
         assert!(matches!(r, Err(Error::BadHello(_))));
