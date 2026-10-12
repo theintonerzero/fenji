@@ -90,6 +90,7 @@ These are the facts the code tasks build on. Task 1 re-verifies each one and wri
 - **Case 3** (init FUN_140299C50) folds the hello to a 16-byte key and runs AES setup: **AES-128**. Case 10 (FUN_140299A70) uses a 32-byte key: AES-256. Task 1 reads case 19 (FUN_140299A10).
 - **Transforms.** The AES send transform (FUN_140299B90) encrypts each whole 16-byte block in place (ECB); the receive transform (FUN_140299AD0) decrypts. Each then XORs every remaining byte at position `p` with `((end - p) as u8) ^ 0xC6`.
 - **Key fold (FUN_14029BE20):** `key[i % n] ^= hello[i]` over all 64 hello bytes, starting from zero (`n` = key length).
+  - *Corrected by Task 1:* this holds for `n` up to 64, which covers every AES case; for the longer RC5 and RC6 keys (cases 4, 9 and 13: 128, 128 and 96 bytes) the fold copies the 64 hello bytes and fills the rest from a generator ([`transport.md`](../../protocol/transport.md) 3.5).
 - **The server chooses both variants.** Fenji uses case 3 in both directions. Its server encrypts what it sends (the client decrypts with `[3]`) and decrypts what it receives (the client encrypted with `[2]`).
 
 **F3. Frame keys** (both in the variant contexts, so 0 once the hello is handled):
