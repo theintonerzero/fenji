@@ -63,7 +63,8 @@ fn show(id: &Value) -> String {
     match id {
         Value::Int(n) => n.to_string(),
         Value::Float(f) => f.to_string(),
-        Value::Str(s) => String::from_utf8_lossy(s).into_owned(),
+        // Escaped, so an id can't add a tab or a line to the events log.
+        Value::Str(s) => String::from_utf8_lossy(s).escape_debug().to_string(),
         other => format!("{other:?}"),
     }
 }
@@ -160,15 +161,41 @@ pub async fn handle(
                             &format!("{kind} id={} args={}", show(&id), args.len()),
                         )?;
                     }
-                    Ok(Up::Unknown { .. }) | Err(_) => {
+                    Ok(Up::Unknown { .. }) => {
                         let head = &m.body[..m.body.len().min(32)];
                         events.line(
                             "message",
                             &format!("ty={} len={} head={}", m.ty, m.body.len(), hex(head)),
                         )?;
                     }
+                    // A script message the decoder refuses (a table reference, say): logged
+                    // with the reason, and the stream goes on.
+                    Err(error) => {
+                        let kind = if m.ty == 0xff { "gateway" } else { "script" };
+                        let head = &m.body[..m.body.len().min(32)];
+                        events.line(
+                            "bad_call",
+                            &format!(
+                                "{kind} len={} head={} error={error}",
+                                m.body.len(),
+                                hex(head)
+                            ),
+                        )?;
+                    }
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_cannot_break_the_events_log() {
+        // The events log is one tab-separated line per event (events.rs).
+        let shown = show(&Value::Str(b"a\nb\tc".to_vec()));
+        assert!(!shown.contains(['\n', '\t']), "{shown}");
     }
 }

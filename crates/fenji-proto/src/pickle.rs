@@ -346,10 +346,41 @@ mod tests {
 
     #[test]
     fn every_truncation_is_an_error() {
-        let full = unhex("04 04 9E 01 00 0B 02 00 00 00 03 01 08 01 61 08 01 6B 01 00 08 02 68 69");
-        assert!(decode(&full).is_ok());
-        for cut in 0..full.len() {
-            assert!(decode(&full[..cut]).is_err(), "cut {cut}");
+        // Every vector in these tests, cut short anywhere, is refused.
+        let mut vectors = vec![
+            unhex("04 04 9E 01 00 0B 02 00 00 00 03 01 08 01 61 08 01 6B 01 00 08 02 68 69"),
+            unhex("04 04 9E 01 00 0B 00 00 00 00 00 00"),
+            unhex("01 04 92 01"),
+            unhex("01 0B 02 00 00 00 03 01 08 01 61 08 01 6B 01 00"),
+            unhex("FF 00 00 18  78 01 08 15 61 62 63 64 04 00  50 57 58 59 5A 21"),
+        ];
+        let values = [
+            Value::Int(-129),
+            Value::Int(32_768),
+            Value::Int(1 << 31),
+            Value::Float(1.5),
+            Value::Bool(false),
+            Value::Bool(true),
+            Value::Null,
+            Value::Nil,
+        ];
+        vectors.extend(
+            values
+                .iter()
+                .map(|v| encode(std::slice::from_ref(v)).unwrap()),
+        );
+        for len in [255, 256, 65_536] {
+            vectors.push(encode(&[Value::Str(vec![b'x'; len])]).unwrap());
+        }
+        for full in &vectors {
+            assert!(decode(full).is_ok(), "{:02x?}", &full[..full.len().min(8)]);
+            for cut in 0..full.len() {
+                assert!(
+                    decode(&full[..cut]).is_err(),
+                    "cut {cut} of {:02x?}",
+                    &full[..full.len().min(8)]
+                );
+            }
         }
     }
 

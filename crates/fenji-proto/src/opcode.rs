@@ -35,6 +35,8 @@ pub enum Stc {
     MovePassive,
     MoveSurround,
     MoveFormular,
+    /// A value the client doesn't name. `from_u8` builds it only for those, so compare by
+    /// `to_u8` when a value might have been built by hand.
     Unknown(u8),
 }
 
@@ -102,6 +104,8 @@ pub enum Cts {
     MoveCombat,
     MoveFinishCharge,
     MoveDebug,
+    /// A value the client doesn't name. `from_u8` builds it only for those, so compare by
+    /// `to_u8` when a value might have been built by hand.
     Unknown(u8),
 }
 

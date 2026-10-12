@@ -5,6 +5,9 @@ use crate::frame::{DownReader, Frame, SEND_CHUNK, UpWriter};
 use crate::handshake::{AuthMessage, MAX_REASON, Message, drain_messages};
 use crate::header::write_message;
 use crate::hello::{CLIENT_MAGIC, HELLO_LEN, check};
+use crate::opcode::Stc;
+use crate::packet::SET_NET_CONNECTED;
+use crate::pickle::{self, Value};
 use crate::variant::Cipher;
 use crate::{Error, Result};
 
@@ -21,7 +24,21 @@ enum CState {
     AwaitHello,
     InAuth,
     Queued,
+    Work,
     Closed,
+}
+
+/// Whether `m` is `PROTOG2C_SET_NET_CONNECTED`, whose script handler calls `set_working`
+/// (transport.md 10.3). Lua indexes its handler table by value, so 414 and 414.0 are one id.
+fn is_set_net_connected(m: &Message) -> bool {
+    if m.ty != Stc::Script.to_u8() {
+        return false;
+    }
+    match pickle::decode(&m.body).ok().as_deref() {
+        Some([Value::Int(id), ..]) => *id == SET_NET_CONNECTED,
+        Some([Value::Float(id), ..]) => *id == SET_NET_CONNECTED as f64,
+        _ => false,
+    }
 }
 
 pub struct Client {
@@ -100,7 +117,13 @@ impl Client {
                 let n = m.body.len().min(MAX_REASON);
                 Ok(ClientEvent::Rejected(m.body[..n].to_vec()))
             }
-            CState::Queued => Ok(ClientEvent::Message(m)),
+            CState::Queued => {
+                if is_set_net_connected(&m) {
+                    self.state = CState::Work;
+                }
+                Ok(ClientEvent::Message(m))
+            }
+            CState::Work => Ok(ClientEvent::Message(m)),
             _ => Err(Error::WrongState {
                 action: "take a message",
                 state: "Closed",
@@ -108,12 +131,12 @@ impl Client {
         }
     }
 
-    /// One message to the server (the real client sends only in `WORK`; this one in `Queued`).
+    /// One message to the server. Like the real client, only in `WORK` (transport.md 7.3).
     pub fn send(&mut self, ty: u8, body: &[u8]) -> Result<Vec<u8>> {
-        if self.state != CState::Queued {
+        if self.state != CState::Work {
             return Err(Error::WrongState {
                 action: "send",
-                state: "not Queued",
+                state: "not Work",
             });
         }
         self.frames(ty, body)

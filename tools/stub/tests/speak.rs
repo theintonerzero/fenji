@@ -120,6 +120,37 @@ async fn speaks_hello_auth_ok_then_work() {
 }
 
 #[tokio::test]
+async fn undecodable_script_messages_and_other_opcodes_are_logged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let addr = start(tmp.path(), AuthReply::Ok).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let mut client = Client::new(auth());
+    let work = ClientEvent::Message(Message {
+        ty: 0,
+        body: set_net_connected(),
+    });
+    pump_until(&mut s, &mut client, 5000, |e| e.contains(&work)).await;
+    // A script message whose pickle the decoder refuses (0D, "magic"), another opcode, then a
+    // good call: each gets its own line, and decoding goes on.
+    for (ty, body) in [
+        (0u8, &[0x01, 0x0D, 0x00][..]),
+        (4, &[][..]),
+        (0xff, &[0x01, 0x04, 0x92, 0x01][..]),
+    ] {
+        s.write_all(&client.send(ty, body).unwrap()).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let ev = read_events(tmp.path());
+    assert!(
+        ev.contains("\tbad_call\tscript len=3 head=010d00 error=pickle: \"magic\" objects (0D) aren't supported"),
+        "{ev}"
+    );
+    assert!(ev.contains("\tmessage\tty=4 len=0 head=\n"), "{ev}");
+    assert!(ev.contains("\tcall\tgateway id=402 args=0"), "{ev}");
+    assert!(!ev.contains("\terror\t"), "{ev}");
+}
+
+#[tokio::test]
 async fn auth_reply_none_stays_silent() {
     let tmp = tempfile::tempdir().unwrap();
     let addr = start(tmp.path(), AuthReply::None).await;

@@ -107,6 +107,22 @@ mod tests {
     }
 
     #[test]
+    fn script_ids_may_be_strings_or_floats() {
+        // The client refuses an id that isn't a number or a string (transport.md 10.5).
+        for id in [Value::Str(b"login".to_vec()), Value::Float(402.0)] {
+            let body = pickle::encode(&[id.clone(), Value::Bool(true)]).unwrap();
+            assert_eq!(
+                Up::decode(0, &body).unwrap(),
+                Up::Script {
+                    gateway: false,
+                    id,
+                    args: vec![Value::Bool(true)]
+                }
+            );
+        }
+    }
+
+    #[test]
     fn gateway_402_decodes() {
         // transport.md 10.4: the client's expected answer, type 0xFF, body pickle(402).
         let got = Up::decode(0xff, &[0x01, 0x04, 0x92, 0x01]).unwrap();

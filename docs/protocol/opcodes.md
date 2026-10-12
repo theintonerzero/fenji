@@ -61,5 +61,5 @@ Script message ids are numbers that the scripts' protocol enum assigns at load t
 | Id | Direction | Name | What it does | Tag | Evidence |
 |---|---|---|---|---|---|
 | 414 | S→C, `STC_PROTOCOL_SCRIPT` | `PROTOG2C_SET_NET_CONNECTED` (the handler logs this name) | Moves the client to `WORK`: it stores billing fields, calls `set_working`, fires `EVENT_NET_CONNECTED` and sends 402 ([`transport.md`](transport.md) §10) | **Inferred**; its effect **Observed** | `data/core/modules/net/net.luac` (the handler at id 414); M2R4, M2R4B, M2R5 |
-| 402 | C→S, `CTS_PROTOCOL_GATE_SCRIPT` | Unknown | Sent with no arguments right after 414: 2.3 s after it in each run | **Observed**; the name **Unknown** | net.luac; M2R4, M2R4B, M2R5 |
+| 402 | C→S, `CTS_PROTOCOL_GATE_SCRIPT` | Unknown | Sent with no arguments once 414 is handled: in each run, 2.3 s after we sent 414 | **Observed**; the name **Unknown** | net.luac; M2R4, M2R4B, M2R5 |
 | 556 | S→C | — | The server sends a chunk of Lua bytecode; the client runs it and answers with 278 and the chunk's MD5. Not needed by Fenji | **Inferred** | `data/core/client/net_manager.luac` |
