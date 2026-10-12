@@ -137,6 +137,14 @@ Read the wrapper's header before the first run.
 
 The client flags that reach the login scene in a dev run are in [spike-0 §8](spike-0.md#8-runtime-observation-isolated-stub-only) (`--gf-sdk=mocked` is dev-only, gate #11). Run the client with `scripts/spike/run-client.sh setup` once, then `run-client.sh run NAME … -- ARGS`; it adds fenji-stub and the AGT driver watchdog. Exit 3 means the watchdog saw a sign of driver activity and stopped the run: stop all runs and report. The script's header lists every exit status, and the watchdog's lists the signs.
 
+From M3, a run can use Fenji's own server and the launcher's ticket instead of the stub (`cargo build --release -p fenji-server -p fenji-launcher` first):
+- `--server CONFIG` runs `fenji-server` with a copy of CONFIG (a `fenji.toml` whose `login_bind` and `api_bind` are on 127.0.0.1) and waits for both ports. Its log is the run's `server.log`. A relative `[store] path` stays in the copy's folder: a fresh database each run.
+- `--server-data DIR` keeps the database between runs. DIR is a directory under `re/runs/` that holds no link or special file, and the config's `[store] path` must be absolute and inside it. The sandbox can write DIR, so open it on the host only before the first run (to create the account), or as a copy made with `watchdog.py collect`.
+- `--launch "ARGS"` runs `fenji-launch play --print ARGS` once the server is up, and needs `--launch-password FILE`. The file reaches the sandbox only on its standard input: it is never bound, copied, recorded, or named in an argument or the evidence. The client gets only the `gj_*` pairs, and `fenji-launch` may print nothing else. `io/launch.txt` records the pairs with the ticket redacted, and any Fenji ticket found in the evidence afterwards is redacted in place and listed in `redactions.txt`.
+- `--key T:KEY` and `--type T:TEXT` press a key (an X keysym name such as `Return` or `space`) or type printable ASCII T seconds into the run, as `--click` clicks (`xkey.py`, through XTEST). Presses run in time order, none after the timeout.
+
+If the server isn't ready or the launcher fails, the client isn't started and the run exits 7.
+
 ## Working rules
 
 - Static analysis of files on disk comes first. Runtime observation (Wine `WINEDEBUG`, the client's own log, stub sessions) happens only inside the sandbox, against our own stub or server, or in the guarded bare-metal play tests CLAUDE.md describes.
