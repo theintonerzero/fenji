@@ -5,6 +5,7 @@
 use crate::variant::VARIANT_COUNT;
 use crate::{Error, Result};
 
+/// The hello's length: 16 words, outside any frame (transport.md 2.1).
 pub const HELLO_LEN: usize = 64;
 /// `net_client_create`'s integer argument (net_manager.luac `0.20`), kept at ctx+0x50 by
 /// FUN_14029A900 (docs/protocol/login.md 2.6–2.7). A client whose `K` differs closes with

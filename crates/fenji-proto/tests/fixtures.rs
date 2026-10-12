@@ -2,7 +2,7 @@
 //! bytes and the machine fingerprint in the auth payload are synthetic.
 use fenji_proto::codec::StoredCodec;
 use fenji_proto::frame::{Frame, UpReader};
-use fenji_proto::handshake::{AuthMessage, Event, Server};
+use fenji_proto::handshake::{AuthMessage, Event, MAX_INBOUND, Server};
 use fenji_proto::header::split_message;
 use fenji_proto::hello::{CLIENT_MAGIC, check};
 use fenji_proto::packet::Up;
@@ -42,8 +42,10 @@ fn r2_auth() -> AuthMessage {
         }
     }
     assert_eq!(at, up.len(), "whole frames");
-    let (h, body, used) = split_message(&stream).expect("one whole message");
-    assert_eq!((h.ty, used), (0, stream.len()), "one auth message");
+    let (h, body, used) = split_message(&stream, MAX_INBOUND)
+        .unwrap()
+        .expect("one whole message");
+    assert_eq!((h.ty(), used), (0, stream.len()), "one auth message");
     AuthMessage::parse(body).unwrap()
 }
 

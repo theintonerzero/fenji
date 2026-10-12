@@ -55,12 +55,16 @@ impl AuthMessage {
     }
 }
 
+/// One inner message: its type, and the body its 4-byte header announces (transport.md 7.1; read
+/// by FUN_14029ABE0, written by FUN_14029AC60). Messages and frames are independent (7.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub ty: u8,
     pub body: Vec<u8>,
 }
 
+/// What the client's bytes complete: its auth message (§6), a time sync (4.6), or a later message,
+/// which the client sends only in `WORK` (7.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Auth(AuthMessage),
@@ -68,6 +72,8 @@ pub enum Event {
     Message(Message),
 }
 
+/// Where the session is. `accept` moves the client to `QUEUE` (transport.md 6.6) and `begin_work`
+/// to `WORK` (10.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     AwaitAuth,
@@ -95,18 +101,9 @@ impl State {
 pub(crate) fn drain_messages(stream: &mut Vec<u8>) -> Result<Vec<Message>> {
     let mut out = Vec::new();
     let mut at = 0;
-    loop {
-        if let Some(h) = stream.get(at..at + HEADER_LEN) {
-            let len = crate::header::Header::from_bytes(h.try_into().expect("4 bytes")).len;
-            if len > MAX_INBOUND {
-                return Err(Error::BodyTooLong(len));
-            }
-        }
-        let Some((h, body, used)) = split_message(&stream[at..]) else {
-            break;
-        };
+    while let Some((h, body, used)) = split_message(&stream[at..], MAX_INBOUND)? {
         out.push(Message {
-            ty: h.ty,
+            ty: h.ty(),
             body: body.to_vec(),
         });
         at += used;
@@ -133,6 +130,7 @@ pub(crate) fn frame_stream(
     Ok(out)
 }
 
+/// One client connection, from the server's side (module docs).
 pub struct Server {
     state: State,
     down_cipher: Cipher,
@@ -230,6 +228,12 @@ impl Server {
         // A 2-byte reason "ok" would be read as acceptance.
         if reason == b"ok" {
             return Err(Error::BadAuth("a reason of \"ok\" would accept".into()));
+        }
+        // The client reads its first message only once 5 bytes are there (transport.md 6.6).
+        if reason.is_empty() {
+            return Err(Error::BadAuth(
+                "an empty reason: the client would wait for a fifth byte".into(),
+            ));
         }
         let out = self.write(0, reason, codec)?;
         self.state = State::Closed;
