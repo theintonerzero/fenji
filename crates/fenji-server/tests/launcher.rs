@@ -45,10 +45,11 @@ async fn the_launcher_registers_signs_in_and_gets_a_ticket_the_gate_takes() {
         ),
         ("tester", "Fenji", s.login_addr.port())
     );
-    let mut bot = Bot::connect(s.login_addr, payload(&grant.ticket, &grant.account, true)).await;
-    bot.expect_work().await;
+    // As `fenji-launch play` does: the session ends before the client uses the ticket.
     let held = session.clone();
     api.sign_out(session).await.unwrap();
+    let mut bot = Bot::connect(s.login_addr, payload(&grant.ticket, &grant.account, true)).await;
+    bot.expect_work().await;
     let gone = api.game_token(&held).await.unwrap_err();
     assert!(
         matches!(gone, ApiError::Server { status: 401, ref code, .. } if code == "bad_session"),

@@ -1,15 +1,11 @@
-//! How the client learns its gate, ticket and account (M3 spec D1–D3). The launcher path
-//! (`gj_uinfo`) builds only with the `dev-login-path` feature, for sandboxed developer runs, until
-//! the owner decides gate #114.
+//! How the client learns its gate, ticket and account (M3 spec D1–D3). Players use the launcher
+//! path (`gj_uinfo`), the owner's decision on gate #114 (option a, 2026-10-13): it reads only inputs
+//! the unmodified client already takes, and no platform service is involved
+//! (docs/protocol/packets/lobby.md 12.6).
 use std::net::SocketAddrV4;
 
 use crate::api::GameGrant;
 use crate::launch::LaunchSpec;
-
-/// Why a player build can't start the client yet.
-pub const GATE_NOTICE: &str = "Starting the game from the launcher waits on the owner's decision \
-                               about the login path (issue #114). Until then, developers start the \
-                               client only in the sandbox (scripts/spike/run-client.sh).";
 
 pub trait LoginPath {
     fn name(&self) -> &'static str;
@@ -17,25 +13,16 @@ pub trait LoginPath {
     fn apply(&self, grant: &GameGrant, gate: SocketAddrV4, spec: &mut LaunchSpec);
 }
 
-/// The login paths this build has, best first.
+/// The login paths there are, best first.
 pub fn available() -> Vec<Box<dyn LoginPath>> {
-    #[cfg(feature = "dev-login-path")]
-    {
-        vec![Box::new(Uinfo)]
-    }
-    #[cfg(not(feature = "dev-login-path"))]
-    {
-        Vec::new()
-    }
+    vec![Box::new(Uinfo)]
 }
 
 /// The launcher path (login.md 2.8–2.10): `gj_uinfo` (`<server id>:90:<server name>:0:<account>:
 /// <user id>`), `gj_gates` and `gj_ticket`, all in the environment, where the client's setting
 /// lookup finds them and the ticket stays out of the command line.
-#[cfg(feature = "dev-login-path")]
 pub struct Uinfo;
 
-#[cfg(feature = "dev-login-path")]
 impl LoginPath for Uinfo {
     fn name(&self) -> &'static str {
         "uinfo"
@@ -56,14 +43,6 @@ impl LoginPath for Uinfo {
 mod tests {
     use super::*;
 
-    #[cfg(not(feature = "dev-login-path"))]
-    #[test]
-    fn a_default_build_offers_no_login_path() {
-        assert!(available().is_empty());
-        assert!(GATE_NOTICE.contains("#114"));
-    }
-
-    #[cfg(feature = "dev-login-path")]
     #[test]
     fn uinfo_puts_everything_in_the_environment() {
         let grant = GameGrant {

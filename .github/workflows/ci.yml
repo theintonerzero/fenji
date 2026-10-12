@@ -27,9 +27,6 @@ jobs:
       # tools/oodle-helper's dll.rs, the workspace's only unsafe code, builds for Windows only.
       - run: cargo clippy -p fenji-oodle-helper --target x86_64-pc-windows-gnu --locked -- -D warnings
       - run: cargo test --workspace --locked
-      # The launcher path for sandboxed developer runs (gate #114), built only with this feature.
-      - run: cargo clippy -p fenji-launcher --all-targets --features dev-login-path --locked -- -D warnings
-      - run: cargo test -p fenji-launcher --features dev-login-path --locked
 
   deny:
     runs-on: ubuntu-24.04

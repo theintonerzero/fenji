@@ -28,7 +28,13 @@ impl Settings {
     pub fn save(&self, dir: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join(format!("{FILE}.tmp"));
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(&serde_json::to_vec_pretty(self)?)?;
+            // On disk before the rename, so a power cut can't leave an empty file in its place.
+            f.sync_all()?;
+        }
         std::fs::rename(&tmp, dir.join(FILE))?;
         Ok(())
     }

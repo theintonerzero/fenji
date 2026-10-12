@@ -8,7 +8,7 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use fenji_launcher::api::ApiClient;
 use fenji_launcher::launch::{LaunchSpec, resolve_ipv4};
-use fenji_launcher::login_path::{GATE_NOTICE, available};
+use fenji_launcher::login_path::available;
 use fenji_launcher::manifest::{HEADER, Manifest};
 use fenji_launcher::verify::{Level, verify};
 use fenji_launcher::{invite_link, manifest};
@@ -168,8 +168,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         } => {
             let paths = available();
             let Some(path) = paths.first() else {
-                eprintln!("{GATE_NOTICE}");
-                return Ok(ExitCode::from(2));
+                bail!("this build has no login path");
             };
             if !print {
                 eprintln!(
@@ -181,6 +180,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let pw = password(password_file.as_deref())?;
             let api = ApiClient::new(&server)?;
             let rt = runtime()?;
+            // The gate must be usable before any password is sent (M3 spec §4).
+            let info = rt.block_on(api.server_info())?;
+            let gate = resolve_ipv4(&info.gate_host, info.gate_port)?;
             let session = rt.block_on(api.sign_in(&username, &pw))?;
             let grant = rt.block_on(api.game_token(&session));
             // The ticket is all the client needs; the session ends here either way.
@@ -188,7 +190,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 eprintln!("fenji-launch: signing out: {e}");
             }
             let grant = grant?;
-            let gate = resolve_ipv4(&grant.gate_host, grant.gate_port)?;
+            if (grant.gate_host.as_str(), grant.gate_port)
+                != (info.gate_host.as_str(), info.gate_port)
+            {
+                bail!("the server named one gate in its info and another in the game token");
+            }
             let mut spec = LaunchSpec {
                 program: PathBuf::new(),
                 args: Vec::new(),

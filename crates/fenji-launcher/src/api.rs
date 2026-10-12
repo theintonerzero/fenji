@@ -11,13 +11,15 @@ use serde_json::{Value, json};
 
 /// How long one request may take.
 pub const TIMEOUT: Duration = Duration::from_secs(15);
+/// The largest answer read; the API's own are a few hundred bytes.
+pub const MAX_ANSWER: usize = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     #[error("the server address must start with https:// (http:// only for this machine)")]
     Insecure,
-    #[error("{0:?} is not a server address")]
-    BadUrl(String),
+    #[error("that isn't a server address: give https://host or https://host:port")]
+    BadUrl,
     #[error("the server answered {code} (HTTP {status})")]
     Server {
         status: u16,
@@ -117,23 +119,26 @@ fn loopback(url: &Url) -> bool {
 impl ApiClient {
     /// A client for the server at `server` (`https://host[:port]`, or `http://` on this machine).
     pub fn new(server: &str) -> Result<Self, ApiError> {
-        let base = Url::parse(server).map_err(|_| ApiError::BadUrl(server.into()))?;
+        let base = Url::parse(server).map_err(|_| ApiError::BadUrl)?;
         match base.scheme() {
             "https" => {}
             "http" if loopback(&base) => {}
             "http" => return Err(ApiError::Insecure),
-            _ => return Err(ApiError::BadUrl(server.into())),
+            _ => return Err(ApiError::BadUrl),
         }
         if base.host_str().is_none() {
-            return Err(ApiError::BadUrl(server.into()));
+            return Err(ApiError::BadUrl);
         }
         crypto();
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(TIMEOUT)
             // A redirect could carry a password to another place, or to http://.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| ApiError::Http(e.to_string()))?;
+            .redirect(reqwest::redirect::Policy::none());
+        if loopback(&base) {
+            // Plain http stays on this machine: never through a proxy from the environment.
+            builder = builder.no_proxy();
+        }
+        let http = builder.build().map_err(describe)?;
         Ok(Self { base, http })
     }
 
@@ -144,10 +149,7 @@ impl ApiClient {
         bearer: Option<&str>,
         body: Option<Value>,
     ) -> Result<Option<T>, ApiError> {
-        let url = self
-            .base
-            .join(path)
-            .map_err(|_| ApiError::BadUrl(path.into()))?;
+        let url = self.base.join(path).map_err(|_| ApiError::BadUrl)?;
         let mut req = self.http.request(method, url);
         if let Some(t) = bearer {
             req = req.bearer_auth(t);
@@ -155,16 +157,15 @@ impl ApiClient {
         if let Some(b) = body {
             req = req.json(&b);
         }
-        // Without the URL: the error's text stays free of anything a user typed.
-        let res = req
-            .send()
-            .await
-            .map_err(|e| ApiError::Http(e.without_url().to_string()))?;
+        let mut res = req.send().await.map_err(describe)?;
         let status = res.status();
-        let bytes = res
-            .bytes()
-            .await
-            .map_err(|e| ApiError::Http(e.without_url().to_string()))?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = res.chunk().await.map_err(describe)? {
+            if bytes.len() + chunk.len() > MAX_ANSWER {
+                return Err(ApiError::Decode("the server's answer is too large".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         if !status.is_success() {
             return Err(server_error(status.as_u16(), &bytes));
         }
@@ -224,23 +225,73 @@ impl ApiClient {
     }
 
     /// A single-use game token, valid for about a minute.
+    /// Refused unless every field is one the login path can pass on unchanged (`GameGrant::check`).
     pub async fn game_token(&self, session: &Session) -> Result<GameGrant, ApiError> {
-        self.expect(
-            Method::POST,
-            "/api/v1/game-tokens",
-            Some(&session.token),
-            None,
-        )
-        .await
+        let grant: GameGrant = self
+            .expect(
+                Method::POST,
+                "/api/v1/game-tokens",
+                Some(&session.token),
+                None,
+            )
+            .await?;
+        grant.check()?;
+        Ok(grant)
     }
 }
 
-/// The error an answer's status and body describe: the body's `error` code, or `unknown`.
+/// A network error with its causes ("error sending request: client error (Connect): tcp connect
+/// error: Connection refused"), without the URL, so nothing a user typed is shown.
+fn describe(e: reqwest::Error) -> ApiError {
+    let e = e.without_url();
+    let mut text = e.to_string();
+    let mut cause = std::error::Error::source(&e);
+    while let Some(c) = cause {
+        text.push_str(": ");
+        text.push_str(&c.to_string());
+        cause = c.source();
+    }
+    ApiError::Http(text)
+}
+
+impl GameGrant {
+    /// The ticket is `fenji1-` and 64 hex digits, and the names hold no colon (the client splits
+    /// `gj_uinfo` on colons) and no control character: a server can't bend the login fields.
+    pub fn check(&self) -> Result<(), ApiError> {
+        let ticket_ok = self
+            .ticket
+            .strip_prefix("fenji1-")
+            .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+        let plain = |s: &str| !s.is_empty() && !s.chars().any(|c| c == ':' || c.is_control());
+        if !ticket_ok
+            || !plain(&self.server_name)
+            || !plain(&self.account)
+            || !plain(&self.gate_host)
+        {
+            return Err(ApiError::Decode(
+                "the game token's fields aren't ones the client can take".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The error an answer's status and body describe: the body's `error` code when it is a plain
+/// code (`[a-z0-9_]`, up to 64), so a hostile server can't put terminal sequences on the screen;
+/// otherwise `unknown`.
 fn server_error(status: u16, body: &[u8]) -> ApiError {
     let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let code = v["error"]
+        .as_str()
+        .filter(|c| {
+            (1..=64).contains(&c.len())
+                && c.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        })
+        .unwrap_or("unknown");
     ApiError::Server {
         status,
-        code: v["error"].as_str().unwrap_or("unknown").to_string(),
+        code: code.to_string(),
         retry_after_secs: v["retry_after_secs"].as_u64(),
     }
 }

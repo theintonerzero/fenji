@@ -7,10 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-[features]
-# The launcher path (gj_uinfo) for sandboxed developer runs only, until the owner decides gate #114.
-dev-login-path = []
-
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

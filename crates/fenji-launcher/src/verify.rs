@@ -36,6 +36,9 @@ fn executable(path: &str) -> bool {
 
 /// Compares `root` with `m`. Files the manifest doesn't list are ignored.
 pub fn verify(root: &Path, m: &Manifest, level: Level) -> anyhow::Result<Report> {
+    if !root.is_dir() {
+        anyhow::bail!("there is no folder at {}", root.display());
+    }
     let mut report = Report::default();
     let mut to_hash: Vec<(usize, PathBuf)> = Vec::new();
     for (i, e) in m.entries.iter().enumerate() {
@@ -46,7 +49,12 @@ pub fn verify(root: &Path, m: &Manifest, level: Level) -> anyhow::Result<Report>
                 report.missing.push(e.path.clone());
                 continue;
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
                 report.missing.push(e.path.clone());
                 continue;
             }
@@ -71,6 +79,16 @@ pub fn verify(root: &Path, m: &Manifest, level: Level) -> anyhow::Result<Report>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_folder_is_an_error_and_a_file_in_the_way_is_missing() {
+        let (d, m) = tree();
+        assert!(verify(&d.path().join("nope"), &m, Level::Quick).is_err());
+        std::fs::remove_dir_all(d.path().join("data")).unwrap();
+        std::fs::write(d.path().join("data"), b"a file where a folder was").unwrap();
+        let r = verify(d.path(), &m, Level::Quick).unwrap();
+        assert_eq!(r.missing, vec!["data/data000".to_string()]);
+    }
 
     fn tree() -> (tempfile::TempDir, Manifest) {
         let d = tempfile::tempdir().unwrap();

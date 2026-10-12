@@ -8,12 +8,26 @@ pub const STEAM_APP_ID: u32 = 1418100;
 /// The archive mount the client needs (login.md §1: `--fs=<dir>:<data index>:<asset index>`).
 pub const FS_ARG: &str = "--fs=data:_index:_index";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Its `Debug` shows the environment's names, not their values: the login path puts the ticket
+/// there.
+#[derive(Clone, PartialEq, Eq)]
 pub struct LaunchSpec {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub cwd: PathBuf,
+}
+
+impl std::fmt::Debug for LaunchSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.env.iter().map(|(k, _)| k.as_str()).collect();
+        f.debug_struct("LaunchSpec")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("env", &names)
+            .field("cwd", &self.cwd)
+            .finish()
+    }
 }
 
 /// Where the client runs.
@@ -33,6 +47,10 @@ pub enum Platform {
 pub enum LaunchError {
     #[error("{0} has no IPv4 address; the game client can only connect to IPv4 gates")]
     NoIpv4(String),
+    #[error("can't look up {0}: {1}")]
+    Lookup(String, String),
+    #[error("{0} ({1}) can't be a gate: it isn't one machine's address")]
+    Unusable(String, std::net::Ipv4Addr),
 }
 
 /// The command that starts the client in `client` (the folder holding `bin64/` and `data/`), run
@@ -71,21 +89,49 @@ pub fn base_spec(client: &Path, platform: &Platform) -> LaunchSpec {
 
 /// The gate as a dotted IPv4 address: the client parses it with `inet_addr` (transport.md 1.1).
 pub fn resolve_ipv4(host: &str, port: u16) -> Result<SocketAddrV4, LaunchError> {
-    (host, port)
+    let addrs = (host, port)
         .to_socket_addrs()
-        .ok()
-        .and_then(|mut addrs| {
-            addrs.find_map(|a| match a {
-                SocketAddr::V4(v4) => Some(v4),
-                SocketAddr::V6(_) => None,
-            })
+        .map_err(|e| LaunchError::Lookup(host.to_string(), e.to_string()))?;
+    let gate = addrs
+        .filter_map(|a| match a {
+            SocketAddr::V4(v4) => Some(v4),
+            SocketAddr::V6(_) => None,
         })
-        .ok_or_else(|| LaunchError::NoIpv4(host.to_string()))
+        .next()
+        .ok_or_else(|| LaunchError::NoIpv4(host.to_string()))?;
+    let ip = *gate.ip();
+    if ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast() {
+        return Err(LaunchError::Unusable(host.to_string(), ip));
+    }
+    Ok(gate)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_spec_never_shows_its_environment_values() {
+        let spec = LaunchSpec {
+            program: "x".into(),
+            args: vec![],
+            env: vec![("gj_ticket".into(), "fenji1-secret".into())],
+            cwd: "/".into(),
+        };
+        let shown = format!("{spec:?}");
+        assert!(
+            shown.contains("gj_ticket") && !shown.contains("secret"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn an_unusable_gate_address_is_refused() {
+        for host in ["0.0.0.0", "255.255.255.255", "224.0.0.1"] {
+            let e = resolve_ipv4(host, 7800).unwrap_err().to_string();
+            assert!(e.contains("can't be a gate"), "{host}: {e}");
+        }
+    }
 
     #[test]
     fn linux_runs_umu_in_its_own_prefix_from_bin64() {
@@ -149,9 +195,11 @@ mod tests {
 
     #[test]
     fn gate_without_ipv4_is_a_clear_error() {
-        for host in ["no-such-host.invalid", "::1"] {
-            let e = resolve_ipv4(host, 7800).unwrap_err().to_string();
-            assert!(e.contains("no IPv4 address"), "{e}");
-        }
+        let e = resolve_ipv4("::1", 7800).unwrap_err().to_string();
+        assert!(e.contains("no IPv4 address"), "{e}");
+        let e = resolve_ipv4("no-such-host.invalid", 7800)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("can't look up no-such-host.invalid"), "{e}");
     }
 }
