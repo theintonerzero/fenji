@@ -111,7 +111,7 @@ The strings, the key lengths and the tail constants are **Observed**; the famili
 | 5.5 | A raw length of 0 (prefix `00`, or `FF`): if the decoder succeeds, nothing is appended and nothing fails; if it fails, error 0x5F5E101. | **Inferred** | T13 |
 | 5.6 | One decoder state per connection (FUN_14029B020): a copy (`OodleNetwork1TCP_State_InitAsCopy`) of the state the client trained at start-up from `gate_dictionary.bin`, used with the shared dictionary built from the same file (FUN_14029B150). The state is passed to every decode, so our encoder would have to start from the same dictionary and trained state and encode every frame in order. | **Inferred** | T14 |
 | 5.7 | The dictionary image. The net module's set-up (FUN_140222740) loads `data/core/share/gate_dictionary.bin` whole (FUN_140222360). Its first 16 bytes must equal the MD5 of the file with those 16 bytes zeroed (FUN_1400B5B30: the MD5 start values at 0x1400B5B59–0x1400B5B6E, and its first round constant 0xD76AA478 at 0x1400B5C5E); otherwise the file is rejected. FUN_14029B150 then reads the window size (`u32` at +0x14), a byte at +0x12 that it passes to `OodleNetwork1_Shared_Size` and `OodleNetwork1_Shared_SetWindow`, the window from +0x1C, and the trained state after the window (rounded up to 32 bytes). Without a valid file, FUN_14029A6A0 builds a stand-in dictionary from one built-in 1-byte packet (0x1411ADEE8). | **Inferred**; constants **Observed** | T14 |
-| 5.8 | A stored packet passes the decoder: a body whose raw-length prefix equals the length of the bytes after it, those bytes unencoded. In runs m2-r3 and m2-r3b the client decoded one such packet, the first on its connection with a one-byte prefix (7 and 39 bytes of body), and parsed the message it held. A stored `ok` kept the client connected for the whole run. A stored rejection closed it at once, logged as `NET_ST_CLOSED_AUTH(7)` with our reason, and showed our text (§9). In m2-r4 and m2-r4b the client also decoded a second stored packet, with 17 and 87 bytes of body. That the decoder accepts every stored packet, longer prefixes included, so that the server needs no Oodle Network encoder, is our inference. What the decoder does with a raw length of 0 is still **Unknown**. | Runs **Observed**; the generalisation **Inferred** | M2R3, M2R3B, M2R4, M2R4B |
+| 5.8 | A stored packet passes the decoder: a body whose raw-length prefix equals the length of the bytes after it, those bytes unencoded. In runs m2-r3 and m2-r3b the client decoded one such packet, the first on its connection with a one-byte prefix (7 and 39 bytes of body), and parsed the message it held. A stored `ok` kept the client connected for the whole run. A stored rejection closed it at once, logged as `NET_ST_CLOSED_AUTH(7)` with our reason, and showed our text (§9). In m2-r4 and m2-r4b the client also decoded a second stored packet, with 17 and 87 bytes of body, and in m2-r6 one with the three-byte prefix: `FC` and a raw length of 389. The `FD` and `FE` prefixes can't occur, since each raw length must stay at or below 0x4080 (5.4). That the decoder accepts every stored packet, so that the server needs no Oodle Network encoder, is our inference. What the decoder does with a raw length of 0 is still **Unknown**. | Runs **Observed**; the generalisation **Inferred** | M2R3, M2R3B, M2R4, M2R4B, M2R6 |
 | 5.9 | Not the network: the client's one `OodleLZ_Decompress` call site (FUN_14024E060, one of spike-0 4.6's wrappers) passes 14 arguments: the block plus 4, the block's length minus 4, the output, the `u32` read from the block's first 4 bytes as the raw length, then 1, eight zeros and 3 (call at 0x14024E0AB). So that wrapper's blocks start with a `u32` raw length. Whether the archives' codec-4 blocks use it is Task 11's question. | **Inferred**; constants **Observed** | T17 |
 
 | First byte `b` | Prefix bytes | Raw length |
@@ -169,21 +169,21 @@ The length counts the body only, up to 0xFFFFFF.
 
 ## 8. Open questions
 
-- **`QUEUE` → `WORK`.** Answered: the script message `PROTOG2C_SET_NET_CONNECTED` (§10), seen to work in runs m2-r4 to m2-r5 (§9).
+- **`QUEUE` → `WORK`.** Answered: the script message `PROTOG2C_SET_NET_CONNECTED` (§10), seen to work in runs m2-r4 to m2-r6 (§9).
 - **Payload encoding.** Answered for the script opcodes and the auth payload: the client's pickle, LZ4-compressed from 128 bytes up ([`payloads.md`](payloads.md)). The other opcodes' bodies are per-type native formats ([`opcodes.md`](opcodes.md)).
 - **Server time syncs.** Nothing found waits for one. The client's scripts start sending type-2 time-sync messages once a character is in the world, and the reply's format is read (10.6).
 - **Script message 402,** sent after `WORK`: its name and what the gate answers.
-- **R3.** Answered as far as tested: stored packets decode, a later and longer one under the stepped key included (5.8, §9).
+- **R3.** Answered: stored packets decode, a later and longer one under the stepped key included, and one with the three-byte `FC` prefix (5.8, §9).
 - **The 16 auth bytes.** Zero in every run (§9); whether that means the stand-in dictionary is open (6.3).
 - **The real server's choices.** The `ok` message's type (6.7), and what the server did with the 16 bytes and the MAC address.
 
 ## 9. Runs
 
-M2 plan Tasks 8 and 10 ran the pinned client against `fenji-stub --speak` inside `scripts/spike/run-client.sh`. Every run used:
+M2 plan Tasks 8 and 10 ran the pinned client against `fenji-stub --speak` inside `scripts/spike/run-client.sh`, and m2-r6 checked the `FC` prefix after the v0.3.0 release (issue #88). Every run used:
 - the sandbox options `--no-root --x11 99 --cpu-topology`, with the AGT driver watchdog armed;
 - the stub on 127.0.0.1:7800 with variants 3 and 3;
 - the client arguments `--gf-sdk=mocked --fs=data:_index:_index`, and one of two login paths:
-  - m2-r1 to m2-r4b, the launcher path ([`login.md`](login.md) 2.8–2.10): the environment variable `gj_uinfo=1:90:Fenji:0:tester:1`, and the client arguments `gj_gates=127.0.0.1:7800 gj_ticket=fenji-dev`;
+  - m2-r1 to m2-r4b and m2-r6, the launcher path ([`login.md`](login.md) 2.8–2.10): the environment variable `gj_uinfo=1:90:Fenji:0:tester:1`, and the client arguments `gj_gates=127.0.0.1:7800 gj_ticket=fenji-dev`;
   - m2-r5, the server-list path ([`login.md`](login.md) §3), as run m1-c3: a local server list (`serverlist_url=file:///…/serverlist.json`) whose one entry points at the stub, then two clicks, on the entry and on the confirm button. The mocked SDK supplies the ticket and the language (German).
 
 | Run | The stub's reply to the auth | What the stub saw | Verdict | Watchdog | Exit |
@@ -194,6 +194,7 @@ M2 plan Tasks 8 and 10 ran the pinned client against `fenji-stub --speak` inside
 | m2-r4 | `ok`, then `PROTOG2C_SET_NET_CONNECTED` with an empty billing table (10.4), each in a stored frame | the hello and the auth as in m2-r1; 2.3 s after our two frames, one message of type 0xFF whose body is the pickle of (402), `01 04 92 01`; then time syncs until the timeout. `gujianol.log`: `[net]net connected...`, then a script error from a listener of `EVENT_NET_CONNECTED` that formats a billing number (`bad argument #1 to '?' (number expected, got nil)`) | the client reached `WORK` and sent its first script message: R4 passes | no sign | 0 |
 | m2-r4b | as m2-r4, with the four billing fields set to 0 | as m2-r4: the message with 402 at 2.3 s; `[net]net connected...` and no script error | R4 passes, without the error | no sign | 0 |
 | m2-r5 | as m2-r4b | the hello; an auth whose payload is 285 bytes, LZ4-compressed ([`payloads.md`](payloads.md) P.6); 2.3 s after our two frames, the message with 402; `[net]net connected...` and no script error | the server-list path reaches `WORK` too: R5 passes | no sign | 0 |
+| m2-r6 | as m2-r4b, with the work message padded by a fifth argument of 300 bytes (`--work-pad=300`): a 385-byte body, so its stored packet has the `FC` prefix | as m2-r4b: 2.4 s after our two frames, the message with 402; `[net]net connected...` and the same log lines as m2-r4b, no script error. The second frame is 392 bytes (its length XOR the key 0xD736): `FC`, the raw length 389, then the 389 bytes | the `FC` prefix decodes | no sign | 0 |
 
 **Observed:**
 - **The hello passes.** The client accepted a hello built by `fenji_proto::hello::build` with w0 % 27 = w1 % 27 = 3 (§2), and answered with its auth message.
@@ -203,6 +204,7 @@ M2 plan Tasks 8 and 10 ran the pinned client against `fenji-stub --speak` inside
 - **Time syncs.** The client sent one every 2,000 ms, before `ok`, after it and in `WORK` (4.6). It sent no type-2 time-sync message, as 10.6 expects before a character is in the world.
 - **Stored packets.** A stored `ok` kept the client connected, and a stored rejection reason closed it at once, was logged with state 7 `CLOSED_AUTH`, and was shown to the player (5.8, 6.6). By 5.3's reading, a decode failure would have closed the connection with 0x5F5E101 at once.
 - **Later and longer stored packets, and the server's key step.** In m2-r4 and m2-r4b the second stored packet on the connection, 17 and 87 bytes of body, went out under the stepped key 0xD736 (4.3), and the client acted on it.
+- **The three-byte prefix.** In m2-r6 the second stored packet had the prefix `FC 85 01`, a raw length of 389, and the client acted on it: it logged `[net]net connected...` and sent 402 (5.8). The handler took the fifth argument without an error.
 - **`WORK`.** After `PROTOG2C_SET_NET_CONNECTED` the client logged `[net]net connected...` and sent the script message 402 to the gate (`CTS_PROTOCOL_GATE_SCRIPT`) with no arguments, on both login paths: 10.3–10.4 hold. The fixture `crates/fenji-proto/tests/fixtures/r4b-*.hex` holds m2-r4b's hello, our two frames and the client's first three frames, scrubbed. A test checks that `fenji-proto`'s server sends exactly our two frames for that hello, and that it decodes the client's time sync and its message with 402.
 
 **Inferred:**
@@ -257,6 +259,7 @@ From `QUEUE` on, the client's inbound messages go to its scripts, and one script
 | M2R4 | `re/stub-logs/m2-r4/`, `re/runs/out/m2-r4/` (`gujianol.log` line 59, `[net]net connected...`; lines 60 and 75, the listener's error), `re/m2/m2-r4.console` | Run m2-r4: `WORK` and the message with 402, with an empty billing table |
 | M2R4B | `re/stub-logs/m2-r4b/`, `re/runs/out/m2-r4b/` (`gujianol.log` line 59), `re/m2/m2-r4b.console` | Run m2-r4b: as m2-r4, the billing fields 0, no error; the source of the `r4b` fixtures |
 | M2R5 | `re/stub-logs/m2-r5/` (`.auth.bin`: the compressed payload), `re/runs/out/m2-r5/` (`gujianol.log` line 57), `re/m2/m2-r5.console` | Run m2-r5: the server-list path to `WORK` |
+| M2R6 | `re/stub-logs/m2-r6/` (`.log`: the 394-byte second frame at offset 73), `re/runs/out/m2-r6/` (`gujianol.log` line 59), `re/m2/m2-r6.console` | Run m2-r6: a stored packet with the `FC` prefix |
 | L3 | `re/m2/runs.md` | Each run's prediction, written before it, and its outcome |
 | L4 | `re/m2/scrub_r2.py`, `re/m2/scrub_r2_fields.py`, `re/m2/fixtures_r4b.py` | The independent decryption (Python and `openssl`) and the scrubbing that made the fixtures |
 

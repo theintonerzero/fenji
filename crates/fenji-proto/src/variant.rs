@@ -8,6 +8,7 @@ use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use crate::hello::HELLO_LEN;
 use crate::{Error, Result};
 
+/// The client's variants: the hello picks each direction's as a word mod 27 (transport.md 2.5).
 pub const VARIANT_COUNT: u32 = 27;
 /// Case 3: the hello folded to 16 bytes, then AES (init FUN_140299C50, encrypt FUN_140299B90,
 /// decrypt FUN_140299AD0).

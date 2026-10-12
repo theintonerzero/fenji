@@ -32,7 +32,8 @@ impl Up {
                     .ok_or_else(|| Error::Pickle("a script message with no id".into()))?;
                 if !matches!(id, Value::Int(_) | Value::Float(_) | Value::Str(_)) {
                     return Err(Error::Pickle(format!(
-                        "a script message id must be a number or string, not {id:?}"
+                        "a script message id must be a number or string, not {}",
+                        id.kind()
                     )));
                 }
                 Ok(Self::Script {
@@ -181,5 +182,15 @@ mod tests {
         }
         assert!(Up::decode(0xff, &[0x00]).is_err(), "no values at all");
         assert!(Up::decode(0, &[0x01, 0x11]).is_err(), "bad pickle");
+        // A refused id is named by its kind, not printed.
+        let big = Value::Table(Table {
+            array: vec![Value::Nil; 1000],
+            hash: vec![],
+        });
+        let body = pickle::encode(&[big]).unwrap();
+        assert_eq!(
+            Up::decode(0xff, &body).unwrap_err().to_string(),
+            "pickle: a script message id must be a number or string, not a table"
+        );
     }
 }

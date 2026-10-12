@@ -2,12 +2,13 @@
 //! messages and the auth payload. FUN_1400D5850 (header FUN_1400D56D0, values FUN_1400D4AC0)
 //! unpacks it; `kslua_pickle_pack` (FUN_1400D54F0) packs it. A packet is a count of values, then
 //! the values, each a tag and its data, little-endian. A packet of 128 bytes or more usually
-//! arrives LZ4-compressed (payloads.md P.1, P.5). Fenji reads tags 00–0C, compressed or not, and
-//! writes them uncompressed, which the client reads too. It handles no table references and no
-//! "magic" objects, and refuses an empty packet, which the client reads as no values. The
-//! client's table caches use the same format with those two forms: `fenji_data::cache` reads them
-//! (docs/re/m2-tables.md §2). The two readers share the format but not code, as fenji-proto
-//! depends on nothing internal; a server that must read references from peers would join them.
+//! arrives LZ4-compressed (payloads.md P.1, P.5). Fenji reads every form the client writes,
+//! compressed or not: the header's table count, table references and "magic" objects included
+//! (payloads.md P.3), within [`MAX_DECODED`] values a packet. It writes them uncompressed, which
+//! the client reads too, and refuses an empty packet, which the client reads as no values. The
+//! client's table caches use the same format: `fenji_data::cache` reads those into an arena, as
+//! they are far larger; fenji-proto depends on nothing internal, so the two share the format, not
+//! code.
 use crate::{Error, Result};
 
 /// One value.
@@ -21,6 +22,32 @@ pub enum Value {
     Table(Table),
     /// Tag 0C, a null light userdata.
     Null,
+    /// Tags 0E, 0F and 10: the table with this index in the order the client numbers them, which
+    /// [`tables`] lists. Only the first tables the header counts can be named (FUN_1400D4AC0).
+    Ref(u32),
+    /// Tag 0D: a "magic" object, which the client rebuilds with the constructor registered under
+    /// `name` (payloads.md P.3), e.g. a `Float4` from four numbers.
+    Magic {
+        name: Vec<u8>,
+        arg: Box<Value>,
+    },
+}
+
+impl Value {
+    /// What kind of value this is, for a message about it: a peer's value is never printed whole.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Value::Nil => "nil",
+            Value::Bool(_) => "a boolean",
+            Value::Int(_) => "an integer",
+            Value::Float(_) => "a float",
+            Value::Str(_) => "a string",
+            Value::Table(_) => "a table",
+            Value::Null => "a null userdata",
+            Value::Ref(_) => "a table reference",
+            Value::Magic { .. } => "a magic object",
+        }
+    }
 }
 
 /// A Lua table: the array part (indices 1, 2, …) and the other pairs, in wire order.
@@ -30,13 +57,19 @@ pub struct Table {
     pub hash: Vec<(Value, Value)>,
 }
 
-/// Tables nest at most this deep ("unpack table too depth!", FUN_1400D4AC0).
-pub const MAX_DEPTH: usize = 32;
+/// Tables nest at most this deep. The client counts from 1 and refuses a table that takes the
+/// count past 32, both unpacking ("unpack table too depth!", FUN_1400D5850, FUN_1400D4AC0) and
+/// packing (FUN_1400D33F0, FUN_1400D3950): payloads.md P.2.
+pub const MAX_DEPTH: usize = 31;
 /// The largest raw size a compressed packet may declare ("pkt bad size, too large zip size",
 /// FUN_1400D55C0).
 pub const MAX_UNZIPPED: usize = 0x10_0000;
-/// The most values a packet without table references holds (its count byte stays below 0x80).
+/// The most top-level values a packet holds (the count byte's low 7 bits).
 pub const MAX_VALUES: usize = 0x7f;
+/// The most values one packet decodes into, every value read counting, a table's end marker
+/// included (#84). A compressed packet of a few KiB can unzip to [`MAX_UNZIPPED`] bytes, about a
+/// million values; this bounds what a peer can make the server allocate per message.
+pub const MAX_DECODED: usize = 1 << 16;
 /// The most array slots reserved up front for a table, whatever count it declares. Nested tables
 /// may each declare a count as large as the rest of the input; reserving that much at every level
 /// would let a 1 MiB message claim gigabytes. Past this, the array grows as values are read, and
@@ -47,79 +80,168 @@ fn err<T>(what: impl Into<String>) -> Result<T> {
     Err(Error::Pickle(what.into()))
 }
 
-/// Encodes `values` with the shortest integer and string forms.
+/// Encodes `values` with the shortest integer, string and reference forms. A packet with a
+/// [`Value::Ref`] gets the header's table count, as the client's packer writes it (every table
+/// counted); one without keeps the one-byte count.
 pub fn encode(values: &[Value]) -> Result<Vec<u8>> {
     if values.len() > MAX_VALUES {
         return err(format!("{} values, at most {MAX_VALUES}", values.len()));
     }
-    let mut out = vec![values.len() as u8];
-    for v in values {
-        put(v, 0, &mut out)?;
+    let mut w = Writer {
+        out: Vec::new(),
+        registered: 0,
+    };
+    if values.iter().any(has_ref) {
+        let n = tables(values).len();
+        let Some(n) = u32::try_from(n).ok().filter(|&n| n < 1 << 24) else {
+            return err(format!("{n} tables, at most 2^24 - 1"));
+        };
+        w.out.push(0x80 | values.len() as u8);
+        w.out.extend_from_slice(&n.to_be_bytes()[1..]);
+    } else {
+        w.out.push(values.len() as u8);
     }
-    Ok(out)
+    for v in values {
+        w.put(v, 0)?;
+    }
+    Ok(w.out)
 }
 
-fn put(v: &Value, depth: usize, out: &mut Vec<u8>) -> Result<()> {
-    match v {
-        Value::Nil => out.push(0x00),
-        Value::Bool(true) => out.push(0x01),
-        Value::Bool(false) => out.push(0x02),
-        Value::Int(n) => {
-            if let Ok(x) = i8::try_from(*n) {
-                out.push(0x03);
-                out.extend_from_slice(&x.to_le_bytes());
-            } else if let Ok(x) = i16::try_from(*n) {
-                out.push(0x04);
-                out.extend_from_slice(&x.to_le_bytes());
-            } else if let Ok(x) = i32::try_from(*n) {
-                out.push(0x05);
-                out.extend_from_slice(&x.to_le_bytes());
-            } else {
-                out.push(0x06);
-                out.extend_from_slice(&n.to_le_bytes());
-            }
-        }
-        Value::Float(f) => {
-            out.push(0x07);
-            out.extend_from_slice(&f.to_le_bytes());
-        }
-        Value::Str(s) => {
-            if let Ok(n) = u8::try_from(s.len()) {
-                out.push(0x08);
-                out.push(n);
-            } else if let Ok(n) = u16::try_from(s.len()) {
-                out.push(0x09);
-                out.extend_from_slice(&n.to_le_bytes());
-            } else if let Ok(n) = u32::try_from(s.len()) {
-                out.push(0x0a);
-                out.extend_from_slice(&n.to_le_bytes());
-            } else {
-                return err("a string over 4 GiB");
-            }
-            out.extend_from_slice(s);
-        }
-        Value::Table(t) => {
-            if depth >= MAX_DEPTH {
-                return err(format!("tables nested over {MAX_DEPTH} deep"));
-            }
-            let n = u32::try_from(t.array.len()).or_else(|_| err("an array over 2^32 values"))?;
-            out.push(0x0b);
-            out.extend_from_slice(&n.to_le_bytes());
-            for a in &t.array {
-                put(a, depth + 1, out)?;
-            }
-            for (k, v) in &t.hash {
-                if *k == Value::Nil {
-                    return err("a nil key would end the table");
+/// Every table in `values`, in the order the client numbers them: a table before its contents,
+/// its array part, then each key and value, in wire order. [`Value::Ref`] indexes this list.
+pub fn tables(values: &[Value]) -> Vec<&Table> {
+    fn walk<'a>(v: &'a Value, out: &mut Vec<&'a Table>) {
+        match v {
+            Value::Table(t) => {
+                out.push(t);
+                for a in &t.array {
+                    walk(a, out);
                 }
-                put(k, depth + 1, out)?;
-                put(v, depth + 1, out)?;
+                for (k, v) in &t.hash {
+                    walk(k, out);
+                    walk(v, out);
+                }
             }
-            out.push(0x00);
+            Value::Magic { arg, .. } => walk(arg, out),
+            _ => {}
         }
-        Value::Null => out.push(0x0c),
     }
-    Ok(())
+    let mut out = Vec::new();
+    for v in values {
+        walk(v, &mut out);
+    }
+    out
+}
+
+fn has_ref(v: &Value) -> bool {
+    match v {
+        Value::Ref(_) => true,
+        Value::Table(t) => {
+            t.array.iter().any(has_ref) || t.hash.iter().any(|(k, v)| has_ref(k) || has_ref(v))
+        }
+        Value::Magic { arg, .. } => has_ref(arg),
+        _ => false,
+    }
+}
+
+struct Writer {
+    out: Vec<u8>,
+    /// Tables written so far: a reference may name only these.
+    registered: u32,
+}
+
+impl Writer {
+    fn put(&mut self, v: &Value, depth: usize) -> Result<()> {
+        let out = &mut self.out;
+        match v {
+            Value::Nil => out.push(0x00),
+            Value::Bool(true) => out.push(0x01),
+            Value::Bool(false) => out.push(0x02),
+            Value::Int(n) => {
+                if let Ok(x) = i8::try_from(*n) {
+                    out.push(0x03);
+                    out.extend_from_slice(&x.to_le_bytes());
+                } else if let Ok(x) = i16::try_from(*n) {
+                    out.push(0x04);
+                    out.extend_from_slice(&x.to_le_bytes());
+                } else if let Ok(x) = i32::try_from(*n) {
+                    out.push(0x05);
+                    out.extend_from_slice(&x.to_le_bytes());
+                } else {
+                    out.push(0x06);
+                    out.extend_from_slice(&n.to_le_bytes());
+                }
+            }
+            Value::Float(f) => {
+                out.push(0x07);
+                out.extend_from_slice(&f.to_le_bytes());
+            }
+            Value::Str(s) => self.put_str(s)?,
+            Value::Table(t) => {
+                if depth >= MAX_DEPTH {
+                    return err(format!("tables nested over {MAX_DEPTH} deep"));
+                }
+                let n =
+                    u32::try_from(t.array.len()).or_else(|_| err("an array over 2^32 values"))?;
+                out.push(0x0b);
+                out.extend_from_slice(&n.to_le_bytes());
+                self.registered += 1;
+                for a in &t.array {
+                    self.put(a, depth + 1)?;
+                }
+                for (k, v) in &t.hash {
+                    if *k == Value::Nil {
+                        return err("a nil key would end the table");
+                    }
+                    self.put(k, depth + 1)?;
+                    self.put(v, depth + 1)?;
+                }
+                self.out.push(0x00);
+            }
+            Value::Null => out.push(0x0c),
+            Value::Ref(i) => {
+                if *i >= self.registered {
+                    return err(format!("a reference to table {i}, not yet written"));
+                }
+                if let Ok(x) = u8::try_from(*i) {
+                    out.extend([0x0e, x]);
+                } else if let Ok(x) = u16::try_from(*i) {
+                    out.push(0x0f);
+                    out.extend_from_slice(&x.to_le_bytes());
+                } else {
+                    out.push(0x10);
+                    out.extend_from_slice(&i.to_le_bytes());
+                }
+            }
+            Value::Magic { name, arg } => {
+                if depth >= MAX_DEPTH {
+                    return err(format!("values nested over {MAX_DEPTH} deep"));
+                }
+                out.push(0x0d);
+                self.put_str(name)?;
+                self.put(arg, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn put_str(&mut self, s: &[u8]) -> Result<()> {
+        let out = &mut self.out;
+        if let Ok(n) = u8::try_from(s.len()) {
+            out.push(0x08);
+            out.push(n);
+        } else if let Ok(n) = u16::try_from(s.len()) {
+            out.push(0x09);
+            out.extend_from_slice(&n.to_le_bytes());
+        } else if let Ok(n) = u32::try_from(s.len()) {
+            out.push(0x0a);
+            out.extend_from_slice(&n.to_le_bytes());
+        } else {
+            return err("a string over 4 GiB");
+        }
+        out.extend_from_slice(s);
+        Ok(())
+    }
 }
 
 /// Decodes a whole packet, compressed or not.
@@ -151,10 +273,19 @@ fn unzip(bytes: &[u8]) -> Result<Vec<u8>> {
 
 /// The count byte and the values, uncompressed.
 fn values(bytes: &[u8]) -> Result<Vec<Value>> {
-    let mut r = Reader { buf: bytes, at: 0 };
-    let count = r.byte()?;
+    let mut r = Reader {
+        buf: bytes,
+        at: 0,
+        declared: 0,
+        registered: 0,
+        decoded: 0,
+    };
+    let mut count = r.byte()?;
+    // The 0x80 bit: a 24-bit big-endian count of tables references may name (FUN_1400D56D0).
     if count >= 0x80 {
-        return err("table references aren't supported");
+        let [a, b, c] = r.array::<3>()?;
+        r.declared = u32::from_be_bytes([0, a, b, c]) as usize;
+        count &= 0x7f;
     }
     let mut out = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
@@ -169,6 +300,12 @@ fn values(bytes: &[u8]) -> Result<Vec<Value>> {
 struct Reader<'a> {
     buf: &'a [u8],
     at: usize,
+    /// How many tables references may name: the header's count.
+    declared: usize,
+    /// Tables numbered so far: the first `declared` read.
+    registered: usize,
+    /// Values read so far, against [`MAX_DECODED`].
+    decoded: usize,
 }
 
 impl Reader<'_> {
@@ -195,6 +332,10 @@ impl Reader<'_> {
     }
 
     fn value(&mut self, depth: usize) -> Result<Value> {
+        self.decoded += 1;
+        if self.decoded > MAX_DECODED {
+            return err(format!("over {MAX_DECODED} values in one packet"));
+        }
         let tag = self.byte()?;
         Ok(match tag {
             0x00 => Value::Nil,
@@ -225,6 +366,10 @@ impl Reader<'_> {
                         self.remaining()
                     ));
                 }
+                // Numbered before its contents, while the header's count allows (FUN_1400D4AC0).
+                if self.registered < self.declared {
+                    self.registered += 1;
+                }
                 let mut t = Table {
                     array: Vec::with_capacity(n.min(PREALLOC)),
                     hash: Vec::new(),
@@ -243,8 +388,32 @@ impl Reader<'_> {
                 Value::Table(t)
             }
             0x0c => Value::Null,
-            0x0d => return err("\"magic\" objects (0D) aren't supported"),
-            0x0e..=0x10 => return err("table references aren't supported"),
+            0x0d => {
+                // A magic object counts as a level, which keeps a chain of them bounded.
+                if depth >= MAX_DEPTH {
+                    return err(format!("values nested over {MAX_DEPTH} deep"));
+                }
+                match self.value(depth + 1)? {
+                    // A nil name: the next value stands for itself (FUN_1400D4AC0, case 0D).
+                    Value::Nil => self.value(depth + 1)?,
+                    Value::Str(name) => Value::Magic {
+                        name,
+                        arg: Box::new(self.value(depth + 1)?),
+                    },
+                    other => return err(format!("a magic object named by {}", other.kind())),
+                }
+            }
+            0x0e..=0x10 => {
+                let i = match tag {
+                    0x0e => usize::from(self.byte()?),
+                    0x0f => usize::from(u16::from_le_bytes(self.array()?)),
+                    _ => u32::from_le_bytes(self.array()?) as usize,
+                };
+                if i >= self.registered {
+                    return err(format!("a reference to table {i}, not yet registered"));
+                }
+                Value::Ref(i as u32)
+            }
             other => return err(format!("unknown tag {other:#04x}")),
         })
     }
@@ -351,6 +520,11 @@ mod tests {
     fn every_truncation_is_an_error() {
         // Every vector in these tests, cut short anywhere, is refused.
         let mut vectors = vec![
+            unhex("82 00 00 01  04 92 01  0B 00 00 00 00 08 01 61 03 01 00"),
+            unhex(
+                "81 00 00 02  0B 00 00 00 00  08 01 61 0E 00  08 01 62 0B 00 00 00 00 00  08 01 63 0E 01  00",
+            ),
+            unhex("01 0D 00 03 07"),
             unhex("04 04 9E 01 00 0B 02 00 00 00 03 01 08 01 61 08 01 6B 01 00 08 02 68 69"),
             unhex("04 04 9E 01 00 0B 00 00 00 00 00 00"),
             unhex("01 04 92 01"),
@@ -390,16 +564,149 @@ mod tests {
     #[test]
     fn refused_forms() {
         for bad in [
-            "01 0D 00",          // magic
-            "01 0E 00",          // table reference, u8
-            "01 0F 00 00",       // table reference, u16
-            "01 10 00 00 00 00", // table reference, u32
+            "01 0D 00",          // magic without its argument
+            "01 0E 00",          // a reference with no tables declared
+            "01 0F 00 00",       // the same, u16
+            "01 10 00 00 00 00", // the same, u32
             "01 11",             // unknown tag
-            "81 00 00 00 00",    // count with table references
             "01 00 00",          // trailing byte
         ] {
             assert!(decode(&unhex(bad)).is_err(), "{bad}");
         }
+    }
+
+    fn table(hash: Vec<(Value, Value)>) -> Value {
+        Value::Table(Table {
+            array: vec![],
+            hash,
+        })
+    }
+
+    #[test]
+    fn a_client_message_with_a_table_uses_the_reference_header() {
+        // FUN_1400D5280 and FUN_1400D3950 (payloads.md P.3): the client's packer registers every
+        // table it packs, so a message with a table has the count byte's 0x80 bit set and a
+        // 24-bit big-endian count of tables. (402, {a = 1}):
+        let bytes = unhex("82 00 00 01  04 92 01  0B 00 00 00 00 08 01 61 03 01 00");
+        assert_eq!(
+            decode(&bytes).unwrap(),
+            [Value::Int(402), table(vec![(s("a"), Value::Int(1))])]
+        );
+    }
+
+    #[test]
+    fn references_name_tables_in_creation_order() {
+        // FUN_1400D4AC0: a 0B table is registered before its contents, while fewer than the
+        // header's count are registered, and 0E, 0F or 10 names one by index. The root is
+        // table 0 and refers to itself; `b` is table 1, which `c` names again.
+        let bytes = unhex(
+            "81 00 00 02  0B 00 00 00 00  08 01 61 0E 00  08 01 62 0B 00 00 00 00 00  08 01 63 0E 01  00",
+        );
+        let want = table(vec![
+            (s("a"), Value::Ref(0)),
+            (s("b"), Value::Table(Table::default())),
+            (s("c"), Value::Ref(1)),
+        ]);
+        let got = decode(&bytes).unwrap();
+        assert_eq!(got, std::slice::from_ref(&want));
+        let order = tables(&got);
+        assert_eq!(order.len(), 2);
+        assert_eq!(*order[1], Table::default());
+        // Written back the same way: the header counts every table, the references are short.
+        assert_eq!(encode(&[want]).unwrap(), bytes);
+        for wider in [
+            "81 00 00 01 0B 00 00 00 00 08 01 61 0F 00 00 00",
+            "81 00 00 01 0B 00 00 00 00 08 01 61 10 00 00 00 00 00",
+        ] {
+            assert_eq!(
+                decode(&unhex(wider)).unwrap(),
+                [table(vec![(s("a"), Value::Ref(0))])],
+                "{wider}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reference_must_name_a_registered_table() {
+        for bad in [
+            "81 00 00 01 0E 00",                            // declared, none registered yet
+            "81 00 00 02 0B 00 00 00 00 08 01 61 0E 01 00", // ahead of what's registered
+            // past the declared count: only the first table is registered
+            "81 00 00 01 0B 00 00 00 00 08 01 61 0B 00 00 00 00 00 08 01 62 0E 01 00",
+        ] {
+            assert!(decode(&unhex(bad)).is_err(), "{bad}");
+        }
+        // The encoder refuses one too.
+        assert!(encode(&[Value::Ref(0)]).is_err());
+        assert!(encode(&[table(vec![(s("a"), Value::Ref(1))])]).is_err());
+    }
+
+    #[test]
+    fn magic_objects() {
+        // FUN_1400D41A0 packs userdata with a `__pickle__` metamethod as 0D, a name and an
+        // argument; FUN_1400D4AC0 calls the constructor registered under the name.
+        let float4 = Value::Magic {
+            name: b"Float4".to_vec(),
+            arg: Box::new(Value::Table(Table {
+                array: vec![Value::Float(1.0); 4],
+                hash: vec![],
+            })),
+        };
+        let bytes = encode(std::slice::from_ref(&float4)).unwrap();
+        assert_eq!(bytes[..10], unhex("01 0D 08 06 46 6C 6F 61 74 34"));
+        assert_eq!(decode(&bytes).unwrap(), [float4]);
+        // A nil name: the next value stands for itself.
+        assert_eq!(decode(&unhex("01 0D 00 03 07")).unwrap(), [Value::Int(7)]);
+        // Only string names.
+        assert!(decode(&unhex("01 0D 03 01 03 02")).is_err());
+    }
+
+    #[test]
+    fn a_refused_value_is_named_by_its_kind() {
+        // Not printed: one error line can't hold a whole table a peer sent. A magic object named
+        // by a table of 1000 nils:
+        let mut b = vec![0x01, 0x0D, 0x0B, 0xE8, 0x03, 0x00, 0x00];
+        b.extend([0x00; 1001]);
+        b.push(0x00);
+        assert_eq!(
+            decode(&b).unwrap_err().to_string(),
+            "pickle: a magic object named by a table"
+        );
+    }
+
+    #[test]
+    fn magic_objects_count_toward_the_depth() {
+        let chain = |n: usize| {
+            let mut b = vec![0x01];
+            for _ in 0..n {
+                b.extend([0x0D, 0x00]);
+            }
+            b.push(0x00);
+            b
+        };
+        assert!(decode(&chain(MAX_DEPTH)).is_ok());
+        assert!(decode(&chain(MAX_DEPTH + 1)).is_err());
+    }
+
+    #[test]
+    fn a_message_holds_at_most_max_decoded_values() {
+        // #84: a 4 KiB compressed message can unzip to 1 MiB, about a million values. Every
+        // value read counts, a table's end marker included: one table of n nils is n + 2.
+        let nils = |n: usize| {
+            let mut b = vec![0x01, 0x0B];
+            b.extend((n as u32).to_le_bytes());
+            b.extend(std::iter::repeat_n(0x00, n + 1));
+            b
+        };
+        assert!(decode(&nils(MAX_DECODED - 2)).is_ok());
+        assert!(decode(&nils(MAX_DECODED - 1)).is_err());
+        // Compression doesn't get around it.
+        let raw = nils(MAX_DECODED);
+        let mut packet = vec![0xFF];
+        packet.extend_from_slice(&(raw.len() as u32).to_be_bytes()[1..]);
+        packet.extend(lz4_flex::block::compress(&raw));
+        assert!(packet.len() < 2048, "{} bytes", packet.len());
+        assert!(decode(&packet).is_err());
     }
 
     #[test]
@@ -446,8 +753,7 @@ mod tests {
             "FF 00 00 18 78 01 08 15",                                     // literals cut short
             "FF 00 00 18 78 01 08 15 61 62 63 64 00 00 50 57 58 59 5A 21", // offset 0
             "FF 00 00 18 78 01 08 15 61 62 63 64 08 00 50 57 58 59 5A 21", // offset before the output
-            "FF 00 00 05 50 81 00 00 00 00", // inside, a count with table references
-            "FF 00 00 01 10 FF",             // inside, FF again: a count byte, not a second FF
+            "FF 00 00 01 10 FF", // inside, FF again: a count byte, not a second FF
         ] {
             assert!(decode(&unhex(bad)).is_err(), "{bad}");
         }
@@ -460,29 +766,36 @@ mod tests {
     }
 
     #[test]
-    fn nesting_is_bounded_at_32_tables() {
-        let mut v = Value::Nil;
-        for _ in 0..MAX_DEPTH {
-            v = Value::Table(Table {
-                array: vec![v],
-                hash: vec![],
-            });
-        }
-        let ok = encode(std::slice::from_ref(&v)).unwrap();
-        assert_eq!(decode(&ok).unwrap(), [v.clone()]);
-        let deeper = Value::Table(Table {
-            array: vec![v],
-            hash: vec![],
-        });
-        assert!(encode(std::slice::from_ref(&deeper)).is_err());
-        // The same 33 levels written by hand are refused by the decoder too.
-        let mut b = vec![0x01];
-        for _ in 0..=MAX_DEPTH {
-            b.extend([0x0B, 1, 0, 0, 0]);
-        }
-        b.push(0x00);
-        b.extend(std::iter::repeat_n(0x00, MAX_DEPTH + 1));
-        assert!(decode(&b).is_err());
+    fn tables_nest_31_deep_as_in_the_client() {
+        // FUN_1400D5850 starts the unpacker's depth at 1 (its constant at 0x142F04970), and
+        // FUN_1400D4AC0 refuses a table that takes it past 32 ("unpack table too depth!"). The
+        // packer counts the same way (FUN_1400D33F0, FUN_1400D3950). So 31 tables, not 32.
+        let nested = |n: usize| {
+            let mut v = Value::Nil;
+            for _ in 0..n {
+                v = Value::Table(Table {
+                    array: vec![v],
+                    hash: vec![],
+                });
+            }
+            v
+        };
+        let bytes = encode(&[nested(31)]).unwrap();
+        assert_eq!(decode(&bytes).unwrap(), [nested(31)]);
+        assert!(encode(&[nested(32)]).is_err());
+        // Each table's one array value is the next table, the innermost's is nil, then each
+        // table's pairs end with a nil key.
+        let by_hand = |n: usize| {
+            let mut b = vec![0x01];
+            for _ in 0..n {
+                b.extend([0x0B, 1, 0, 0, 0]);
+            }
+            b.push(0x00);
+            b.extend(std::iter::repeat_n(0x00, n));
+            b
+        };
+        assert_eq!(by_hand(31), bytes);
+        assert!(decode(&by_hand(32)).is_err());
     }
 
     #[test]
@@ -497,8 +810,8 @@ mod tests {
 
     #[test]
     fn nested_huge_array_counts_fail_cleanly() {
-        // 33 nested tables, each declaring an array count as large as the rest of a 1 MiB
-        // input: refused at depth 33, with at most PREALLOC slots reserved per level.
+        // One table more than MAX_DEPTH, each declaring an array count as large as the rest of
+        // a 1 MiB input: refused at the last, with at most PREALLOC slots reserved per level.
         let total = 1 << 20;
         let mut b = vec![0x01];
         for level in 0..=MAX_DEPTH {

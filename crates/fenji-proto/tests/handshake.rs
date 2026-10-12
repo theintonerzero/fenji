@@ -1,3 +1,4 @@
+use fenji_proto::Error;
 use fenji_proto::client::{Client, ClientEvent};
 use fenji_proto::codec::StoredCodec;
 use fenji_proto::frame::{SEND_CHUNK, UpWriter};
@@ -123,9 +124,27 @@ fn byte_at_a_time_matches_one_read() {
 
 #[test]
 fn oversized_inbound_message_is_refused() {
+    // From its header, in the message's first frame: the server never buffers the body.
     let (mut server, mut client) = to_work(6);
     let up = client.send(1, &vec![0; MAX_INBOUND + 1]).unwrap();
-    assert!(server.receive(&up).is_err());
+    assert_eq!(
+        server.receive(&up[..2 + SEND_CHUNK]),
+        Err(Error::BodyTooLong(MAX_INBOUND + 1))
+    );
+    assert_eq!(server.state(), State::Closed);
+}
+
+#[test]
+fn an_empty_reject_reason_is_refused() {
+    // The client looks at its first message only once 5 bytes have arrived (transport.md 6.6), so
+    // a bare 4-byte header would leave it waiting. The session can still answer.
+    let (mut server, mut client, _) = connect(10);
+    assert!(server.reject(b"", &StoredCodec).is_err());
+    assert_eq!(server.state(), State::Authed);
+    let (events, _) = client
+        .receive(&server.reject(b"x", &StoredCodec).unwrap())
+        .unwrap();
+    assert_eq!(events, [ClientEvent::Rejected(b"x".to_vec())]);
 }
 
 #[test]

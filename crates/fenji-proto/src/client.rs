@@ -11,9 +11,12 @@ use crate::pickle::{self, Value};
 use crate::variant::Cipher;
 use crate::{Error, Result};
 
+/// What the server's bytes complete, as the client reads them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientEvent {
+    /// The reply `ok`: the client is in `QUEUE` (transport.md 6.6).
     Accepted,
+    /// Any other reply: the close reason, at most 255 bytes (6.6).
     Rejected(Vec<u8>),
     TimeSync(u64),
     Message(Message),
@@ -41,6 +44,8 @@ fn is_set_net_connected(m: &Message) -> bool {
     }
 }
 
+/// One connection, from the client's side: it answers the hello with its auth message (§6), reads
+/// the reply, and sends only in `WORK` (7.3).
 pub struct Client {
     auth: AuthMessage,
     state: CState,

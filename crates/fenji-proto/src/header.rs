@@ -7,11 +7,16 @@ pub const HEADER_LEN: usize = 4;
 /// The largest body a 24-bit length can carry.
 pub const MAX_BODY: usize = 0xFF_FFFF;
 
-/// A message's type and body length.
+/// A message's type and body length. Built only by [`Header::new`], which refuses a length over
+/// [`MAX_BODY`], or read from the wire, so [`Header::to_bytes`] never cuts one short:
+///
+/// ```compile_fail
+/// let h = fenji_proto::header::Header { ty: 0, len: 1 << 25 };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
-    pub ty: u8,
-    pub len: usize,
+    ty: u8,
+    len: usize,
 }
 
 impl Header {
@@ -20,6 +25,15 @@ impl Header {
             return Err(Error::BodyTooLong(len));
         }
         Ok(Self { ty, len })
+    }
+
+    pub fn ty(self) -> u8 {
+        self.ty
+    }
+
+    /// The body's length in bytes, at most [`MAX_BODY`].
+    pub fn body_len(self) -> usize {
+        self.len
     }
 
     /// `[len >> 16, ty ^ low byte of (len >> 1), len, len >> 8]`.
@@ -49,12 +63,19 @@ pub fn write_message(ty: u8, body: &[u8], out: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-/// The first whole message in `buf`: its header, its body and the bytes it takes. `None` until all
-/// of it is there.
-pub fn split_message(buf: &[u8]) -> Option<(Header, &[u8], usize)> {
-    let h = Header::from_bytes(buf.get(..HEADER_LEN)?.try_into().ok()?);
-    let body = buf.get(HEADER_LEN..HEADER_LEN + h.len)?;
-    Some((h, body, HEADER_LEN + h.len))
+/// The first whole message in `buf`: its header, its body and the bytes it takes; `None` until all
+/// of it is there. A header that announces a body over `max` bytes is refused as soon as it is
+/// there, so a caller never buffers more than `max` bytes waiting for one message.
+pub fn split_message(buf: &[u8], max: usize) -> Result<Option<(Header, &[u8], usize)>> {
+    let Some(&[a, b, c, d]) = buf.get(..HEADER_LEN) else {
+        return Ok(None);
+    };
+    let h = Header::from_bytes([a, b, c, d]);
+    if h.len > max {
+        return Err(Error::BodyTooLong(h.len));
+    }
+    let end = HEADER_LEN + h.len;
+    Ok(buf.get(HEADER_LEN..end).map(|body| (h, body, end)))
 }
 
 #[cfg(test)]
@@ -106,16 +127,31 @@ mod tests {
     }
 
     #[test]
+    fn split_refuses_a_body_over_its_bound_from_the_header() {
+        // Refused once the header is there, so the caller never waits for, or buffers, the body.
+        let mut buf = Vec::new();
+        write_message(1, &[0; 100], &mut buf).unwrap();
+        assert_eq!(split_message(&buf[..4], 99), Err(Error::BodyTooLong(100)));
+        assert_eq!(split_message(&buf[..4], 100), Ok(None));
+        assert_eq!(split_message(&buf[..3], 99), Ok(None));
+        let (h, body, used) = split_message(&buf, 100).unwrap().unwrap();
+        assert_eq!(
+            (h, body.len(), used),
+            (Header::new(1, 100).unwrap(), 100, 104)
+        );
+    }
+
+    #[test]
     fn split_waits_for_a_whole_message() {
         let mut buf = Vec::new();
         write_message(7, b"abc", &mut buf).unwrap();
         write_message(8, b"", &mut buf).unwrap();
         for cut in 0..7 {
-            assert!(split_message(&buf[..cut]).is_none(), "cut {cut}");
+            assert_eq!(split_message(&buf[..cut], MAX_BODY), Ok(None), "cut {cut}");
         }
-        let (h, body, used) = split_message(&buf).unwrap();
-        assert_eq!((h.ty, body, used), (7, &b"abc"[..], 7));
-        let (h, body, used) = split_message(&buf[used..]).unwrap();
-        assert_eq!((h.ty, body, used), (8, &b""[..], 4));
+        let (h, body, used) = split_message(&buf, MAX_BODY).unwrap().unwrap();
+        assert_eq!((h.ty(), body, used), (7, &b"abc"[..], 7));
+        let (h, body, used) = split_message(&buf[used..], MAX_BODY).unwrap().unwrap();
+        assert_eq!((h.ty(), body, used), (8, &b""[..], 4));
     }
 }
