@@ -109,11 +109,11 @@ impl Refusal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Appearance {
     pub voice: Option<i64>,
-    /// The base face, 1 or 2 (the client's `check_base_face` clamps to that, default 1).
+    /// The base face, 1 or 2 (clamped as the client's `check_base_face` does; 1 when absent).
     pub base_face: i64,
     /// The face editor's string (`v:5;…`).
     pub face: Option<String>,
-    /// The starting outfit, 1 or 2.
+    /// The starting outfit, 1 or 2 (the create screen's two buttons; clamped, 1 when absent).
     pub equips_id: i64,
     /// `portrait_id << 16 | frame`.
     pub portrait: i64,
@@ -149,15 +149,16 @@ pub fn skeleton_allowed(vocation: i64, skeleton: i64) -> bool {
     matches!((vocation, skeleton), (0..=5, 1 | 2) | (6, 1) | (7 | 9, 3))
 }
 
+/// The letters with diacritics the Western server allowed (the English text of
+/// `ERR_ROLE_NAME_ALLCHINESE`): umlauts, grave and acute accents, and cedillas.
+const DIACRITICS: &str = "äëïöüÿÄËÏÖÜàèìòùÀÈÌÒÙáéíóúýÁÉÍÓÚÝçÇ";
+
 /// The Western server's characters (the English text of `ERR_ROLE_NAME_ALLCHINESE`): letters a–z,
-/// the Latin-1 letters with umlauts, accents and cedillas, full stops (not first or last), hyphens
-/// and underscores.
+/// letters with umlauts, grave or acute accents or cedillas, full stops (not first or last),
+/// hyphens and underscores.
 fn name_chars_ok(name: &str) -> bool {
-    let ok = |c: char| {
-        c.is_ascii_alphabetic()
-            || (('\u{C0}'..='\u{FF}').contains(&c) && c != '\u{D7}' && c != '\u{F7}')
-            || matches!(c, '.' | '-' | '_')
-    };
+    let ok =
+        |c: char| c.is_ascii_alphabetic() || DIACRITICS.contains(c) || matches!(c, '.' | '-' | '_');
     name.chars().all(ok) && !name.starts_with('.') && !name.ends_with('.')
 }
 
@@ -192,8 +193,9 @@ impl CreateRequest {
                             .ok_or(Refusal::Malformed)?,
                     )
                 }
+                // As the client's check_base_face (face_verification.luac 0.36): clamped to 1–2.
                 Some("prop_sys_avatar_feature") => {
-                    a.base_face = int(v).filter(|x| (1..=2).contains(x)).unwrap_or(1)
+                    a.base_face = int(v).map_or(1, |x| x.clamp(1, 2))
                 }
                 Some("prop_sys_avatar_feature_face") => match v {
                     Value::Str(b) if b.len() <= FACE_MAX && b.iter().all(u8::is_ascii_graphic) => {
@@ -201,9 +203,7 @@ impl CreateRequest {
                     }
                     _ => return Err(Refusal::Malformed),
                 },
-                Some("prop_base_equips_id") => {
-                    a.equips_id = int(v).filter(|x| (1..=2).contains(x)).unwrap_or(1)
-                }
+                Some("prop_base_equips_id") => a.equips_id = int(v).map_or(1, |x| x.clamp(1, 2)),
                 Some("prop_sys_portrait") => {
                     a.portrait = int(v)
                         .filter(|x| (0..=i64::from(i32::MAX)).contains(x))

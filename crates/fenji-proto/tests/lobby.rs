@@ -76,7 +76,14 @@ fn names_follow_the_western_rule() {
             "{why}"
         );
     }
-    for bad in ["a b", "Lin2", ".Lin", "Lin.", "林林", "Li\u{0}n", "a×b"] {
+    for ok in ["Äöüé", "Àlà", "Ýves", "Íñ".replace('ñ', "i").as_str()] {
+        assert!(CreateRequest::parse(&request(ok, 0, 1)).is_ok(), "{ok}");
+    }
+    // Only the diacritics the Western rule names: umlauts, grave and acute accents, cedillas.
+    for bad in [
+        "a b", "Lin2", ".Lin", "Lin.", "林林", "Li\u{0}n", "a×b", "Niño", "Æsir", "Groß", "Ølaf",
+        "Âme",
+    ] {
         assert_eq!(
             CreateRequest::parse(&request(bad, 0, 1)).unwrap_err(),
             Refusal::NameChars,
@@ -145,8 +152,13 @@ fn shapes_no_client_sends_are_refused() {
 
 #[test]
 fn out_of_range_appearance_values_are_clamped_as_the_client_does() {
+    // check_base_face (face_verification.luac 0.36) clamps: below 1 gives 1, above 2 gives 2.
     let r = with(request("Lin", 0, 1), 4, Value::Int(7)); // base face
     let r = with(r, 8, Value::Int(9)); // outfit
+    let a = CreateRequest::parse(&r).unwrap().appearance;
+    assert_eq!((a.base_face, a.equips_id), (2, 2));
+    let r = with(request("Lin", 0, 1), 4, Value::Int(-3));
+    let r = with(r, 8, Value::Int(0));
     let a = CreateRequest::parse(&r).unwrap().appearance;
     assert_eq!((a.base_face, a.equips_id), (1, 1));
 }

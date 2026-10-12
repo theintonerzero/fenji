@@ -20,8 +20,9 @@ pub const MAX_INBOUND: usize = 1 << 20;
 /// The client keeps at most this much of a close reason (spike-0 4.28).
 pub const MAX_REASON: usize = 255;
 
-/// The client's first message (type 0).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The client's first message (type 0). Its `Debug` shows sizes only: the payload carries the
+/// ticket, and the machine bytes a MAC address (M3 spec D3).
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuthMessage {
     /// The first 16 bytes of the `gate_dictionary.bin` image at DAT_1431FC8E0 (transport.md 6.3).
     pub dict_id: [u8; 16],
@@ -29,6 +30,16 @@ pub struct AuthMessage {
     pub machine: [u8; 6],
     /// `net_client_create`'s payload: `ks.pickle_pack` of the login fields (login.md 2.6).
     pub payload: Vec<u8>,
+}
+
+impl std::fmt::Debug for AuthMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthMessage")
+            .field("dict_id", &self.dict_id)
+            .field("machine", &"…")
+            .field("payload_len", &self.payload.len())
+            .finish()
+    }
 }
 
 impl AuthMessage {

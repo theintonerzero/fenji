@@ -154,6 +154,27 @@ fn a_closed_simulator_sends_no_time_syncs() {
 }
 
 #[test]
+fn an_auth_message_never_shows_its_payload_or_machine_bytes() {
+    // The payload carries the ticket (and the MAC and fingerprint): one `?event` in a log line
+    // must not print them (M3 spec D3).
+    let a = AuthMessage {
+        dict_id: [0; 16],
+        machine: [0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45],
+        payload: b"fenji1-secretticket".to_vec(),
+    };
+    for shown in [format!("{a:?}"), format!("{:?}", Event::Auth(a.clone()))] {
+        assert!(
+            !shown.contains("secret") && !shown.contains("115, 101, 99"),
+            "{shown}"
+        );
+        assert!(
+            !shown.to_lowercase().contains("ab, cd") && !shown.contains("171"),
+            "{shown}"
+        );
+    }
+}
+
+#[test]
 fn an_empty_reject_reason_is_refused() {
     // The client looks at its first message only once 5 bytes have arrived (transport.md 6.6), so
     // a bare 4-byte header would leave it waiting. The session can still answer.
