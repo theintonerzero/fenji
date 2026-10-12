@@ -3903,7 +3903,7 @@ git commit -m "docs: record M3: summary, spec notes, privacy and security" -m "C
   - merge with a merge commit;
   - tag `v0.4.0`;
   - merge `main` back into `dev`;
-  - `gh release create v0.4.0` with the pinned-build line and the changelog section, plus a line that this release isn't for players (D2, #114);
+  - `gh release create v0.4.0` with the pinned-build line and the changelog section, plus what M3 offers and what is still open (Amendment B);
   - close the release issue and milestone M3, after moving open items such as #91 to M4.
 
   Otherwise leave the PR open and say why in the morning report.
@@ -3976,3 +3976,24 @@ The plan's review (PR #128) and the first PR reviews changed these points. Each 
 - `PRE_AUTH_CAP` is 26 + 4 + 0x4000 + 512 rather than D17's 26 + 0x4000, to allow for the header, frame lengths and time syncs.
 - The `invites` table's key is `id`, with `code_hash` unique.
 - The limiter's final design (above) replaces §4's "per username" with keyed buckets.
+
+## Amendment B: the owner's decisions of 2026-10-13
+
+The owner decided two questions during execution (#114). Where this amendment and anything else in this plan differ, the Global Constraints included, this amendment wins.
+
+**Gate #114: option (a), the launcher path for players.** Spec D2's "not decided here" is settled. The launcher verifies the client files against the pinned manifest, then starts the unmodified client with `gj_uinfo`, `gj_gates` and a single-use Fenji ticket in the environment (`docs/protocol/packets/lobby.md` §12, #135). Ownership rests on the host's vetting (ground rule 1). Consequences:
+- **Task 7:** the `dev-login-path` feature is removed, and `Uinfo` is in every build (#134). Tasks 8 and 9 build `fenji-launch` without the feature (#136 to follow).
+- **Starting the client (#138):** `fenji-launch play` gains a mode that starts the client, using `umu-run` in the launcher's own prefix on Linux and the exe on Windows. The ticket stays in the environment.
+- **Task 11:** the Tauri shell's Play button starts the client through the same library, instead of explaining the gate.
+- **Task 13:** the release notes no longer say v0.4.0 isn't for players because of D2; they say what M3 offers (the lobby, no world yet) and what is still open below.
+
+**Guarded bare-metal play tests (#139).** To test bare-metal play, the client may run outside `isolated-run.sh` on the Linux game box only, under these guards, all of them:
+- through `umu-run` in a dedicated prefix;
+- using the pinned copy (never the Steam library), with Steam not running;
+- against a local `fenji-server`;
+- with the AGT driver watchdog armed;
+- with the client's network limited to the Fenji server.
+
+CLAUDE.md's client-run rule says this. Implementation choice, not part of the decision: the guarded runner runs from a throwaway reflink copy of the pinned copy, as `run-client.sh` does, so the client never writes into the pinned copy. Rungs that pass `--gf-sdk=mocked` (L1–L5, L7) stay in the sandbox, since gate #11 allows the mocked SDK only there. L6 (no SDK flag, the player's own path) may also run bare-metal, which tests what the sandbox can't: umu's runtime container and the real GPU.
+
+**Still open:** whether the AGT driver loads on native Windows on the launcher path. A static reading of that path comes first. Its result goes to the owner (ground rule 6) before Windows players are offered a way to start the client (the Play button or `fenji-launch play`) or told anything about the driver.

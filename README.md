@@ -27,7 +27,7 @@ The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-des
 - **Bring your own legitimate copy.** Every player, and whoever hosts the server, needs their own legitimate copy of the game: on Steam (app 1418100, which you can download only if it's already in your library, since it was delisted) or through Gameforge's launcher back when Gameforge distributed it. Fenji supports one client build, the one in [`docs/re/pinned-build.md`](docs/re/pinned-build.md) (Steam build 10015727); other copies may not work. Fenji never distributes the game, never points to unofficial copies and doesn't support cracked or modified clients.
 - **Clean room.** No leaked server files, binaries, scripts or source, and nothing derived from them, ever.
 - **No game content here.** No game files, extracted assets, decompiled scripts, middleware libraries or packet captures. The tools read the game's data from your own installation, at run time.
-- **Hands off official services.** Fenji never connects a modified or instrumented client to a live service. All testing happens in a sandbox against our own server.
+- **Hands off official services.** Fenji never connects a modified or instrumented client to a live service. Testing happens in a sandbox, or on the project's own Linux machine with the client's network limited to a local Fenji server, and always against our own server.
 - **Private and free.** Fenji is meant for private, invite-only, unlisted and non-commercial servers. The project doesn't run, list or vouch for any server, and won't help with public or paid ones.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the full rules and what they mean for contributors.
