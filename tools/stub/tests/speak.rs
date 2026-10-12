@@ -87,6 +87,19 @@ fn read_events(dir: &Path) -> String {
         .collect()
 }
 
+/// The events log once it holds every line in `want`, or as it is after `ms` (the asserts that
+/// follow then show what is missing). Polling, not a fixed sleep, so a slow machine can't fail it.
+async fn events_with(dir: &Path, want: &[&str], ms: u64) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
+    loop {
+        let ev = read_events(dir);
+        if want.iter().all(|w| ev.contains(w)) || tokio::time::Instant::now() >= deadline {
+            return ev;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test]
 async fn speaks_hello_auth_ok_then_work() {
     let tmp = tempfile::tempdir().unwrap();
@@ -104,8 +117,12 @@ async fn speaks_hello_auth_ok_then_work() {
         .await
         .unwrap();
     s.write_all(&client.time_sync(99)).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let ev = read_events(tmp.path());
+    let ev = events_with(
+        tmp.path(),
+        &["\tcall\tgateway id=402 args=0", "\ttime_sync\tclient_ms=99"],
+        5000,
+    )
+    .await;
     assert!(ev.contains("\thello\tdown=3 up=3"), "{ev}");
     assert!(
         ev.contains(
@@ -139,8 +156,7 @@ async fn undecodable_script_messages_and_other_opcodes_are_logged() {
     ] {
         s.write_all(&client.send(ty, body).unwrap()).await.unwrap();
     }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let ev = read_events(tmp.path());
+    let ev = events_with(tmp.path(), &["\tcall\tgateway id=402 args=0"], 5000).await;
     assert!(
         ev.contains("\tbad_call\tscript len=3 head=010d00 error=pickle: \"magic\" objects (0D) aren't supported"),
         "{ev}"
@@ -174,7 +190,6 @@ async fn auth_reply_reject_sends_the_reason() {
             fenji_stub::speak::REJECT_REASON.to_vec()
         )]
     );
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let ev = read_events(tmp.path());
+    let ev = events_with(tmp.path(), &["\tsent\treject (stored frame)"], 5000).await;
     assert!(ev.contains("\tsent\treject (stored frame)"), "{ev}");
 }
