@@ -147,10 +147,10 @@ async fn undecodable_script_messages_and_other_opcodes_are_logged() {
         body: set_net_connected(),
     });
     pump_until(&mut s, &mut client, 5000, |e| e.contains(&work)).await;
-    // A script message whose pickle the decoder refuses (0D, "magic"), another opcode, then a
+    // A script message whose pickle the decoder refuses (tag 11, unknown), another opcode, then a
     // good call: each gets its own line, and decoding goes on.
     for (ty, body) in [
-        (0u8, &[0x01, 0x0D, 0x00][..]),
+        (0u8, &[0x01, 0x11][..]),
         (4, &[][..]),
         (0xff, &[0x01, 0x04, 0x92, 0x01][..]),
     ] {
@@ -158,7 +158,7 @@ async fn undecodable_script_messages_and_other_opcodes_are_logged() {
     }
     let ev = events_with(tmp.path(), &["\tcall\tgateway id=402 args=0"], 5000).await;
     assert!(
-        ev.contains("\tbad_call\tscript len=3 head=010d00 error=pickle: \"magic\" objects (0D) aren't supported"),
+        ev.contains("\tbad_call\tscript len=2 head=0111 error=pickle: unknown tag 0x11"),
         "{ev}"
     );
     assert!(ev.contains("\tmessage\tty=4 len=0 head=\n"), "{ev}");
