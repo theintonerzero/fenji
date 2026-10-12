@@ -1,17 +1,20 @@
-//! archive: the SoLO data archives' structure without decompression (M1 spec §5,
-//! docs/re/m1-archives.md). Oodle (codec 4) waits on decision gate #39, so only stored files can be
-//! extracted. Writes only under re/.
-use std::collections::BTreeMap;
+//! archive: the SoLO data archives' structure (M1 spec §5, docs/re/m1-archives.md). Oodle (codec 4)
+//! is read only through the spool that scripts/spike/run-oodle-helper.sh decodes (M2 plan Task 11):
+//! `paths` decodes `_index` that way; `extract` still writes stored files only. Writes only under
+//! re/.
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use fenji_data::archive::{
     CONTAINER_MAGIC, Record, STATUS_USED, read_blob_header, read_part_header,
 };
-use fenji_data::{Codec, FIXED_LEN};
+use fenji_data::oodle_spool::OodleSpool;
+use fenji_data::{Codec, FIXED_LEN, index};
 use sha1::{Digest, Sha1};
 
 /// The SoLO data archives, read without decompression. Writes only under re/.
@@ -46,6 +49,14 @@ enum Command {
     },
     /// The _index blob header
     Index,
+    /// Decode _index through the Oodle spool and write OUT/paths.tsv (key, path, part, offset,
+    /// size, codec); OUT and the spool must be inside re/
+    Paths {
+        #[arg(long, default_value = "re/oodle-spool")]
+        spool: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 fn part_path(client: &Path, n: u32) -> PathBuf {
@@ -76,7 +87,7 @@ fn content_magic(f: &mut File, offset: u64, raw_size: u64) -> Result<Option<[u8;
     Ok(Some(m))
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
     let client = match cli.client {
         Some(c) => c,
@@ -88,6 +99,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Info => info(&client),
         Command::List { part } => list(&client, part),
+        Command::Paths { spool, out } => return paths(&client, &spool, &out),
         Command::Extract {
             part,
             stored_only,
@@ -115,7 +127,105 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+    }?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Where a live record keeps a file: part, offset, stored size, codec.
+struct Place {
+    part: u32,
+    offset: u32,
+    size: u32,
+    codec: &'static str,
+}
+
+/// Decodes `_index` through the spool, then writes OUT/paths.tsv. Exits 3 when blocks wait for the
+/// helper.
+fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
+    let repo = fenji_data::re_dir::find_repo_root(&std::env::current_dir()?)?;
+    let out = fenji_data::re_dir::resolve_out_dir(&repo, out)?;
+    // The spool holds the client's compressed blocks, so it stays under re/ too.
+    let spool = OodleSpool::new(&fenji_data::re_dir::resolve_out_dir(&repo, spool)?)?;
+    let bytes = std::fs::read(client.join("data").join("_index"))?;
+    let queued = spool.spool_blob(&bytes, 0)?;
+    if queued > 0 {
+        println!("{queued} blocks spooled: run scripts/spike/run-oodle-helper.sh, then re-run");
+        return Ok(ExitCode::from(3));
     }
+    let raw = match fenji_data::decode_blob(&bytes, 0, &spool) {
+        Ok(raw) => raw,
+        Err(fenji_data::Error::OodlePending(name)) => {
+            println!(
+                "{name} and maybe more wait in the spool: run scripts/spike/run-oodle-helper.sh, then re-run"
+            );
+            return Ok(ExitCode::from(3));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let map = index::build(&raw);
+
+    let (mut places, mut live, mut repeated) = (HashMap::new(), 0usize, 0usize);
+    for n in 0..1000 {
+        let path = part_path(client, n);
+        if !path.exists() {
+            break;
+        }
+        let h = read_part_header(&path).with_context(|| path.display().to_string())?;
+        let mut f = File::open(&path)?;
+        for r in h.live() {
+            live += 1;
+            if places.contains_key(&r.key) {
+                repeated += 1;
+                continue;
+            }
+            let codec = match read_blob_header(&mut f, u64::from(r.offset)) {
+                Ok(b) => b.codec.name(),
+                Err(_) => "bad-header",
+            };
+            places.insert(
+                r.key,
+                Place {
+                    part: n,
+                    offset: r.offset,
+                    size: r.size,
+                    codec,
+                },
+            );
+        }
+    }
+
+    let tsv = out.join("paths.tsv");
+    let mut w = BufWriter::new(File::create(&tsv)?);
+    writeln!(w, "key\tpath\tpart\toffset\tsize\tcodec")?;
+    let mut found = 0usize;
+    for (path, key) in &map.by_path {
+        match places.get(key) {
+            Some(p) => {
+                found += 1;
+                writeln!(
+                    w,
+                    "{}\t{path}\t{:03}\t{:#x}\t{}\t{}",
+                    hex(key),
+                    p.part,
+                    p.offset,
+                    p.size,
+                    p.codec
+                )?;
+            }
+            None => writeln!(w, "{}\t{path}\t-\t-\t-\t-", hex(key))?,
+        }
+    }
+    w.flush()?;
+    println!(
+        "{} paths ({} containers); {} bad lines, {} lines not UTF-8; {found} found in a part, {} not found; {live} live records, {repeated} repeating a key; wrote {}",
+        map.by_path.len(),
+        map.containers.len(),
+        map.bad_lines,
+        map.non_utf8_lines,
+        map.by_path.len() - found,
+        tsv.display()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 fn info(client: &Path) -> Result<()> {

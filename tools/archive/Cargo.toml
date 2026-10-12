@@ -1,6 +1,6 @@
 [package]
 name = "fenji-archive"
-description = "Reads the SoLO data archives' structure (index chains, records, blob headers, _index) without decompressing Oodle data; writes only under re/"
+description = "Reads the SoLO data archives' structure (index chains, records, blob headers, _index and its paths); Oodle data only through the sandboxed helper's spool; writes only under re/"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
