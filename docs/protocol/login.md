@@ -141,3 +141,21 @@ M1 Task 10 ran the pinned client twice inside `run-client.sh`. Both runs used:
 | C4 | `re/runs/out/en-1/` (screenshots, `wine.log`, `gujianol.log`, `watchdog.log`), `re/stub-logs/en-1/` (one session) and `re/m1/connect/en-1.console` | Run en-1: the launcher's path, the English interface |
 
 On 2026-10-12 a test draft deleted `re/runs`, with the run directories of m1-c1 and m1-c2: their screenshots and their Wine and watchdog logs ([`m1-summary.md`](../re/m1-summary.md)). Their stub logs, console output and notes survived. m1-c3 repeats m1-c2.
+
+## 7. M3: the launcher path with a Fenji ticket
+
+From M3 the launcher path (2.8–2.10) carries a Fenji game token, and the owner chose it for players (gate #114, option a, 2026-10-13; [`packets/lobby.md`](packets/lobby.md) §12):
+- `fenji-launch` signs in to the Fenji server's account API, takes a game token and signs out.
+- It starts the unmodified client with `gj_uinfo` (`<server id>:90:<server name>:0:<account>:<account id>`), `gj_gates` (the gate as dotted IPv4) and `gj_ticket` (the token) in its environment, never on its command line.
+- The gate takes the token from the auth payload's first value and spends it. The account in its third value must be the token's own.
+
+**The token** is `fenji1-` and 64 hex digits from 32 random bytes. The server keeps only its SHA-256. It works once, for 60 s, for one account (M3 spec D3).
+
+**What it protects against.** It stops a token that leaked later being replayed, and tokens leaking from logs, since Fenji's own code never logs one. It doesn't hide the token on the wire: the transport has no confidentiality ([`transport.md`](transport.md) 3.9), so anyone on the path who sees the hello can read the auth payload. The token's single use is a race there, which the client usually wins within about 10 s. A host who needs more puts the gate on a network the players trust.
+
+**Runs.**
+- In m3-l1 the real client logged in with such a token 8.4 s after the server came up.
+- In m3-l6 it did the same with no `--gf-sdk` flag at all, so the player path needs nothing else.
+
+Both runs are in [`packets/lobby.md`](packets/lobby.md) §14, with the list, create, restart and delete runs.
+

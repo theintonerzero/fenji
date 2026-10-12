@@ -221,6 +221,13 @@ impl Bot {
         self.sock.write_all(&out).await.unwrap();
     }
 
+    /// A message body exactly as given, as a gateway script message (type 0xFF): for a recorded
+    /// body such as a fixture.
+    pub async fn send_raw(&mut self, body: &[u8]) {
+        let out = self.client.send(0xFF, body).unwrap();
+        self.sock.write_all(&out).await.unwrap();
+    }
+
     /// The next script message: its id and arguments.
     pub async fn recv(&mut self) -> (i64, Vec<Value>) {
         let e = self.next().await.expect("a message");

@@ -73,7 +73,7 @@ All lobby messages are script messages on the one gate connection. The client se
 |---|---|---|---|
 | 3.1 | **"Press Any Key".** In `WORK`, Login's 100 ms `login` timer shows the `Prompt` label, "任意键开始游戏" ("Press Any Key"), as soon as `NET.GetStatus()` returns 3. Nothing waits for a server message first: in M2 the prompt appeared with no 495 sent. | **Observed** (the label; the M2 run), **Inferred** (flow) | S5 `0.6`; D5 (`Login.xml` line 71); D2; [`../transport.md`](../transport.md) M2R4B |
 | 3.2 | **The key press.** `OnGlobalKeyUp` calls `NET.QueryActors()` only when the status is 3, `LoginFrame` is visible, no global alert is open, and none of Login's own gates is set (the logo video, the protocol dialog, a transition under way). It then sets the gate `L9_1`, so further presses do nothing until a 228 arrives. | **Inferred** | S5 `0.24` |
-| 3.3 | **370, 496, 292.** `QueryActors` calls `hotpatch_pull`. That sends 370 with `hotpatch_revision` (0 unless a 243 has changed it) and, when `is_shipping_client()`, 496 with no arguments. Then `QueryActors` sends 292 with no arguments. So the server sees 370, 496 and 292 in that order, all of type 0xFF, and only 292 needs an answer. No run has sent a key press yet (§13). | **Observed** (bytecode), **Inferred** (the order on the wire) | S1 `0.48`; S2 `0.4` |
+| 3.3 | **370, 496, 292.** `QueryActors` calls `hotpatch_pull`. That sends 370 with `hotpatch_revision` (0 unless a 243 has changed it) and, when `is_shipping_client()`, 496 with no arguments. Then `QueryActors` sends 292 with no arguments. So the server sees 370, 496 and 292 in that order, all of type 0xFF, and only 292 needs an answer. Runs m3-l2 to m3-l5 saw exactly this order, all three within 0.1 ms, at each key press or click on the title (§14). | **Observed** (bytecode), **Inferred** (the order on the wire) | S1 `0.48`; S2 `0.4` |
 | 3.4 | **228's handler.** It keeps `deepcopy(list)` as `query_actors_list`. It calls `OnBillingGapsUpdate(extra.billing_gap)` when `extra` has one; otherwise it sets `server_info.billing_gap` to `{}` if that is unset. Then it fires `EVENT_QUERY_ACTORS(last_pid, list, extra)` with the original list. Two listeners act on it: Login's and the select screen's. | **Observed** (constants), **Inferred** (flow) | S1 `0.32`; S5 `0.10`; S6 `0.10`, `0.12` |
 | 3.5 | **The first argument: the pid to pre-select.** Login compares it with each `actor.pid` (`==`) to pick the transit cutscene. `ShowSelectActor` makes it the selection when none is set, and the list builder selects that actor's frame, or the frame in slot 1 when nothing matches. So 0, or a pid that matches no actor, selects slot 1. It must have the same type as `pid`: an integer. | **Inferred** | S5 `0.10`, `0.9`; S6 `0.16`, `0.3` |
 | 3.6 | **The second argument: the list.** A Lua sequence of actor tables (§4), and a table even when empty. Login tests `list and next(list)`. A nil list would leave the handler's copy nil, and a later 628's `table.insert` into it would fail. | **Inferred** | S5 `0.9`; S1 `0.32`, `0.33` |
@@ -266,22 +266,53 @@ Which login path a player's client takes decides what reaches the gate, so it wa
 
 ## 13. Open questions for the runs
 
-Only a sandboxed run of the real client can settle these:
-1. How the select screen's model looks with `prop_sys_equips = {}`, with no face string, and with the show flags absent or `true`: a plain body, or a failure?
+Only a sandboxed run of the real client can settle these. The M3 runs (§14) settled 1, 5, 7, 9, 11 and 15; the others stay open.
+1. **Settled (§14):** a plain body works: the select screen showed the character in the vocation's default dress with the chosen face. The question was how the select screen's model looks with `prop_sys_equips = {}`, with no face string, and with the show flags absent or `true`: a plain body, or a failure?
 2. Whether `SetSelected(true)` in the list builder fires `EVENT_SELECT_STATE_CHANGED` at once. The builder assumes it, since `UpdateReButton` then reads `selectActorInfo` (L1 Q3).
 3. Whether a pid above 2^32 or 2^53 survives `lua_actor_new` and the native actor map.
 4. Whether `maxBytes="24"` counts bytes or characters.
-5. The 370, 496, 292 sequence and its timing after a key press, which no M2 run sent, and the logo-video gate.
+5. **Settled (§14):** the order holds, within 0.1 ms, and a click on the title counts as a key. The question was the 370, 496, 292 sequence and its timing after a key press, which no M2 run sent, and the logo-video gate.
 6. That 270 `ERR_SERVER_NOT_RUNNING` after 10 shows the "Hint" alert and restores the screen, and whether a refused name shows both the inline text and the alert.
-7. That 84 `(pid, 0, 2147483647)` shows no alert and that the refresh (370, 496, 292, then 228) shows the new list; and that an empty list returns to the create screen.
+7. **Settled (§14):** no alert, the refresh came 0.64 s later, and the empty list opened creation. The question was that 84 `(pid, 0, 2147483647)` shows no alert and that the refresh (370, 496, 292, then 228) shows the new list; and that an empty list returns to the create screen.
 8. That an actor without `slot` makes the client send 321, and with how many values: two from the builder, three from a swap.
-9. The size and compression of a real 304, whose face string comes from native code.
+9. **Settled (§14):** 758 bytes, sent LZ4-compressed as 702, with a 490-byte face string in 7 sections. The question was the size and compression of a real 304, whose face string comes from native code.
 10. The delete word in the German and French clients.
-11. That nothing breaks when 495 is never sent. Other add-ons also listen to `EVENT_NET_CONNECTED` (L1 Q1); the server-name label and the window title then keep their defaults.
+11. **Settled (§14):** nothing broke, and the select screen named the server "Fenji" from `gj_uinfo`. The question was that nothing breaks when 495 is never sent. Other add-ons also listen to `EVENT_NET_CONNECTED` (L1 Q1); the server-name label and the window title then keep their defaults.
 12. Whether the close reason `ERR_SERVER_IS_FULL=1` shows "The server is full" (9.4).
 13. What the rename and reborn buttons do when the account's counters are 0, and whether a client can send 26 or 454 in M3.
 14. Whether the native `__script_system_trace_call` catches errors (7.4). Fenji's values don't depend on it.
-15. Whether the client starts on the launcher path with no `--gf-sdk` flag at all (run L6; 12.6).
+15. **Settled (§14):** it does (run m3-l6). The question was whether the client starts on the launcher path with no `--gf-sdk` flag at all (12.6).
+
+## 14. Runs
+
+The M3 rungs ran the pinned client in `scripts/spike/run-client.sh` against `fenji-server`, with the AGT driver watchdog armed (2026-10-13; predictions and outcomes in M3R). Each run:
+- started a new `fenji-server` on one database, which held the account `tester`;
+- ran `fenji-launch play --print` inside the sandbox once the server was up;
+- gave the client only the launcher path's three pairs, with a fresh ticket.
+
+The client got `--gf-sdk=mocked --fs=data:_index:_index` (gate #11), except in m3-l6. Key presses, typing and clicks went through XTEST on the nested display.
+
+| Run | What the run did | What happened | Watchdog | Evidence |
+|---|---|---|---|---|
+| m3-l1 | the handoff only, 180 s | "in the lobby" for `tester` 8.4 s after the server's start; 402 2.6 s later; the English title, "Press Any Key", by 120 s | no sign | M3L1 |
+| m3-l2 | a click at 125 s, then Return at 130 s | the click already counted as "any key": 370, 496, 292, then the same three again at the key; each 292 got an empty 228; character creation by 150 s | no sign | M3L2 |
+| m3-l3b | Return; Next; a click on the name box; `Lin` typed; Complete | one 304: name `Lin`, vocation 7, skeleton 3, a 490-byte face string; stored, answered with 628; the select screen showed "Lin", "Mortal 1", with "Current server: Fenji" | no sign | M3L3 |
+| m3-l4 | a new server process on the same database; Return; a click on the delete icon | 228 listed Lin; the select screen showed Lin by 180 s; the delete dialog opened | no sign | M3L4 |
+| m3-l5 | as m3-l4, then `Swords of Legends Online` typed into the dialog and Delete | 166 with pid 1; deleted, answered with 84; 0.64 s later 370, 496, 292; the empty 228 opened creation; no pending-deletion alert | no sign | M3L5 |
+| m3-l6 | the handoff with no `--gf-sdk` flag | as m3-l1: logged in, 402, the title | no sign | M3L6 |
+
+**Observed:**
+- **The lobby works end to end with the real client.** It covers 228's list, 628's actor and 84's values, and the client acted on each as §3–§7 read it.
+- **The creation screen's defaults.** The default pick, Fox Mage and "Girl", is vocation 7 and skeleton 3. The real 304 carried the ten keys of 5.1: voice 3, base face 1, outfit 2 and portrait 169 (`169 << 16`). It was 758 bytes, sent LZ4-compressed as 702.
+- **The launcher path needs no SDK flag** (m3-l6).
+- **The network.** In m3-l6, the client looked up one name, its own machine's (the sandbox's host name, which resolved to 127.0.0.1), and made one connection, to the gate on 127.0.0.1:7800. It tried no other address and opened no URL.
+- **No evidence file holds a ticket or the password.** That was checked with `grep` on each run's evidence.
+
+**Inferred:**
+- **The server's choices hold.** No `enable`, no `block_cd`, 84's threshold, and empty `prop_sys_equips`: the select screen built and showed the character without an error.
+
+**Unknown:**
+- The rest of §13: a refused name and its alerts (6), 321 (8), the German and French delete words (10), a full server's reason (12), the rename and reborn buttons (13), and pids past 2^32 (3).
 
 ## Evidence index
 
@@ -323,6 +354,8 @@ Only a sandboxed run of the real client can settle these:
 | L1 | `re/m3/lobby-reading.md` | The reading agent's notes (Q1–Q12), with line ranges in the decompiled files |
 | L2 | `re/m3/lobby-check.md` | The checks of L1's five load-bearing claims, and of 2.1, 2.3 and §9 |
 | L3 | `re/m3/planning-findings.md` | The M3 plan's first probes, which L1 corrects (L1 §7) |
+| M3R | `re/m3/runs.md` | The M3 rungs' predictions, written before each run, and their outcomes |
+| M3L1–M3L6 | `re/runs/out/m3-l1/`, `m3-l2/`, `m3-l3b/`, `m3-l4/`, `m3-l5/`, `m3-l6/` | Each run's `inputs.txt`, `server.log` (trace), `io/launch.txt` (the ticket redacted), `wine.log`, screenshots and watchdog log |
 | L4 | `re/m3/platform-reading.md`, with its REA bundles in `re/m3/rea/` | The platform reading behind §12: every P and X key with its exact REA call and Evidence ID |
 | P1–P5 | `bin64/gameforge_api64.dll` (SHA-256 `1250487ab0639ff5e16bc2042a9fdb8ffdfe1c3e1cfef77eacc2695c60d5908f`) | P1 SDK selection (FUN_180008040, FUN_180011890); P2 `DllMain` and the configuration reader (FUN_1800018A0, FUN_1800137D0, FUN_1800142D0); P3 the Steam module (FUN_1800A1740, FUN_1800A2790); P5 the Gameforge module's loader (FUN_1800975B0, FUN_180097880) |
 | X1–X5 | `bin64/gujianol.exe` | X1 the `gj_uinfo` check (FUN_14024F010) and the SDK start-up (FUN_1401A34A0); X3 the platform bindings (FUN_1401E8710, FUN_1401E9410); X4 the platform type (FUN_1401E89D0, FUN_1401E2450, FUN_14024EA30); X5 the Gameforge getters (FUN_1401E7960) |
