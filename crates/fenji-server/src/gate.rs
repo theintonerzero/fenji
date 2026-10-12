@@ -43,8 +43,8 @@ pub const SERVER_ERROR: &str = "error server-inner-error";
 pub const PRE_AUTH_CAP: usize = 26 + 4 + 0x4000 + 512;
 /// No frame from the client for this long ends the connection (it sends a time sync every 2 s).
 pub const IDLE: Duration = Duration::from_secs(60);
-/// How long a refused connection stays open for the client to read why.
-const LINGER: Duration = Duration::from_secs(2);
+/// How long a refused or replaced connection stays open, by default, for the client to read why.
+pub const LINGER: Duration = Duration::from_secs(2);
 
 /// The gate's limits (M3 spec D17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +63,8 @@ pub struct GateLimits {
     /// A write to a client that takes longer than this ends the connection: a client that stops
     /// reading can't hold its task, its buffers and its place.
     pub write_deadline: Duration,
+    /// How long a refused or replaced connection stays open for its client to read why.
+    pub linger: Duration,
 }
 
 impl Default for GateLimits {
@@ -74,6 +76,7 @@ impl Default for GateLimits {
             max_unauthenticated_per_network: 8,
             idle: IDLE,
             write_deadline: Duration::from_secs(10),
+            linger: LINGER,
         }
     }
 }
@@ -236,14 +239,14 @@ async fn serve(
         Ok(a) => a,
         Err(reason) => {
             tracing::info!(%peer, reason, "login refused");
-            return refuse(sock, &mut server, reason).await;
+            return refuse(sock, &mut server, reason, gate.limits.linger).await;
         }
     };
     let (conn, mut replaced) = match gate.online.join(account.id) {
         Join::Joined(id, rx) => (id, rx),
         Join::Full => {
             tracing::info!(%peer, account = %account.username, "login refused: the server is full");
-            return refuse(sock, &mut server, SERVER_FULL).await;
+            return refuse(sock, &mut server, SERVER_FULL, gate.limits.linger).await;
         }
     };
     drop(place);
@@ -277,12 +280,13 @@ async fn send(sock: &mut TcpStream, bytes: &[u8], deadline: Duration) -> anyhow:
     }
 }
 
-/// Half-closes, then reads until the client closes or `LINGER` passes, so what was just sent isn't
-/// lost to a reset.
-async fn linger(sock: &mut TcpStream) {
+/// Half-closes, then reads until the client closes or `time` passes, so what was just sent isn't
+/// lost to a reset. Callers hold a waiting place while they linger, so lingering sockets count
+/// against the caps.
+async fn linger(sock: &mut TcpStream, time: Duration) {
     let _ = sock.shutdown().await;
     let mut buf = [0u8; 1024];
-    let _ = tokio::time::timeout(LINGER, async {
+    let _ = tokio::time::timeout(time, async {
         while matches!(sock.read(&mut buf).await, Ok(n) if n > 0) {}
     })
     .await;
@@ -343,10 +347,15 @@ fn login_fields(payload: &[u8]) -> Option<(String, String)> {
 
 /// Refuses the auth with `reason`, then waits briefly for the client to close, so the reason
 /// isn't lost to a reset.
-async fn refuse(sock: &mut TcpStream, server: &mut Server, reason: &str) -> anyhow::Result<()> {
+async fn refuse(
+    sock: &mut TcpStream,
+    server: &mut Server,
+    reason: &str,
+    time: Duration,
+) -> anyhow::Result<()> {
     let out = server.reject(reason.as_bytes(), &StoredCodec)?;
-    send(sock, &out, LINGER).await?;
-    linger(sock).await;
+    send(sock, &out, time).await?;
+    linger(sock, time).await;
     Ok(())
 }
 
@@ -391,7 +400,11 @@ async fn lobby_loop(
                 tracing::info!(%peer, account = %account.username, "replaced by a newer login");
                 let bytes = server.send(Stc::Close.to_u8(), DUPLICATE_LOGIN.as_bytes(), &StoredCodec)?;
                 send(sock, &bytes, deadline).await?;
-                linger(sock).await;
+                // The connection no longer holds an online place, so it lingers only within a
+                // waiting place; with none free it closes at once.
+                if let Some(_place) = gate.waiting.take(peer.ip()) {
+                    linger(sock, gate.limits.linger).await;
+                }
                 return Ok(());
             }
         }

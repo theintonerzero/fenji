@@ -303,6 +303,42 @@ async fn refused_connections_keep_their_waiting_place_until_they_close() {
 }
 
 #[tokio::test]
+async fn replaced_connections_linger_only_within_the_waiting_places() {
+    let dir = tempfile::tempdir().unwrap();
+    let limits = GateLimits {
+        linger: Duration::from_secs(5),
+        ..GateLimits::default()
+    };
+    let (s, _c) = server(dir.path(), "", limits).await;
+    account(&s, "aaa").await;
+    // Nine logins to one account: each replaces the one before, whose client stays open.
+    let mut held = Vec::new();
+    for _ in 0..9 {
+        let t = ticket(&s, "aaa").await;
+        let mut bot = Bot::connect(s.login_addr, payload(&t, "aaa", false)).await;
+        bot.expect_work().await;
+        held.push(bot);
+    }
+    let mut extra = TcpStream::connect(s.login_addr).await.unwrap();
+    assert!(
+        hello(&mut extra).await.is_none(),
+        "replaced connections lingered outside the waiting places"
+    );
+    drop(held);
+    let mut freed = false;
+    for _ in 0..50 {
+        let mut sock = TcpStream::connect(s.login_addr).await.unwrap();
+        if hello(&mut sock).await.is_some() {
+            freed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(freed, "the places never came back");
+    s.shutdown().await;
+}
+
+#[tokio::test]
 async fn an_idle_client_is_closed() {
     let dir = tempfile::tempdir().unwrap();
     let limits = GateLimits {
