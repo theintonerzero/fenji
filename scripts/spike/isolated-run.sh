@@ -17,8 +17,8 @@
 #                   "Inside" below), for tools that refuse to run as root, such as umu-run.
 #   --cpu-topology  bind the host's /sys/devices/system/cpu (CPU topology, caches, frequencies...)
 #                   read-only at the same path; Wine and Proton build their processor information
-#                   from it. No other part of /sys is inside, and without it there is no /sys,
-#                   unless a --bind/--ro-bind DIR exposes some.
+#                   from it. No other part of /sys is inside, and without it there is no /sys:
+#                   --bind and --ro-bind refuse /sys and everything in it.
 #   Pass extra environment with `env VAR=value COMMAND`; only PATH, HOME, TERM, LANG, LANGUAGE,
 #   LC_* and USER are inherited, plus BROWSER=/bin/false (and DISPLAY with --x11).
 #
@@ -44,11 +44,12 @@
 # and $HOME, a handful of read-only /etc files (linker, certificates, fonts, time zone), and
 # generated hosts, nsswitch.conf (files only), passwd and group (root and nobody, and with
 # --no-root you: by your names, or as user and users if a name is empty, starts with '-' or has
-# anything but letters, digits, '.', '_' and '-'). No resolv.conf. No host display, audio, bus or
+# anything but ASCII letters, digits, '.', '_' and '-'). No resolv.conf. No host display, audio, bus or
 # daemon socket (systemd-resolved, D-Bus, systemd --user, PulseAudio/PipeWire, CUPS, sshd, avahi,
 # X11, Wayland, ibus, Steam) exists inside unless a --bind/--ro-bind DIR exposes it, bar the one
-# nested X server socket --x11 N names (see "Display"). Nor does /sys, unless a --bind/--ro-bind
-# DIR exposes part of it, bar the read-only /sys/devices/system/cpu that --cpu-topology adds.
+# nested X server socket --x11 N names (see "Display"). Nor does /sys, bar the read-only
+# /sys/devices/system/cpu that --cpu-topology adds: a bind of /sys, or of anything in it, could
+# hand COMMAND the caller's own cgroup files (cgroup.kill, cgroup.freeze).
 # Bound dirs must belong to the run. One is refused (exit 2) if, at start:
 #   - it holds a socket or fifo at any depth (also one mounted over another file), or can't be
 #     fully scanned for them;
@@ -58,11 +59,13 @@
 #     gfs2, ocfs2, afs, coda, davfs, sshfs, autofs, rpc_pipefs. (A game copy on an ntfs-3g
 #     disk is fuseblk: copy it to a local filesystem.)
 #   - it is, or is a parent of, /, /run, /tmp/.X11-unix, /tmp/.ICE-unix, /var, /etc, /dev, /proc,
-#     $HOME, the runtime dir or a Steam dir, or lies inside /run, /dev, /proc, the X11/ICE dirs,
-#     ~/.steam, ~/.local/share/Steam, Flatpak Steam, ~/.ssh (ControlMaster sockets) or ~/.gnupg.
-#     The client must therefore not live in a Steam library (use the DepotDownloader copy).
+#     $HOME, the runtime dir or a Steam dir, or lies inside /run, /dev, /proc, /sys, the X11/ICE
+#     dirs, ~/.steam, ~/.local/share/Steam, Flatpak Steam, ~/.ssh (ControlMaster sockets) or
+#     ~/.gnupg. The client must therefore not live in a Steam library (use the DepotDownloader copy).
 # These checks run once: a socket created in a bound dir mid-run is visible inside, so never
-# bind a dir a host daemon writes to.
+# bind a dir a host daemon writes to. They check paths, which bwrap then binds, so a process of
+# yours that swapped a bound dir between the two would get past them: the wrapper contains what
+# runs inside, not your other processes, which could reach the network themselves anyway.
 #
 # Display (--x11 N). The host's own display never goes inside: an X client can read other
 # clients' windows and type into them (XTEST), and a session Xwayland, being -rootless, may pass
@@ -77,8 +80,9 @@
 # -ac turns off X authorisation, since no Xauthority goes inside (so any local process may use
 # :99, which holds only the sandboxed client); -nolisten tcp keeps it off the network.
 # -extension MIT-SHM is required: the server would attach SysV shared memory by the client's ID
-# in the host's IPC namespace, i.e. any segment of yours. -shm (no glamor, hence no DRI3) is
-# advised but not checked: with DRI3 the server hands the client a GPU device fd.
+# in the host's IPC namespace, i.e. any segment of yours. So is glamor off (Xwayland's -shm, or
+# -glamor off; Xephyr's default): with glamor comes DRI3, and the server would hand the client a
+# GPU device fd.
 # The server's libXfont2 must be built without font-server support, or a client could set a
 # font path of tcp/HOST:PORT and the server would look HOST up and connect to it, from the host.
 # Fedora's is, since 2.0.8-3 (`rpm -q --changelog libXfont2 | grep 'Disable X fontserver'`); the
@@ -98,12 +102,15 @@
 #     servers make it (otherwise someone else could swap XN after these checks);
 #   - /tmp/.X11-unix/XN is a socket of yours, not a symlink;
 #   - /tmp/.XN-lock, which X servers write, is a regular file of yours naming a running Xwayland,
-#     Xephyr or Xvfb that isn't -rootless and has MIT-SHM off. This refuses session displays
-#     whatever DISPLAY says: a compositor locks the displays it serves under its own PID (GNOME's
-#     gnome-shell holds :0 and :1, both its session Xwayland), and a session Xwayland is -rootless;
+#     Xephyr or Xvfb that isn't -rootless, has MIT-SHM and glamor off and wasn't given
+#     -enable-ei-portal (Xwayland's way to pass input on to the compositor). This refuses session
+#     displays whatever DISPLAY says: a compositor locks the displays it serves under its own PID
+#     (GNOME's gnome-shell holds :0 and :1, both its session Xwayland), and a session Xwayland is
+#     -rootless;
 #   - that server maps a libXfont, and every libXfont it maps is still a readable file at its path
-#     (one deleted or replaced since the server started means: restart the server) without the
-#     names getaddrinfo or gethostbyname in it, the host-name lookups of font-server code.
+#     as the server sees it, through /proc/PID/root (one deleted or replaced since the server
+#     started means: restart the server), without the names getaddrinfo, gethostbyname, socket or
+#     connect in it: the host-name lookups and sockets of font-server code.
 # Inside, the socket is bound read-only (connect() works; nothing inside can chmod or touch the
 # host's socket), alone, at /tmp/.X11-unix/XN: no Xauthority, no other host X socket, and the
 # server's abstract socket stays out of reach in the host's network namespace. Like the bind
@@ -169,8 +176,9 @@ here=$(cd -- "$(dirname -- "$0")" && pwd -P)
 # --no-root: COMMAND runs as your uid and gid, named in the generated passwd and group (below).
 # Refused if either is 0 or 65534, which are root and nobody there (and running this as real root
 # is out of scope). entry_name NAME FALLBACK prints NAME, or FALLBACK if NAME is empty, starts
-# with '-' or has anything but letters, digits, '.', '_' and '-', which could break those files'
-# format. Spelled out, as for --x11: a range can match other characters in some locales.
+# with '-' or has anything but ASCII letters, digits, '.', '_' and '-', which could break those
+# files' format. Spelled out, as for --x11: a range can match other characters in some locales.
+# The self-test's want_name is the same function: change the two together.
 entry_name() {
   case "$1" in
     ""|-*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) printf '%s\n' "$2" ;;
@@ -189,11 +197,18 @@ if [ -n "$noroot" ]; then
   caller_group=$(entry_name "$(id -gn 2>/dev/null)" users)
 fi
 
-if [ "${FENJI_ISOLATED_RUN_ALLOW_STEAM:-}" != 1 ]; then
-  if pgrep -x steam >/dev/null || pgrep -x steamwebhelper >/dev/null || pgrep -f com.valvesoftware.Steam >/dev/null; then
-    echo "isolated-run: quit Steam first (its IPC would let the client reach the network)" >&2
-    exit 2
-  fi
+# A running Steam: processes named steam or steamwebhelper, or one whose command line names
+# Flatpak Steam's app ID. This script's own command line may name it too (as an argument for
+# COMMAND), and doesn't count; pgrep never lists itself.
+steam_running() {
+  local p
+  if pgrep -x steam >/dev/null || pgrep -x steamwebhelper >/dev/null; then return 0; fi
+  for p in $(pgrep -f com.valvesoftware.Steam); do [ "$p" = "$$" ] || return 0; done
+  return 1
+}
+if [ "${FENJI_ISOLATED_RUN_ALLOW_STEAM:-}" != 1 ] && steam_running; then
+  echo "isolated-run: quit Steam first (its IPC would let the client reach the network)" >&2
+  exit 2
 fi
 
 home=${HOME:-/root}
@@ -257,7 +272,7 @@ steam_dirs=("$(resolve "$home/.steam")" "$(resolve "$home/.local/share/Steam")"
             "$(resolve "$home/.var/app/com.valvesoftware.Steam")")
 contains=(/ /run /tmp/.X11-unix /tmp/.ICE-unix /var /etc /dev /proc "$home" "/run/user/$(id -u)"
           "${steam_dirs[@]}")
-under=(/run /dev /proc /tmp/.X11-unix /tmp/.ICE-unix "${steam_dirs[@]}" "$(resolve "$home/.ssh")"
+under=(/run /dev /proc /sys /tmp/.X11-unix /tmp/.ICE-unix "${steam_dirs[@]}" "$(resolve "$home/.ssh")"
        "$(resolve "$home/.gnupg")")
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
   contains+=("$XDG_RUNTIME_DIR")
@@ -270,7 +285,7 @@ for ((i = 1; i < ${#binds[@]}; i += 2)); do
     case "$c/" in "${b%/}/"*) die2 "refusing to bind $b: it contains $c (host daemon sockets)" ;; esac
   done
   for u in "${under[@]}"; do
-    case "$b/" in "${u%/}/"*) die2 "refusing to bind $b: it is inside $u (host daemon sockets)" ;; esac
+    case "$b/" in "${u%/}/"*) die2 "refusing to bind $b: it is inside $u (host daemon sockets, or with /sys, host kernel controls)" ;; esac
   done
   # The filesystem b is on, and every mount below it (see mounts_at).
   mounts_at "$b"
@@ -293,7 +308,7 @@ done
 # --x11 N: a nested X server of the caller's own, never a session one (see "Display" above).
 # x11_server_problem LOCK prints why the process LOCK names isn't such a server (nothing if it is).
 x11_server_problem() {
-  local pid="" comm="" arg prev="" rootless="" shm=on path last="" libs=() f rc
+  local pid="" comm="" arg prev="" rootless="" shm=on glamor=off eiportal="" path last="" libs=() f r rc
   { read -r pid < "$1"; } 2>/dev/null || true
   case "$pid" in ""|*[!0123456789]*) echo "$1 doesn't hold a process ID"; return ;; esac
   if ! { read -r comm < "/proc/$pid/comm"; } 2>/dev/null; then
@@ -305,14 +320,23 @@ x11_server_problem() {
     *) echo "$1 names $comm (PID $pid), not Xwayland, Xephyr or Xvfb (a compositor locks its session displays under its own PID)"
        return ;;
   esac
+  # Glamor (and with it DRI3) is on by default in Xwayland only: -shm or -glamor off turns it off
+  # there, and Xephyr or Xvfb get it only from a -glamor option. A -glamor whose value isn't off
+  # counts as on, whatever came before.
+  [ "$comm" != Xwayland ] || glamor=on
   # The server reads its options in order and matches extension names ignoring ASCII case
   # (strcasecmp, C locale). Spelled out, not ${arg,,}: that follows the caller's locale, and a
   # Turkish one lowercases I to a dotless i.
   { while IFS= read -r -d '' arg; do
       [ "$arg" != -rootless ] || rootless=1
+      [ "$arg" != -enable-ei-portal ] || eiportal=1
+      [ "$arg" != -shm ] || glamor=off
+      case "$comm $arg" in "Xephyr -glamor"*|"Xvfb -glamor"*) glamor=on ;; esac
       case "$prev $arg" in
         "-extension "[Mm][Ii][Tt]-[Ss][Hh][Mm]) shm=off ;;
         "+extension "[Mm][Ii][Tt]-[Ss][Hh][Mm]) shm=on ;;
+        "-glamor off") [ "$comm" != Xwayland ] || glamor=off ;;
+        "-glamor "*) [ "$comm" != Xwayland ] || glamor=on ;;
       esac
       prev=$arg
     done < "/proc/$pid/cmdline"; } 2>/dev/null || true
@@ -324,9 +348,19 @@ x11_server_problem() {
     echo "$comm (PID $pid) has MIT-SHM on, so it would attach your SysV shared memory for the client: start it with -extension MIT-SHM"
     return
   fi
+  if [ "$glamor" = on ]; then
+    echo "$comm (PID $pid) has glamor on, and with it DRI3, which hands the client a GPU device fd: start Xwayland with -shm (or -glamor off), and Xephyr or Xvfb without -glamor"
+    return
+  fi
+  if [ -n "$eiportal" ]; then
+    echo "$comm (PID $pid) runs with -enable-ei-portal, which may pass the client's input on to the compositor: start it without"
+    return
+  fi
   # No font-server support (see "Display"): every libXfont the server maps, each file once. maps
-  # shows a file's path as it is now, marked " (deleted)" once that name no longer leads to it.
-  # A maps that can't be read lists none, which refuses.
+  # shows a file's path as it is now in the server's mount namespace, marked " (deleted)" once
+  # that name no longer leads to it, so the file is read through /proc/PID/root: in another mount
+  # namespace (a container, say) the same path could name a different file here. A maps that
+  # can't be read lists none, which refuses.
   { while read -r _ _ _ _ _ path; do
       case "${path##*/}" in libXfont*) [ "$path" = "$last" ] || libs+=("$path"); last=$path ;; esac
     done < "/proc/$pid/maps"; } 2>/dev/null || true
@@ -340,14 +374,15 @@ x11_server_problem() {
         echo "$comm (PID $pid) maps $f, a libXfont deleted or replaced since it started, which can't be checked: restart the server"
         return ;;
     esac
-    if [ ! -f "$f" ] || [ ! -r "$f" ]; then
-      echo "$comm (PID $pid) maps $f, which is not a readable file here, so it can't be checked for font-server support"
+    r=/proc/$pid/root$f
+    if [ ! -f "$r" ] || [ ! -r "$r" ]; then
+      echo "$comm (PID $pid) maps $f, which is not a readable file here (through /proc/$pid/root), so it can't be checked for font-server support"
       return
     fi
     rc=0
-    LC_ALL=C grep -qaF -e getaddrinfo -e gethostbyname -- "$f" || rc=$?
+    LC_ALL=C grep -qaF -e getaddrinfo -e gethostbyname -e socket -e connect -- "$r" || rc=$?
     case "$rc" in
-      0) echo "$comm (PID $pid) maps $f, a libXfont with font-server support (it looks up host names):" \
+      0) echo "$comm (PID $pid) maps $f, a libXfont with font-server support (it opens sockets or looks up host names):" \
               "any client could make the server connect anywhere. Use a libXfont2 built without it," \
               "as Fedora's is since 2.0.8-3"
          return ;;
@@ -508,5 +543,8 @@ for n in 0 1 2; do
   fi
 done
 
-exec bwrap "${args[@]}" -- "$@" \
-  3<<<"$hosts_data" 4<<<"$nss_data" 5<<<"$passwd_data" 6<<<"$group_data" 7< <(printf '%b' "$bpf")
+# The data fds: bwrap reads and closes them, so COMMAND starts with only 0, 1 and 2. The seccomp
+# program is binary, so it comes through a pipe, opened by an exec of its own: bash closes the
+# process substitution's fd after it, where on the bwrap line it would be inherited (as fd 63).
+exec 7< <(printf '%b' "$bpf")
+exec bwrap "${args[@]}" -- "$@" 3<<<"$hosts_data" 4<<<"$nss_data" 5<<<"$passwd_data" 6<<<"$group_data"
