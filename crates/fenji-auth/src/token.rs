@@ -1,7 +1,8 @@
 //! Session and game tokens (M3 spec D3): 32 bytes from the OS's random source, written as
-//! `fenji1-` and 64 hex digits, and stored only as the SHA-256 of the 32 bytes. The prefix keeps a
-//! ticket from ever matching the `^%x+$` branch of the client's `net_manager_login`, which would
-//! hex-decode it (docs/protocol/packets/lobby.md).
+//! `fenji1-` and 64 hex digits, and stored only as the SHA-256 of the 32 bytes. The client's
+//! `net_manager_login` has a `^%x+$` hex-decode step that can't run in this build (its condition
+//! compares constants); the prefix keeps a ticket from matching it anyway
+//! (docs/protocol/packets/lobby.md 12.7).
 use sha2::{Digest, Sha256};
 
 use crate::{Error, Result};

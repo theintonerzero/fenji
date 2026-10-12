@@ -20,5 +20,6 @@
 | [`protocol/README.md`](protocol/README.md) | Our protocol findings (transport, opcode ledger, payloads) and their format. |
 | [`protocol/login.md`](protocol/login.md) | M1: how the client finds its server, and the first connection to our stub. |
 | [`protocol/transport.md`](protocol/transport.md) | M2: the client's transport: hello, variants, frames and keys, the Oodle wrapper, auth. |
+| [`protocol/packets/lobby.md`](protocol/packets/lobby.md) | M3: the lobby's script messages: the character list, creating and deleting characters, error codes and close reasons. |
 
 Ground rules (full text in the design spec, §2): legitimate copies only; clean room, no leaked server material; no game content in the repo; never touch live official services with modified clients; private and non-commercial.
