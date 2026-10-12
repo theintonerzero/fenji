@@ -91,11 +91,11 @@ A container's layout (4.3):
 **Inferred:**
 - **Path names.** `_index` names the paths of the archives' 224,032 live files. With it, `archive` could list every file by name, and extract the stored ones by path.
 - **Content.** 93.6% of the files, including the game's assets and whatever tables the server must share with the client.
-- **Not missing scripts.** The exe's embedded scripts are complete ([`m1-script-format.md`](m1-script-format.md) §5.2), so they don't need Oodle. Any script copies in the archives would be shadowed, since the embedded copies win (same document, 1.11). Whether any exist is Unknown until `_index` is readable.
+- **Not missing scripts.** The exe's embedded scripts are complete ([`m1-script-format.md`](m1-script-format.md) §5.2), so they don't need Oodle. Any script copies in the archives would be shadowed, since the embedded copies win (same document, 1.13). Whether any exist is Unknown until `_index` is readable.
 
 **Unknown:**
 - **The unidentified stored files.** What the 14,041 are.
-- **Encryption.** Whether any compressed file is also encrypted ([`spike-0.md`](spike-0.md) 6.7). The stored files are plain: their SHA-1s match their keys.
+- **Encryption.** Whether any compressed file is also encrypted ([`spike-0.md`](spike-0.md) 6.7). The 1,135 stored files checked are plain, since their SHA-1s match their keys. The rest weren't checked; that includes the 14,041 unidentified ones, whose first bytes vary widely.
 - **Unexplained fields.** The meaning of the blob header's `check` field, and of the always-zero byte at record offset 0x1E.
 
 ## Evidence index

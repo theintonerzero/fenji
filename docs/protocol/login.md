@@ -47,19 +47,27 @@ None of these inputs touches a client file; all are inputs the client already re
 
 | # | Finding | Tag | Evidence |
 |---|---|---|---|
-| 3.1 | `gj_gates` can't stand in for the list on the Gameforge path. In `NET.Login` (`net.luac` `0.60`, pc 172–184), `gates and gates:match("^(.-):(.-)$")` keeps one result of `match` (`CALL 16 3 2`), then sets the port to nil (`LOADNIL 17`), so the branch never connects. The fallback that M1's plan listed is dropped. | **Inferred** | S1 |
+| 3.1 | `gj_gates` can't stand in for the list on the Gameforge path. In `NET.Login` (`net.luac` `0.60`, pc 172–184), the code that splits `gj_gates` into a host and a port keeps only the first of the two values the pattern match returns, and leaves the port nil. So that branch never connects. The fallback that M1's plan listed is dropped. | **Inferred** | S1 |
 
 Expected port: TCP 7800 on loopback, as the list says. A literal IP needs no name resolution, though `util_gethostbyname` still runs (2.5). The same values could also come from environment variables of the same names (§1). §6 records the runs.
 
 ## 4. The German interface
 
-The interface language comes from the Gameforge SDK's user info, read once at start-up (FUN_1401E7D10):
+The interface language comes from the game language the Gameforge SDK reports, read once at start-up. FUN_1401A35B0 stores what `GameforgeApi_GetContext(0xb)`'s method at +0x28 returns (FUN_1401A32E0), and FUN_1401E7D10 maps it:
 - `de-DE` or `german` gives `de`;
 - `fr-FR` or `french` gives `fr`;
 - `ru-RU` or `russian` gives `ru_RU`;
-- anything else gives `en`.
+- anything else, an empty value included, gives `en`.
 
-With `--gf-sdk=mocked`, that user info comes from the SDK's mocked backend, so a German interface means the mock reports German. **Inferred**. Whether the mock's language can be set lies in `gameforge_api64.dll`, outside this exe. **Unknown**.
+Nothing else sets the interface language. `settings/LanguageSetting.dat` (FUN_1401E80F0) sets only the voice language, `client_sound_language`. **Inferred**.
+
+With `--gf-sdk=mocked`, the SDK's mock (`MockedApiModule` in `gameforge_api64.dll`) answers with constants. The getter in that slot returns `de-DE` (FUN_1800A2DB0), and a sibling returns `en-GB` (FUN_1800A2DA0). Neither reads a flag, an environment variable or the locale, so a mocked run is always German and no input changes it. The string constants are **Observed**. What the getters return, and that the client's call reaches the `de-DE` one, are **Inferred** from reading the code; this fits the German interface.
+
+Two routes would give English without changing the client. Both are open, and both belong to M3's login question:
+- **A real SDK backend that reports English.** The Steam backend maps Steam's language name (`english` gives `en-GB`; FUN_1800A1FE0).
+- **The `gj_uinfo` environment variable.** It makes the client skip the Gameforge SDK at start-up (FUN_14024F010), which leaves the language empty and the interface English. It also changes the platform that the login path takes.
+
+Both are **Inferred**.
 
 ## 5. Open questions
 
@@ -68,7 +76,7 @@ With `--gf-sdk=mocked`, that user info comes from the SDK's mocked backend, so a
 - What the `servername` file's `server_list` serves, given that the Gameforge path doesn't read it.
 - Where `--server_locale` and `--net` are read (spike-0 8.37).
 - The meaning of `net_client_create`'s integer 3861871408.
-- Whether the mocked SDK's language is configurable.
+- What `gj_uinfo` holds, and which login path the client takes when it skips the SDK (FUN_14024F010). It may be an SDK-free route for players (M3).
 
 ## 6. Verification
 
@@ -83,11 +91,12 @@ M1 Task 10 ran the pinned client twice inside `run-client.sh`. Both runs used:
 |---|---|---|---|---|---|---|
 | m1-c1 | §3's server list, no click | 0 | none | none | no sign; 3,953 resource lookups, none of type `PE` | 0 |
 | m1-c2 | m1-c1 plus the player's server choice: a click on the entry "Fenji" at 150 s, then on "Bestätigen" at 156 s | 1 (port 7800, length 0, first 16 bytes: none) | `127.0.0.1` (`gethostbyname`) | 7800, once | no sign; 3,959 resource lookups, none of type `PE` | 0 |
+| m1-c3 | m1-c2 repeated after its evidence was lost (see the evidence index) | 1 (port 7800, length 0, first 16 bytes: none) | `127.0.0.1` (`gethostbyname`) | 7800, once | no sign; 3,959 resource lookups, none of type `PE` | 0 |
 
 **Observed:**
 - **The list loads.** The client reads the list from `serverlist_url=file:///Z:/…/serverlist.json`. From 120 s, its frame "Server auswählen" offered "Fenji" (C1). Curl under Wine reads that `file://` form.
 - **No click, no connection.** With the list and no click, the client didn't connect in 240 s (C1).
-- **The confirm button connects.** A click on the entry alone didn't connect. A click on "Bestätigen" did, in the same second: the client looked up `127.0.0.1` with `gethostbyname` and opened one TCP connection to 127.0.0.1:7800, and the stub logged the session (C2).
+- **The confirm button connects.** A click on the entry alone didn't connect. A click on "Bestätigen" did, in the same second: the client looked up `127.0.0.1` with `gethostbyname` and opened one TCP connection to 127.0.0.1:7800, and the stub logged the session (C2; repeated exactly in C3).
 - **Nobody spoke.** Over the 85 s the connection lasted, neither side sent a byte. The session ended when the run's timeout stopped the client.
 - **The watchdog saw nothing.** It found no sign of driver activity in either run. These are the first runs to log resource lookups (`+resource`), and none of them was of the driver's type `PE`.
 
@@ -117,5 +126,10 @@ M1 Task 10 ran the pinned client twice inside `run-client.sh`. Both runs used:
 | G7 | FUN_1401E79D0 | `gameforge_get_user_language` |
 | G8 | FUN_1401E80F0 | `LanguageSetting.dat` and the voice language |
 | G9 | FUN_14068FB60 | `--fs=` (m1-script-format §1) |
-| C1 | `re/runs/out/m1-c1/` (screenshots, `wine.log`, `watchdog.log`, `inputs.txt`) and `re/stub-logs/m1-c1/` (empty) | Run m1-c1: the server list loaded, no click, no connection |
-| C2 | `re/runs/out/m1-c2/` (screenshots, `wine.log`, `clicks.log`, `watchdog.log`) and `re/stub-logs/m1-c2/` (one session) | Run m1-c2: the clicks, the lookup, the connect, the session |
+| G10 | FUN_1401A35B0, FUN_1401A32E0; FUN_14024F010 | The SDK's game language and platform, stored at start-up; the `gj_uinfo` branch that skips the SDK |
+| D1 | `bin64/gameforge_api64.dll` (SHA-256 `1250487ab0639ff5e16bc2042a9fdb8ffdfe1c3e1cfef77eacc2695c60d5908f`): FUN_1800A2DB0 (REA ev_56d0642c), FUN_1800A2DA0 (ev_94ea5b43), FUN_1800A1FE0 (ev_2a7e13ae), `GameforgeApi_GetContext` (ev_310cf39b) | The mock's constant languages, the Steam language map, the SDK's context lookup |
+| C1 | `re/m1/connect/m1-c1.console`, `runs.md`, `re/stub-logs/m1-c1/` (empty); originally also `re/runs/out/m1-c1/` | Run m1-c1: the server list loaded, no click, no connection |
+| C2 | `re/stub-logs/m1-c2/` (one session), `re/m1/connect/m1-c2.console`, `runs.md`; originally also `re/runs/out/m1-c2/` | Run m1-c2: the clicks, the lookup, the connect, the session |
+| C3 | `re/runs/out/m1-c3/` (screenshots, `wine.log`, `clicks.log`, `watchdog.log`) and `re/stub-logs/m1-c3/` (one session) | Run m1-c3: m1-c2 repeated, with its full evidence |
+
+On 2026-10-12 a test draft deleted `re/runs`, with the run directories of m1-c1 and m1-c2: their screenshots and their Wine and watchdog logs ([`m1-summary.md`](../re/m1-summary.md)). Their stub logs, console output and notes survived. m1-c3 repeats m1-c2.
