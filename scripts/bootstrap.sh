@@ -168,6 +168,7 @@ check_all() {
   report ghidra "$GHIDRA_VERSION" "$([ -x "$GHIDRA_DIR/support/analyzeHeadless" ] && echo "$GHIDRA_VERSION")"
   report unluac "$UNLUAC_VERSION" "$([ -f "$UNLUAC_JAR" ] && echo "$UNLUAC_VERSION")"
   report DepotDownloader "$DEPOTDOWNLOADER_VERSION" "$([ -x "$DD_DIR/DepotDownloader" ] && echo "$DEPOTDOWNLOADER_VERSION")"
+  printf '  %-18s %s\n' mingw-w64 "$(x86_64-w64-mingw32-gcc --version 2>/dev/null | head -n 1 || echo missing)"
   if [ "$PLATFORM" = linux ]; then
     report umu-launcher "$UMU_LAUNCHER_VERSION" "$([ -n "$(find "$UMU_DIR" -name umu-run -type f 2>/dev/null | head -n 1)" ] && echo "$UMU_LAUNCHER_VERSION")"
     report GE-Proton "$GE_PROTON_VERSION" "$([ -x "$GE_PROTON_DIR/proton" ] && echo "$GE_PROTON_VERSION")"
@@ -195,7 +196,7 @@ fi
 
 FEDORA_PACKAGES="gcc gcc-c++ make pkgconf-pkg-config openssl-devel webkit2gtk4.1-devel libxdo-devel \
 libappindicator-gtk3-devel librsvg2-devel alsa-lib-devel curl file unzip git tcpdump wireshark-cli bubblewrap \
-nodejs${NODE_MAJOR} nodejs${NODE_MAJOR}-npm uv"
+nodejs${NODE_MAJOR} nodejs${NODE_MAJOR}-npm uv ${MINGW_FEDORA_PACKAGE}"
 
 case "$DISTRO" in
   macos)
@@ -205,15 +206,16 @@ case "$DISTRO" in
       /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       for p in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$p" ] && eval "$("$p" shellenv)"; done
     fi
-    log "Homebrew: temurin@$JAVA_MAJOR, node@$NODE_MAJOR"
+    log "Homebrew: temurin@$JAVA_MAJOR, node@$NODE_MAJOR, $MINGW_BREW_PACKAGE"
     brew list --cask "temurin@$JAVA_MAJOR" >/dev/null 2>&1 || brew install --cask "temurin@$JAVA_MAJOR"
     brew list --versions "node@$NODE_MAJOR" >/dev/null 2>&1 || brew install "node@$NODE_MAJOR"
     brew list --versions uv >/dev/null 2>&1 || brew install uv
+    brew list --versions "$MINGW_BREW_PACKAGE" >/dev/null 2>&1 || brew install "$MINGW_BREW_PACKAGE"
     NODE_BIN="$(brew --prefix "node@$NODE_MAJOR")/bin"
     export PATH="$NODE_BIN:$PATH"
     ;;
   fedora)
-    log "Fedora packages (build tools, Tauri prerequisites, packet capture, Java $JAVA_MAJOR, Node $NODE_MAJOR)"
+    log "Fedora packages (build tools, Tauri prerequisites, packet capture, Java $JAVA_MAJOR, Node $NODE_MAJOR, MinGW-w64)"
     echo "  sudo dnf install -y $FEDORA_PACKAGES"
     if ask "Run this with sudo?"; then
       # shellcheck disable=SC2086

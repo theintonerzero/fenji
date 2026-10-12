@@ -2,9 +2,12 @@
 //! reads is ever committed: tools write only under `re/` ([`re_dir`]).
 pub mod archive;
 mod blob;
+pub mod cache;
 mod codec;
 mod error;
 mod exe_fs;
+pub mod index;
+pub mod oodle_spool;
 mod pe;
 pub mod re_dir;
 #[cfg(any(test, feature = "test-util"))]

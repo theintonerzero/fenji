@@ -9,7 +9,7 @@
 #       own cmd.exe; and empty home/, steamclient/ and hosts-empty.
 #   scripts/spike/run-client.sh run NAME [--hosts FILE] [--ports "P1 P2"] [--timeout S]
 #       [--display N] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
-#       [--click T:X,Y]... -- [client args...]
+#       [--click T:X,Y]... [--stub-arg ARG]... -- [client args...]
 #       One run: evidence in re/runs/out/NAME/, stub logs in re/stub-logs/NAME/; NAME must be new.
 #       The sandbox writes only to the client copy, the prefix, its home and re/runs/io/NAME; the
 #       evidence directories are never bound into it, and the host takes files out of what the
@@ -18,6 +18,7 @@
 #       the client reads, for this run only. It never replaces a file the copy already has.
 #       --click plays a player's left click at X,Y on the nested display, T seconds into the run
 #       (xclick.py, through XTEST): input to the client's own UI, never a change to the client.
+#       --stub-arg passes one word to fenji-stub, e.g. --stub-arg --speak (M2).
 #
 # Every run uses isolated-run.sh --no-root --x11 N --cpu-topology (CLAUDE.md "Client runs"), the
 # pinned GE-Proton's own `proton run` (umu's runtime container fails in the sandbox), lavapipe, and
@@ -96,7 +97,7 @@ cmd_run() {
   local run=$1
   shift
   local hosts="$WORK/hosts-empty" ports=7804 tmo=300 display=99 channels=$CHANNELS_DEFAULT
-  local envs=() client_files=() clicks=()
+  local envs=() client_files=() clicks=() stub_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --hosts) [ $# -ge 2 ] || usage; hosts=$(realpath -- "$2"); shift 2 ;;
@@ -107,6 +108,7 @@ cmd_run() {
       --env) [ $# -ge 2 ] || usage; envs+=("$2"); shift 2 ;;
       --client-file) [ $# -ge 2 ] || usage; client_files+=("$2"); shift 2 ;;
       --click) [ $# -ge 2 ] || usage; clicks+=("$2"); shift 2 ;;
+      --stub-arg) [ $# -ge 2 ] || usage; stub_args+=("$2"); shift 2 ;;
       --) shift; break ;;
       *) usage ;;
     esac
@@ -124,6 +126,10 @@ cmd_run() {
   local c
   for c in "${clicks[@]}"; do
     [[ "$c" =~ ^[0-9]+:[0-9]+,[0-9]+$ ]] || die "--click takes T:X,Y in whole numbers, not '$c'"
+  done
+  local sa
+  for sa in "${stub_args[@]}"; do
+    case "$sa" in '' | *[!A-Za-z0-9=_.:,-]*) die "--stub-arg takes one word of [A-Za-z0-9=_.:,-], not '$sa'" ;; esac
   done
   local OUT="$WORK/out/$run" IO="$WORK/io/$run" STUB="$REPO/re/stub-logs/$run" PFX="$WORK/compat/pfx"
   if [ ! -d "$WORK/client/bin64" ] || [ ! -f "$PFX/system.reg" ]; then die "no workspace; run: $0 setup"; fi
@@ -236,13 +242,14 @@ cmd_run() {
     PROTON_LOG_DIR="$IO" PROTON_USE_XALIA=0 PROTON_LOG=1 WINEDEBUG="$channels" DXVK_LOG_PATH="$IO" \
     VK_ICD_FILENAMES="$LAVAPIPE" "${envs[@]}" \
     bash -c '
-      W=$1 IO=$2 STUB=$3 STUBBIN=$4 PORTS=$5 TMO=$6 PROTON=$7
-      shift 7
+      W=$1 IO=$2 STUB=$3 STUBBIN=$4 PORTS=$5 TMO=$6 PROTON=$7 SARGS=$8
+      shift 8
       for _ in $(seq 200); do [ -e "$IO/.go" ] && break; sleep 0.05; done
       [ -e "$IO/.go" ] || { echo "watchdog never armed; client not started" >&2; exit 98; }
       la=()
       for p in $PORTS; do la+=(--listen "127.0.0.1:$p"); done
-      "$STUBBIN/fenji-stub" "${la[@]}" --out "$STUB" > "$IO/stub.out" 2>&1 &
+      # SARGS holds the validated --stub-arg words, split here on purpose.
+      "$STUBBIN/fenji-stub" "${la[@]}" $SARGS --out "$STUB" > "$IO/stub.out" 2>&1 &
       stub=$!
       sleep 1
       cd "$W/client/bin64" || exit 99
@@ -254,7 +261,7 @@ cmd_run() {
       kill "$stub" 2>/dev/null
       wait "$stub" 2>/dev/null
       exit "$rc"
-    ' _ "$WORK" "$IO" "$IO/stub" "$STUBBIN" "$ports" "$tmo" "$PROTON" "$@" > "$OUT/sandbox.out" 2>&1 &
+    ' _ "$WORK" "$IO" "$IO/stub" "$STUBBIN" "$ports" "$tmo" "$PROTON" "${stub_args[*]}" "$@" > "$OUT/sandbox.out" 2>&1 &
   local spid=$!
   python3 -I "$WATCHDOG" watch --root "$WORK" --out "$OUT" --sandbox-pid "$spid" \
     --log "$IO/steam-1418100.log" --go "$IO/.go" "${wbinds[@]}" \

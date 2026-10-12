@@ -111,6 +111,8 @@ refuses "--env can't replace the channels" "WINEDEBUG" -- --env WINEDEBUG=-all
 refuses "--env can't move the prefix the watchdog scans" "STEAM_COMPAT_DATA_PATH" -- --env STEAM_COMPAT_DATA_PATH=/tmp/x
 refuses "--env takes VAR=VALUE" "VAR=VALUE" -- --env NOVALUE
 refuses "--ports takes numbers" "--ports" -- --ports '7800;x'
+refuses "--stub-arg takes one word" "--stub-arg" -- --stub-arg 'a b'
+refuses "--stub-arg refuses shell characters" "--stub-arg" -- --stub-arg '--x;rm'
 refuses "--ports can't be empty" "--ports" -- --ports ''
 refuses "--click takes T:X,Y in whole numbers" "--click" -- --click 5:abc
 refuses "valid --ports, --env and --click pass their checks" "no workspace" -- --ports '7800 7801' --env FOO=bar --click 30:640,360

@@ -4,6 +4,7 @@
 |---|---|
 | [`superpowers/specs/2026-10-11-fenji-design.md`](superpowers/specs/2026-10-11-fenji-design.md) | The project design: ground rules, architecture, milestones. Start here. |
 | [`superpowers/specs/2026-10-12-m1-data-layer-design.md`](superpowers/specs/2026-10-12-m1-data-layer-design.md) | M1 design: Lua tooling, the login hunt and first connection, the script census, archives and the Oodle gate. |
+| [`superpowers/specs/2026-10-12-m2-transport-design.md`](superpowers/specs/2026-10-12-m2-transport-design.md) | M2 design: the transport reading, `fenji-proto`, the stub's handshake ladder, the Oodle wire test and the archive helper. |
 | `superpowers/plans/` | One implementation plan per milestone (M0–M5), written before that milestone starts. |
 | [`development.md`](development.md) | Machine setup (macOS/Linux), branches, Conventional Commits, SemVer, changelog, releases. |
 | [`re/README.md`](re/README.md) | Reverse-engineering workflow: pinned build, analysis setup, sandboxed client runs, what may be committed. |
@@ -14,7 +15,10 @@
 | [`re/m1-script-census.md`](re/m1-script-census.md) | M1: how much server-side logic the client's embedded scripts carry. |
 | [`re/m1-archives.md`](re/m1-archives.md) | M1: the data archives' structure, read without decompressing Oodle data. |
 | [`re/m1-summary.md`](re/m1-summary.md) | M1 summary: spike-0's questions answered, deviations, Done-when status. |
+| [`re/m2-tables.md`](re/m2-tables.md) | M2: the client's table format, and where items, skills, monsters, the XP curve and maps live. |
+| [`re/m2-summary.md`](re/m2-summary.md) | M2 summary: the transport answered, deviations, Done-when status. |
 | [`protocol/README.md`](protocol/README.md) | Our protocol findings (transport, opcode ledger, payloads) and their format. |
 | [`protocol/login.md`](protocol/login.md) | M1: how the client finds its server, and the first connection to our stub. |
+| [`protocol/transport.md`](protocol/transport.md) | M2: the client's transport: hello, variants, frames and keys, the Oodle wrapper, auth. |
 
 Ground rules (full text in the design spec, §2): legitimate copies only; clean room, no leaked server material; no game content in the repo; never touch live official services with modified clients; private and non-commercial.
