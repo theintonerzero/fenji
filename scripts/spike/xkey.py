@@ -36,20 +36,21 @@ def main():
     x11.XkbKeycodeToKeysym.restype = ctypes.c_ulong
     x11.XkbKeycodeToKeysym.argtypes = [ctypes.c_void_p, ctypes.c_ubyte, ctypes.c_int, ctypes.c_int]
     xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+    # Every input is checked before any display is opened.
+    if a.key is not None:
+        sym = x11.XStringToKeysym(a.key.encode())
+        if not sym:
+            print(f"xkey: no keysym named {a.key!r}", file=sys.stderr)
+            return 2
+        syms = [sym]
+    else:
+        # Printable ASCII keysyms equal their character codes (X11 keysymdef.h, Latin 1).
+        syms = [ord(c) for c in a.type]
     dpy = x11.XOpenDisplay(a.display.encode())
     if not dpy:
         print(f"xkey: can't open display {a.display}", file=sys.stderr)
         return 1
     try:
-        if a.key is not None:
-            sym = x11.XStringToKeysym(a.key.encode())
-            if not sym:
-                print(f"xkey: no keysym named {a.key!r}", file=sys.stderr)
-                return 2
-            syms = [sym]
-        else:
-            # Printable ASCII keysyms equal their character codes (X11 keysymdef.h, Latin 1).
-            syms = [ord(c) for c in a.type]
         shift = x11.XKeysymToKeycode(dpy, x11.XStringToKeysym(b"Shift_L"))
         for sym in syms:
             code = x11.XKeysymToKeycode(dpy, sym)
@@ -57,7 +58,11 @@ def main():
                 print(f"xkey: keysym {sym:#x} has no key on this display", file=sys.stderr)
                 return 1
             # Shift when the keysym sits at the key's second level (an upper-case letter, "_", ...).
+            # A keysym only a third level (AltGr) reaches can't be typed this way.
             shifted = x11.XkbKeycodeToKeysym(dpy, code, 0, 0) != sym
+            if shifted and x11.XkbKeycodeToKeysym(dpy, code, 0, 1) != sym:
+                print(f"xkey: keysym {sym:#x} needs more than Shift on this layout", file=sys.stderr)
+                return 1
             if shifted:
                 xtst.XTestFakeKeyEvent(dpy, shift, 1, 0)
             xtst.XTestFakeKeyEvent(dpy, code, 1, 0)

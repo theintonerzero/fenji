@@ -13,9 +13,10 @@
 #       [--server CONFIG [--server-data DIR] [--launch "ARGS" [--launch-password FILE]]]
 #       -- [client args...]
 #       One run: evidence in re/runs/out/NAME/, stub logs in re/stub-logs/NAME/; NAME must be new.
-#       The sandbox writes only to the client copy, the prefix, its home and re/runs/io/NAME; the
-#       evidence directories are never bound into it, and the host takes files out of what the
-#       sandbox can write only through `watchdog.py collect`, which never follows a link.
+#       The sandbox writes only to the client copy, the prefix, its home, re/runs/io/NAME and, with
+#       --server-data, DIR; the evidence directories are never bound into it, and the host takes
+#       files out of what the sandbox can write only through `watchdog.py collect`, which never
+#       follows a link.
 #       --client-file puts SRC into the run's client copy as NAME at the install root, an input
 #       the client reads, for this run only. It never replaces a file the copy already has.
 #       --click plays a player's left click at X,Y on the nested display, T seconds into the run
@@ -25,14 +26,16 @@
 #       BackSpace or a letter) or typed printable ASCII, T seconds into the run (xkey.py, XTEST).
 #       --server runs target/release/fenji-server with a copy of CONFIG (a fenji.toml) in place of
 #       the stub, RUST_LOG=fenji_server=trace, its output in the evidence as server.log; the run
-#       waits for its login_bind and api_bind ports. Its [store] path is relative (a fresh database
-#       in the run's I/O directory) or, with --server-data DIR (a directory under re/runs/, bound
-#       read-write, which outlives the run), a path inside DIR.
-#       --launch runs `target/release/fenji-launch play --print ARGS` (built with the dev-login-path
-#       feature) once the server is ready, and gives the client only the gj_* pairs it prints;
-#       inputs.txt records ARGS and io/launch.txt the pairs with gj_ticket redacted. The password
-#       comes from --launch-password FILE: FILE must be alone in its directory, which is bound
-#       read-only; it is never copied, recorded or named in the evidence.
+#       waits for its login_bind and api_bind ports, which must be on 127.0.0.1. Its [store] path is
+#       relative and stays in the copy's folder (a fresh database each run), or, with --server-data
+#       DIR, absolute and inside DIR: a directory under re/runs/, bound read-write, which outlives
+#       the run. The sandbox can write DIR, so open it on the host only before the first run, or as
+#       a copy made with `watchdog.py collect`; a DIR that holds a link or a special file is refused.
+#       --launch runs `target/release/fenji-launch play --print ARGS` once the server is ready, and
+#       gives the client only the gj_* pairs it prints (nothing else may be printed); inputs.txt
+#       records ARGS, and io/launch.txt the pairs with gj_ticket redacted. The account's password
+#       comes from --launch-password FILE (required with --launch), given to the sandbox on its
+#       standard input: it is never bound, copied, recorded, or named in an argument or the evidence.
 #
 # Every run uses isolated-run.sh --no-root --x11 N --cpu-topology (CLAUDE.md "Client runs"), the
 # pinned GE-Proton's own `proton run` (umu's runtime container fails in the sandbox), lavapipe, and
@@ -45,8 +48,9 @@
 # Exit: 0 the run finished; 3 GATE EVENT (the watchdog stopped the run: stop all runs, report);
 # 4 the watchdog failed; 5 the watchdog never armed (the client was not started); 6 the sandbox
 # ended before the client ran; 7 fenji-stub or fenji-server wasn't ready, or fenji-launch failed,
-# when the client was due (the client was not started); 1 or 2 setup or usage errors. Evidence is collected first, best
-# effort: a failure there is reported but never changes the exit status.
+# when the client was due (the client was not started); 1 or 2 setup or usage errors. Evidence is
+# collected first, best effort: a failure there is reported but never changes the exit status. A
+# Fenji ticket found in the evidence afterwards is redacted in place and listed in redactions.txt.
 set -euo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
 REPO=$(cd -- "$HERE/../.." && pwd -P)
@@ -64,27 +68,38 @@ CHANNELS_DEFAULT=+timestamp,+pid,+tid,+threadname,+seh,+debugstr,+loaddll,+winso
 CHANNELS_WATCHDOG=+timestamp,+pid,+tid,+process,+loaddll,+resource,+service,+debugstr,err+all
 # Environment the runner sets and the watchdog depends on; --env may not override it.
 ENV_RESERVED=" WINEDEBUG WINEPREFIX WINESERVER PROTON_LOG PROTON_LOG_DIR STEAM_COMPAT_DATA_PATH STEAM_COMPAT_CLIENT_INSTALL_PATH HOME SteamGameId SteamAppId "
+# Environment that could carry the launcher's password or trace the inner shell (and the ticket in
+# it) into the evidence; --env may not set it.
+ENV_SECRET=" FENJI_PASSWORD SHELLOPTS BASHOPTS BASH_ENV ENV PS4 "
 
 usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0" >&2; exit 2; } # the header above
 die() { echo "run-client: $*" >&2; exit 1; }
 # A usage error with its reason.
 misuse() { echo "run-client: $*" >&2; exit 2; }
 
-# The pairs on stdin with the ticket's value hidden.
-redact_gj_ticket() { sed -E 's/gj_ticket=[^[:space:]]*/gj_ticket=<redacted>/g'; }
+# The pairs on stdin, one per line, with the ticket's whole value hidden.
+redact_gj_ticket() { sed -E 's/^gj_ticket=.*/gj_ticket=<redacted>/'; }
 
-# fenji-launch play --print's output on stdin: prints only its gj_* pairs. Fails when a pair's
-# value holds anything but printable ASCII (a NUL included), or when there is no pair.
+# fenji-launch play --print's output on stdin, read straight from the pipe: prints its gj_* pairs.
+# Every line must be one pair of printable ASCII: a NUL (turned into a control character here), a
+# value split by a newline, or any other line fails it, as does output with no pair.
 parse_launch_output() {
-  local LC_ALL=C out line pairs=()
-  out=$(tr '\000' '\001') || return 1
+  local LC_ALL=C line pairs=()
   while IFS= read -r line; do
-    case "$line" in
-      gj_*) [[ "$line" =~ ^gj_[a-z_]+=[\ -~]*$ ]] || return 1; pairs+=("$line") ;;
-    esac
-  done <<< "$out"
+    [[ "$line" =~ ^gj_[a-z_]+=[\ -~]*$ ]] || return 1
+    pairs+=("$line")
+  done < <(tr '\000' '\001')
   [ "${#pairs[@]}" -gt 0 ] || return 1
   printf '%s\n' "${pairs[@]}"
+}
+
+# launch_pairs BIN PASSWORD WORDS...: `BIN play --print WORDS` with the password in its
+# environment only, its output parsed straight from the pipe (parse_launch_output).
+launch_pairs() {
+  local bin=$1 pw=$2
+  shift 2
+  set -o pipefail
+  FENJI_PASSWORD="$pw" "$bin" play --print "$@" | parse_launch_output
 }
 
 # server_config CONFIG: the login port, the API port and the store path of a fenji.toml, one per
@@ -101,8 +116,14 @@ except (OSError, tomllib.TOMLDecodeError) as e:
     sys.exit(f"{sys.argv[1]}: {e}")
 s = c.get("server", {})
 for key, default in (("login_bind", "127.0.0.1:7800"), ("api_bind", "127.0.0.1:7801")):
-    print(str(s.get(key, default)).rpartition(":")[2])
-print(c.get("store", {}).get("path", "fenji.db"))
+    host, _, port = str(s.get(key, default)).rpartition(":")
+    if host != "127.0.0.1" or not port.isdigit() or not 1 <= int(port) <= 65535:
+        sys.exit(f"[server] {key} must be 127.0.0.1 and a port from 1 to 65535 (the sandbox is loopback only)")
+    print(port)
+path = str(c.get("store", {}).get("path", "fenji.db"))
+if not path or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path):
+    sys.exit("[store] path must be a path without control characters")
+print(path)
 EOF
 }
 # WINEDEBUG for a run: the caller's channels, then the watchdog's (later entries win).
@@ -157,12 +178,15 @@ record_inputs() {
   echo "clicks (T:X,Y): ${clicks[*]-}"
   echo "keys (T:KEY): ${keys[*]-}"
   echo "text (T:TEXT): ${types[*]-}"
-  echo "stub ports: $ports"
-  echo "stub args: ${stub_args[*]-}"
-  echo "server config: ${server_cfg:-none (fenji-stub)}"
-  echo "server data: ${server_data:-none}"
-  echo "launch args: ${launch-}"
-  echo "launch password: ${launch_password:+a file, bound read-only, never recorded}"
+  if [ -n "${server_cfg-}" ]; then
+    echo "server config: ${server_copy-} (a copy of $server_cfg)"
+    echo "server data: ${server_data:-none}"
+    echo "launch args: ${launch-}"
+    echo "launch password: ${launch_password:+given on the sandbox standard input, never recorded}"
+  else
+    echo "stub ports: $ports"
+    echo "stub args: ${stub_args[*]-}"
+  fi
   echo "timeout: $tmo"
   echo "display: :$display"
   echo "wine channels (WINEDEBUG, with PROTON_LOG=1): $channels"
@@ -174,7 +198,7 @@ record_inputs() {
   cat "$hosts"
   if [ -n "${server_cfg-}" ]; then
     echo "--- server config content"
-    cat "$server_cfg"
+    cat "${server_copy:-$server_cfg}"
   fi
   } > "$OUT/inputs.txt"
 }
@@ -185,14 +209,23 @@ check_presses() {
   local LC_ALL=C k
   for k in "${keys[@]}"; do
     [[ "$k" =~ ^[0-9]+:[A-Za-z][A-Za-z0-9_]*$ ]] || misuse "--key takes T:KEY (whole seconds, an X keysym name), not '$k'"
+    [ "${k%%:*}" -le "$tmo" ] || misuse "--key $k comes after the --timeout of $tmo s"
   done
   for k in "${types[@]}"; do
     [[ "$k" =~ ^[0-9]+:[\ -~]+$ ]] || misuse "--type takes T:TEXT (whole seconds, printable ASCII), not '$k'"
+    [ "${k%%:*}" -le "$tmo" ] || misuse "--type at ${k%%:*} s comes after the --timeout of $tmo s"
   done
+  for k in "${clicks[@]}"; do
+    [ "${k%%:*}" -le "$tmo" ] || misuse "--click $k comes after the --timeout of $tmo s"
+  done
+  # Played in time order, whatever the command line's order.
+  if [ "${#presses[@]}" -gt 0 ]; then
+    mapfile -t presses < <(printf '%s\n' "${presses[@]}" | sort -s -t: -k2,2n)
+  fi
 }
 
 # --server, --server-data, --launch and --launch-password. Uses and sets cmd_run's variables; sets
-# login_port and api_port from the config.
+# login_port and api_port from the config, and launch_words.
 check_server() {
   if [ -z "$server_cfg" ]; then
     [ -z "$server_data" ] || misuse "--server-data needs --server"
@@ -201,12 +234,12 @@ check_server() {
     return 0
   fi
   [ "$ports_given" = 0 ] || misuse "--server and --ports don't mix: the server's ports come from its config"
-  [ -f "$server_cfg" ] && [ -r "$server_cfg" ] || misuse "--server: can't read '$server_cfg'"
+  [ "${#stub_args[@]}" = 0 ] || misuse "--server and --stub-arg don't mix: no stub runs"
+  if [ ! -f "$server_cfg" ] || [ ! -r "$server_cfg" ]; then misuse "--server: can't read '$server_cfg'"; fi
   server_cfg=$(realpath -- "$server_cfg")
   local cfg store
-  cfg=$(server_config "$server_cfg" 2>&1) || misuse "--server: '$server_cfg' isn't a fenji.toml: $cfg"
+  cfg=$(server_config "$server_cfg" 2>&1) || misuse "--server: '$server_cfg' isn't usable: $cfg"
   { read -r login_port; read -r api_port; read -r store; } <<< "$cfg"
-  case "$login_port:$api_port" in *[!0123456789:]* | :* | *:) misuse "--server: the config's ports must be numbers" ;; esac
   if [ -n "$server_data" ]; then
     [ -d "$server_data" ] || misuse "--server-data: no directory '$server_data'"
     server_data=$(realpath -- "$server_data")
@@ -216,29 +249,39 @@ check_server() {
       "$WORK"/?*/) ;;
       *) misuse "--server-data must be a directory under $WORK/" ;;
     esac
+    local odd
+    odd=$(find "$server_data" -mindepth 1 \( -type l -o ! \( -type f -o -type d \) \) -printf . | wc -c)
+    [ "$odd" = 0 ] || misuse "--server-data: '$server_data' holds a link or a special file"
+    case "$store" in
+      /*) ;;
+      *) misuse "--server-data: the config's [store] path must be absolute, inside $server_data" ;;
+    esac
     case "$(realpath -m -- "$store")" in
       "$server_data"/?*) ;;
       *) misuse "--server-data: the config's [store] path must be inside $server_data, not '$store'" ;;
     esac
   else
-    case "$store" in
-      /*) misuse "--server: an absolute [store] path needs --server-data (the sandbox can write only there)" ;;
+    # Relative to the config's copy, which the server reads; it must stay in that folder.
+    case "/$store/" in
+      //* ) misuse "--server: an absolute [store] path needs --server-data (the sandbox can write only there)" ;;
+      */../* | */./*) misuse "--server: a relative [store] path can't leave the config's folder: '$store'" ;;
     esac
   fi
   if [ -n "$launch" ]; then
+    [ -n "$launch_password" ] || misuse "--launch needs --launch-password: fenji-launch signs in"
     local w
-    for w in $launch; do
+    read -r -a launch_words <<< "$launch"
+    for w in "${launch_words[@]}"; do
       case "$w" in *[!A-Za-z0-9=_.:/@-]*) misuse "--launch takes words of [A-Za-z0-9=_.:/@-], not '$w'" ;; esac
+      case "$w" in --password*) misuse "--launch: the password comes only from --launch-password" ;; esac
     done
   else
     [ -z "$launch_password" ] || misuse "--launch-password needs --launch"
   fi
   if [ -n "$launch_password" ]; then
-    [ -f "$launch_password" ] && [ -r "$launch_password" ] || misuse "--launch-password: can't read the file"
-    launch_password=$(realpath -- "$launch_password")
-    local others
-    others=$(find "$(dirname -- "$launch_password")" -mindepth 1 -maxdepth 1 ! -name "$(basename -- "$launch_password")" | head -1)
-    [ -z "$others" ] || misuse "--launch-password: the file must be alone in its directory, which is bound read-only"
+    if [ ! -f "$launch_password" ] || [ ! -r "$launch_password" ]; then
+      misuse "--launch-password: can't read the file"
+    fi
   fi
 }
 
@@ -248,7 +291,7 @@ cmd_run() {
   shift
   local hosts="$WORK/hosts-empty" ports=7804 tmo=300 display=99 channels=$CHANNELS_DEFAULT
   local envs=() client_files=() clicks=() stub_args=() keys=() types=() presses=()
-  local server_cfg="" server_data="" launch="" launch_password="" ports_given=0
+  local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 launch_words=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --hosts) [ $# -ge 2 ] || usage; hosts=$(realpath -- "$2"); shift 2 ;;
@@ -278,6 +321,7 @@ cmd_run() {
   for ev in "${envs[@]}"; do
     case "$ev" in [A-Za-z_]*=*) ;; *) die "--env takes VAR=VALUE, not '$ev'" ;; esac
     case "$ENV_RESERVED" in *" ${ev%%=*} "*) die "--env ${ev%%=*}: the runner sets it, and the watchdog depends on it" ;; esac
+    case "$ENV_SECRET" in *" ${ev%%=*} "*) misuse "--env ${ev%%=*}: it could put the password or the ticket in the evidence" ;; esac
   done
   channels=$(watch_channels "$channels")
   local c
@@ -310,8 +354,7 @@ cmd_run() {
   if [ -n "$server_cfg" ]; then
     [ -x "$STUBBIN/fenji-server" ] || die "build the server first: cargo build --release -p fenji-server"
     if [ -n "$launch" ]; then
-      [ -x "$STUBBIN/fenji-launch" ] ||
-        die "build the launcher first: cargo build --release -p fenji-launcher --features dev-login-path"
+      [ -x "$STUBBIN/fenji-launch" ] || die "build the launcher first: cargo build --release -p fenji-launcher"
     fi
   else
     [ -x "$STUBBIN/fenji-stub" ] || die "build the stub first: cargo build --release -p fenji-stub"
@@ -391,7 +434,7 @@ cmd_run() {
       sl=$((start + t - now))
       [ "$sl" -le 0 ] || sleep "$sl"
       [ -e "$OUT/.running" ] || break
-      python3 -I "$HERE/xkey.py" --display ":$display" "--$kind" "$what" 2>>"$OUT/keys.err" &&
+      python3 -I "$HERE/xkey.py" --display ":$display" "--$kind=$what" 2>>"$OUT/keys.err" &&
         echo "$(date -Is) $kind $t:$what" >> "$OUT/keys.log"
     done
   ) &
@@ -405,7 +448,6 @@ cmd_run() {
   local binds=(--bind "$WORK/client" --bind "$WORK/compat" --bind "$WORK/home" --bind "$WORK/steamclient"
     --bind "$IO" --ro-bind "$STUBBIN" --ro-bind "$PROTON")
   if [ -n "$server_data" ]; then binds+=(--bind "$server_data"); fi
-  if [ -n "$launch_password" ]; then binds+=(--ro-bind "$(dirname -- "$launch_password")"); fi
   local wbinds=() i
   for ((i = 1; i < ${#binds[@]}; i += 2)); do wbinds+=(--bind "${binds[i]}"); done
   set +e
@@ -415,10 +457,14 @@ cmd_run() {
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$WORK/steamclient" SteamGameId=1418100 SteamAppId=1418100 \
     PROTON_LOG_DIR="$IO" PROTON_USE_XALIA=0 PROTON_LOG=1 WINEDEBUG="$channels" DXVK_LOG_PATH="$IO" \
     VK_ICD_FILENAMES="$LAVAPIPE" "${envs[@]}" \
-    bash -c "$(declare -f parse_launch_output redact_gj_ticket)"'
-      W=$1 IO=$2 STUB=$3 STUBBIN=$4 PORTS=$5 TMO=$6 PROTON=$7 SARGS=$8 SERVER=$9 LAUNCH=${10} LPW=${11}
-      LPORT=${12} APORT=${13}
-      shift 13
+    bash -c "$(declare -f parse_launch_output redact_gj_ticket launch_pairs)"'
+      W=$1 IO=$2 STUB=$3 STUBBIN=$4 PORTS=$5 TMO=$6 PROTON=$7 SARGS=$8 SERVER=$9 LAUNCH=${10}
+      LPORT=${11} APORT=${12}
+      shift 12
+      # The launcher password, if any, is this shell'"'"'s standard input; nothing else reads it.
+      PW=""
+      [ -z "$LAUNCH" ] || IFS= read -r PW || true
+      exec < /dev/null
       for _ in $(seq 200); do [ -e "$IO/.go" ] && break; sleep 0.05; done
       [ -e "$IO/.go" ] || { echo "watchdog never armed; client not started" >&2; exit 98; }
       if [ -n "$SERVER" ]; then
@@ -441,19 +487,17 @@ cmd_run() {
         kill -0 "$stub" 2>/dev/null || { echo "fenji-stub exited at start; client not started" >&2; exit 97; }
       fi
       if [ -n "$LAUNCH" ]; then
-        pw=()
-        [ -z "$LPW" ] || pw=(--password-file "$LPW")
-        # LAUNCH holds the validated --launch words, split here on purpose. The output holds the
-        # ticket: it stays in this shell and never reaches a file unredacted.
-        out=$("$STUBBIN/fenji-launch" play --print $LAUNCH "${pw[@]}" 2> "$IO/launch.err") ||
-          { echo "fenji-launch failed; client not started" >&2; exit 95; }
-        pairs=$(parse_launch_output <<< "$out") ||
-          { echo "fenji-launch gave no usable gj_* pairs; client not started" >&2; exit 95; }
-        unset out
+        # The validated --launch words, split without globbing. The pairs hold the ticket: they
+        # stay in this shell and reach a file only redacted.
+        read -r -a LW <<< "$LAUNCH"
+        pairs=$(launch_pairs "$STUBBIN/fenji-launch" "$PW" "${LW[@]}" 2> "$IO/launch.err") ||
+          { echo "fenji-launch failed, or printed something other than gj_* pairs; client not started" >&2; exit 95; }
+        unset PW
         redact_gj_ticket <<< "$pairs" > "$IO/launch.txt"
         while IFS= read -r kv; do export "${kv?}"; done <<< "$pairs"
         unset pairs kv
       fi
+      unset PW
       cd "$W/client/bin64" || exit 99
       timeout -k 10 "$TMO" python3 "$PROTON/proton" run "$W/client/bin64/gujianol.exe" "$@" > "$IO/proton.out" 2>&1
       rc=$?
@@ -464,7 +508,7 @@ cmd_run() {
       wait "$stub" 2>/dev/null
       exit "$rc"
     ' _ "$WORK" "$IO" "$IO/stub" "$STUBBIN" "$ports" "$tmo" "$PROTON" "${stub_args[*]}" "$server_copy" \
-    "$launch" "$launch_password" "$login_port" "$api_port" "$@" > "$OUT/sandbox.out" 2>&1 &
+    "$launch" "$login_port" "$api_port" "$@" < "${launch_password:-/dev/null}" > "$OUT/sandbox.out" 2>&1 &
   local spid=$!
   python3 -I "$WATCHDOG" watch --root "$WORK" --out "$OUT" --sandbox-pid "$spid" \
     --log "$IO/steam-1418100.log" --go "$IO/.go" "${wbinds[@]}" \
@@ -487,6 +531,8 @@ cmd_run() {
   fi
   set -e
   rm -f "$OUT/.running" "$IO/.go"
+  # The schedulers may still sleep toward a later time: they end with the run.
+  kill "$shots" "$clicker" "$typist" 2>/dev/null || true
   wait "$shots" "$clicker" "$typist" 2>/dev/null || true
   local ran=0
   if [ -e "$IO/exit-code" ]; then ran=1; fi # the inner script writes it once the client has run
@@ -516,12 +562,14 @@ verdict() {
     3) echo "GATE EVENT: the driver watchdog stopped the run; see $out/watchdog-trigger.txt. Stop all runs." >&2; return 3 ;;
     *) echo "WATCHDOG FAILURE (exit $wdrc); see $out/watchdog.log and watchdog.err" >&2; return 4 ;;
   esac
+  # A client that ran finished, whatever its own status (it may exit 95 to 98 itself).
+  [ "$ran" != 1 ] || return 0
   [ "$wrc" != 98 ] || { echo "the watchdog never armed; the client was not started" >&2; return 5; }
   [ "$wrc" != 97 ] || { echo "fenji-stub wasn't running when the client was due (see $out/io/stub.out); the client was not started" >&2; return 7; }
   [ "$wrc" != 96 ] || { echo "fenji-server wasn't ready when the client was due (see $out/server.log); the client was not started" >&2; return 7; }
-  [ "$wrc" != 95 ] || { echo "fenji-launch failed (see $out/io/launch.err); the client was not started" >&2; return 7; }
-  [ "$ran" = 1 ] || { echo "the sandbox ended before the client ran (sandbox exit $wrc); see $out/sandbox.out" >&2; return 6; }
-  return 0
+  [ "$wrc" != 95 ] || { echo "fenji-launch failed or printed more than gj_* pairs (see $out/io/launch.err and $out/sandbox.out); the client was not started" >&2; return 7; }
+  echo "the sandbox ended before the client ran (sandbox exit $wrc); see $out/sandbox.out" >&2
+  return 6
 }
 
 # The evidence, copied out of what the sandbox could write without following any link. Uses
@@ -566,7 +614,18 @@ collect_evidence() {
   done
   find "$WORK/client" "$PFX/drive_c" "$WORK/home" -newer "$OUT/.start" -type f -not -path '*/mesa_shader_cache/*' \
     -printf '%TT\t%s\t%p\n' 2>/dev/null | sort > "$OUT/new-files.txt"
+  redact_tickets "$OUT" || bad=1
   return "$bad"
+}
+
+# A Fenji ticket that reached the evidence anyway (Wine's +process lines, a client argument) is
+# redacted in place; the files are listed in redactions.txt.
+redact_tickets() {
+  local dir=$1 f
+  while IFS= read -r -d '' f; do
+    sed -i -E 's/fenji1-[0-9a-fA-F]{64}/fenji1-<redacted>/g' -- "$f" || return 1
+    printf '%s\n' "${f#"$dir"/}" >> "$dir/redactions.txt"
+  done < <(grep -rlZE 'fenji1-[0-9a-fA-F]{64}' -- "$dir" 2>/dev/null)
 }
 
 # Sourced by test-run-client.sh for its functions; run as a command otherwise.
