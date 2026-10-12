@@ -156,6 +156,18 @@ fn play_checks_the_gate_before_any_password_is_sent() {
 }
 
 #[test]
+fn a_server_cannot_put_escape_sequences_on_the_terminal() {
+    let (server, seen) = canned(Box::new(|m, p| match (m, p) {
+        ("GET", "/api/v1/server") => ("200 OK", server_info("\\u001b[2Jgate.example")),
+        _ => usual(m, p),
+    }));
+    let out = play(&server);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!out.stderr.contains(&0x1b), "{:?}", text(&out.stderr));
+    assert_eq!(*seen.lock().unwrap(), ["GET /api/v1/server"]);
+}
+
+#[test]
 fn play_signs_out_even_when_the_game_token_fails() {
     let (server, seen) = canned(Box::new(|m, p| match (m, p) {
         ("POST", "/api/v1/game-tokens") => {

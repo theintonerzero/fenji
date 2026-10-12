@@ -189,8 +189,13 @@ impl ApiClient {
             .ok_or_else(|| ApiError::Decode("an empty answer".into()))
     }
 
+    /// Refused unless the gate is a plain host name or address (`ServerInfo::check`).
     pub async fn server_info(&self) -> Result<ServerInfo, ApiError> {
-        self.expect(Method::GET, "/api/v1/server", None, None).await
+        let info: ServerInfo = self
+            .expect(Method::GET, "/api/v1/server", None, None)
+            .await?;
+        info.check()?;
+        Ok(info)
     }
 
     /// Creates an account with an invite code.
@@ -254,6 +259,26 @@ fn describe(e: reqwest::Error) -> ApiError {
     ApiError::Http(text)
 }
 
+/// A host name or IPv4 address as a gate needs it: letters, digits, dots and hyphens. Nothing
+/// else, so a server's value can't carry terminal sequences into an error message.
+fn plain_host(h: &str) -> bool {
+    (1..=253).contains(&h.len())
+        && h.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+}
+
+impl ServerInfo {
+    /// The gate is a plain host name or address, and the server's name holds no control character.
+    pub fn check(&self) -> Result<(), ApiError> {
+        if !plain_host(&self.gate_host) || self.name.chars().any(char::is_control) {
+            return Err(ApiError::Decode(
+                "the server's info names a gate the client can't use".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl GameGrant {
     /// The ticket is `fenji1-` and 64 hex digits, and the names hold no colon (the client splits
     /// `gj_uinfo` on colons) and no control character: a server can't bend the login fields.
@@ -266,7 +291,7 @@ impl GameGrant {
         if !ticket_ok
             || !plain(&self.server_name)
             || !plain(&self.account)
-            || !plain(&self.gate_host)
+            || !plain_host(&self.gate_host)
         {
             return Err(ApiError::Decode(
                 "the game token's fields aren't ones the client can take".into(),
