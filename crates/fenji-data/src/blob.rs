@@ -94,8 +94,10 @@ impl BlobHeader {
             .get(FIXED_LEN..FIXED_LEN + 4 * blocks)
             .ok_or_else(|| bad(format!("the list of {blocks} block sizes is truncated")))?;
         let block_sizes = list
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().expect("4 bytes")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
         let header = Self {
             raw_size,
