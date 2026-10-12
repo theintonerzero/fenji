@@ -60,7 +60,7 @@ Also by ledgered rulings:
 | 4 | Oodle Network path | **Met.** R3 and its control m2-r3b: stored packets work, so gate G2 never opened. | `transport.md` 5.8, §9; #64, #72 |
 | 5 | Archives (#51) | **Met.** The helper decodes Oodle blocks. `_index` gives 272,734 paths. The tables' format is read: the cache (`m2-tables.md` 2.1–2.8), and the layout of the three `.tab` files checked (2.9). `archive dump` writes items, skills, monsters, the XP curve and maps under `re/`, and `archive extract --key` any one file. | `m1-archives.md` 3.4–3.5, `m2-tables.md`; #67–#69 |
 | 6 | Loose ends | **Met.** #18 closed with a norm: a new finding cites an REA Evidence ID next to the pinned-exe address, and addresses alone stay acceptable for earlier findings and where REA has no function. M2's findings written after the norm carry their IDs with the exact calls: added in Task 14 to `transport.md` §10, `opcodes.md`, `payloads.md` and `m1-archives.md`, and in Task 13's review fixes to `m2-tables.md`. Spike-0 1.8 is answered in part. | `README.md`; #58, #70 |
-| 7 | Records | **Met:** this document; "M2 update" notes in the parent spec's §6.2, §10 and §12. `sources.md` is unchanged: M2 used no outside source. | #70 |
+| 7 | Records | **Met:** this document; "M2 update" notes in the parent spec's §6.2, §10 and §12. `sources.md` was unchanged at the release, since M2 used no outside source of knowledge about the game; it now also lists `llvm-undname` and `objdump`, the general-purpose tools behind [`README.md`](README.md#naming-functions-from-aurogonenginedll-spike-0-18) (spike-0 1.8). | #70 |
 
 ## Gates and the owner's rulings
 

@@ -54,8 +54,8 @@ pub trait StreamCodec {
     fn decode(&self, payload: &[u8]) -> Result<Vec<u8>>;
 }
 
-/// The raw bytes themselves, with a raw length equal to the packet's length. Whether the client's
-/// decoder accepts this is rung R3's question (M2 spec §2, P1).
+/// The raw bytes themselves, with a raw length equal to the packet's length. The client's decoder
+/// accepts it, one-byte and `FC` prefixes alike (transport.md 5.8: runs m2-r3 to m2-r6).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StoredCodec;
 

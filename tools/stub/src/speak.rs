@@ -28,7 +28,7 @@ pub enum AuthReply {
     /// Nothing: stop after reading the auth (rungs R1–R2).
     None,
     /// `REJECT_REASON` in a stored frame: R3's control. A client that decodes and reads the
-    /// frame closes with `CLOSED_AUTH` (transport.md 6.7).
+    /// frame closes with `CLOSED_AUTH` (transport.md 6.6).
     Reject,
 }
 
