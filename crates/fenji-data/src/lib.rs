@@ -5,6 +5,7 @@ mod blob;
 mod codec;
 mod error;
 mod exe_fs;
+pub mod oodle_spool;
 mod pe;
 pub mod re_dir;
 #[cfg(any(test, feature = "test-util"))]

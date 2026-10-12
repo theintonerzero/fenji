@@ -5,8 +5,10 @@ pub enum Error {
     NotPe(&'static str),
     #[error("blob header at {at:#x}: {reason}")]
     BadBlob { at: u64, reason: String },
-    #[error("codec {0} is not available here (Oodle, codec 4, waits on decision gate #39)")]
+    #[error("codec {0} is not available here (codec 4 needs an OodleSpool: M2 plan Task 11)")]
     CodecUnavailable(u16),
+    #[error("Oodle block {0} is spooled: run scripts/spike/run-oodle-helper.sh, then retry")]
+    OodlePending(String),
     #[error("LZ4 block {index}: {reason}")]
     Lz4 { index: usize, reason: String },
     #[error("decoded {got} bytes where the header says {want}")]

@@ -60,6 +60,25 @@ pub fn lz4_blob(content: &[u8], timestamp: u64) -> Vec<u8> {
     b
 }
 
+/// An LZ4 blob (codec 1) of already compressed blocks, `block_size` raw bytes each but the last.
+pub fn lz4_blob_blocks(blocks: &[Vec<u8>], raw_size: u64, block_size: u32) -> Vec<u8> {
+    let stored = FIXED_LEN + 4 * blocks.len() + blocks.iter().map(Vec::len).sum::<usize>();
+    let mut b = Vec::new();
+    b.extend_from_slice(&raw_size.to_le_bytes());
+    b.extend_from_slice(&0u64.to_le_bytes());
+    b.extend_from_slice(&(stored as u64).to_le_bytes());
+    b.extend_from_slice(&block_size.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&0u16.to_le_bytes());
+    for c in blocks {
+        b.extend_from_slice(&(c.len() as u32).to_le_bytes());
+    }
+    for c in blocks {
+        b.extend_from_slice(c);
+    }
+    b
+}
+
 /// A stored blob (codec 0): the 32-byte header, then `content`, with no block list. The block size
 /// field is min(size, 512 KiB), as in most of the client's stored blobs.
 pub fn stored_blob(content: &[u8]) -> Vec<u8> {

@@ -1,5 +1,5 @@
-//! Block decompression. Fenji decodes stored and LZ4 blocks itself; Oodle (codec 4) waits on the
-//! M1 decision gate and is refused until then.
+//! Block decompression. Fenji decodes stored and LZ4 blocks itself. Oodle (codec 4) goes through
+//! an [`OodleSpool`](crate::oodle_spool::OodleSpool) and the sandboxed helper (gate #39, route c).
 use crate::{Codec, Error, Result};
 
 /// The most an LZ4 block can expand: each extra length byte adds at most 255 output bytes.

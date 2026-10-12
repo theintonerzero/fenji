@@ -58,6 +58,7 @@ In short:
 | 3.1 | `_index` is a single blob: raw size 25,533,513; stored size 5,736,039 (the file's size); timestamp 2022-11-25 09:28:58 UTC; block size 512 KiB; codec 4 (Oodle); check 0xB355; 49 blocks. | **Observed** | AN |
 | 3.2 | The engine opens `_index` through its blob stream and parses lines of `<40 hex digits>\t<path>`. The hex is a file's key, which it looks up in the parts' records; the path becomes a node in the file system. A line that starts with `-` removes a path, and a path that ends in `$$` is a container. | **Inferred** | G3 |
 | 3.3 | So outside the two containers, `_index` is the only place the archives' paths are named, and reading it needs codec 4. | **Inferred** | G3, AI |
+| 3.4 | **M2 update: the blocks and their decoder.** Each of `_index`'s 49 blocks starts with its raw length as a little-endian `u32` (0x80000; the last block 0x59C49), then the Oodle stream. The engine's four Oodle codecs, Kraken, Mermaid, Selkie and Leviathan, share one decompressor, FUN_14024E060, which passes `OodleLZ_Decompress` the block after those 4 bytes, with the `u32` as the raw length. `tools/oodle-helper` does the same with the client's own `oo2core_6_win64.dll`, inside the sandbox (M2 plan Task 11). All 49 blocks decode to their raw lengths. The joined 25,533,513 bytes are 272,741 lines of `<40 hex digits>\t<path>` and a final newline. 2 of the paths end in `$$` (containers), no line starts with `-`, and 7 paths aren't valid UTF-8. | **Observed** (the prefixes, the decode, the lines); the shared decompressor **Inferred** | AN, AO; G5 |
 
 ## 4. Stored files
 
@@ -110,7 +111,9 @@ Paths are relative to the repo root. `re/` is git-ignored, so these files exist 
 | AP | `re/m1/archive-probe.tsv`, `re/m1/archive-notes.md` (probes `re/m1/probes/zfs_probe.py`, `zfs_probe2.py`; `archive list` for 2.7) | Record fields and CRCs, statuses, deleted ranges, tiling, stored blob shape, the key and `check` tests, the spike-0 reconciliation | 1.4, 2.4–2.9 |
 | AK | `re/m1/archive-stored-kinds.txt`, `re/m1/archive-stored-sizes.txt` (probe `re/m1/probes/stored_kinds.py`) | Stored files by first bytes and size | 4.1, 4.2 |
 | AC | `re/m1/archive-notes.md` (probes `re/m1/probes/sp_probe.py`, `sp_probe2.py`) | The two containers | 4.3, 4.4 |
+| AO | `re/m2/oodle-helper-run2.log` (`scripts/spike/run-oodle-helper.sh`), `re/m2/index-check.txt`, `re/oodle-spool/` | The first decode with the client's DLL, and the shape of the joined `_index` | 3.4 |
 | G1 | FUN_1400BF780, magic at 0x142EFC778; FUN_1400C0A90 (`%s/data%03u` at 0x142EFC7E8) | Opens part N and checks or writes `ZFS\0`; builds the part paths | 1.1 |
 | G2 | FUN_1400C0FE0, FUN_1400BFF10; `[IX]` at 0x142EFC77C; CRC table 0x142EF7EC0; messages at 0x142EFC788, 0x142EFC7A8, 0x142EFC7C8 | Loads every part's index chain: record fields, CRC, status, the key table | 1.2, 1.4–1.6 |
 | G3 | FUN_1400BE960, FUN_1400BE4A0 | Loads `_index` through the blob stream and parses its lines | 1.7, 3.2, 3.3 |
 | G4 | FUN_1400BEB00; `[SP]` at 0x142EFC770; FUN_1400B84E0 (the header CRC) | Reads a container | 1.7, 4.3 |
+| G5 | 0x14068EFC0 (not a function in the shared project yet): a `u16` selector, 0 to 3, giving the compressor of Kraken, Mermaid, Selkie or Leviathan (FUN_14024E0C0, FUN_14068F5A0, FUN_14024E200, FUN_14024E160; names at 0x1411927B0–0x1411927C8) and, for all four, the decompressor FUN_14024E060 | The engine's Oodle codecs and their shared decompressor | 3.4 |

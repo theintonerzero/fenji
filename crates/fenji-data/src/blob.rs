@@ -129,8 +129,17 @@ impl BlobHeader {
     }
 }
 
-/// Decodes a whole blob. `bytes` starts at its header and holds at least `stored_size` bytes.
-pub fn decode(bytes: &[u8], at: u64, codecs: &dyn Decompressor) -> Result<Vec<u8>> {
+/// One block of a blob: its compressed bytes and the raw length it decodes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Block<'a> {
+    pub index: usize,
+    pub input: &'a [u8],
+    pub raw_len: usize,
+}
+
+/// A blob's header and blocks. `bytes` starts at its header and holds at least `stored_size`
+/// bytes. A stored blob is one block of its whole data.
+pub fn blocks(bytes: &[u8], at: u64) -> Result<(BlobHeader, Vec<Block<'_>>)> {
     let h = BlobHeader::parse(bytes, at)?;
     let data = bytes
         .get(h.header_len()..h.stored_size as usize)
@@ -143,23 +152,42 @@ pub fn decode(bytes: &[u8], at: u64, codecs: &dyn Decompressor) -> Result<Vec<u8
             ),
         })?;
     if h.codec == Codec::Stored {
-        return codecs.decompress_block(Codec::Stored, data, h.raw_size as usize, 0);
+        let one = Block {
+            index: 0,
+            input: data,
+            raw_len: h.raw_size as usize,
+        };
+        return Ok((h, vec![one]));
     }
-    let mut out = Vec::with_capacity(h.raw_size.min(MAX_PREALLOC) as usize);
-    let mut pos = 0usize;
+    let mut out = Vec::with_capacity(h.block_sizes.len());
+    let (mut pos, mut left) = (0usize, h.raw_size);
     for (index, &len) in h.block_sizes.iter().enumerate() {
-        let raw_len = (h.raw_size - out.len() as u64).min(u64::from(h.block_size)) as usize;
+        let raw_len = left.min(u64::from(h.block_size)) as usize;
         // In range: `data` is exactly the sum of the block sizes (checked by `parse`).
-        let block = &data[pos..pos + len as usize];
-        let decoded = codecs.decompress_block(h.codec, block, raw_len, index)?;
-        if decoded.len() != raw_len {
+        out.push(Block {
+            index,
+            input: &data[pos..pos + len as usize],
+            raw_len,
+        });
+        pos += len as usize;
+        left -= raw_len as u64;
+    }
+    Ok((h, out))
+}
+
+/// Decodes a whole blob. `bytes` starts at its header and holds at least `stored_size` bytes.
+pub fn decode(bytes: &[u8], at: u64, codecs: &dyn Decompressor) -> Result<Vec<u8>> {
+    let (h, blocks) = blocks(bytes, at)?;
+    let mut out = Vec::with_capacity(h.raw_size.min(MAX_PREALLOC) as usize);
+    for b in blocks {
+        let decoded = codecs.decompress_block(h.codec, b.input, b.raw_len, b.index)?;
+        if decoded.len() != b.raw_len {
             return Err(Error::SizeMismatch {
                 got: decoded.len() as u64,
-                want: raw_len as u64,
+                want: b.raw_len as u64,
             });
         }
         out.extend_from_slice(&decoded);
-        pos += len as usize;
     }
     if out.len() as u64 != h.raw_size {
         return Err(Error::SizeMismatch {
@@ -173,7 +201,8 @@ pub fn decode(bytes: &[u8], at: u64, codecs: &dyn Decompressor) -> Result<Vec<u8
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BuiltinCodecs, test_util::lz4_blob};
+    use crate::BuiltinCodecs;
+    use crate::test_util::{lz4_blob, lz4_blob_blocks, stored_blob};
 
     #[test]
     fn single_block_lz4_round_trip() {
@@ -198,22 +227,40 @@ mod tests {
             .chunks(block)
             .map(lz4_flex::block::compress)
             .collect();
-        let stored = FIXED_LEN + 4 * blocks.len() + blocks.iter().map(Vec::len).sum::<usize>();
-        let mut b = Vec::new();
-        b.extend_from_slice(&(content.len() as u64).to_le_bytes());
-        b.extend_from_slice(&0u64.to_le_bytes());
-        b.extend_from_slice(&(stored as u64).to_le_bytes());
-        b.extend_from_slice(&(block as u32).to_le_bytes());
-        b.extend_from_slice(&1u16.to_le_bytes());
-        b.extend_from_slice(&0u16.to_le_bytes());
-        for c in &blocks {
-            b.extend_from_slice(&(c.len() as u32).to_le_bytes());
-        }
-        for c in &blocks {
-            b.extend_from_slice(c);
-        }
+        let b = lz4_blob_blocks(&blocks, content.len() as u64, block as u32);
         assert_eq!(BlobHeader::parse(&b, 0).unwrap().block_sizes.len(), 3);
         assert_eq!(decode(&b, 0, &BuiltinCodecs).unwrap(), content);
+    }
+
+    #[test]
+    fn blocks_lists_each_block_with_its_raw_length() {
+        let content = vec![9u8; 40_000];
+        let block = 16_384usize;
+        let compressed: Vec<Vec<u8>> = content
+            .chunks(block)
+            .map(lz4_flex::block::compress)
+            .collect();
+        let blob = lz4_blob_blocks(&compressed, content.len() as u64, block as u32);
+        let (h, blocks) = blocks(&blob, 0).unwrap();
+        assert_eq!(h.block_sizes.len(), 3);
+        let raws: Vec<usize> = blocks.iter().map(|b| b.raw_len).collect();
+        assert_eq!(raws, [16_384, 16_384, 40_000 - 2 * 16_384]);
+        assert_eq!(blocks[1].input, &compressed[1][..]);
+        assert_eq!(blocks[2].index, 2);
+    }
+
+    #[test]
+    fn a_stored_blob_is_one_block() {
+        let blob = stored_blob(b"plain");
+        let (_, blocks) = blocks(&blob, 0).unwrap();
+        assert_eq!(
+            blocks,
+            [Block {
+                index: 0,
+                input: &b"plain"[..],
+                raw_len: 5
+            }]
+        );
     }
 
     #[test]
@@ -227,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn oodle_is_refused_until_the_gate() {
+    fn builtin_codecs_refuse_oodle() {
         let mut blob = lz4_blob(b"abcabcabc", 0);
         blob[28] = 4;
         assert!(matches!(
@@ -283,20 +330,7 @@ mod tests {
             .chunks(block)
             .map(lz4_flex::block::compress)
             .collect();
-        let stored = FIXED_LEN + 4 * blocks.len() + blocks.iter().map(Vec::len).sum::<usize>();
-        let mut b = Vec::new();
-        b.extend_from_slice(&(content.len() as u64).to_le_bytes());
-        b.extend_from_slice(&0u64.to_le_bytes());
-        b.extend_from_slice(&(stored as u64).to_le_bytes());
-        b.extend_from_slice(&(block as u32).to_le_bytes());
-        b.extend_from_slice(&1u16.to_le_bytes());
-        b.extend_from_slice(&0u16.to_le_bytes());
-        for c in &blocks {
-            b.extend_from_slice(&(c.len() as u32).to_le_bytes());
-        }
-        for c in &blocks {
-            b.extend_from_slice(c);
-        }
+        let b = lz4_blob_blocks(&blocks, content.len() as u64, block as u32);
         assert!(matches!(
             decode(&b, 0, &TooMuch),
             Err(Error::SizeMismatch { .. })
