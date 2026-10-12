@@ -84,6 +84,7 @@ The strings, the key lengths and the tail constants are **Observed**; the famili
 | 3.6 | Both directions fold the same 64 bytes, so with case 3 both ways the two AES-128 keys are equal. For 2.6's hello the key is `03 00 00 00 33 7B 2F E6 00 00 00 00 00 00 00 00`. | **Inferred** (computed) | L2 |
 | 3.7 | The server picks both variants through `w0` and `w1`, and Fenji picks case 3 both ways. The client's receive transform decrypts, so our server encrypts each frame body it sends (AES-128 encrypt on the whole blocks, then the tail XOR). The client's send transform encrypts, so our server decrypts each body it receives (AES-128 decrypt on the whole blocks, then the tail XOR). | **Inferred** | T8, T10, T11 |
 | 3.8 | No variant reads `data/core/share/gate_dictionary.bin`: the inits take only the hello. That file feeds only the Oodle decoder (5.6) and the auth's 16 bytes (6.3). | **Inferred** | T6–T9, T14 |
+| 3.9 | **No confidentiality.** Every key comes from the hello (3.5), which the server sends in the clear (2.1). So anyone who sees the stream can rebuild both keys and read both directions, the auth payload and its ticket included: the variants scramble the stream, they don't protect it. A server built on this transport has to treat what crosses it as public: a ticket must be single-use and short-lived, and a password must never cross it. | **Inferred** | 2.1, 3.5, 3.6 |
 
 ## 4. Frames and keys
 
