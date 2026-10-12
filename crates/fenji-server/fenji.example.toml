@@ -1,0 +1,28 @@
+# Fenji server configuration (docs/superpowers/specs/2026-10-12-m3-login-lobby-design.md, D16).
+# Changes take effect when the server restarts.
+
+[server]
+id = 1                          # sent to the client as gj_uinfo's first field
+name = "Fenji"                  # shown by the client; no colons
+public_host = "127.0.0.1"       # what launchers connect to: an IPv4 address, or a name with one
+login_bind = "127.0.0.1:7800"   # the gate: game connections
+api_bind = "127.0.0.1:7801"     # the account API; put Caddy (TLS) in front of it to face the internet
+max_players = 20
+trusted_proxies = []            # e.g. ["127.0.0.1"] when Caddy runs on this machine
+
+[store]
+path = "fenji.db"               # relative to this file
+
+[data]
+# client_path = "/srv/fenji/solo-client"   # your own copy of the pinned client (not read in M3)
+
+[auth]
+game_token_ttl_secs = 60
+session_ttl_secs = 86400
+
+[lobby]
+max_characters = 9              # the select screen shows 9 places; more scroll
+
+[access]
+invite_only = true
+admins = []
