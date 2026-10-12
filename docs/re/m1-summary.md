@@ -20,7 +20,7 @@ The documents:
 | 6.16 | Which size field the chunk header drops | **Answered:** the `size_t` byte. | `m1-script-format.md` 3.3 |
 | 6.19 | Whether the VM keeps the stock opcode numbers | **Answered:** opcodes 0–46 are stock. Of the extra opcodes 47–53, only 49, 50 and 53 occur. | `m1-script-format.md` 3.8, §4 |
 | 6.21 | How much server-side logic the scripts carry | **Answered:** 17.6% of `data/scripts`' instructions run only on the server, mostly in combat. Two `server/` directories also ship whole. | `m1-script-census.md` |
-| 8.19 | Why the interface is German | **Answered:** the interface language comes from the Gameforge SDK's user info, and the mocked SDK reports German. | `login.md` §4 |
+| 8.19 | Why the interface is German | **Answered:** the interface language comes from the Gameforge SDK's game language, and the mocked SDK hard-codes `de-DE`, so no input can change it. A real SDK, or the `gj_uinfo` start-up branch that skips the SDK, would give English (M3). | `login.md` §4 |
 | 8.37 | What gives the client its server | **Answered and run:** the `serverlist_url` setting (a `file://` list works), then the player's choice in the server-choice frame. The real client opened a session with fenji-stub that way. | `login.md` §2, §3, §6 |
 
 ## Deviations from the spec

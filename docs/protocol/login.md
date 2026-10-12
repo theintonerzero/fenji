@@ -53,13 +53,21 @@ Expected port: TCP 7800 on loopback, as the list says. A literal IP needs no nam
 
 ## 4. The German interface
 
-The interface language comes from the Gameforge SDK's user info, read once at start-up (FUN_1401E7D10):
+The interface language comes from the game language the Gameforge SDK reports, read once at start-up. FUN_1401A35B0 stores what `GameforgeApi_GetContext(0xb)`'s method at +0x28 returns (FUN_1401A32E0), and FUN_1401E7D10 maps it:
 - `de-DE` or `german` gives `de`;
 - `fr-FR` or `french` gives `fr`;
 - `ru-RU` or `russian` gives `ru_RU`;
-- anything else gives `en`.
+- anything else, an empty value included, gives `en`.
 
-With `--gf-sdk=mocked`, that user info comes from the SDK's mocked backend, so a German interface means the mock reports German. **Inferred**. Whether the mock's language can be set lies in `gameforge_api64.dll`, outside this exe. **Unknown**.
+Nothing else sets the interface language. `settings/LanguageSetting.dat` (FUN_1401E80F0) sets only the voice language, `client_sound_language`. **Inferred**.
+
+With `--gf-sdk=mocked`, the SDK's mock (`MockedApiModule` in `gameforge_api64.dll`) answers with constants. The getter in that slot returns `de-DE` (FUN_1800A2DB0), and a sibling returns `en-GB` (FUN_1800A2DA0). Neither reads a flag, an environment variable or the locale, so a mocked run is always German and no input changes it. The getters are **Observed**. That the client's call reaches the `de-DE` getter is **Inferred**; it fits the German interface.
+
+Two routes would give English without changing the client. Both are open, and both belong to M3's login question:
+- **A real SDK backend that reports English.** The Steam backend maps Steam's language name (`english` gives `en-GB`; FUN_1800A1FE0).
+- **The `gj_uinfo` environment variable.** It makes the client skip the Gameforge SDK at start-up (FUN_14024F010), which leaves the language empty and the interface English. It also changes the platform that the login path takes.
+
+Both are **Inferred**.
 
 ## 5. Open questions
 
@@ -68,7 +76,7 @@ With `--gf-sdk=mocked`, that user info comes from the SDK's mocked backend, so a
 - What the `servername` file's `server_list` serves, given that the Gameforge path doesn't read it.
 - Where `--server_locale` and `--net` are read (spike-0 8.37).
 - The meaning of `net_client_create`'s integer 3861871408.
-- Whether the mocked SDK's language is configurable.
+- What `gj_uinfo` holds, and which login path the client takes when it skips the SDK (FUN_14024F010). It may be an SDK-free route for players (M3).
 
 ## 6. Verification
 
@@ -117,5 +125,7 @@ M1 Task 10 ran the pinned client twice inside `run-client.sh`. Both runs used:
 | G7 | FUN_1401E79D0 | `gameforge_get_user_language` |
 | G8 | FUN_1401E80F0 | `LanguageSetting.dat` and the voice language |
 | G9 | FUN_14068FB60 | `--fs=` (m1-script-format §1) |
+| G10 | FUN_1401A35B0, FUN_1401A32E0; FUN_14024F010 | The SDK's game language and platform, stored at start-up; the `gj_uinfo` branch that skips the SDK |
+| D1 | `bin64/gameforge_api64.dll` (SHA-256 `1250487ab0639ff5e16bc2042a9fdb8ffdfe1c3e1cfef77eacc2695c60d5908f`): FUN_1800A2DB0 (REA ev_56d0642c), FUN_1800A2DA0 (ev_94ea5b43), FUN_1800A1FE0 (ev_2a7e13ae), `GameforgeApi_GetContext` (ev_310cf39b) | The mock's constant languages, the Steam language map, the SDK's context lookup |
 | C1 | `re/runs/out/m1-c1/` (screenshots, `wine.log`, `watchdog.log`, `inputs.txt`) and `re/stub-logs/m1-c1/` (empty) | Run m1-c1: the server list loaded, no click, no connection |
 | C2 | `re/runs/out/m1-c2/` (screenshots, `wine.log`, `clicks.log`, `watchdog.log`) and `re/stub-logs/m1-c2/` (one session) | Run m1-c2: the clicks, the lookup, the connect, the session |
