@@ -32,7 +32,7 @@ On the Gameforge platform, the client gets its server list by downloading the UR
 | 2.4 | On the login screen, a Gameforge client that isn't logged in shows the server-choice frame for that list (`data/interface/addons/Login/Login.luac` `0.7`). The frame's confirm button (`ConfirmBtn`, "Bestätigen" in the German interface) runs `0.30`. That handler takes the selected entry, stores its `server_id` as the client setting `SERVERINDEX`, and calls `NET.Login(index)`. A click on an entry only selects it (§6). Other platforms call `NET.Login` directly. | **Inferred**; the button **Observed** (§6) | S3, C2 |
 | 2.5 | `NET.Login` (`net.luac` `0.60`) takes the chosen entry's gate. It resolves the host with `util_gethostbyname`, builds `host:port`, takes the zone and server name from the entry and the ticket from the Gameforge SDK, and calls `net_manager_login`. | **Inferred** | S1 |
 | 2.6 | `net_manager_login` (`data/core/client/net_manager.luac` `0.20`) packs the ticket, the account fields, the client version, a machine fingerprint and the user language with `ks.pickle_pack`. It then calls `net_client_create(gate, packed, 3861871408)`, the binding spike-0 found at 0x140222970, which reads two strings and an integer. | **Inferred** | S2 |
-| 2.7 | What the constant 3861871408 (0xE62F7B30) means. | **Unknown** | S2 |
+| 2.7 | What the constant 3861871408 (0xE62F7B30) means. **M2 update:** it is the hello's magic `K`. The client checks one word of the server's 64-byte hello against `(K OR 0xC0000000) XOR w1 XOR w0`, and a mismatch closes the connection with `CLOSED_VERSION`, so `K` works as a protocol version ([`transport.md`](transport.md) 2.2–2.4). Hellos built from it were accepted in every M2 run (§9 there). | **Inferred** (M1: **Unknown**) | S2; [`transport.md`](transport.md) 2.3–2.4, §9 |
 | 2.8 | A second path skips the list: the launcher's. With the environment variable `gj_uinfo` set (or the setting `gj_uinfo_cmd`), `NET.Login` (`net.luac` `0.60`, pc 23–67 and 239–253) does four things. It reads `gj_gates` as the whole gate (`host:port`) and `gj_ticket` as the ticket. It splits `gj_uinfo` into six colon-separated fields: server id, zone, server name, account type, account and user id, with the first and last as numbers. It stores those, then calls `net_manager_login` with the gate, the ticket, a constant 0, the account, the user id and the first field. The zone, server name and account type stay in the scripts. On the other paths that first slot carries a per-platform constant, so what it means is open ([`payloads.md`](payloads.md), the auth payload). | **Inferred** | S1 |
 | 2.9 | At start-up, `gj_uinfo` in the environment makes the client skip the Gameforge SDK altogether (FUN_14024F010). There is no SDK initialisation, and so no platform and no language from it. | **Inferred** | G10 |
 | 2.10 | Run en-1 used `gj_uinfo=1:90:Fenji:0:tester:1`, `gj_gates=127.0.0.1:7800` and `gj_ticket=fenji-dev`. The client connected to fenji-stub in the same second its login stage was ready: no list, no click and no name lookup. Its interface was English (§4). | **Observed** | C4 |
@@ -76,12 +76,12 @@ The first is **Inferred**. The second is **Observed** in run en-1 (C4).
 
 ## 5. Open questions
 
-- What the server must send first: the server speaks first (spike-0 4.x).
-- The Oodle Network data the client expects from the server (spike-0 4.5). M2, and the wire part of the Oodle question in gate #39.
+- What the server must send first: the server speaks first (spike-0 4.x). **Answered in M2:** the 64-byte hello ([`transport.md`](transport.md) §2).
+- The Oodle Network data the client expects from the server (spike-0 4.5). M2, and the wire part of the Oodle question in gate #39. **Answered in M2:** a stored packet passes the client's decoder, so the server needs no encoder ([`transport.md`](transport.md) 5.8).
 - What the `servername` file's `server_list` serves, given that the Gameforge path doesn't read it.
 - Where `--server_locale` and `--net` are read (spike-0 8.37).
-- The meaning of `net_client_create`'s integer 3861871408.
-- What the client sends on the launcher path, and whether players may use it (#54).
+- The meaning of `net_client_create`'s integer 3861871408. **Answered in M2:** the hello's magic `K` (2.7).
+- What the client sends on the launcher path, and whether players may use it (#54). **Partly answered in M2:** the same auth message as on the server-list path, with `gj_ticket` as the ticket ([`payloads.md`](payloads.md), The auth payload). Whether players may use the path stays with M3 (#54).
 
 ## 6. Verification
 
