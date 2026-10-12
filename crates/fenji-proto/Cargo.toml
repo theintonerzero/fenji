@@ -1,0 +1,13 @@
+[package]
+name = "fenji-proto"
+description = "The SoLO client's transport without I/O: hello, variants, frame keys, frames, the Oodle wrapper's prefix, inner headers and the gate handshake"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

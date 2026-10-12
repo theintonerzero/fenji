@@ -265,6 +265,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fenji-proto"
+version = "0.2.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "fenji-stub"
 version = "0.2.0"
 dependencies = [
