@@ -25,7 +25,7 @@ The documents:
 |---|---|---|---|
 | spike-0 1.8 | Whether `AurogonEngine.dll`'s exports can name engine functions in `gujianol.exe` | **Partly.** The recipe and its limits are recorded. | `README.md` (spike-0 1.8 section) |
 | spike-0 4.7 | What the client does with its Oodle LZ wrappers, and whether outgoing traffic passes through them | **Answered.** Four codecs (Kraken, Mermaid, Selkie, Leviathan) share one decompressor, FUN_14024E060. It reads each archive block's `u32` raw length and decodes the rest. The client's outgoing frames carry no Oodle data: they decode with the cipher and inner header alone. | `m1-archives.md` 3.4; `transport.md` §9 |
-| spike-0 4.9 | Which serialiser the payloads use | **Answered.** The client's own pickle, LZ4-compressed from 128 bytes up. The table caches add table references and magic objects. | `payloads.md`; `m2-tables.md` §2 |
+| spike-0 4.9 | Which serialiser the payloads use | **Answered.** The client's own pickle, LZ4-compressed from 128 bytes up. The table caches add table references and magic objects, and so does any client message that carries a table or a userdata (found after the release: `payloads.md` P.7, P.8). | `payloads.md`; `m2-tables.md` §2 |
 | spike-0 4.14 | Each opcode's number on the wire | **Answered.** `STC` 0–29 and `CTS` 0xFF, then 0–11. `STC_PROTOCOL_SCRIPT` and `CTS_PROTOCOL_GATE_SCRIPT` are verified on the wire. | `opcodes.md` |
 | spike-0 4.23 | The hello and the variant choice | **Answered and run.** The hello's check is one word against `(K \| 0xC0000000) ^ w1 ^ w0`, with K = 0xE62F7B30 (`net_client_create`'s integer). The variants are w0 % 27 and w1 % 27, taken unsigned. | `transport.md` §2–3, §9 |
 | spike-0 4.24 | What differs between the 27 variants | **Answered.** Eight cipher families. Fenji implements and verified AES-128 (variant 3). | `transport.md` §3 |
@@ -60,7 +60,7 @@ Also by ledgered rulings:
 | 4 | Oodle Network path | **Met.** R3 and its control m2-r3b: stored packets work, so gate G2 never opened. | `transport.md` 5.8, §9; #64, #72 |
 | 5 | Archives (#51) | **Met.** The helper decodes Oodle blocks. `_index` gives 272,734 paths. The tables' format is read: the cache (`m2-tables.md` 2.1–2.8), and the layout of the three `.tab` files checked (2.9). `archive dump` writes items, skills, monsters, the XP curve and maps under `re/`, and `archive extract --key` any one file. | `m1-archives.md` 3.4–3.5, `m2-tables.md`; #67–#69 |
 | 6 | Loose ends | **Met.** #18 closed with a norm: a new finding cites an REA Evidence ID next to the pinned-exe address, and addresses alone stay acceptable for earlier findings and where REA has no function. M2's findings written after the norm carry their IDs with the exact calls: added in Task 14 to `transport.md` §10, `opcodes.md`, `payloads.md` and `m1-archives.md`, and in Task 13's review fixes to `m2-tables.md`. Spike-0 1.8 is answered in part. | `README.md`; #58, #70 |
-| 7 | Records | **Met:** this document; "M2 update" notes in the parent spec's §6.2, §10 and §12. `sources.md` is unchanged: M2 used no outside source. | #70 |
+| 7 | Records | **Met:** this document; "M2 update" notes in the parent spec's §6.2, §10 and §12. `sources.md` was unchanged at the release, since M2 used no outside source of knowledge about the game; it now also lists `llvm-undname` and `objdump`, the general-purpose tools behind [`README.md`](README.md#naming-functions-from-aurogonenginedll-spike-0-18) (spike-0 1.8). | #70 |
 
 ## Gates and the owner's rulings
 

@@ -2,7 +2,7 @@
 //! bytes and the machine fingerprint in the auth payload are synthetic.
 use fenji_proto::codec::StoredCodec;
 use fenji_proto::frame::{Frame, UpReader};
-use fenji_proto::handshake::{AuthMessage, Event, Server};
+use fenji_proto::handshake::{AuthMessage, Event, MAX_INBOUND, Server};
 use fenji_proto::header::split_message;
 use fenji_proto::hello::{CLIENT_MAGIC, check};
 use fenji_proto::packet::Up;
@@ -42,8 +42,10 @@ fn r2_auth() -> AuthMessage {
         }
     }
     assert_eq!(at, up.len(), "whole frames");
-    let (h, body, used) = split_message(&stream).expect("one whole message");
-    assert_eq!((h.ty, used), (0, stream.len()), "one auth message");
+    let (h, body, used) = split_message(&stream, MAX_INBOUND)
+        .unwrap()
+        .expect("one whole message");
+    assert_eq!((h.ty(), used), (0, stream.len()), "one auth message");
     AuthMessage::parse(body).unwrap()
 }
 
@@ -105,9 +107,8 @@ fn r4b() -> R4b {
 /// gives h back.
 fn server_for(hello: &[u8; 64]) -> Server {
     let mut fill = *hello;
-    for w in fill.chunks_exact_mut(4).take(2) {
-        let h = u32::from_le_bytes(w.try_into().unwrap());
-        w.copy_from_slice(&(h / 27).to_le_bytes());
+    for w in fill.as_chunks_mut::<4>().0.iter_mut().take(2) {
+        *w = (u32::from_le_bytes(*w) / 27).to_le_bytes();
     }
     let (server, sent) = Server::start(fill, check(hello, CLIENT_MAGIC).unwrap()).unwrap();
     assert_eq!(&sent, hello);

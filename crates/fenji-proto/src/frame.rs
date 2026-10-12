@@ -6,18 +6,23 @@
 use crate::scramble::{DownKey, UpKey};
 use crate::{Error, Result};
 
-/// The most a `u16` length can say.
+/// The most a frame's `u16` length can say (transport.md 4.1): the bound the server reads the
+/// client's frames with. The client's own are at most [`SEND_CHUNK`] bytes (4.5).
 pub const MAX_FRAME_BODY: usize = 0xffff;
 /// The client copies each server frame body, and decodes each one's raw bytes, into 0x4080-byte
 /// buffers without a length check (FUN_14029B850, FUN_14029A900; transport.md 4.9, 5.4), so the
 /// server never sends a larger body (ruling R10).
 pub const CLIENT_RECV_MAX: usize = 0x4080;
-/// The client sends data frames of at most this many bytes, and so does our server.
+/// The client cuts what it sends into data frames of at most this many bytes (0x800 at
+/// 0x14029C625 in FUN_14029C600; transport.md 4.5), and so does our server.
 pub const SEND_CHUNK: usize = 0x800;
 
+/// One frame, its length unmasked (transport.md 4.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
+    /// Length 0: the sender's clock in milliseconds, which the variant doesn't touch.
     TimeSync(u64),
+    /// Any other length: the body, still under the variant transform (3.4).
     Data(Vec<u8>),
 }
 
@@ -53,7 +58,8 @@ fn take(buf: &[u8], key: u16) -> Option<(Frame, usize)> {
     Some((Frame::Data(body.to_vec()), 2 + len))
 }
 
-/// Server side: writes frames to the client.
+/// Server side: writes frames to the client. The key steps by 0xD736 after every frame, as the
+/// client's receive loop FUN_14029B850 expects (transport.md 4.3).
 #[derive(Debug, Default)]
 pub struct DownWriter {
     key: DownKey,
@@ -79,8 +85,8 @@ impl DownWriter {
     }
 }
 
-/// Client side: reads the server's frames. `None` means more bytes are needed; the key moves only
-/// when a whole frame is read.
+/// Client side: reads the server's frames as FUN_14029B850 does (transport.md 4.3). `None` means
+/// more bytes are needed; the key moves only when a whole frame is read.
 #[derive(Debug, Default)]
 pub struct DownReader {
     key: DownKey,
@@ -98,7 +104,8 @@ impl DownReader {
     }
 }
 
-/// Client side: writes frames to the server.
+/// Client side: writes frames to the server as FUN_14029C600 (data) and FUN_14029A5B0 (time syncs)
+/// do, each kind with its own key step (transport.md 4.5, 4.6).
 #[derive(Debug, Default)]
 pub struct UpWriter {
     key: UpKey,
@@ -124,7 +131,8 @@ impl UpWriter {
     }
 }
 
-/// Server side: reads the client's frames.
+/// Server side: reads the client's frames, stepping the one key by each frame's kind in the
+/// client's order (transport.md 4.7).
 #[derive(Debug, Default)]
 pub struct UpReader {
     key: UpKey,

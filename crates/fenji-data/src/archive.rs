@@ -133,7 +133,9 @@ pub fn read_part_header_from<R: Read + Seek>(r: &mut R) -> Result<PartHeader> {
         blocks.push(at);
         records.extend(
             block[8..]
-                .chunks_exact(RECORD_LEN)
+                .as_chunks::<RECORD_LEN>()
+                .0
+                .iter()
                 .take_while(|rec| rec[31] != STATUS_FREE)
                 .enumerate()
                 .map(|(slot, rec)| Record::parse(first_slot + slot as u32, rec)),

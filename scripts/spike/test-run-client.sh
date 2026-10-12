@@ -80,6 +80,7 @@ exits 3 "a gate event is exit 3" -- verdict 3 0 1 "$OUT"
 exits 4 "a watchdog failure is exit 4" -- verdict 4 124 1 "$OUT"
 exits 5 "a watchdog that never armed is exit 5" -- verdict 0 98 0 "$OUT"
 exits 6 "a sandbox that ended before the client ran is exit 6" -- verdict 0 2 0 "$OUT"
+exits 7 "a stub that wasn't running when the client was due is exit 7" -- verdict 0 97 0 "$OUT"
 exits 0 "a finished run is exit 0, whatever the client's own status" -- verdict 0 124 1 "$OUT"
 
 exits 3 "a failed evidence collection leaves a gate event exit 3" -- with_failing_collect finish_run 3 0 1
@@ -116,6 +117,21 @@ refuses "--stub-arg refuses shell characters" "--stub-arg" -- --stub-arg '--x;rm
 refuses "--ports can't be empty" "--ports" -- --ports ''
 refuses "--click takes T:X,Y in whole numbers" "--click" -- --click 5:abc
 refuses "valid --ports, --env and --click pass their checks" "no workspace" -- --ports '7800 7801' --env FOO=bar --click 30:640,360
+
+# record_inputs writes what defines a run, the stub's arguments included.
+if (
+  guard
+  OUT=$TESTROOT/inputs run=t ports=7800 tmo=9 display=99 channels=-all hosts=$TESTROOT/hosts
+  WRAP=$TESTROOT/hosts WATCHDOG=$TESTROOT/hosts PROTON=/nonexistent
+  envs=() client_files=() clicks=() stub_args=(--speak --auth-reply=reject)
+  mkdir -p "$OUT" && echo "127.0.0.1 localhost" > "$hosts"
+  record_inputs -x 1 > /dev/null 2>&1
+  grep -qx 'stub args: --speak --auth-reply=reject' "$OUT/inputs.txt"
+); then
+  ok "inputs.txt records the stub's arguments"
+else
+  bad "inputs.txt records the stub's arguments"
+fi
 
 case "$(watch_channels -all)" in
   -all,*+process*+loaddll*+resource*+service*err+all*) ok "the watchdog's channels follow any --channels" ;;

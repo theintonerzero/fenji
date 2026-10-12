@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
-# Enforces Conventional Commits 1.0.0 on the subject line.
-# Installed by scripts/bootstrap.sh via `git config core.hooksPath .githooks`.
+# Enforces Conventional Commits 1.0.0 on the subject line, and keeps session links out of the
+# message. Installed by scripts/bootstrap.sh via `git config core.hooksPath`; the scripts it runs
+# are the ones beside it, so a worktree on an older branch is checked by the same rules.
 set -euo pipefail
-exec "$(git rev-parse --show-toplevel)/scripts/check-commit-subject.sh" "$(head -n 1 "$1")"
+root=$(cd "$(dirname "$0")/.." && pwd -P)
+"$root/scripts/check-commit-subject.sh" "$(head -n 1 "$1")"
+# Every line counts (git commit -m and -F keep lines starting with #), except what follows git's
+# own scissors block, which git commit -v writes and git drops: a line of dashes around ">8",
+# then "Do not modify or remove the line above.", whatever the comment string.
+awk '
+  held != "" { if ($0 ~ /Do not modify or remove the line above\.$/) { held = ""; exit } print held; held = "" }
+  /^[^[:space:]]+ -+ >8 -+$/ { held = $0; next }
+  { print }
+  END { if (held != "") print held }
+' "$1" | "$root/scripts/check-no-session-links.sh"

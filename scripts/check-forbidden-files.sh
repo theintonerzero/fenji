@@ -63,8 +63,8 @@ while IFS= read -r -d '' f <&3; do
   case "$lower" in
     *.exe|*.dll|*.sys|*.pae|*.vplugin|*.luac|*.tab|*.bk2|*.bank|*.fsb|*.pcap|*.pcapng|*.gpr|*.hop|*.i64|*.idb)
       fail "$f" "forbidden file type"; continue ;;
-    *.so|*.so.*|*.dylib)
-      fail "$f" "native library (Oodle and other middleware ship as .so and .dylib)"; continue ;;
+    *.so|*.so.*|*.dylib|*.lib|*.a)
+      fail "$f" "native library (Oodle and other middleware ship as .so, .dylib, .lib and .a)"; continue ;;
     *.rep/*)
       fail "$f" "Ghidra project data"; continue ;;
     # M2's artefacts, wherever they land: a stub started outside the repo root, or a copy by hand.
@@ -73,8 +73,23 @@ while IFS= read -r -d '' f <&3; do
     *.new_cache|*.jsonl)
       fail "$f" "a decoded table cache or table dump"; continue ;;
   esac
-  # An Oodle spool block: <SHA-1 in 40 hex digits>-<raw length>.bin (fenji_data::oodle_spool).
   base=${lower##*/}
+  case "$base" in
+    oodle*.h)
+      fail "$f" "an Oodle SDK header"; continue ;;
+  esac
+  # A fenji-stub session log: <unix millis>-<local port>-<peer>.log (tools/stub/src/session.rs). It
+  # holds the client's auth frame, which anyone can decrypt (docs/protocol/transport.md 3.9).
+  case "$base" in
+    *-*-*.log)
+      millis=${base%%-*}
+      port=${base#*-}
+      port=${port%%-*}
+      if [ -n "$millis" ] && [ -z "${millis//[0123456789]/}" ] && [ -n "$port" ] && [ -z "${port//[0123456789]/}" ]; then
+        fail "$f" "a fenji-stub session log (it holds the client's auth frame)"; continue
+      fi ;;
+  esac
+  # An Oodle spool block: <SHA-1 in 40 hex digits>-<raw length>.bin (fenji_data::oodle_spool).
   case "$base" in
     *-*.bin)
       sha=${base%%-*}
@@ -95,7 +110,7 @@ while IFS= read -r -d '' f <&3; do
     4d5a*) fail "$f" "Windows PE binary (MZ header)" ;;
     7f454c46*) fail "$f" "ELF binary" ;;
     # cafebabe is a universal (fat) Mach-O header, and also the header of Java class files.
-    feedface*|feedfacf*|cefaedfe*|cffaedfe*|cafebabe*) fail "$f" "Mach-O binary" ;;
+    feedface*|feedfacf*|cefaedfe*|cffaedfe*|cafebabe*|cafebabf*) fail "$f" "Mach-O binary" ;;
     1b4c7561*) fail "$f" "Lua bytecode" ;;
     5a465300*) fail "$f" "game archive block (ZFS)" ;;
     d4c3b2a1*|a1b2c3d4*|4d3cb2a1*|a1b23c4d*) fail "$f" "pcap capture" ;;

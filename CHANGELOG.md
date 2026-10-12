@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-12
+
+### Added
+
+- **tools:** Refuse session links in commits and PR descriptions (#109)
+
+### Changed
+
+- **deps:** Use as_chunks for constant-size chunks (#97)
+
+### Fixed
+
+- **tools:** Record the stub's arguments and check it started (#99)
+- **tools:** Dump checks the cache against its key (#100)
+- **tools:** Close the repo-guard follow-ups (#103)
+- **proto:** Read every pickle form the client writes, and bound what a peer can send (#104)
+- **proto:** Make the client simulator behave like the real client where it didn't (#105)
+- **re:** Close the sandbox follow-ups carried since Caphras (#107)
+- **proto:** Refuse a pickle header that reads as compressed, and NaN keys (#110)
+
+### Documentation
+
+- Add the public-facing community files (#96)
+- **re:** Correct and link the M2 records (#106)
+- **re:** Reject the server package found in a working copy (#112)
+
 ## [0.3.0] - 2026-10-12
 
 ### Added

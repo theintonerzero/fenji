@@ -30,7 +30,8 @@
 #
 # Exit: 0 the run finished; 3 GATE EVENT (the watchdog stopped the run: stop all runs, report);
 # 4 the watchdog failed; 5 the watchdog never armed (the client was not started); 6 the sandbox
-# ended before the client ran; 1 or 2 setup or usage errors. Evidence is collected first, best
+# ended before the client ran; 7 fenji-stub wasn't running when the client was due (the client was
+# not started); 1 or 2 setup or usage errors. Evidence is collected first, best
 # effort: a failure there is reported but never changes the exit status.
 set -euo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
@@ -90,6 +91,30 @@ cmd_setup() {
     _ "$PROTON" "$WORK/compat" > "$WORK/prefix-init.log" 2>&1 || true
   [ -f "$WORK/compat/pfx/system.reg" ] || die "the Wine prefix wasn't created; see $WORK/prefix-init.log"
   echo "workspace ready: $WORK"
+}
+
+# What defines a run, written to OUT/inputs.txt before it starts. Uses cmd_run's run, ports, tmo,
+# display, channels, hosts, envs, client_files, clicks and stub_args; "$@" is the client's arguments.
+record_inputs() {
+  {
+  echo "run: $run"
+  echo "date: $(date -Is)"
+  echo "client args: $*"
+  echo "extra env: ${envs[*]-}"
+  echo "client files: ${client_files[*]-}"
+  echo "clicks (T:X,Y): ${clicks[*]-}"
+  echo "stub ports: $ports"
+  echo "stub args: ${stub_args[*]-}"
+  echo "timeout: $tmo"
+  echo "display: :$display"
+  echo "wine channels (WINEDEBUG, with PROTON_LOG=1): $channels"
+  echo "GE-Proton: $PROTON"
+  echo "sandbox: isolated-run.sh --no-root --x11 $display --cpu-topology (sha256 $(sha256sum "$WRAP" | cut -c1-16)…)"
+  echo "driver watchdog: watchdog.py sha256 $(sha256sum "$WATCHDOG" | cut -c1-16)…"
+  echo "hosts file: $hosts"
+  echo "--- hosts content"
+  cat "$hosts"
+  } > "$OUT/inputs.txt"
 }
 
 cmd_run() {
@@ -170,24 +195,7 @@ cmd_run() {
   mkdir -p "$OUT" "$IO/stub" "$STUB"
 
   # --- before: inputs, client files, AGT baseline
-  {
-    echo "run: $run"
-    echo "date: $(date -Is)"
-    echo "client args: $*"
-    echo "extra env: ${envs[*]-}"
-    echo "client files: ${client_files[*]-}"
-    echo "clicks (T:X,Y): ${clicks[*]-}"
-    echo "stub ports: $ports"
-    echo "timeout: $tmo"
-    echo "display: :$display"
-    echo "wine channels (WINEDEBUG, with PROTON_LOG=1): $channels"
-    echo "GE-Proton: $PROTON"
-    echo "sandbox: isolated-run.sh --no-root --x11 $display --cpu-topology (sha256 $(sha256sum "$WRAP" | cut -c1-16)…)"
-    echo "driver watchdog: watchdog.py sha256 $(sha256sum "$WATCHDOG" | cut -c1-16)…"
-    echo "hosts file: $hosts"
-    echo "--- hosts content"
-    cat "$hosts"
-  } > "$OUT/inputs.txt"
+  record_inputs "$@"
   for spec in "${client_files[@]}"; do
     cp -- "${spec#*=}" "$WORK/client/${spec%%=*}"
   done
@@ -252,6 +260,7 @@ cmd_run() {
       "$STUBBIN/fenji-stub" "${la[@]}" $SARGS --out "$STUB" > "$IO/stub.out" 2>&1 &
       stub=$!
       sleep 1
+      kill -0 "$stub" 2>/dev/null || { echo "fenji-stub exited at start; client not started" >&2; exit 97; }
       cd "$W/client/bin64" || exit 99
       timeout -k 10 "$TMO" python3 "$PROTON/proton" run "$W/client/bin64/gujianol.exe" "$@" > "$IO/proton.out" 2>&1
       rc=$?
@@ -314,6 +323,7 @@ verdict() {
     *) echo "WATCHDOG FAILURE (exit $wdrc); see $out/watchdog.log and watchdog.err" >&2; return 4 ;;
   esac
   [ "$wrc" != 98 ] || { echo "the watchdog never armed; the client was not started" >&2; return 5; }
+  [ "$wrc" != 97 ] || { echo "fenji-stub wasn't running when the client was due (see $out/io/stub.out); the client was not started" >&2; return 7; }
   [ "$ran" = 1 ] || { echo "the sandbox ended before the client ran (sandbox exit $wrc); see $out/sandbox.out" >&2; return 6; }
   return 0
 }

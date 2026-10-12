@@ -12,7 +12,7 @@ How we analyse the pinned SoLO client without breaking the ground rules (design 
 | Our own findings in prose | `docs/protocol/`, `docs/re/` | Yes |
 | Rust definitions citing evidence | `crates/fenji-proto/`, `crates/fenji-data/`, `crates/fenji-lua/` | Yes |
 
-`scripts/check-forbidden-files.sh` (run in CI and by the pre-commit hook) rejects game binaries, archives, Lua bytecode, captures and analysis databases.
+`scripts/check-forbidden-files.sh` (run in CI and by the pre-commit hook) rejects game binaries, archives, native libraries and Oodle's SDK, Lua bytecode, captures and analysis databases, and the tools' run and decode artefacts wherever they are staged: stub session logs and auth captures, Oodle spool blocks, table caches and dumps.
 
 ## Getting the pinned build
 
@@ -62,7 +62,7 @@ Why:
 To check a new setup (REA 6.3.0, Ghidra 12.1.4): step 3's call, exactly `procedure_pseudo_code {procedure: "0x14029C330"}` (upper-case hex), must return `ev_2487ebf9c2001ca037d52f138681f91175ece7bc1de0ba6422232f62d2ca9b77`.
 
 1. `binary_session {}`: is anything open? The reply is about 200 KB, so the harness saves it to a file; read `open` from it with `python3 -I` or `jq`. If it is true, `close_binary {}` first.
-2. `open_binary {path: "<absolute $FENJI_CLIENT_PATH>/bin64/gujianol.exe"}`: an absolute path and nothing else. The reply has the `sha256`; compare it with [`pinned-build.md`](pinned-build.md).
+2. `open_binary {path: "<absolute $FENJI_CLIENT_PATH>/bin64/gujianol.exe"}`: an absolute path and nothing else. On a machine where Hopper or IDA is installed, add `provider_id: "ghidra"`: automatic selection could pick another provider, and the provider is part of every Evidence ID. The reply has the `sha256`; compare it with [`pinned-build.md`](pinned-build.md).
 3. Ask the first question and wait about four minutes. Any query starts Ghidra, so make it one you need, such as `procedure_pseudo_code {procedure: "0x14029C330"}`. Don't send another request meanwhile, and don't cancel it: a cancelled request throws the analysis away and the next query pays again.
 4. Ask the rest in the same session. Each of these returns an Evidence ID. A procedure is `0x` plus hex, or the `FUN_…` name in lower case. Type addresses as REA prints them, in lower case: the case is part of the ID (see How to cite).
    - `procedure_pseudo_code {procedure}`: the decompiler text, about 10 KB, inline. The default read.

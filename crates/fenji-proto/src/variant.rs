@@ -8,6 +8,7 @@ use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use crate::hello::HELLO_LEN;
 use crate::{Error, Result};
 
+/// The client's variants: the hello picks each direction's as a word mod 27 (transport.md 2.5).
 pub const VARIANT_COUNT: u32 = 27;
 /// Case 3: the hello folded to 16 bytes, then AES (init FUN_140299C50, encrypt FUN_140299B90,
 /// decrypt FUN_140299AD0).
@@ -50,24 +51,20 @@ impl Cipher {
 
     /// The client's send transform: whole blocks encrypted, then the tail.
     pub fn encrypt(&self, buf: &mut [u8]) {
-        let mut blocks = buf.chunks_exact_mut(16);
-        for chunk in &mut blocks {
-            let mut b: [u8; 16] = (&*chunk).try_into().expect("16 bytes");
-            self.aes.encrypt_block((&mut b).into());
-            chunk.copy_from_slice(&b);
+        let (blocks, rest) = buf.as_chunks_mut::<16>();
+        for b in blocks {
+            self.aes.encrypt_block(b.into());
         }
-        tail(blocks.into_remainder(), AES_TAIL);
+        tail(rest, AES_TAIL);
     }
 
     /// The client's receive transform: whole blocks decrypted, then the tail.
     pub fn decrypt(&self, buf: &mut [u8]) {
-        let mut blocks = buf.chunks_exact_mut(16);
-        for chunk in &mut blocks {
-            let mut b: [u8; 16] = (&*chunk).try_into().expect("16 bytes");
-            self.aes.decrypt_block((&mut b).into());
-            chunk.copy_from_slice(&b);
+        let (blocks, rest) = buf.as_chunks_mut::<16>();
+        for b in blocks {
+            self.aes.decrypt_block(b.into());
         }
-        tail(blocks.into_remainder(), AES_TAIL);
+        tail(rest, AES_TAIL);
     }
 }
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
-# Installed by scripts/bootstrap.sh via `git config core.hooksPath .githooks`.
+# Installed by scripts/bootstrap.sh via `git config core.hooksPath`. Runs the check beside this
+# hook, against the repository being committed to.
 set -euo pipefail
-exec "$(git rev-parse --show-toplevel)/scripts/check-forbidden-files.sh" --staged
+exec "$(cd "$(dirname "$0")/.." && pwd -P)/scripts/check-forbidden-files.sh" --staged

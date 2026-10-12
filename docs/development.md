@@ -23,7 +23,7 @@ claude                        # accept workspace trust; approve the rea and brp 
 
 Fedora notes (the Linux box runs Fedora; other distros get a printed package list to install themselves):
 
-- `dnf` installs build tools, Tauri prerequisites (`webkit2gtk4.1-devel`, `libxdo-devel`, `libappindicator-gtk3-devel`, `librsvg2-devel`, `openssl-devel`), `alsa-lib-devel` (Bevy audio, pulled in by `bevy_remote`; needed by `bevy_brp_mcp`), `tcpdump`, `wireshark-cli` (tshark) and `nodejs24`. Fedora Atomic (Silverblue/Kinoite/Bazzite) gets the same list to layer or use in a toolbox.
+- `dnf` installs build tools, Tauri prerequisites (`webkit2gtk4.1-devel`, `libxdo-devel`, `libappindicator-gtk3-devel`, `librsvg2-devel`, `openssl-devel`), `alsa-lib-devel` (Bevy audio, pulled in by `bevy_remote`; needed by `bevy_brp_mcp`) and `nodejs24`. Fedora Atomic (Silverblue/Kinoite/Bazzite) gets the same list to layer or use in a toolbox.
 - Ghidra comes from the official release zip on both macOS and Fedora (SHA-256 verified), so both machines run the identical pinned build at `~/.local/share/fenji/tools/ghidra_12.1.4_PUBLIC`.
 - macOS gets Java from the Temurin 21 cask and Node from Homebrew `node@24`. On Linux, bootstrap downloads the Temurin 21 tarball (SHA-256 pinned) into `~/.local/share/fenji/tools`, because Fedora 44 no longer packages JDK 21.
 - `umu-run` (Proton outside Steam), `DepotDownloader`, `ghidraRun`, `bridge-mcp-ghidra` (via `uv tool`) and pnpm land in `~/.local/bin`; the GhidraMCP extension lands in Ghidra's user directory (`~/.config/ghidra/ghidra_12.1.4_PUBLIC/Extensions` on Linux, `~/Library/ghidra/...` on macOS); the unluac jar lands in `~/.local/share/fenji/tools/unluac/` (used by `luatool decompile`); GE-Proton (Linux x86_64) lands in `~/.local/share/fenji/tools/GE-Proton11-7`.
@@ -59,6 +59,7 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 - Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
 - Scopes: `proto`, `data`, `lua`, `auth`, `store`, `server`, `launcher`, `tools`, `content`, `deploy`, `docs`, `re`, `deps`, `release`.
 - `!` or a `BREAKING CHANGE:` footer marks a breaking change.
+- No session links: a commit message or PR description never carries an AI agent's session link or ID (a `Claude-Session:` trailer, a claude.ai session or chat URL). The hook refuses them in commit messages, and CI in a PR's title, description and commits that aren't in `dev` yet (`scripts/check-no-session-links.sh`, `scripts/check-pr-session-links.sh`, in the required `repo-hygiene` job). `Co-Authored-By:` attribution is fine.
 
 ## Versioning: SemVer 2.0.0
 

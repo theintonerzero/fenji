@@ -11,8 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use fenji_proto::codec::StoredCodec;
 use fenji_proto::handshake::{Event, Server};
 use fenji_proto::hello::{HELLO_LEN, Variants};
-use fenji_proto::packet::Up;
-use fenji_proto::pickle::Value;
+use fenji_proto::opcode::Stc;
+use fenji_proto::packet::{Up, set_net_connected};
+use fenji_proto::pickle::{self, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -27,7 +28,7 @@ pub enum AuthReply {
     /// Nothing: stop after reading the auth (rungs R1–R2).
     None,
     /// `REJECT_REASON` in a stored frame: R3's control. A client that decodes and reads the
-    /// frame closes with `CLOSED_AUTH` (transport.md 6.7).
+    /// frame closes with `CLOSED_AUTH` (transport.md 6.6).
     Reject,
 }
 
@@ -38,6 +39,17 @@ pub const REJECT_REASON: &[u8] = b"fenji-stub: rejected (control run)";
 pub struct SpeakOpts {
     pub variants: Variants,
     pub auth_reply: AuthReply,
+    /// Bytes of padding the work message carries as a fifth argument, which its handler ignores.
+    /// 0 sends the plain message. Enough padding takes its stored packet past 251 bytes, to the
+    /// `FC` prefix (transport.md 5.2, #88).
+    pub work_pad: usize,
+}
+
+/// `PROTOG2C_SET_NET_CONNECTED` with a fifth argument of `pad` bytes.
+fn padded_work(pad: usize) -> Vec<u8> {
+    let mut values = pickle::decode(&set_net_connected()).expect("our own body");
+    values.push(Value::Str(vec![b'.'; pad]));
+    pickle::encode(&values).expect("five values")
 }
 
 /// Fresh bytes for the hello. The hello goes out in clear and the keys are folded from it, so it
@@ -146,10 +158,19 @@ pub async fn handle(
                     }
                     if opts.auth_reply == AuthReply::Ok {
                         // QUEUE -> WORK (transport.md 10.3-10.4).
-                        let out = server.begin_work(&StoredCodec).map_err(other)?;
+                        let (out, what) = if opts.work_pad == 0 {
+                            let out = server.begin_work(&StoredCodec);
+                            (out, "work (SET_NET_CONNECTED)".to_string())
+                        } else {
+                            let body = padded_work(opts.work_pad);
+                            let what =
+                                format!("work (SET_NET_CONNECTED, {}-byte body)", body.len());
+                            (server.send(Stc::Script.to_u8(), &body, &StoredCodec), what)
+                        };
+                        let out = out.map_err(other)?;
                         stream.write_all(&out).await?;
                         log.record_sent(&out)?;
-                        events.line("sent", "work (SET_NET_CONNECTED)")?;
+                        events.line("sent", &what)?;
                     }
                 }
                 Event::TimeSync(ms) => events.line("time_sync", &format!("client_ms={ms}"))?,
@@ -168,8 +189,8 @@ pub async fn handle(
                             &format!("ty={} len={} head={}", m.ty, m.body.len(), hex(head)),
                         )?;
                     }
-                    // A script message the decoder refuses (a table reference, say): logged
-                    // with the reason, and the stream goes on.
+                    // A script message the decoder refuses (an unknown tag, say): logged with
+                    // the reason, and the stream goes on.
                     Err(error) => {
                         let kind = if m.ty == 0xff { "gateway" } else { "script" };
                         let head = &m.body[..m.body.len().min(32)];
