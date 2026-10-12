@@ -12,8 +12,9 @@ HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=run-client.sh
 . "$HERE/run-client.sh"
 set +e # run-client.sh sets -e; these tests check exit statuses themselves
-TESTROOT=$(mktemp -d)
+TESTROOT=$(mktemp -d) || { echo "FATAL: mktemp failed" >&2; exit 2; }
 readonly TESTROOT
+[ -d "$TESTROOT" ] || { echo "FATAL: no test root" >&2; exit 2; }
 trap 'rm -rf -- "$TESTROOT"' EXIT
 # An empty workspace: anything that gets past the argument checks stops at "no workspace", so no test
 # can ever start a run.
@@ -25,8 +26,8 @@ bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 
 # Stops every test at once if WORK has left TESTROOT.
 guard() {
-  case "$WORK:$REPO" in
-    "$TESTROOT"/*:"$TESTROOT"/*) ;;
+  case "$TESTROOT:$WORK:$REPO" in
+    /?*:"$TESTROOT"/*:"$TESTROOT"/*) ;;
     *) echo "FATAL: WORK or REPO left the test root: $WORK $REPO" >&2; exit 2 ;;
   esac
 }
@@ -99,10 +100,10 @@ else
   bad "a successful collect clears the copy for the next run: exit $rc"
 fi
 
-mkdir -p "$WORK/client/bin64" "$WORK/client/settings" "$WORK/compat/pfx"
-touch "$WORK/compat/pfx/system.reg"
+mkdir -p "$TESTROOT/work/client/bin64" "$TESTROOT/work/client/settings" "$TESTROOT/work/compat/pfx"
+touch "$TESTROOT/work/compat/pfx/system.reg"
 refuses "a run refuses a client copy with another run's leftovers" "leftover" --
-rm -rf -- "$WORK/client" "$WORK/compat"
+rm -rf -- "$TESTROOT/work/client" "$TESTROOT/work/compat"
 
 refuses "--env can't redirect the log the watchdog reads" "PROTON_LOG_DIR" -- --env PROTON_LOG_DIR=/tmp/x
 refuses "--env can't rename the log the watchdog reads" "SteamGameId" -- --env SteamGameId=1

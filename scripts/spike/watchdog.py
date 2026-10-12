@@ -104,7 +104,16 @@ class Log:
         self.f = open(path, "a", buffering=1)
 
     def __call__(self, msg):
-        self.f.write(f"{now()} {msg}\n")
+        line = f"{now()} {msg}\n"
+        try:
+            self.f.write(line)
+        except OSError:
+            # A full disk must not turn a gate event into an uncaught error: fall back to stderr
+            # (the runner's watchdog.err), and drop the line if that fails too.
+            try:
+                sys.stderr.write(line)
+            except OSError:
+                pass
 
 
 # --- *.sys files -------------------------------------------------------------------------------
@@ -800,13 +809,13 @@ def cmd_watch(a):
                 live = [f"{p}:{i['comm']}" for p, i in seen.items() if i.get("alive")]
                 log(f"heartbeat: poll {polls}, log {tail.off} bytes, live {live}")
             time.sleep(max(0.0, a.interval - (time.monotonic() - t)))
-    except BaseException as e:  # fail safe: no watchdog, no run
-        log(f"WATCHDOG FAILURE {type(e).__name__}: {e}; killing the sandbox")
+    except BaseException as e:  # fail safe: no watchdog, no run. Kill first, then say why.
         for p in ((descendants(init) if init else []) + [spid]):
             try:
                 os.kill(p, signal.SIGKILL)
             except OSError:
                 pass
+        log(f"WATCHDOG FAILURE {type(e).__name__}: {e}; the sandbox was killed")
         raise SystemExit(4)
 
 

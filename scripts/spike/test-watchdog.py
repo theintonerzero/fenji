@@ -367,5 +367,20 @@ class GateEventRecord(unittest.TestCase):
             self.assertEqual(rc, 3)
             self.assertIn("GATE EVENT", (out / "watchdog.log").read_text())
 
+class LogNeverRaises(unittest.TestCase):
+    """Scoped re-review: a full disk must not make the watchdog's own log raise, or a gate event
+    would end as an uncaught error (exit 1) instead of exit 3."""
+
+    def test_a_failed_log_write_falls_back_and_does_not_raise(self):
+        class Full:
+            def write(self, _):
+                raise OSError(28, "No space left on device")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = wd.Log(str(pathlib.Path(tmp, "watchdog.log")))
+            log.f.close()
+            log.f = Full()
+            log("GATE EVENT: S1 new .sys file: /x/agt.sys")  # must not raise
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)

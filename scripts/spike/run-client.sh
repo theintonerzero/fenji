@@ -134,7 +134,7 @@ cmd_run() {
     if [ -e "$left" ] || [ -L "$left" ]; then
       case "${left##*/}" in
         bin64 | data | tools) ;;
-        *) die "leftover ${left##*/} at the client copy's install root (an earlier run's); move it first" ;;
+        *) die "leftover ${left##*/} at the client copy's install root, which should hold only bin64, data and tools; move it first" ;;
       esac
     fi
   done
