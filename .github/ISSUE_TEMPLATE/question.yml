@@ -1,0 +1,14 @@
+name: Question
+description: Ask about building, contributing or how Fenji works.
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fenji can't help anyone get the game: every player needs their own legitimate copy (see the README). Security problems go through the private report form, never a public issue.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true

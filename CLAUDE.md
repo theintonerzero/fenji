@@ -1,12 +1,14 @@
 # Fenji
 
-Clean-room private server emulator for Swords of Legends Online (SoLO: the Western build of 古剑奇谭网络版, Steam app 1418100; servers shut down 2023-06-30), in Rust, for a small invited group on the owner's VPS. Built by reverse engineering the owner's own licensed client. Design: `docs/superpowers/specs/2026-10-11-fenji-design.md`. Docs index: `docs/README.md`. Fenji replaces the halted Caphras project (Black Desert Online) and keeps its tooling and process.
+Clean-room private server emulator for Swords of Legends Online (SoLO: the Western build of 古剑奇谭网络版, Steam app 1418100; servers shut down 2023-06-30), in Rust, that anyone can host for a small group of friends they invite. Built by reverse engineering the owner's own licensed client. Design: `docs/superpowers/specs/2026-10-11-fenji-design.md`. Docs index: `docs/README.md`. Fenji replaces the halted Caphras project (Black Desert Online) and keeps its tooling and process.
 
-**Status:** M2 (transport + handshake) released as v0.3.0; summary in `docs/re/m2-summary.md`. Next: the public-repo community files, then the open M0–M2 issues (v0.3.1), then M3 (login + lobby), which has no plan yet.
+The GitHub repository is public and licensed AGPL-3.0-or-later (`LICENSE`); `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `PRIVACY.md` and `CODE_OF_CONDUCT.md` at the root are its public face, so keep them current, and never put the owner's personal details in tracked files.
+
+**Status:** M2 (transport + handshake) released as v0.3.0; summary in `docs/re/m2-summary.md`. Next: the open M0–M2 issues (v0.3.1), then M3 (login + lobby), which has no plan yet.
 
 ## Ground rules (never break these)
 
-1. **Legitimate copies only.** Every player and the host needs their own legitimately obtained SoLO client: Steam (app 1418100 already in their library; it's delisted) or Gameforge's own launcher from when it was distributed. Never distribute the client, point to unofficial copies, or support cracked or modified clients. There's no automated ownership check; the owner vets everyone they invite.
+1. **Legitimate copies only.** Every player and the host needs their own legitimately obtained SoLO client: Steam (app 1418100 already in their library; it's delisted) or Gameforge's own launcher from when it was distributed. Never distribute the client, point to unofficial copies, or support cracked or modified clients. There's no automated ownership check; the host vets everyone they invite.
 2. **Clean room.** Never use, reference or accept leaked SoLO / 古剑奇谭网络版 server files, binaries, scripts or source, or anything derived from them. That includes the GuJian Online "server RE report" from RaGEZONE (rejected; see `docs/re/sources.md`) and anything from the unofficial servers. Community material only if clearly licensed with clean provenance, as hints or external tools, listed in `docs/re/sources.md`.
 3. **No game content in the repo.** No binaries, data archives, extracted assets, extracted or decompiled Lua, middleware libraries (Oodle, …), REA evidence bundles, captures or stub logs. These live in `$FENJI_CLIENT_PATH` and the git-ignored `re/`. `scripts/check-forbidden-files.sh` enforces this; never bypass it.
 4. **Never connect a modified or instrumented client to a live official service.** The game still runs in China, and Gameforge, Steam and Epic services are live. Every client run happens inside `scripts/spike/isolated-run.sh`, against our own stub or server.
