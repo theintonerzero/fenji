@@ -333,7 +333,10 @@ until(die_at)
 """
 _INIT = """import json, os, subprocess, sys, time
 d, plan, go = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]
+deadline = time.time() + 15  # a watchdog that never arms fails the test, not the CI job
 while not os.path.exists(go):
+    if time.time() > deadline:
+        sys.exit(9)
     time.sleep(0.005)
 t0 = time.time()
 procs = []
@@ -349,6 +352,7 @@ subprocess.Popen([f"{sys.argv[1]}/bin/bwrap", f"{sys.argv[1]}/init.py"] + sys.ar
 """
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")
 class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
     """A fake sandbox of stand-in processes renamed with prctl: no Wine and no client. Times are
     seconds after the start signal, with margins far above the 0.05 s polls."""
@@ -372,6 +376,8 @@ class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
             wd.TMPFS_SUBS = wd.TMPFS_SHALLOW = ()  # the host's own files are not this test's sandbox
             try:
                 rc = wd.cmd_watch(a)
+            except SystemExit as e:  # a failure (exit 4) leaves through SystemExit
+                rc = e.code
             finally:
                 wd.TMPFS_SUBS, wd.TMPFS_SHALLOW = saved
                 try:
@@ -382,11 +388,22 @@ class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
             trig = out / "watchdog-trigger.txt"
             return rc, trig.read_text() if trig.exists() else ""
 
-    def test_a_client_renamed_late_still_arms_s2(self):
-        rc, trig = self.watch([[0.0, "wine64", "gujianol.exe", 1.0, 6.0],
-                               [0.4, "winedevice.exe", "-", 0, 5.0]])
+    def test_a_client_renamed_late_stays_found_and_arms_s2(self):
+        # The winedevice starts after the rename, so only a client that stayed found sees it.
+        rc, trig = self.watch([[0.0, "wine64", "gujianol.exe", 0.6, 6.0],
+                               [1.4, "winedevice.exe", "-", 0, 5.0]])
         self.assertEqual(rc, 3)
         self.assertIn("S2", trig)
+
+    def test_a_client_found_late_rearms_the_log_check(self):
+        # Found late, the client starts the clock for "the log never showed its creation".
+        saved = wd.client_creation_overdue.__defaults__
+        wd.client_creation_overdue.__defaults__ = (0.5,)
+        try:
+            rc, _ = self.watch([[0.0, "wine64", "gujianol.exe", 0.6, 6.0]])
+        finally:
+            wd.client_creation_overdue.__defaults__ = saved
+        self.assertEqual(rc, 4)
 
     def test_a_winedevice_renamed_late_still_trips_s2(self):
         rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 6.0],
