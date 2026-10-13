@@ -9,14 +9,14 @@ All the protocol and format knowledge here comes from studying our own licensed 
 
 ## Status
 
-**Not playable yet.** With M3, a Fenji server runs invite-only accounts and the character lobby. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and finds them again after a restart. Entering the world comes with M4.
+**Not playable yet.** With M3, a Fenji server runs invite-only accounts and the character lobby. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and finds them again after a restart. Entering the world comes with M4. The game connection between the client and the server is readable and unauthenticated. It carries no password, but play over a trusted network or a VPN ([PRIVACY.md](PRIVACY.md)).
 
 | Milestone | What it delivers | State |
 |---|---|---|
 | M0 | Development environment, sandbox, first analysis of the client | Released, v0.1.0 |
 | M1 | Reading the client's data: archives, embedded scripts | Released, v0.2.0 |
 | M2 | The network transport and handshake, against the real client | Released, v0.3.0 |
-| M3 | Accounts, the launcher, character list and creation | Done; v0.4.0 is next |
+| M3 | Accounts, the launcher, character list and creation | All tasks merged; the final review and v0.4.0 are next |
 | M4 | Friends in the starting zone: moving, seeing each other, chat | Planned |
 | M5 | Monsters, combat, XP, loot and saved progress (v1) | Planned |
 

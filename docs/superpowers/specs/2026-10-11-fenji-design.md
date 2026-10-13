@@ -111,7 +111,7 @@ Every source is credited in `docs/re/sources.md`.
 
 There is no Steam sign-in and no ownership check (rule 1).
 
-**M3 update** ([`m3-summary.md`](../../re/m3-summary.md)). Built as designed: one-time invite codes (stored as SHA-256 hashes, with labels and expiry), registration with an argon2id hash, sign-in with a limiter per account and per network, session tokens, and single-use game tokens (`fenji1-` and 64 hex digits, stored as SHA-256, 60 s by default, configurable from 10 s to an hour, bound to one account). The account API speaks plain HTTP until M4 adds TLS.
+**M3 update** ([`m3-summary.md`](../../re/m3-summary.md)). Built: one-time invite codes (stored as SHA-256 hashes, with labels and expiry), registration with an argon2id hash, sign-in with a limiter (a username only slows down; a username and network pair and a network lock), session tokens, and single-use game tokens (`fenji1-` and 64 hex digits, stored as SHA-256, 60 s by default, configurable from 10 s to an hour, bound to one account). The account API speaks plain HTTP, and `fenji-launch` refuses `http://` except to this machine, until M4 adds TLS. `/invite` in game waits for chat (M4).
 
 ### 5.2 Launcher (Linux + Windows)
 
@@ -128,7 +128,7 @@ The launcher replaces Gameforge's `SOLO_Launcher.exe`, whose server-list service
 - **verify** checks a folder against the pinned build's manifest (210 files, quick or full);
 - **play** starts the client on Linux through `umu-run`, in the launcher's own prefix, after `umu-run createprefix`. It starts only the pinned build, and refuses every other system: native Windows waits on the AGT reading (gate #114, plan Amendment B).
 
-By the owner's decision of 2026-10-13, the Tauri app moved out of M3 to #146, with its visual direction chosen ("Ember Sword") and DepotDownloader download and repair in its brief.
+By the owner's decision of 2026-10-13, the Tauri app moved out of M3 to #146, with its screen designs approved by the owner and DepotDownloader download and repair in its brief.
 
 ### 5.3 Client redirect and ticket (preference order; M0 and M3 decide)
 
@@ -350,9 +350,9 @@ Each milestone release to `main` bumps the minor version (M0 → `0.1.0` … M4 
 - the gate and the character lobby, whose list, create and delete survive a restart;
 - the ticket handoff on the launcher path;
 - `fenji-launch`, which redeems, verifies and plays on Linux;
-- the real, unmodified client through all of it, in the sandbox (runs m3-l1 to m3-l6).
+- the real, unmodified client through all of it, in the sandbox (runs m3-l1 to m3-l6) and on bare metal on Linux (bm-4 to bm-6).
 
-The launcher's window (#146) and a console for hosts (#147) move to M4 by the owner's decision.
+The launcher's window (#146) moves to M4 by the owner's decision, and a console for hosts (#147) is a new request for M4.
 
 ## 11. Conventions
 
