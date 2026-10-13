@@ -146,6 +146,41 @@ case " ${got[*]} " in
   *) bad "launch: ${got[*]}" ;;
 esac
 
+# --- --desktop: the session's own display, as a player has it
+# with_env NAME=VALUE COMMAND...: COMMAND with NAME set (an empty VALUE unsets it).
+with_env() {
+  local kv=$1
+  shift
+  if [ -n "${kv#*=}" ]; then export "${kv?}"; else unset "${kv%%=*}"; fi
+  "$@"
+}
+says 2 "needs a local DISPLAY" "--desktop refuses a remote DISPLAY" -- with_env DISPLAY=otherhost:0 desktop_display
+says 2 "needs a local DISPLAY" "--desktop refuses an unset DISPLAY" -- with_env DISPLAY= desktop_display
+if [ "$(with_env DISPLAY=:1.0 desktop_display)" = 1 ]; then ok "--desktop takes the display number from DISPLAY"; else bad "desktop display :1.0"; fi
+touch "$TESTROOT/xauth"
+if [ -z "$(with_env XAUTHORITY= desktop_xauth)" ]; then ok "no XAUTHORITY: nothing to bring in"; else bad "xauth when unset"; fi
+if [ "$(with_env XAUTHORITY="$TESTROOT/xauth" desktop_xauth)" = "$TESTROOT/xauth" ]; then ok "the display's auth file is brought in"; else bad "xauth file"; fi
+says 2 "XAUTHORITY" "an XAUTHORITY that isn't a readable file is refused" -- with_env XAUTHORITY="$TESTROOT/none" desktop_xauth
+says 2 "--key, --type or --click" "--desktop refuses key presses and clicks" -- with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --desktop --key 5:Return
+says 2 "don't go together" "--desktop and --display don't go together" -- with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --desktop --display 0
+mkdir -p "$TESTROOT/rt2"
+mapfile -t got < <(XDG_RUNTIME_DIR=$TESTROOT/rt2 HOME=$TESTROOT/nohome namespace_cmd 0 "$TESTROOT/xauth")
+want=(bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$TESTROOT/rt2" --tmpfs /tmp
+  --bind /tmp/.X11-unix/X0 /tmp/.X11-unix/X0 --tmpfs /dev/shm --ro-bind "$TESTROOT/xauth" "$TESTROOT/xauth"
+  --unshare-net --unshare-pid --die-with-parent --seccomp 7 --)
+if [ "${got[*]}" = "${want[*]}" ]; then ok "a desktop run brings in the display's auth file, read-only, after the tmpfs mounts"; else bad "desktop namespace: ${got[*]}"; fi
+mapfile -t got < <(namespace_env 0 "$TESTROOT/xauth")
+want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:0 XAUTHORITY="$TESTROOT/xauth")
+if [ "${got[*]}" = "${want[*]}" ]; then ok "inside a desktop run: the session's display and its auth file"; else bad "desktop env: ${got[*]}"; fi
+inputs=(stale)
+bare_inputs 1 "$TESTROOT/out" 0 60
+if [ "${#inputs[@]}" = 0 ]; then ok "a desktop run takes no screenshots and sends no input"; else bad "desktop inputs: ${inputs[*]}"; fi
+inputs=()
+bare_inputs 0 "$TESTROOT/out" 99 60
+if [ "${#inputs[@]}" = 3 ]; then ok "a nested-display run starts its screenshots, clicks and keys"; else bad "nested inputs: ${inputs[*]-}"; fi
+kill "${inputs[@]}" 2> /dev/null
+wait "${inputs[@]}" 2> /dev/null
+
 # --- the verdict
 says 7 "didn't start the client" "fenji-launch stopping before the start is exit 7" -- bare_verdict 0 95 0 "$TESTROOT/out"
 says 3 "GATE EVENT" "a watchdog trigger is a gate event" -- bare_verdict 3 137 1 "$TESTROOT/out"

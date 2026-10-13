@@ -28,8 +28,8 @@
 #
 #   scripts/spike/run-bare.sh setup
 #   scripts/spike/run-bare.sh run NAME --server FILE --server-data DIR --username USER
-#       --password-file FILE [--timeout SECONDS] [--display N] [--key T:KEY]... [--type T:TEXT]...
-#       [--click T:X,Y]...
+#       --password-file FILE [--timeout SECONDS] [--display N | --desktop] [--key T:KEY]...
+#       [--type T:TEXT]... [--click T:X,Y]...
 #
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
 # update off (the namespace has no network anyway), then primes it: cmd.exe started once through
@@ -38,9 +38,11 @@
 #
 # run's --server config must bind 127.0.0.1 and name 127.0.0.1 as its public_host, its [store] path
 # must lie in --server-data, a directory under re/bare-metal/, and --password-file holds the
-# account's password on its first line. The display is the nested one (:99 unless --display):
-# Xwayland on the real GPU, where screenshots and key presses can reach the client. The evidence
-# goes to re/bare-metal/out/NAME; a Fenji ticket found there is redacted in place.
+# account's password on its first line. The display is the nested one (:99 unless --display), where
+# screenshots and key presses can reach the client. --desktop runs the client on the session's own
+# display instead (DISPLAY), as a player has it: the display's auth file comes in read-only, and
+# there are no screenshots, key presses or clicks, which would take or reach the whole desktop. The
+# evidence goes to re/bare-metal/out/NAME; a Fenji ticket found there is redacted in place.
 #
 # Exit: 0 the run finished; 3 GATE EVENT (the watchdog stopped the run: stop all runs, report);
 # 4 the watchdog failed; 5 the watchdog never armed (the client was not started); 6 the namespace
@@ -79,15 +81,17 @@ host_guards() {
 # /run, /tmp and /dev/shm, so no host daemon socket (D-Bus, systemd-resolved, the portal, agents) is
 # there, bar the user's audio sockets and the display's X11 socket, bound back; Steam's pipe masked;
 # loopback only; its own PID namespace (where the watchdog arms); the seccomp filter on fd 7; and
-# nothing left when its parent goes.
+# nothing left when its parent goes. A second argument is a desktop run's X authority file, brought
+# in read-only after the tmpfs mounts, which would hide it.
 namespace_cmd() {
-  local display=$1 rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
+  local display=$1 xauth=${2:-} rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
   printf '%s\n' bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$rt"
   for s in pipewire-0 pulse; do
     if [ -e "$rt/$s" ]; then printf '%s\n' --bind "$rt/$s" "$rt/$s"; fi
   done
   printf '%s\n' --tmpfs /tmp --bind "/tmp/.X11-unix/X$display" "/tmp/.X11-unix/X$display" --tmpfs /dev/shm
   if [ -e "$HOME/.steam/steam.pipe" ]; then printf '%s\n' --ro-bind /dev/null "$HOME/.steam/steam.pipe"; fi
+  if [ -n "$xauth" ]; then printf '%s\n' --ro-bind "$xauth" "$xauth"; fi
   printf '%s\n' --unshare-net --unshare-pid --die-with-parent --seccomp 7 --
 }
 
@@ -95,6 +99,36 @@ namespace_cmd() {
 # no password.
 namespace_env() {
   printf '%s\n' env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD "DISPLAY=:$1"
+  if [ -n "${2:-}" ]; then printf '%s\n' "XAUTHORITY=$2"; fi
+}
+
+# --desktop: the session's own display, as a player has it. Its number, from a local DISPLAY.
+desktop_display() {
+  [[ "${DISPLAY:-}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]] ||
+    misuse "--desktop needs a local DISPLAY such as :0 (DISPLAY is '${DISPLAY:-}')"
+  echo "${BASH_REMATCH[1]}"
+}
+
+# The X authority file a desktop run brings into the namespace, read-only: XAUTHORITY's, when it is
+# set (GNOME keeps it under /run/user, which the namespace hides). Unset, Xlib reads ~/.Xauthority,
+# which the namespace shows anyway.
+desktop_xauth() {
+  [ -n "${XAUTHORITY:-}" ] || return 0
+  if [ ! -f "$XAUTHORITY" ] || [ ! -r "$XAUTHORITY" ]; then
+    misuse "XAUTHORITY isn't a readable file: '$XAUTHORITY'"
+  fi
+  echo "$XAUTHORITY"
+}
+
+# The host-side inputs for a run (run-client.sh's start_inputs), their PIDs in inputs. None on the
+# player's own desktop: a screenshot would take the whole screen, and a key press or click would go
+# to whatever has focus there.
+bare_inputs() {
+  local desktop=$1 out=$2 display=$3 tmo=$4
+  inputs=()
+  [ "$desktop" = 0 ] || return 0
+  start_inputs "$out" "$display" "$tmo"
+  inputs=("$shots" "$clicker" "$typist")
 }
 
 # isolated-run.sh's filter: add_key, request_key and keyctl fail, so no key request can make the
@@ -186,7 +220,7 @@ cmd_bare_run() {
   [ $# -ge 1 ] || usage
   local run=$1
   shift
-  local tmo=300 display=99 user="" pwfile="" keys=() types=() clicks=() presses=()
+  local tmo=300 display=99 display_given=0 desktop=0 xauth="" user="" pwfile="" keys=() types=() clicks=() presses=()
   local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 stub_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -195,7 +229,8 @@ cmd_bare_run() {
       --username) [ $# -ge 2 ] || usage; user=$2; shift 2 ;;
       --password-file) [ $# -ge 2 ] || usage; pwfile=$2; shift 2 ;;
       --timeout) [ $# -ge 2 ] || usage; tmo=$2; shift 2 ;;
-      --display) [ $# -ge 2 ] || usage; display=$2; shift 2 ;;
+      --display) [ $# -ge 2 ] || usage; display=$2; display_given=1; shift 2 ;;
+      --desktop) desktop=1; shift ;;
       --key) [ $# -ge 2 ] || usage; keys+=("$2"); presses+=("key:$2"); shift 2 ;;
       --type) [ $# -ge 2 ] || usage; types+=("$2"); presses+=("type:$2"); shift 2 ;;
       --click) [ $# -ge 2 ] || usage; clicks+=("$2"); shift 2 ;;
@@ -205,6 +240,14 @@ cmd_bare_run() {
   case "$run" in '' | */* | .* | *[!A-Za-z0-9._-]*) die "bad run name: '$run'" ;; esac
   case "$tmo" in '' | *[!0123456789]*) die "--timeout takes whole seconds" ;; esac
   case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
+  if [ "$desktop" = 1 ]; then
+    [ "$display_given" = 0 ] || misuse "--desktop and --display don't go together: --desktop is the session's own display"
+    if [ ${#presses[@]} -gt 0 ] || [ ${#clicks[@]} -gt 0 ]; then
+      misuse "--desktop takes no --key, --type or --click: they would go to whatever has focus on the desktop"
+    fi
+    display=$(desktop_display) || exit 2
+    xauth=$(desktop_xauth) || exit 2
+  fi
   [ -n "$server_cfg" ] || misuse "--server is required: the client plays against a local fenji-server"
   [ -n "$server_data" ] || misuse "--server-data is required: the server's store lives there"
   [[ "$user" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || misuse "--username takes the account's name"
@@ -245,13 +288,17 @@ PY
   {
     echo "run $run (bare metal), $(date -Is)"
     echo "guards: Linux x86_64; Steam not running (and watched); no Wine running; reflink copy of $PINNED_COPY; prefix $PFX"
-    echo "namespace: $(namespace_cmd "$display" | tr '\n' ' ')$(namespace_env "$display" | tr '\n' ' ')"
+    echo "namespace: $(namespace_cmd "$display" "$xauth" | tr '\n' ' ')$(namespace_env "$display" "$xauth" | tr '\n' ' ')"
     echo "launch: fenji-launch $(launch_args "$api_port" "$user" "<password file>" "$RUN/client" | tr '\n' ' ')"
     echo "server: $server_copy (login 127.0.0.1:$login_port, API 127.0.0.1:$api_port), store in $server_data"
     echo "umu-run: $UMU ($(sha256sum "$UMU" | cut -c1-16)…); GE-Proton: $PROTON"
     echo "wine channels (WINEDEBUG, with PROTON_LOG=1): $channels"
     echo "driver watchdog: watchdog.py sha256 $(sha256sum "$WATCHDOG" | cut -c1-16)…, --no-tmpfs-scan"
-    echo "display :$display; timeout $tmo s; keys ${presses[*]-}; clicks ${clicks[*]-}"
+    if [ "$desktop" = 1 ]; then
+      echo "display :$display, the desktop (no screenshots, keys or clicks); timeout $tmo s"
+    else
+      echo "display :$display; timeout $tmo s; keys ${presses[*]-}; clicks ${clicks[*]-}"
+    fi
   } > "$OUT/inputs.txt"
   find "$PFX" -iname '*.sys' -printf '%P\t%y\t%l\t%s\t%T@\n' | sort > "$OUT/sys-before.tsv"
   python3 -I "$WATCHDOG" collect --src "$PFX" --dest "$OUT/reg-before" --name system.reg --name user.reg
@@ -259,14 +306,14 @@ PY
   python3 -I "$WATCHDOG" baseline --root "$WORK" --out "$OUT"
   touch "$OUT/.start"
 
-  local shots clicker typist
-  start_inputs "$OUT" "$display" "$tmo"
+  local shots clicker typist inputs=()
+  bare_inputs "$desktop" "$OUT" "$display" "$tmo"
   touch "$OUT/.running"
 
   # --- the run: fenji-server and fenji-launch in one namespace, started once the watchdog has armed
   local ns ne la bpf
-  mapfile -t ns < <(namespace_cmd "$display")
-  mapfile -t ne < <(namespace_env "$display")
+  mapfile -t ns < <(namespace_cmd "$display" "$xauth")
+  mapfile -t ne < <(namespace_env "$display" "$xauth")
   mapfile -t la < <(launch_args "$api_port" "$user" "$pwfile" "$RUN/client")
   bpf=$(seccomp_filter)
   set +e
@@ -333,8 +380,8 @@ PY
   fi
   set -e
   rm -f "$OUT/.running" "$IO/.go"
-  kill "$shots" "$clicker" "$typist" "$steamwatch" 2>/dev/null || true
-  wait "$shots" "$clicker" "$typist" "$steamwatch" 2>/dev/null || true
+  kill "${inputs[@]}" "$steamwatch" 2>/dev/null || true
+  wait "${inputs[@]}" "$steamwatch" 2>/dev/null || true
   local ran=0
   if [ -e "$IO/exit-code" ]; then ran=1; fi
   echo "$wrc" > "$OUT/namespace-exit-code"
