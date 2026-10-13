@@ -29,7 +29,7 @@
 #
 #   scripts/spike/run-bare.sh setup [--display N | --desktop]
 #   scripts/spike/run-bare.sh run NAME --server FILE --server-data DIR --username USER
-#       --password-file FILE [--timeout SECONDS] [--display N | --desktop] [--key T:KEY]...
+#       --password-file FILE (--display N | --desktop) [--timeout SECONDS] [--key T:KEY]...
 #       [--type T:TEXT]... [--click T:X,Y]...
 #
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
@@ -42,9 +42,10 @@
 # account's password on its first line. The evidence goes to re/bare-metal/out/NAME; a Fenji ticket
 # found there is redacted in place.
 #
-# The display. By default a run uses a nested display, :99 or --display N, where screenshots and
-# key presses reach the client and nothing else. The real GPU can present there only if that
-# Xwayland has glamor on, so start a dedicated one without -shm, for example
+# The display: a run names it, and has no default. A nested display (--display N) is a dedicated
+# rootful Xwayland, Xephyr or Xvfb, never the session's own (bare_display_problem), where
+# screenshots and key presses reach the client and nothing else. The real GPU can present there
+# only if that Xwayland has glamor on, so start a dedicated one without -shm, for example
 #   Xwayland :98 -geometry 1920x1080 -ac -nolisten tcp -noreset -extension MIT-SHM &
 # and pass --display 98. isolated-run.sh's :99 keeps glamor off (-shm) so that a sandboxed client
 # gets no GPU device; a bare run's client has the GPU anyway, so never share the two displays.
@@ -52,11 +53,11 @@
 # --desktop runs the client on the session's own display (DISPLAY), as a player has it. The
 # display's X authority file comes in read-only, and there are no screenshots, key presses or
 # clicks, which would take or reach the whole desktop. The client then joins the session's X
-# server: it can see the other X11 windows and the clipboard the compositor bridges into X11, and
-# its XTEST input may reach native windows through the compositor (libei), a terminal included. So
-# a desktop run limits the client's network less strictly than a nested one. The owner accepted
-# that for hands-on test runs (2026-10-13). Players run the game on their own desktop anyway; these
-# runs are a developer's.
+# server: it can see, read and type into the other X11 windows, read and replace the clipboard the
+# compositor bridges into X11, and its XTEST input may reach native windows through the compositor
+# (libei), a terminal included. The namespace's network stays loopback-only; the risk is the X
+# server and the compositor as a way out of it. The owner accepted that for hands-on test runs
+# (2026-10-13). Players run the game on their own desktop anyway; these runs are a developer's.
 #
 # Exit: 0 the run finished; 3 GATE EVENT (the watchdog stopped the run: stop all runs, report);
 # 4 the watchdog failed; 5 the watchdog never armed (the client was not started); 6 the namespace
@@ -72,6 +73,9 @@ WORK="$REPO/re/bare-metal"
 PINNED_COPY="${FENJI_CLIENT_PATH:-}"
 UMU="${FENJI_UMU_RUN:-$HOME/.local/bin/umu-run}"
 GAMEID=umu-1418100
+# Where the display checks look: the X servers' lock files and /proc (the tests point both elsewhere).
+X_LOCKS=/tmp
+BARE_PROC=/proc
 
 usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$BARE_HERE/run-bare.sh" >&2; exit 2; }
 die() { echo "run-bare: $*" >&2; exit 1; }
@@ -137,12 +141,53 @@ desktop_xauth() {
 
 # The display for setup or a run, from --desktop (1 or 0) and whether --display was given (1 or 0):
 # the nested one in display, or with --desktop the session's own, whose X authority file goes in
-# xauth. Sets display and xauth.
+# xauth. Sets display and xauth. A nested display is never the session's own: --display naming
+# DISPLAY would skip --desktop's limits on screenshots and input.
 choose_display() {
-  [ "$1" = 1 ] || return 0
-  [ "$2" = 0 ] || misuse "--desktop and --display don't go together: --desktop is the session's own display"
-  display=$(desktop_display) || exit 2
-  xauth=$(desktop_xauth) || exit 2
+  if [ "$1" = 1 ]; then
+    [ "$2" = 0 ] || misuse "--desktop and --display don't go together: --desktop is the session's own display"
+    display=$(desktop_display) || exit 2
+    xauth=$(desktop_xauth) || exit 2
+    return 0
+  fi
+  if [[ "${DISPLAY:-}" =~ ^:([0123456789]+)(\.[0123456789]+)?$ ]] && [ "${BASH_REMATCH[1]}" = "$display" ]; then
+    misuse "--display $display is the session's own display (DISPLAY); use --desktop for it"
+  fi
+}
+
+# Why display N isn't a nested display a bare run may use (nothing if it is). It must be a dedicated
+# rootful Xwayland, Xephyr or Xvfb: a compositor locks its session displays under its own PID, and
+# a session Xwayland runs -rootless and may pass input on to the compositor (-enable-ei-portal), as
+# isolated-run.sh's "Display" explains. Glamor and MIT-SHM may be on here, unlike in the sandbox:
+# a bare run's client has the GPU and the host's IPC namespace anyway.
+bare_display_problem() {
+  local lock="$X_LOCKS/.X$1-lock" pid="" comm="" arg
+  [ -e "$lock" ] || { echo "display :$1 has no lock ($lock)"; return; }
+  { read -r pid < "$lock"; } 2>/dev/null || true
+  case "$pid" in "" | *[!0123456789]*) echo "$lock doesn't hold a process ID"; return ;; esac
+  if ! { read -r comm < "$BARE_PROC/$pid/comm"; } 2>/dev/null; then
+    echo "process $pid, named by $lock, is not running"
+    return
+  fi
+  case "$comm" in
+    Xwayland | Xephyr | Xvfb) ;;
+    *) echo "$lock names $comm (PID $pid), not a dedicated Xwayland, Xephyr or Xvfb: a compositor locks its session displays; use --desktop for the session's own"
+       return ;;
+  esac
+  { while IFS= read -r -d '' arg; do
+      case "$arg" in
+        -rootless) echo "$comm (PID $pid) runs -rootless, as a session Xwayland does: start a dedicated rootful one, or use --desktop"; return ;;
+        -enable-ei-portal) echo "$comm (PID $pid) passes input on to the compositor (-enable-ei-portal): start a dedicated one without it"; return ;;
+      esac
+    done < "$BARE_PROC/$pid/cmdline"; } 2>/dev/null || true
+}
+
+# Dies unless a nested display (desktop 0) is a dedicated X server (bare_display_problem).
+nested_display_ok() {
+  local why
+  [ "$1" = 0 ] || return 0
+  why=$(bare_display_problem "$2")
+  [ -z "$why" ] || die "display :$2 can't be a nested display: $why"
 }
 
 # The host-side inputs for a run (run-client.sh's start_inputs), their PIDs in inputs. None on the
@@ -240,6 +285,7 @@ cmd_bare_setup() {
   fi
   mkdir -p "$WORK/compat"
   need_display "$display"
+  nested_display_ok "$desktop" "$display"
   local ns ne se bpf prime
   mapfile -t ns < <(namespace_cmd "$display" "$xauth")
   mapfile -t ne < <(namespace_env "$display" "$xauth")
@@ -264,7 +310,7 @@ cmd_bare_run() {
   [ $# -ge 1 ] || usage
   local run=$1
   shift
-  local tmo=300 display=99 display_given=0 desktop=0 xauth="" user="" pwfile="" keys=() types=() clicks=() presses=()
+  local tmo=300 display="" display_given=0 desktop=0 xauth="" user="" pwfile="" keys=() types=() clicks=() presses=()
   local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 stub_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -283,11 +329,12 @@ cmd_bare_run() {
   done
   case "$run" in '' | */* | .* | *[!A-Za-z0-9._-]*) die "bad run name: '$run'" ;; esac
   case "$tmo" in '' | *[!0123456789]*) die "--timeout takes whole seconds" ;; esac
-  case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
+  if [ "$display_given" = 1 ]; then
+    case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
+  fi
   if [ "$desktop" = 1 ] && { [ ${#presses[@]} -gt 0 ] || [ ${#clicks[@]} -gt 0 ]; }; then
     misuse "--desktop takes no --key, --type or --click: they would go to whatever has focus on the desktop"
   fi
-  choose_display "$desktop" "$display_given"
   [ -n "$server_cfg" ] || misuse "--server is required: the client plays against a local fenji-server"
   [ -n "$server_data" ] || misuse "--server-data is required: the server's store lives there"
   [[ "$user" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || misuse "--username takes the account's name"
@@ -308,6 +355,9 @@ import sys, tomllib
 with open(sys.argv[1], "rb") as f:
     sys.exit(0 if tomllib.load(f).get("server", {}).get("public_host") == "127.0.0.1" else 1)
 PY
+  [ "$desktop" = 1 ] || [ "$display_given" = 1 ] ||
+    misuse "a run needs --display N or --desktop: a dedicated nested display, or the session's own (see the header)"
+  choose_display "$desktop" "$display_given"
   host_guards
   prefix_ready || die "no prefix; run: $0 setup"
   if [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" != "$(proton_build)" ]; then
@@ -315,6 +365,7 @@ PY
   fi
   prefix_primed || die "the prefix hasn't been through Proton's launcher, so Proton's own service isn't in the watchdog's baseline; run: $0 setup"
   need_display "$display"
+  nested_display_ok "$desktop" "$display"
   check_pinned_copy
   [ -x "$STUBBIN/fenji-server" ] || die "build the server first: cargo build --release -p fenji-server"
   [ -x "$STUBBIN/fenji-launch" ] || die "build the launcher first: cargo build --release -p fenji-launcher"

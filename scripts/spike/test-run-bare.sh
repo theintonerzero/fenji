@@ -14,10 +14,11 @@ set +e # run-bare.sh sets -e; these tests check exit statuses themselves
 TESTROOT=$(mktemp -d) || { echo "FATAL: mktemp failed" >&2; exit 2; }
 readonly TESTROOT
 [ -d "$TESTROOT" ] || { echo "FATAL: no test root" >&2; exit 2; }
-# Only the test shell itself removes the root: a subshell that inherited this trap must not (CI's
-# bash 5.2 lost the root mid-run while background input loops were being killed).
-trap '[ "$BASHPID" != "$$" ] || rm -rf -- "$TESTROOT"' EXIT
+# Only the test shell itself removes the root, and only when it can tell it is the test shell: a
+# subshell signalled before it resets its traps runs this one, and its first command can fail.
+trap '[ "$BASHPID" = "$$" ] && rm -rf -- "$TESTROOT"' EXIT
 WORK=$TESTROOT/work REPO=$TESTROOT/repo PINNED_COPY=$TESTROOT/nonexistent UMU=$TESTROOT/nonexistent
+BARE_PROC=$TESTROOT/proc
 PROTON=$TESTROOT/nonexistent STUBBIN=$TESTROOT/nonexistent WATCHDOG=$TESTROOT/nonexistent
 mkdir -p "$WORK/data" "$WORK/runs/old" "$TESTROOT/bin"
 fails=0
@@ -67,6 +68,7 @@ cfg() { printf '[server]\npublic_host = "%s"\nlogin_bind = "%s"\napi_bind = "127
 echo "a long password" > "$TESTROOT/password"
 cfg 127.0.0.1:7800 "$WORK/data/fenji.db"
 GOOD=(--server "$TESTROOT/fenji.toml" --server-data "$WORK/data" --username tester --password-file "$TESTROOT/password")
+NESTED=(--display 98)
 
 # --- arguments
 says 2 "" "run with no name is a usage error" -- cmd_bare_run
@@ -96,7 +98,8 @@ says 1 "Steam is running" "Steam's web helper running refuses the run" -- with_f
 fake_pgrep wineserver
 says 1 "Wine processes" "Wine running refuses the run" -- with_fakes host_guards
 fake_pgrep ""
-says 1 "umu-run not found" "good arguments reach the guards, which stop at a missing umu-run" -- with_fakes cmd_bare_run t "${GOOD[@]}"
+says 2 "--display N or --desktop" "a run names its display: no default" -- with_fakes cmd_bare_run t "${GOOD[@]}"
+says 1 "umu-run not found" "good arguments reach the guards, which stop at a missing umu-run" -- with_fakes cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
 else
   echo "skip the guard tests: they need Linux"
 fi
@@ -165,7 +168,8 @@ if [ "$(with_env XAUTHORITY="$TESTROOT/xauth" desktop_xauth)" = "$TESTROOT/xauth
 says 2 "XAUTHORITY" "an XAUTHORITY that isn't a readable file is refused" -- with_env XAUTHORITY="$TESTROOT/none" desktop_xauth
 says 2 "--key, --type or --click" "--desktop refuses key presses and clicks" -- with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --desktop --key 5:Return
 says 2 "--key, --type or --click" "--desktop refuses a click given before it" -- with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --click 5:10,10 --desktop
-says 2 "needs a local DISPLAY" "--desktop takes ASCII digits only" -- with_env DISPLAY=$':\u0663' desktop_display
+if locale -a 2> /dev/null | grep -qix 'en_US.utf-\?8'; then wide=en_US.UTF-8; else wide=C.UTF-8; fi
+says 2 "needs a local DISPLAY" "--desktop takes ASCII digits only" -- with_env LC_ALL="$wide" with_env DISPLAY=$':\u0663' desktop_display
 mkdir -p "$TESTROOT/xauthdir"
 mkfifo "$TESTROOT/xauthfifo"
 says 2 "XAUTHORITY" "an XAUTHORITY that is a directory is refused" -- with_env XAUTHORITY="$TESTROOT/xauthdir" desktop_xauth
@@ -196,8 +200,49 @@ inputs=(stale)
 bare_inputs 1 "$TESTROOT/out" 0 60
 if [ "${#inputs[@]}" = 0 ]; then ok "a desktop run takes no screenshots and sends no input"; else bad "desktop inputs: ${inputs[*]}"; fi
 # start_inputs stands in here, so the test starts no background jobs of its own.
-started=$(start_inputs() { shots=11 clicker=12 typist=13; }; inputs=(); bare_inputs 0 "$TESTROOT/out" 99 60; echo "${inputs[*]-}")
-if [ "$started" = "11 12 13" ]; then ok "a nested-display run starts its screenshots, clicks and keys"; else bad "nested inputs: $started"; fi
+started=$(start_inputs() { echo "$*" > "$TESTROOT/started-with"; shots=11 clicker=12 typist=13; }; inputs=(); bare_inputs 0 "$TESTROOT/out" 98 60; echo "${inputs[*]-}")
+if [ "$started" = "11 12 13" ] && [ "$(cat -- "$TESTROOT/started-with")" = "$TESTROOT/out 98 60" ]; then
+  ok "a nested-display run starts its screenshots, clicks and keys, on its own display"
+else
+  bad "nested inputs: $started / $(cat -- "$TESTROOT/started-with" 2> /dev/null)"
+fi
+
+# --- a nested display must be a dedicated X server, never the session's own (fake /proc)
+# xserver PID COMM ARGS...: a process in the fake /proc, with its comm and NUL-separated cmdline.
+xserver() {
+  local pid=$1 comm=$2
+  shift 2
+  mkdir -p "$BARE_PROC/$pid"
+  echo "$comm" > "$BARE_PROC/$pid/comm"
+  printf '%s\0' "$@" > "$BARE_PROC/$pid/cmdline"
+}
+# lock N PID: display N's lock file, naming PID, under the test root's own X lock directory.
+lock() { printf '%10d\n' "$2" > "$TESTROOT/.X$1-lock"; }
+X_LOCKS=$TESTROOT
+xserver 4101 Xwayland Xwayland :98 -geometry 1920x1080 -ac -nolisten tcp -noreset -extension MIT-SHM
+xserver 4102 Xwayland Xwayland :97 -geometry 1280x720 -ac -nolisten tcp -noreset -extension MIT-SHM -shm
+xserver 4103 Xwayland Xwayland :0 -rootless -noreset -accessx -core -listenfd 4 -enable-ei-portal
+xserver 4104 gnome-shell /usr/bin/gnome-shell
+xserver 4105 Xwayland Xwayland :96 -ac -enable-ei-portal
+lock 98 4101
+lock 97 4102
+lock 0 4103
+lock 1 4104
+lock 96 4105
+lock 95 999999
+printf 'garbage\n' > "$TESTROOT/.X94-lock"
+if [ -z "$(bare_display_problem 98)" ]; then ok "a dedicated rootful Xwayland with glamor on is a nested display"; else bad "glamor-on nested: $(bare_display_problem 98)"; fi
+if [ -z "$(bare_display_problem 97)" ]; then ok "the sandbox's kind of display, glamor off, is one too"; else bad "glamor-off nested: $(bare_display_problem 97)"; fi
+case "$(bare_display_problem 0)" in *rootless*) ok "a -rootless session Xwayland is refused" ;; *) bad "rootless: $(bare_display_problem 0)" ;; esac
+case "$(bare_display_problem 1)" in *gnome-shell*) ok "a display the compositor locks is refused" ;; *) bad "compositor: $(bare_display_problem 1)" ;; esac
+case "$(bare_display_problem 96)" in *ei-portal*) ok "an Xwayland that passes input to the compositor is refused" ;; *) bad "ei-portal: $(bare_display_problem 96)" ;; esac
+case "$(bare_display_problem 95)" in *"not running"*) ok "a lock naming no running process is refused" ;; *) bad "stale lock: $(bare_display_problem 95)" ;; esac
+case "$(bare_display_problem 94)" in *"process ID"*) ok "a lock without a process ID is refused" ;; *) bad "garbage lock: $(bare_display_problem 94)" ;; esac
+case "$(bare_display_problem 93)" in *"no lock"*) ok "a display with no lock is refused" ;; *) bad "no lock: $(bare_display_problem 93)" ;; esac
+says 2 "use --desktop" "--display naming the session's own display is refused" -- with_env display=98 with_env DISPLAY=:98.0 choose_display 0 1
+says 2 "needs a local DISPLAY" "setup --desktop with no DISPLAY is refused" -- with_env DISPLAY= cmd_bare_setup --desktop
+says 2 "" "setup: an unknown option is a usage error" -- cmd_bare_setup --print
+says 1 "display number" "setup: --display takes a number" -- cmd_bare_setup --display x
 
 # --- the verdict
 says 7 "didn't start the client" "fenji-launch stopping before the start is exit 7" -- bare_verdict 0 95 0 "$TESTROOT/out"
@@ -254,10 +299,13 @@ fi
 if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   fake_pgrep ""
   says 1 "hasn't been through Proton's launcher" "a run refuses a prefix Proton's launcher never ran in" -- \
-    with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}"
+    with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
   cp -- "$TESTROOT/proton-nobridge/version" "$WORK/compat/fenji-primed"
   says 1 "another GE-Proton build" "a run names a prefix primed by another GE-Proton build" -- \
-    with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}"
+    with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
+  : > "$WORK/compat/fenji-primed"
+  says 1 "before builds were recorded" "a run names a prefix primed before builds were recorded" -- \
+    with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
   rm -f -- "$WORK/compat/fenji-primed"
 else
   echo "skip the unprimed-prefix run test: it needs Linux on x86_64"
