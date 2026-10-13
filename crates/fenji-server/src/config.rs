@@ -1,5 +1,5 @@
-//! `fenji.toml` (M3 spec D16): read whole, checked, then used. Unknown keys and impossible values
-//! are refused with the place they were found. Changes need a restart in M3.
+//! `fenji.toml` (M3 spec D16; M4 world spec §3): read whole, checked, then used. Unknown keys and
+//! impossible values are refused with the place they were found. Changes need a restart.
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
@@ -20,6 +20,8 @@ pub struct Config {
     pub lobby: LobbyConfig,
     #[serde(default)]
     pub access: AccessConfig,
+    #[serde(default)]
+    pub world: WorldConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +52,9 @@ pub struct ServerConfig {
     /// Peers whose `X-Forwarded-For` names the client (M3 spec D12).
     #[serde(default)]
     pub trusted_proxies: Vec<IpAddr>,
+    /// The world's ticks per second (Fenji design spec §6.4).
+    #[serde(default = "twenty")]
+    pub tick_hz: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,7 +72,7 @@ impl Default for StoreConfig {
     }
 }
 
-/// The operator's own copy of the pinned client. M3 reads nothing from it (ruling P4).
+/// The operator's own copy of the pinned client. Nothing reads it before M5 (#180).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataConfig {
@@ -126,6 +131,42 @@ impl Default for AccessConfig {
     }
 }
 
+/// The world (M4 world spec §3): where new characters enter, the speed check's leniency, and how
+/// often places are saved.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldConfig {
+    /// The scene new characters enter (world spec §3.1).
+    #[serde(default = "start_scene")]
+    pub start_scene: i64,
+    /// Where in it: x, y, z (up) and a yaw in degrees.
+    #[serde(default = "start_position")]
+    pub start_position: [f64; 4],
+    /// The speed check's tolerance (Fenji design spec §6.4: `max_speed × dt × tolerance`).
+    #[serde(default = "one_and_a_half")]
+    pub move_tolerance: f64,
+    /// How often everyone's place is saved, besides when they leave.
+    #[serde(default = "five_minutes")]
+    pub save_every_secs: u64,
+}
+
+impl Default for WorldConfig {
+    fn default() -> Self {
+        Self {
+            start_scene: start_scene(),
+            start_position: start_position(),
+            move_tolerance: one_and_a_half(),
+            save_every_secs: five_minutes(),
+        }
+    }
+}
+
+/// The farthest a start coordinate (x, y or z) may be from 0: 100 km, the world's own limit.
+pub const COORDINATE_LIMIT: f64 = 10_000_000.0;
+
+/// The start yaw's bound in degrees: within ±360, as every position's yaw is.
+pub const YAW_LIMIT: f64 = 360.0;
+
 fn one() -> u32 {
     1
 }
@@ -143,6 +184,20 @@ fn a_day() -> u64 {
 }
 fn yes() -> bool {
     true
+}
+/// The start point of vocations 0–5 in the client's tables (M4 world spec §2.5; Inferred until
+/// the world's first run checks it).
+fn start_scene() -> i64 {
+    5
+}
+fn start_position() -> [f64; 4] {
+    [2366.0, -71735.0, 64854.0, 345.0]
+}
+fn one_and_a_half() -> f64 {
+    1.5
+}
+fn five_minutes() -> u64 {
+    300
 }
 fn localhost() -> String {
     "127.0.0.1".into()
@@ -228,6 +283,26 @@ impl Config {
         if !self.access.invite_only {
             bail!("[access] invite_only: M3 servers are invite-only");
         }
+        if !(1..=60).contains(&s.tick_hz) {
+            bail!("[server] tick_hz: 1 to 60");
+        }
+        let w = &self.world;
+        if !(1..=i64::from(i32::MAX)).contains(&w.start_scene) {
+            bail!("[world] start_scene: 1 to {}", i32::MAX);
+        }
+        let [x, y, z, yaw] = w.start_position;
+        let beyond = |v: f64, limit: f64| !v.is_finite() || v.abs() > limit;
+        if [x, y, z].into_iter().any(|v| beyond(v, COORDINATE_LIMIT)) || beyond(yaw, YAW_LIMIT) {
+            bail!(
+                "[world] start_position: [x, y, z, yaw], with x, y and z from -{COORDINATE_LIMIT} to {COORDINATE_LIMIT} and the yaw from -{YAW_LIMIT} to {YAW_LIMIT} degrees"
+            );
+        }
+        if !(1.0..=5.0).contains(&w.move_tolerance) {
+            bail!("[world] move_tolerance: 1.0 to 5.0");
+        }
+        if !(30..=3600).contains(&w.save_every_secs) {
+            bail!("[world] save_every_secs: 30 to 3600");
+        }
         Ok(())
     }
 }
@@ -277,6 +352,11 @@ mod tests {
         assert_eq!(c.store.path, Path::new("/etc/fenji/fenji.db"));
         assert_eq!(c.auth.game_token_ttl_secs, 60);
         assert_eq!(c.lobby.max_characters, 9);
+        assert_eq!(c.server.tick_hz, 20);
+        assert_eq!(c.world.start_scene, 5);
+        assert_eq!(c.world.start_position, [2366.0, -71735.0, 64854.0, 345.0]);
+        assert_eq!(c.world.move_tolerance, 1.5);
+        assert_eq!(c.world.save_every_secs, 300);
     }
 
     #[test]
@@ -342,12 +422,62 @@ mod tests {
             (1, 20, 9)
         );
         assert!(c.server.trusted_proxies.is_empty());
+        assert_eq!((c.server.tick_hz, c.world.start_scene), (20, 5));
+        assert_eq!(
+            (c.world.move_tolerance, c.world.save_every_secs),
+            (1.5, 300)
+        );
         assert_eq!(c.store.path, Path::new("/srv/fenji.db"));
         assert!(c.data.client_path.is_none());
         assert!(
             Config::parse("", Path::new("/")).is_err(),
             "a name is required"
         );
+    }
+
+    #[test]
+    fn the_world_takes_whole_numbers_for_its_start_and_refuses_impossible_values() {
+        let parse = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/"))
+        };
+        let c = parse("[world]\nstart_scene = 3006\nstart_position = [52626, 9004, 1450, -169]\n")
+            .unwrap();
+        assert_eq!(c.world.start_scene, 3006);
+        assert_eq!(c.world.start_position, [52626.0, 9004.0, 1450.0, -169.0]);
+        for (extra, place) in [
+            ("tick_hz = 0", "tick_hz"),
+            ("tick_hz = 61", "tick_hz"),
+            ("[world]\nstart_scene = 0", "start_scene"),
+            ("[world]\nstart_scene = 2147483648", "start_scene"),
+            (
+                "[world]\nstart_position = [1.0, 2.0, 3.0]",
+                "start_position",
+            ),
+            (
+                "[world]\nstart_position = [nan, 0.0, 0.0, 0.0]",
+                "start_position",
+            ),
+            (
+                "[world]\nstart_position = [0.0, inf, 0.0, 0.0]",
+                "start_position",
+            ),
+            (
+                "[world]\nstart_position = [0.0, 0.0, 1e8, 0.0]",
+                "start_position",
+            ),
+            (
+                "[world]\nstart_position = [0.0, 0.0, 0.0, 361.0]",
+                "start_position",
+            ),
+            ("[world]\nmove_tolerance = 0.5", "move_tolerance"),
+            ("[world]\nmove_tolerance = nan", "move_tolerance"),
+            ("[world]\nsave_every_secs = 29", "save_every_secs"),
+            ("[world]\nsave_every_secs = 3601", "save_every_secs"),
+            ("[world]\nbogus = 1", "bogus"),
+        ] {
+            let e = format!("{:#}", parse(extra).unwrap_err());
+            assert!(e.contains(place), "{extra}: {e}");
+        }
     }
 
     #[test]
