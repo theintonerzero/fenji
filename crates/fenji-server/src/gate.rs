@@ -17,7 +17,7 @@ use fenji_proto::packet::Up;
 use fenji_proto::pickle::{self, Value};
 use fenji_proto::variant::AES128;
 use fenji_store::Account;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -302,7 +302,7 @@ async fn send_or_replaced<W: AsyncWrite + Unpin>(
 /// Half-closes, then reads until the client closes or `time` passes, so what was just sent isn't
 /// lost to a reset. Callers hold a waiting place while they linger, so lingering sockets count
 /// against the caps.
-async fn linger(sock: &mut TcpStream, time: Duration) {
+async fn linger<S: AsyncRead + AsyncWrite + Unpin>(sock: &mut S, time: Duration) {
     let _ = sock.shutdown().await;
     let mut buf = [0u8; 1024];
     let _ = tokio::time::timeout(time, async {
@@ -437,15 +437,29 @@ async fn lobby_loop(
             Ok(()) = &mut *replaced => {
                 tracing::info!(%peer, account = %account.username, "replaced by a newer login");
                 let bytes = server.send(Stc::Close.to_u8(), DUPLICATE_LOGIN.as_bytes(), &StoredCodec)?;
-                send(sock, &bytes, deadline).await?;
-                // The connection no longer holds an online place, so it lingers only within a
-                // waiting place; with none free it closes at once.
-                if let Some(_place) = gate.waiting.take(peer.ip()) {
-                    linger(sock, gate.limits.linger).await;
-                }
+                let place = gate.waiting.take(peer.ip());
+                close_replaced(sock, &bytes, place, gate.limits.linger).await;
                 return Ok(());
             }
         }
+    }
+}
+
+/// Closes a connection that a newer login replaced. It no longer holds an online place, so it says
+/// why and lingers only within a waiting place, and for `time` at most: a client that stopped
+/// reading can't keep its socket outside the caps (#174). With no waiting place free it closes at
+/// once, without a reason.
+async fn close_replaced<S: AsyncRead + AsyncWrite + Unpin>(
+    sock: &mut S,
+    close: &[u8],
+    place: Option<Place>,
+    time: Duration,
+) {
+    let Some(_place) = place else {
+        return;
+    };
+    if send(sock, close, time).await.is_ok() {
+        linger(sock, time).await;
     }
 }
 
@@ -566,6 +580,37 @@ mod tests {
         let mut buf = [0u8; 5];
         r.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"hello");
+    }
+
+    #[tokio::test]
+    async fn a_replaced_client_that_stopped_reading_is_let_go_within_the_linger() {
+        // A pipe nobody reads: the close reason doesn't fit, as with a client that stopped reading.
+        let (mut sock, _unread) = tokio::io::duplex(8);
+        let places = Places::new(1, 1);
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let began = std::time::Instant::now();
+        close_replaced(
+            &mut sock,
+            &[0u8; 64],
+            places.take(ip),
+            Duration::from_millis(100),
+        )
+        .await;
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "not the 10 s write deadline"
+        );
+        assert!(places.take(ip).is_some(), "the waiting place is given back");
+    }
+
+    #[tokio::test]
+    async fn with_no_waiting_place_free_a_replaced_connection_closes_without_a_reason() {
+        let (mut sock, mut client) = tokio::io::duplex(1024);
+        close_replaced(&mut sock, b"why", None, Duration::from_secs(30)).await;
+        drop(sock);
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).await.unwrap();
+        assert!(got.is_empty());
     }
 
     #[test]
