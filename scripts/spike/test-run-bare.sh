@@ -722,7 +722,9 @@ else
   echo "skip the end-to-end flows: they need Linux on x86_64"
 fi
 
-# --- the namespace for real, where it can be made: probes run inside it
+# --- the namespace for real, where it can be made: probes run inside it. CI runs them after it
+# installs bwrap, with a socket at /tmp/.X11-unix/X99, and sets FENJI_REQUIRE_LIVE_PROBES=1, so
+# that a skip there fails instead (#148).
 if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && command -v bwrap > /dev/null && [ -S /tmp/.X11-unix/X99 ] &&
   bwrap --dev-bind / / --unshare-net --unshare-pid true 2> /dev/null; then
   mapfile -t ns < <(namespace_cmd 99)
@@ -742,6 +744,8 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && command -v bwrap > /dev/null 
   for want in "no system bus" "no resolver socket" "no session bus" "empty /dev/shm" "the display" "loopback only" "no name lookups" "no key requests"; do
     if grep -qx "$want" <<< "$probe"; then ok "inside the namespace: $want"; else bad "inside the namespace: $want missing ($probe)"; fi
   done
+elif [ "${FENJI_REQUIRE_LIVE_PROBES:-}" = 1 ]; then
+  bad "the live namespace probes couldn't run (FENJI_REQUIRE_LIVE_PROBES=1): they need Linux on x86_64, bwrap, namespaces and /tmp/.X11-unix/X99"
 else
   echo "skip the live namespace probes: they need bwrap, namespaces and the nested display :99"
 fi

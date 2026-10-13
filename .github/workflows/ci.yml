@@ -82,6 +82,21 @@ jobs:
           bwrap --version
           python3 -I scripts/spike/seccomp-deny-keys.py --disasm
           scripts/spike/test-isolated-run.sh
+      - name: Bare runner's live namespace probes
+        # After the step that installs bwrap and lifts AppArmor's restriction. The namespace binds
+        # the display's socket, so a stand-in listens at X99; FENJI_REQUIRE_LIVE_PROBES=1 makes a
+        # skip a failure.
+        run: |
+          sudo install -d -m 1777 /tmp/.X11-unix
+          python3 -I -c 'import socket, sys, time
+          s = socket.socket(socket.AF_UNIX)
+          s.bind(sys.argv[1])
+          s.listen()
+          time.sleep(900)' /tmp/.X11-unix/X99 < /dev/null > /dev/null 2>&1 &
+          x99=$!
+          trap 'kill "$x99"' EXIT
+          for _ in $(seq 50); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.1; done
+          FENJI_REQUIRE_LIVE_PROBES=1 scripts/spike/test-run-bare.sh
 
   pr-title:
     if: github.event_name == 'pull_request'
