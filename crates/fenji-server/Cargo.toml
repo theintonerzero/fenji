@@ -26,6 +26,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 fenji-launcher.workspace = true
+lz4_flex.workspace = true
 tempfile.workspace = true
 tower.workspace = true
 

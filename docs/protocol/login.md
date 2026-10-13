@@ -35,7 +35,7 @@ On the Gameforge platform, the client gets its server list by downloading the UR
 | 2.7 | What the constant 3861871408 (0xE62F7B30) means. **M2 update:** it is the hello's magic `K`. The client checks one word of the server's 64-byte hello against `(K OR 0xC0000000) XOR w1 XOR w0`, and a mismatch closes the connection with `CLOSED_VERSION`, so `K` works as a protocol version ([`transport.md`](transport.md) 2.2–2.4). Hellos built from it were accepted in every M2 run (§9 there). | **Inferred** (M1: **Unknown**) | S2; [`transport.md`](transport.md) 2.3–2.4, §9 |
 | 2.8 | A second path skips the list: the launcher's. With the environment variable `gj_uinfo` set (or the setting `gj_uinfo_cmd`), `NET.Login` (`net.luac` `0.60`, pc 23–67 and 239–253) does four things. It reads `gj_gates` as the whole gate (`host:port`) and `gj_ticket` as the ticket. It splits `gj_uinfo` into six colon-separated fields: server id, zone, server name, account type, account and user id, with the first and last as numbers. It stores those, then calls `net_manager_login` with the gate, the ticket, a constant 0, the account, the user id and the first field. The zone, server name and account type stay in the scripts. On the other paths that first slot carries a per-platform constant, so what it means is open ([`payloads.md`](payloads.md), the auth payload). | **Inferred** | S1 |
 | 2.9 | At start-up, `gj_uinfo` in the environment makes the client skip the Gameforge SDK altogether (FUN_14024F010). There is no SDK initialisation, and so no platform and no language from it. | **Inferred** | G10 |
-| 2.10 | Run en-1 used `gj_uinfo=1:90:Fenji:0:tester:1`, `gj_gates=127.0.0.1:7800` and `gj_ticket=fenji-dev`. The client connected to fenji-stub in the same second its login stage was ready: no list, no click and no name lookup. Its interface was English (§4). | **Observed** | C4 |
+| 2.10 | Run en-1 used `gj_uinfo=1:90:Fenji:0:tester:1`, `gj_gates=127.0.0.1:7800` and `gj_ticket=fenji-dev`. The client connected to fenji-stub in the same second its login stage was ready: no list, no click and no name lookup. The only lookup in its Wine log is wineboot's, of the sandbox's host name `isolated-run` ([spike-0](../re/spike-0.md) 8.23). Its interface was English (§4). | **Observed** | C4 |
 
 ## 3. Pointing the client at our stub
 
@@ -99,6 +99,8 @@ M1 Task 10 ran the pinned client twice inside `run-client.sh`. Both runs used:
 | m1-c3 | m1-c2 repeated after its evidence was lost (see the evidence index) | 1 (port 7800, length 0, first 16 bytes: none) | `127.0.0.1` (`gethostbyname`) | 7800, once | no sign; 3,959 resource lookups, none of type `PE` | 0 |
 | en-1 | After M1: the launcher's path (2.8–2.10), with `gj_uinfo`, `gj_gates` and `gj_ticket`; no list, no click | 1 (port 7800, length 0, first 16 bytes: none) | none | 7800, once | no sign; 3,959 resource lookups, none of type `PE` | 0 |
 
+"Names looked up" counts the client's own lookups. Each run's Wine log also holds one lookup by Wine's `wineboot`, of the sandbox's host name `isolated-run` ([spike-0](../re/spike-0.md) 8.23).
+
 **Observed:**
 - **The list loads.** The client reads the list from `serverlist_url=file:///Z:/…/serverlist.json`. From 120 s, its frame "Server auswählen" offered "Fenji" (C1). Curl under Wine reads that `file://` form.
 - **No click, no connection.** With the list and no click, the client didn't connect in 240 s (C1).
@@ -114,6 +116,24 @@ M1 Task 10 ran the pinned client twice inside `run-client.sh`. Both runs used:
 **Unknown:**
 - **How long the client waits.** Whether it gives up on a silent server, and when.
 - **Whether the click is needed.** Whether a remembered choice (`SERVERINDEX`, with "Meine Auswahl merken" ticked) skips it in a later start. The runner starts every run from the same client copy, so these runs can't show it.
+
+## 7. M3: the launcher path with a Fenji ticket
+
+From M3 the launcher path (2.8–2.10) carries a Fenji game token, and the owner chose it for players (gate #114, option a, 2026-10-13; [`packets/lobby.md`](packets/lobby.md) §12):
+- `fenji-launch play --print` signs in to the Fenji server's account API, takes a game token, signs out and prints three pairs: `gj_uinfo` (`<server id>:90:<server name>:0:<account>:<account id>`), `gj_gates` (the gate as dotted IPv4) and `gj_ticket` (the token).
+- In the M3 runs the sandboxed runner (`scripts/spike/run-client.sh --launch`) put those pairs in the unmodified client's environment, never on its command line, and started it. `fenji-launch play` starting the client itself is #138: Linux, through umu-run; native Windows waits for the AGT driver reading (ground rule 6).
+- The gate takes the token from the auth payload's first value and spends it. The account in its third value must be the token's own.
+
+**The token** is `fenji1-` and 64 hex digits from 32 random bytes. The server keeps only its SHA-256. It works once, for one account, for 60 s by default (`[auth] game_token_ttl_secs`, 10 to 3600; M3 spec D3).
+
+**What it protects against** (M3 spec D3). Single use, the short life and the account binding stop a token being replayed later, tokens leaking from logs (Fenji's own code never logs one) and observers off the path. They can't stop an attacker on the path. The transport has no confidentiality and no authentication ([`transport.md`](transport.md) 3.9), so such an attacker can read the auth payload, pose as the server and spend the token first, or take over the session after auth. Only a change to the client could stop that, and changing the client is gated (ground rule 6). So:
+- no password crosses the game connection: it goes only to the account API;
+- the README and PRIVACY.md have to tell hosts and players that the game connection is readable and unauthenticated (M3 plan Task 12);
+- a host who needs more puts the gate behind a VPN, or on a network the players trust.
+
+**Runs** ([`packets/lobby.md`](packets/lobby.md) §14, with the list, create, restart and delete runs):
+- In m3-l1 the real client logged in with such a token 8.4 s after the server came up.
+- In m3-l6 it did the same with no `--gf-sdk` flag at all: in the sandbox, the launcher path needs no SDK flag. Bare-metal and native Windows are untested.
 
 ## Evidence index
 

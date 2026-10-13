@@ -638,6 +638,7 @@ dependencies = [
  "fenji-proto",
  "fenji-store",
  "getrandom 0.4.3",
+ "lz4_flex",
  "serde",
  "serde_json",
  "tempfile",
