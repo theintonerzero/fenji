@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-13
+
+### Fixed
+
+- **store:** Keep the database owner-only, and overwrite deleted rows (#152)
+- **server:** End a deleted account's session, and close when the client quits (#153)
+- **server:** Build invite links from the account API's address, not the gate's (#154)
+- **proto:** Refuse a base face or outfit in a create request that isn't a number (#155)
+- **launcher:** Tell a rate-limited player how long to wait, and test the grant checks (#156)
+- **server:** Keep one live game token per account, and make the dummy hash at start (#157)
+- **server:** Let a reply blocked on a stuck client give way when the account logs in again (#159)
+- **tools:** Close the watchdog's S3 gaps for NULL display names and user-mode LoadDriver (#162)
+- **tools:** Scan the bare namespace's own tmpfs mounts, and name the prefix to the watchdog (#163)
+- **tools:** Refuse bare-run paths the namespace's tmpfs would hide, and resolve HOME (#164)
+- **tools:** Hide IBus's sockets from the bare namespace, and name the audio daemon as the residual (#166)
+- **tools:** Refuse sandbox binds on the kernel's own filesystems wherever they are mounted (#167)
+- **tools:** Mark a bare prefix that saw a gate event, and refuse it until it is rebuilt (#171)
+- **store:** Empty the write-ahead log after an account delete, so no old copy lingers (#172)
+- **tools:** Create the gate-event mark exclusively, so a planted FIFO can't stall the runner (#173)
+
+### Documentation
+
+- Say what deleting an account removes, and bring the stale M3 lines up to date (#161)
+- **proto:** Say where the pickle decoder differs from the client's; pin a compressed table count (#165)
+
 ## [0.4.0] - 2026-10-13
 
 ### Added
