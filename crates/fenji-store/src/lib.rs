@@ -28,8 +28,9 @@ pub struct Store {
 impl Store {
     /// Opens `path`, creating it if needed, and brings its schema up to date. The file is kept
     /// owner-only, since it holds password hashes, and SQLite overwrites deleted rows
-    /// (`secure_delete`), so an account deleted is gone from the file too, bar the WAL until its
-    /// next checkpoint.
+    /// (`secure_delete`), so an account deleted is gone from the file too. Older copies in the
+    /// write-ahead log go with [`Store::checkpoint`], or when SQLite next restarts the log, which
+    /// it then cuts back to nothing (`journal_size_limit`), or when the last connection closes.
     pub async fn open(path: &Path) -> Result<Self> {
         owner_only(path)?;
         let opts = SqliteConnectOptions::new()
@@ -39,6 +40,7 @@ impl Store {
             .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true)
             .pragma("secure_delete", "ON")
+            .pragma("journal_size_limit", "0")
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
@@ -46,6 +48,16 @@ impl Store {
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self { pool })
+    }
+
+    /// Folds the write-ahead log into the database and empties it (`wal_checkpoint(TRUNCATE)`), so
+    /// nothing deleted lingers there. False when another connection still had the log in use at
+    /// the end of the busy timeout: the log then empties when SQLite next restarts it.
+    pub async fn checkpoint(&self) -> Result<bool> {
+        let (busy, _, _): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(busy == 0)
     }
 
     /// Closes every connection; later calls fail.
@@ -224,5 +236,48 @@ mod tests {
                 assert_eq!(mode(&p), 0o600, "{f}");
             }
         }
+    }
+
+    /// The `-wal` file next to `dir`'s database (SQLite appends the suffix to the whole name).
+    fn wal(dir: &Path) -> std::path::PathBuf {
+        dir.join("fenji.db-wal")
+    }
+
+    #[tokio::test]
+    async fn the_log_is_cut_back_whenever_sqlite_restarts_it() {
+        // A checkpoint alone doesn't shrink the write-ahead log, so frames that copied a deleted
+        // row would stay in the file until overwritten (PRIVACY.md, "Deleting your data").
+        let (_d, s) = test_util::store().await;
+        let limit: i64 = sqlx::query_scalar("PRAGMA journal_size_limit")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(limit, 0);
+    }
+
+    #[tokio::test]
+    async fn a_checkpoint_empties_the_log() {
+        let (d, s) = test_util::store().await;
+        test_util::account(&s, 1, "bob").await;
+        assert!(std::fs::metadata(wal(d.path())).unwrap().len() > 0);
+        assert!(s.checkpoint().await.unwrap());
+        assert_eq!(std::fs::metadata(wal(d.path())).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_checkpoint_a_reader_holds_up_says_so() {
+        // A reader still on an older snapshot keeps its frames in use: the log can't be emptied
+        // (after the busy timeout), and the caller hears it.
+        let (_d, s) = test_util::store().await;
+        test_util::account(&s, 1, "bob").await;
+        let mut reader = s.pool.acquire().await.unwrap();
+        sqlx::query("BEGIN").execute(&mut *reader).await.unwrap();
+        let _: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&mut *reader)
+            .await
+            .unwrap();
+        test_util::account(&s, 2, "eve").await;
+        assert!(!s.checkpoint().await.unwrap());
+        sqlx::query("ROLLBACK").execute(&mut *reader).await.unwrap();
     }
 }
