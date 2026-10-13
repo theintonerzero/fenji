@@ -8,10 +8,16 @@
 # it set is pointed into TESTROOT before any test runs; every test checks that WORK is still there.
 set -uo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
+# run-bare.sh runs the client on the Linux game box only, and needs GNU tools such as realpath -m,
+# which macOS's realpath lacks.
+if [ "$(uname -s)" != Linux ]; then
+  echo "skip: run-bare.sh and its tests are for Linux"
+  exit 0
+fi
 # shellcheck source=run-bare.sh
 . "$HERE/run-bare.sh"
 set +e # run-bare.sh sets -e; these tests check exit statuses themselves
-unset DISPLAY # the tests set it where they need it, so the caller's session can't change a result
+unset DISPLAY XDG_CACHE_HOME # set where a test needs them, so the caller's session can't change a result
 TESTROOT=$(mktemp -d) || { echo "FATAL: mktemp failed" >&2; exit 2; }
 readonly TESTROOT
 [ -d "$TESTROOT" ] || { echo "FATAL: no test root" >&2; exit 2; }
@@ -151,6 +157,13 @@ case " ${got[*]} " in
   *" --bind $TESTROOT/rt/pipewire-0 $TESTROOT/rt/pipewire-0 --bind $TESTROOT/rt/pulse $TESTROOT/rt/pulse "*" --ro-bind /dev/null $TESTROOT/home2/.steam/steam.pipe --tmpfs $TESTROOT/home2/.cache/ibus "*)
     ok "audio sockets come back, Steam's pipe is masked, and IBus's sockets are hidden" ;;
   *) bad "namespace with audio, a Steam pipe and IBus: ${got[*]}" ;;
+esac
+mkdir -p "$TESTROOT/cache2/ibus"
+mapfile -t got < <(XDG_CACHE_HOME=$TESTROOT/cache2 XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/home2 namespace_cmd 99)
+case " ${got[*]} " in
+  *" --tmpfs $TESTROOT/home2/.cache/ibus --tmpfs $TESTROOT/cache2/ibus "*)
+    ok "IBus's sockets are hidden under XDG_CACHE_HOME too" ;;
+  *) bad "namespace with XDG_CACHE_HOME: ${got[*]}" ;;
 esac
 mapfile -t got < <(namespace_env 99)
 want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:99)
@@ -529,8 +542,9 @@ printf '\n[System\\\\ControlSet001\\\\Services\\\\discord-bridge] 1\n"Type"=dwor
 EOF
   cat > "$F/release/fenji-server" <<'EOF'
 #!/usr/bin/env python3
-"""Listens on its config's login and API addresses until it is stopped (`--config FILE run`)."""
-import socket, sys, time, tomllib
+"""Listens on its config's login and API addresses until it is stopped (`--config FILE run`), or its
+parent ends: run-bare.sh's own stop isn't the only way a run ends."""
+import os, socket, sys, time, tomllib
 with open(sys.argv[2], "rb") as f:
     server = tomllib.load(f)["server"]
 held = []
@@ -541,26 +555,30 @@ for key in ("login_bind", "api_bind"):
     s.bind((host, int(port)))
     s.listen()
     held.append(s)
-while True:
-    time.sleep(1)
+parent = os.getppid()
+while os.getppid() == parent:
+    time.sleep(0.2)
 EOF
   cat > "$F/release/fenji-launch" <<'EOF'
 #!/usr/bin/env bash
 # Records its arguments, says what fenji-launch says right before it starts the client, and plays
 # the client for FAKE_LAUNCH_SECS. A client that misbehaves plants a link at FAKE_PLANT, to
-# FAKE_PLANT_TO, or a FIFO at FAKE_FIFO, which a rescuer opens after 15 s, so that a writer stalled
-# on it is let go and the test ends.
+# FAKE_PLANT_TO, or a FIFO at FAKE_FIFO. A rescuer opens the FIFO after 15 s, so that a writer
+# stalled on it is let go and the test ends, but only while the path still is a FIFO: the test
+# removes it once its flow is over, and opening a path that is gone would create a regular file
+# there, where the next flow writes its mark.
 printf '%s\n' "$@" > "$FAKE_LOG/launch"
 echo "starting the client" >&2
 if [ -n "${FAKE_PLANT:-}" ]; then ln -s -- "$FAKE_PLANT_TO" "$FAKE_PLANT"; fi
 if [ -n "${FAKE_FIFO:-}" ]; then
   mkfifo -- "$FAKE_FIFO"
-  (sleep 15; exec 3<> "$FAKE_FIFO") > /dev/null 2>&1 &
+  (sleep 15; if [ -p "$FAKE_FIFO" ]; then exec 3<> "$FAKE_FIFO"; fi) > /dev/null 2>&1 &
 fi
 sleep "${FAKE_LAUNCH_SECS:-0}"
 EOF
   cat > "$F/watchdog.py" <<'EOF'
-"""The flow tests' watchdog: watch creates the start signal, waits for the namespace to end and
+"""The flow tests' watchdog: watch creates the start signal, waits for the namespace to end (or,
+with FAKE_WATCH_EARLY, only that many seconds, as a gate event does while the client plays) and
 exits FAKE_WATCH_RC (0 by default); every other mode is the real watchdog's. Each call is
 recorded."""
 import os
@@ -585,7 +603,7 @@ def alive(pid):
         return False
 
 
-deadline = time.monotonic() + 120
+deadline = time.monotonic() + float(os.environ.get("FAKE_WATCH_EARLY", "120"))
 while alive(spid) and time.monotonic() < deadline:
     time.sleep(0.05)
 sys.exit(int(os.environ.get("FAKE_WATCH_RC", "0")))
@@ -782,6 +800,16 @@ print(*(x.getsockname()[1] for x in s))')
     ok "a FIFO the client planted at the mark's place doesn't stall the runner"
   else
     bad "a planted FIFO: rc $rc after $secs s: $out"
+  fi
+  # A gate event while the client still plays (#174): the watchdog exits first, and the run ends
+  # the namespace, marks the prefix and reports it, long before the client would have stopped.
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  flow run-gate-first "$F/work" with_env FAKE_WATCH_RC=3 with_env FAKE_WATCH_EARLY=2 \
+    with_env FAKE_LAUNCH_SECS=60 cmd_bare_run e1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 3 ] && [ "$secs" -lt 30 ] && grep -q '^run e1: watchdog exit 3, ' "$F/work/compat/fenji-gate-event" 2> /dev/null; then
+    ok "a watchdog that exits first ends the run: the namespace stops and the prefix is marked"
+  else
+    bad "the watchdog first: rc $rc after $secs s, mark '$(cat "$F/work/compat/fenji-gate-event" 2> /dev/null)': $out"
   fi
 else
   echo "skip the end-to-end flows: they need Linux on x86_64"

@@ -60,7 +60,7 @@
 #     disk is fuseblk: copy it to a local filesystem.) Or one of the kernel's own interfaces,
 #     wherever it is mounted (host controls, devices or namespaces): sysfs, proc, cgroup,
 #     cgroup2, nsfs, debugfs, tracefs, securityfs, bpf, configfs, efivarfs, pstore, selinuxfs,
-#     binfmt_misc, fusectl, devtmpfs, devpts, mqueue;
+#     smackfs, binfmt_misc, fusectl, devtmpfs, devpts, mqueue, nfsd, binder, resctrl;
 #   - it is, or is a parent of, /, /run, /tmp/.X11-unix, /tmp/.ICE-unix, /var, /etc, /dev, /proc,
 #     $HOME, the runtime dir or a Steam dir, or lies inside /run, /dev, /proc, /sys, the X11/ICE
 #     dirs, ~/.steam, ~/.local/share/Steam, Flatpak Steam, ~/.ssh (ControlMaster sockets) or
@@ -227,7 +227,7 @@ refused_fstype() {
     beegfs|orangefs|gfs2|ocfs2|afs|coda|davfs|sshfs|autofs|rpc_pipefs)
       echo "a host daemon serves it"; return 0 ;;
     sysfs|proc|cgroup|cgroup2|nsfs|debugfs|tracefs|securityfs|bpf|configfs|efivarfs|pstore|\
-    selinuxfs|binfmt_misc|fusectl|devtmpfs|devpts|mqueue)
+    selinuxfs|smackfs|binfmt_misc|fusectl|devtmpfs|devpts|mqueue|nfsd|binder|resctrl)
       echo "the kernel's own interface: host controls, devices or namespaces"; return 0 ;;
   esac
   local t

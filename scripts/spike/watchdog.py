@@ -59,6 +59,7 @@ Signs (any one triggers):
   logged before the client's process creation (controller ruling after r7). Everything else,
   including a LoadDriver with no readable name after the client's creation, triggers.
 """
+import contextlib
 import argparse
 import hashlib
 import json
@@ -112,6 +113,17 @@ def now():
 class Log:
     def __init__(self, path):
         self.f = open(path, "a", buffering=1)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.f.close()
+        except OSError:
+            # Closing flushes again what a failed write left in the buffer: on a full disk that
+            # fails too, and must not turn a gate event into an uncaught error either.
+            pass
 
     def __call__(self, msg):
         line = f"{now()} {msg}\n"
@@ -581,6 +593,11 @@ class Tail:
         self.path, self.off, self.rest, self.fh = path, 0, b"", None
         self.at_eof = False  # whether the last read reached the end of the log as it was then
 
+    def close(self):
+        if self.fh is not None:
+            self.fh.close()
+            self.fh = None
+
     def replaced(self):
         """Whether the path now names another file than the open one, or this one shrank below
         what was read of it. A moment with no file at the path is neither: the old one is still
@@ -680,12 +697,15 @@ def cmd_scanlog(a):
 
 
 def cmd_watch(a):
-    log = Log(os.path.join(a.out, "watchdog.log"))
+    with Log(os.path.join(a.out, "watchdog.log")) as log, contextlib.closing(Tail(a.log)) as tail:
+        return watch(a, log, tail)
+
+
+def watch(a, log, tail):
     base = load_baseline(a.out)
     base_sys = base["sys"]
     rules = baseline_rules(base)
     reg_path, reg_sig = system_reg(a.prefix), None
-    tail = Tail(a.log)
     spid = a.sandbox_pid
     ns = None
     init = None
