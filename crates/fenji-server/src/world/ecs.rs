@@ -9,6 +9,7 @@ use bevy_ecs::system::ScheduleSystem;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
+use super::interest::Sight;
 use super::types::*;
 
 /// The world's settings, from fenji.toml.
@@ -75,6 +76,12 @@ pub(super) struct Index {
     pub names: HashMap<String, Entity>,
 }
 
+/// What the inbound phase hands to later phases, this tick.
+#[derive(Resource, Default)]
+pub(super) struct Pending {
+    pub pulls: Vec<(Entity, ActorId)>,
+}
+
 /// The services task's channel.
 #[derive(Resource)]
 pub(super) struct Services(pub mpsc::UnboundedSender<Service>);
@@ -103,9 +110,11 @@ impl WorldCore {
         world.insert_resource(Now::default());
         world.insert_resource(Inbox::default());
         world.insert_resource(Index::default());
+        world.insert_resource(Pending::default());
         world.insert_resource(Services(services));
         let phases = vec![
             ("inbound", phase(inbound)),
+            ("interest", phase(super::interest::system)),
             ("persist", phase(persist)),
             ("cleanup", phase(cleanup)),
         ];
@@ -139,8 +148,8 @@ pub(super) fn name_key(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
-/// Applies the tick's inputs in arrival order. A connection that sends more than
-/// `max_inputs_per_tick` is kicked.
+/// Applies the tick's inputs in arrival order. Pulls wait in [`Pending`] for the interest phase. A
+/// connection that sends more than `max_inputs_per_tick` is kicked.
 fn inbound(world: &mut World) {
     let inputs = std::mem::take(&mut world.resource_mut::<Inbox>().0);
     let max = world.resource::<Rules>().max_inputs_per_tick;
@@ -169,11 +178,13 @@ fn inbound(world: &mut World) {
                     loaded(world, e);
                 }
             }
-            // Counted against the limit; the phases that take them come with interest, movement
-            // and chat.
-            WorldIn::Pull { conn, .. }
-            | WorldIn::Move { conn, .. }
-            | WorldIn::Chat { conn, .. } => {
+            WorldIn::Pull { conn, pid } => {
+                if let Some(e) = counted(world, &mut counts, max, conn) {
+                    world.resource_mut::<Pending>().pulls.push((e, pid));
+                }
+            }
+            // Counted against the limit; the phases that take them come with movement and chat.
+            WorldIn::Move { conn, .. } | WorldIn::Chat { conn, .. } => {
                 counted(world, &mut counts, max, conn);
             }
         }
@@ -239,6 +250,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
             },
             Here(at),
             Stage::Loading,
+            Sight::default(),
         ))
         .id();
     let mut index = world.resource_mut::<Index>();
@@ -289,6 +301,21 @@ pub(super) fn send(world: &mut World, e: Entity, msg: WorldOut) {
     }
 }
 
+/// [`send`] for systems, which doom through `commands`.
+pub(super) fn deliver(conn: &Conn, e: Entity, msg: WorldOut, commands: &mut Commands) {
+    match conn.out.try_send(msg) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            commands
+                .entity(e)
+                .insert_if_new(Doomed(Some(KickReason::SlowReader)));
+        }
+        Err(TrySendError::Closed(_)) => {
+            commands.entity(e).insert_if_new(Doomed(None));
+        }
+    }
+}
+
 /// Marks `e` to leave at the end of the tick. The first reason stands.
 pub(super) fn doom(world: &mut World, e: Entity, reason: Option<KickReason>) {
     if let Ok(mut entity) = world.get_entity_mut(e)
@@ -298,8 +325,20 @@ pub(super) fn doom(world: &mut World, e: Entity, reason: Option<KickReason>) {
     }
 }
 
-/// Takes `e` out of the game now: its place is saved, its connection hears why when there is a
-/// reason, and the index forgets it.
+/// Tells every player whose client knows of `pid` that it has gone (9), and forgets it there.
+pub(super) fn hide(world: &mut World, pid: ActorId) {
+    let mut viewers = world.query::<(Entity, &mut Sight)>();
+    let told: Vec<Entity> = viewers
+        .iter_mut(world)
+        .filter_map(|(v, mut sight)| sight.0.remove(&pid).map(|_| v))
+        .collect();
+    for v in told {
+        send(world, v, WorldOut::Leave { pids: vec![pid] });
+    }
+}
+
+/// Takes `e` out of the game now: its viewers are told, its place is saved, its connection hears
+/// why when there is a reason, and the index forgets it.
 fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
     let (Some(actor), Some(here), Some(conn), Some(account)) = (
         world.get::<Actor>(e),
@@ -325,6 +364,7 @@ fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
     unindex(&mut index.pids, &pid, e);
     unindex(&mut index.accounts, &account_id, e);
     unindex(&mut index.names, &name, e);
+    hide(world, pid);
 }
 
 /// Removes `key` from `map` only if it still names `e`.
