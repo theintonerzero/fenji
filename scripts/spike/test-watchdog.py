@@ -250,6 +250,39 @@ class S4Registry(unittest.TestCase):
             wd.parse_services(str(self.reg))
 
 
+class ClientRename(unittest.TestCase):  # issue #142
+    """Wine starts the client's process as wine64 and renames it once the exe is loaded, so the
+    name read when its pid first appeared can be stale."""
+
+    def proc(self, pid, start, comm, argv, alive=True):
+        return {"pid": pid, "start": start, "comm": comm, "argv": argv, "alive": alive}
+
+    def test_a_process_renamed_to_the_client_is_found(self):
+        seen = {
+            7: self.proc(7, 100, "wine64", ["/usr/bin/wine64", "C:\\SoLO\\bin64\\gujianol.exe"]),
+            8: self.proc(8, 90, "wineserver", ["wineserver"]),
+            9: self.proc(9, 95, "wine64", ["wine64"], alive=False),
+        }
+        now = {
+            7: self.proc(7, 100, "gujianol.exe", ["C:\\SoLO\\bin64\\gujianol.exe"]),
+            8: self.proc(8, 90, "wineserver", ["wineserver"]),
+            9: self.proc(9, 95, "gujianol.exe", ["gujianol.exe"]),
+        }
+        found = wd.renamed_to(seen, wd.CLIENT, now.get)
+        self.assertEqual([p for p, _ in found], [7])
+        self.assertEqual(seen[7]["comm"], "gujianol.exe")
+        self.assertEqual(wd.renamed_to(seen, wd.CLIENT, now.get), [], "found once")
+
+    def test_a_pid_now_held_by_another_process_is_not_the_client(self):
+        seen = {7: self.proc(7, 100, "wine64", ["wine64"])}
+        now = {7: self.proc(7, 250, "gujianol.exe", ["gujianol.exe"])}
+        self.assertEqual(wd.renamed_to(seen, wd.CLIENT, now.get), [])
+
+    def test_a_process_that_is_gone_is_skipped(self):
+        seen = {7: self.proc(7, 100, "wine64", ["wine64"])}
+        self.assertEqual(wd.renamed_to(seen, wd.CLIENT, lambda p: None), [])
+
+
 class ClientCreationOverdue(unittest.TestCase):
     """Review M3: if the log never shows the client's creation, every LoadDriver would count as
     'before the client'; the watchdog stops the run instead of going blind."""

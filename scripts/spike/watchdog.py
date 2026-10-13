@@ -349,6 +349,23 @@ def is_named(info, name):
     return info["comm"].lower() == name or re.split(r"[\\/]", a0)[-1].lower() == name
 
 
+def renamed_to(seen, name, info_of):
+    """The live processes in `seen` that carry `name` now though they didn't when first seen,
+    each record updated. Wine starts the client's process as wine64 and renames it once the exe is
+    loaded, so a name read when the pid appeared can be stale (#142). A pid now held by another
+    process, which has another start time, is left alone."""
+    found = []
+    for p, info in seen.items():
+        if not info.get("alive") or is_named(info, name):
+            continue
+        now = info_of(p)
+        if not now or now["start"] != info["start"] or not is_named(now, name):
+            continue
+        info.update(comm=now["comm"], argv=now["argv"])
+        found.append((p, info))
+    return found
+
+
 def ppid_map():
     m = {}
     for d in os.listdir("/proc"):
@@ -678,6 +695,12 @@ def cmd_watch(a):
             if info.get("alive") and p not in cur:
                 info["alive"] = False
                 log(f"proc - pid {p} comm {info['comm']!r}")
+        if client_start is None:
+            for p, info in renamed_to(seen, CLIENT, proc_info):
+                if client_start is None or info["start"] < client_start:
+                    client_start, client_pid = info["start"], p
+                    client_seen = client_seen or time.monotonic()
+                log(f"client detected after a rename: pid {p} start {info['start']}")
         if client_start is not None:
             for p, info in seen.items():
                 if info.get("alive") and is_named(info, WINEDEVICE) and info["start"] > client_start:
