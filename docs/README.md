@@ -5,7 +5,9 @@
 | [`superpowers/specs/2026-10-11-fenji-design.md`](superpowers/specs/2026-10-11-fenji-design.md) | The project design: ground rules, architecture, milestones. Start here. |
 | [`superpowers/specs/2026-10-12-m1-data-layer-design.md`](superpowers/specs/2026-10-12-m1-data-layer-design.md) | M1 design: Lua tooling, the login hunt and first connection, the script census, archives and the Oodle gate. |
 | [`superpowers/specs/2026-10-12-m2-transport-design.md`](superpowers/specs/2026-10-12-m2-transport-design.md) | M2 design: the transport reading, `fenji-proto`, the stub's handshake ladder, the Oodle wire test and the archive helper. |
-| `superpowers/plans/` | One implementation plan per milestone (M0–M5), written before that milestone starts. |
+| [`superpowers/specs/2026-10-12-m3-login-lobby-design.md`](superpowers/specs/2026-10-12-m3-login-lobby-design.md) | M3 design: accounts and the account API, the gate and the lobby, the ticket handoff and `fenji-launch`. |
+| [`superpowers/specs/2026-10-13-m4-social-sandbox-design.md`](superpowers/specs/2026-10-13-m4-social-sandbox-design.md) | M4 design: its three pieces in order (the world, hosting, the desktop launcher) and what they share. Each piece gets its own spec. |
+| `superpowers/plans/` | One implementation plan per milestone (M0–M5), or per piece where a milestone's spec splits it (M4), written before that work starts. |
 | [`development.md`](development.md) | Machine setup (macOS/Linux), branches, Conventional Commits, SemVer, changelog, releases. |
 | [`re/README.md`](re/README.md) | Reverse-engineering workflow: pinned build, analysis setup, sandboxed client runs, what may be committed. |
 | [`re/sources.md`](re/sources.md) | External sources we used, and sources rejected for clean-room reasons. |
