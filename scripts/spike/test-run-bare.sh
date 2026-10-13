@@ -139,11 +139,20 @@ esac
 mapfile -t got < <(namespace_env 99)
 want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:99)
 if [ "${got[*]}" = "${want[*]}" ]; then ok "inside: no session bus, no agents, no Wayland, no password"; else bad "env: ${got[*]}"; fi
-mapfile -t got < <(watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242)
-case " ${got[*]} " in
-  *" watch --root $WORK --out $TESTROOT/out --sandbox-pid 4242 "*" --no-tmpfs-scan "*) ok "the watchdog watches the namespace, without the tmpfs scan" ;;
-  *) bad "watch: ${got[*]}" ;;
-esac
+mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/home2 namespace_cmd 99)
+mapfile -t got < <(watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242 "${ns[@]}")
+want=(python3 -I "$WATCHDOG" watch --root "$WORK" --prefix "$WORK/compat" --out "$TESTROOT/out" --sandbox-pid 4242
+  --log "$TESTROOT/io/steam-1418100.log" --go "$TESTROOT/io/.go" --tmpfs /run --bind "$TESTROOT/rt/pipewire-0"
+  --bind "$TESTROOT/rt/pulse" --tmpfs /tmp --bind /tmp/.X11-unix/X99 --tmpfs /dev/shm
+  --bind "$TESTROOT/home2/.steam/steam.pipe")
+if [ "${got[*]}" = "${want[*]}" ]; then
+  ok "the watchdog watches the namespace and its prefix, and scans its tmpfs mounts less what it binds in"
+else
+  bad "watch: ${got[*]}"
+fi
+mapfile -t got < <(baseline_cmd "$TESTROOT/out")
+want=(python3 -I "$WATCHDOG" baseline --root "$WORK" --prefix "$WORK/compat" --out "$TESTROOT/out")
+if [ "${got[*]}" = "${want[*]}" ]; then ok "the baseline names the prefix too"; else bad "baseline: ${got[*]}"; fi
 mapfile -t got < <(launch_args 7801 tester "$TESTROOT/password" "$WORK/runs/t/client")
 case " ${got[*]} " in
   *gf-sdk* | *" --print "*) bad "fenji-launch gets an SDK flag or --print: ${got[*]}" ;;
@@ -194,6 +203,12 @@ want=(bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$TESTRO
   --bind /tmp/.X11-unix/X0 /tmp/.X11-unix/X0 --tmpfs /dev/shm --ro-bind "$TESTROOT/xauth" "$TESTROOT/xauth"
   --unshare-net --unshare-pid --die-with-parent --seccomp 7 --)
 if [ "${got[*]}" = "${want[*]}" ]; then ok "a desktop run brings in the display's auth file, read-only, after the tmpfs mounts"; else bad "desktop namespace: ${got[*]}"; fi
+mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt2 HOME=$TESTROOT/nohome namespace_cmd 0 "$TESTROOT/xauth")
+mapfile -t got < <(watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242 "${ns[@]}")
+case " ${got[*]} " in
+  *" --tmpfs /run --tmpfs /tmp --bind /tmp/.X11-unix/X0 --tmpfs /dev/shm --bind $TESTROOT/xauth ") ok "a desktop run's auth file is left out of the tmpfs scan" ;;
+  *) bad "desktop watch: ${got[*]}" ;;
+esac
 mapfile -t got < <(namespace_env 0 "$TESTROOT/xauth")
 want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:0 XAUTHORITY="$TESTROOT/xauth")
 if [ "${got[*]}" = "${want[*]}" ]; then ok "inside a desktop run: the session's display and its auth file"; else bad "desktop env: ${got[*]}"; fi

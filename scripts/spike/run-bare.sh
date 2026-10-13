@@ -24,10 +24,12 @@
 # (a kernel DNS upcall). So home, GPU, audio and display are as on a player's machine, and no host
 # daemon socket in /run, /tmp or /dev/shm is. Its own /proc matters: without it, a nested bwrap
 # (umu's pressure-vessel) looks its child up in the host's /proc by a namespace PID and hangs. The
-# watchdog's scan of sandbox tmpfs mounts is off (--no-tmpfs-scan): the host's own Proton prefixes
-# would trip it. Its scan of re/bare-metal (the prefix and the run's copy), its process rules
-# (S2), its log rules (S3, which follow Proton's per-session logs) and its registry rule (S4) carry
-# the rest, and the run's evidence lists any new *.sys file under umu's runtime and /var/tmp.
+# watchdog scans re/bare-metal (the prefix and the run's copy) and the namespace's own /run, /tmp
+# and /dev/shm, less what the namespace binds into them (watch_cmd); the rest of the namespace's
+# filesystem is the host's, whose own Proton prefixes would trip it. Its process rules (S2), its log
+# rules (S3, which follow Proton's per-session logs) and its registry rule (S4, on the prefix named
+# directly, not through umu's pfx link) carry the rest, and the run's evidence lists any new *.sys
+# file under umu's runtime and /var/tmp.
 # Linux on x86_64 only.
 #
 #   scripts/spike/run-bare.sh setup (--display N | --desktop)
@@ -289,11 +291,29 @@ check_pinned_copy() {
   [ -z "$(find "$PINNED_COPY" -type l -print -quit)" ] || die "the pinned copy holds a link; it must hold files only"
 }
 
-# The watchdog's command line for run OUT/IO and namespace PID.
+# The watchdog's command line for run OUT/IO and namespace PID, given the namespace's own command
+# line (namespace_cmd's). It names the prefix, not umu's pfx link to it. S1 scans each tmpfs mount
+# the namespace makes, through /proc/PID/root, less each path the namespace binds in (the audio and
+# X11 sockets, the auth file): the rest of its filesystem is the host's, whose own Proton prefixes
+# would trip that scan.
 watch_cmd() {
-  local out=$1 io=$2 spid=$3
-  printf '%s\n' python3 -I "$WATCHDOG" watch --root "$WORK" --out "$out" --sandbox-pid "$spid" \
-    --log "$io/steam-1418100.log" --go "$io/.go" --no-tmpfs-scan
+  local out=$1 io=$2 spid=$3 i
+  shift 3
+  local a=("$@")
+  printf '%s\n' python3 -I "$WATCHDOG" watch --root "$WORK" --prefix "$WORK/compat" --out "$out" \
+    --sandbox-pid "$spid" --log "$io/steam-1418100.log" --go "$io/.go"
+  for ((i = 0; i < ${#a[@]}; i++)); do
+    case ${a[i]} in
+      --tmpfs) printf '%s\n' --tmpfs "${a[i + 1]}" ;;
+      --bind | --ro-bind) printf '%s\n' --bind "${a[i + 2]}" ;;
+      --) break ;;
+    esac
+  done
+}
+
+# The watchdog's baseline command line for run OUT, with the prefix named as watch_cmd names it.
+baseline_cmd() {
+  printf '%s\n' python3 -I "$WATCHDOG" baseline --root "$WORK" --prefix "$WORK/compat" --out "$1"
 }
 
 # fenji-launch's arguments for a run: the player's command, with the run's client copy, the
@@ -453,7 +473,7 @@ PY
     echo "server: $server_copy (login 127.0.0.1:$login_port, API 127.0.0.1:$api_port), store in $server_data"
     echo "umu-run: $UMU ($(sha256sum "$UMU" | cut -c1-16)…); GE-Proton: $PROTON"
     echo "wine channels (WINEDEBUG, with PROTON_LOG=1): $channels"
-    echo "driver watchdog: watchdog.py sha256 $(sha256sum "$WATCHDOG" | cut -c1-16)…, --no-tmpfs-scan"
+    echo "driver watchdog: watchdog.py sha256 $(sha256sum "$WATCHDOG" | cut -c1-16)…, scanning the namespace's tmpfs mounts"
     if [ "$desktop" = 1 ]; then
       echo "display :$display, the desktop (no screenshots, keys or clicks); timeout $tmo s"
     else
@@ -463,7 +483,9 @@ PY
   find "$PFX" -iname '*.sys' -printf '%P\t%y\t%l\t%s\t%T@\n' | sort > "$OUT/sys-before.tsv"
   python3 -I "$WATCHDOG" collect --src "$PFX" --dest "$OUT/reg-before" --name system.reg --name user.reg
   grep -o '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\[^]\\]*' "$OUT/reg-before/system.reg" | sort -u > "$OUT/services-before.txt" || true
-  python3 -I "$WATCHDOG" baseline --root "$WORK" --out "$OUT"
+  local bc
+  mapfile -t bc < <(baseline_cmd "$OUT")
+  "${bc[@]}"
   touch "$OUT/.start"
 
   local shots clicker typist inputs=()
@@ -520,7 +542,7 @@ PY
     done
   ) &
   local steamwatch=$!
-  mapfile -t wc < <(watch_cmd "$OUT" "$IO" "$spid")
+  mapfile -t wc < <(watch_cmd "$OUT" "$IO" "$spid" "${ns[@]}")
   "${wc[@]}" 2>> "$OUT/watchdog.err" &
   local wdpid=$!
   # Whichever ends first. If it is the watchdog (gate event, failure, or killed), the namespace
