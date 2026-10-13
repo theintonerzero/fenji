@@ -26,14 +26,19 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens `path`, creating it if needed, and brings its schema up to date.
+    /// Opens `path`, creating it if needed, and brings its schema up to date. The file is kept
+    /// owner-only, since it holds password hashes, and SQLite overwrites deleted rows
+    /// (`secure_delete`), so an account deleted is gone from the file too, bar the WAL until its
+    /// next checkpoint.
     pub async fn open(path: &Path) -> Result<Self> {
+        owner_only(path)?;
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true)
+            .pragma("secure_delete", "ON")
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
@@ -61,6 +66,39 @@ impl Store {
     async fn begin(&self) -> Result<Transaction<'static, Sqlite>> {
         Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
     }
+}
+
+/// Creates `path` owner-only (0600) if it is missing, and takes group and other access away from it
+/// and from its `-wal` and `-shm` files if they have any (a database from v0.4.0 was 0644). SQLite
+/// gives the files it creates later the main file's mode.
+#[cfg(unix)]
+fn owner_only(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+    for suffix in ["", "-wal", "-shm"] {
+        let mut p = path.as_os_str().to_owned();
+        p.push(suffix);
+        let p = std::path::PathBuf::from(p);
+        match std::fs::metadata(&p) {
+            Ok(m) if m.permissions().mode() & 0o077 != 0 => {
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn owner_only(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -122,5 +160,63 @@ mod tests {
         s.close().await;
         let s = Store::open(&path).await.unwrap();
         assert_eq!(s.list_invites().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn deleted_rows_are_overwritten() {
+        let (_dir, s) = test_util::store().await;
+        let on: (i64,) = sqlx::query_as("PRAGMA secure_delete")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(on.0, 1);
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_new_database_and_its_wal_are_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.db");
+        let s = Store::open(&path).await.unwrap();
+        s.create_invite(&[7; 32], None, 1, None).await.unwrap();
+        assert_eq!(mode(&path), 0o600);
+        let wal = dir.path().join("fenji.db-wal");
+        assert!(
+            wal.exists(),
+            "a write in WAL mode leaves the -wal file while the pool is open"
+        );
+        assert_eq!(mode(&wal), 0o600);
+        assert_eq!(mode(&dir.path().join("fenji.db-shm")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_existing_world_readable_database_is_made_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.db");
+        let s = Store::open(&path).await.unwrap();
+        s.create_invite(&[7; 32], None, 1, None).await.unwrap();
+        s.close().await;
+        for f in ["fenji.db", "fenji.db-wal", "fenji.db-shm"] {
+            let p = dir.path().join(f);
+            if p.exists() {
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+        }
+        let s = Store::open(&path).await.unwrap();
+        assert_eq!(s.list_invites().await.unwrap().len(), 1);
+        for f in ["fenji.db", "fenji.db-wal", "fenji.db-shm"] {
+            let p = dir.path().join(f);
+            if p.exists() {
+                assert_eq!(mode(&p), 0o600, "{f}");
+            }
+        }
     }
 }
