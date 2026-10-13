@@ -2,6 +2,7 @@
 //! thread at `[server] tick_hz`, fed over channels by the connection tasks. It speaks only the
 //! protocol-neutral events of [`types`]; the connection side maps them to and from the wire.
 mod ecs;
+mod interest;
 mod services;
 mod thread;
 pub mod types;
