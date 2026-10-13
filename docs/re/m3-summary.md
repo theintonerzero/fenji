@@ -49,7 +49,7 @@ The documents:
 |---|---|---|---|
 | Parent spec §12 | What the ticket is and how Fenji issues it | **Answered and run.** A Fenji game token: `fenji1-` and 64 hex characters. It is single-use, valid for 60 s, bound to one account and stored as its SHA-256. It reaches the client in its environment as `gj_ticket`, and the client sends it as it is: its hex-decoding step can't run in this build. | M3 spec D3; `lobby.md` 12.7; `login.md` §7 |
 | #54, gate #114 | Which login path players use | **Decided by the owner, 2026-10-13: the launcher path** (option a). The client is verified against the pinned manifest, then started unmodified with `gj_uinfo`, `gj_gates` and a single-use Fenji ticket. No platform credentials are involved, and ownership rests on the host's vetting (ground rule 1). | `lobby.md` §12; #114 |
-| #54 | Whether the launcher path needs an SDK flag | **No.** In the sandbox, m3-l6 started and logged in with no `--gf-sdk` flag. On bare metal, bm-2 signed in the same way, through `umu-run`, on the real GPU. | `lobby.md` 12.6, §14; below |
+| #54 | Whether the launcher path needs an SDK flag | **No.** In the sandbox, m3-l6 started and logged in with no `--gf-sdk` flag. On bare metal, bm-2 to bm-5 signed in the same way, through `umu-run`, on the real GPU. | `lobby.md` 12.6, §14; below |
 | `lobby.md` §13 | What only a real-client run could settle | **Questions 7, 9, 11 and 15 settled; 1 and 5 in part.** The empty list opens creation. A real 304 is 758 bytes, sent LZ4-compressed. Never sending 495 breaks nothing. The client starts with no SDK flag. | `lobby.md` §13–14 |
 | `login.md` §1, spike-0 8.2, 4.34–4.35 | Earlier readings of the platform paths | **Corrected.** The scripts' Steam branch is dead in this build, the platform DLL's configuration search runs in `DllMain`, and `121.5.97.203:8001` is the Chinese gate fallback. | `lobby.md` 12.8 |
 
@@ -67,9 +67,9 @@ The documents:
 | # | Item | Status | Evidence |
 |---|---|---|---|
 | 1 | Accounts | **Met.** Invites, registration, sign-in with the limiter, and game tokens, all with unit tests and the server's integration tests. | #129, #130, #132 |
-| 2 | The ticket handoff | **Met.** In L1 (m3-l1), `fenji-launch` signed in, took a game token and built the launch spec. The client logged in with it, and the server took it once. On bare metal, `fenji-launch play` did the same through `umu-run` (bm-2). | `lobby.md` §14; #136, #140 |
-| 3 | The lobby in the real client | **Met.** L2, L3 and L5: list, create and delete. The watchdog showed no sign in any run. In m3-l3a and m3-l3b its rule S2 didn't arm (#142, fixed in #143), and both `winedevice.exe` had started before the client. | `lobby.md` §14 |
-| 4 | Persistence | **Met.** L4 (m3-l4) listed a character from the run before after a new server process started, and the bot's restart test runs in CI. | `lobby.md` §14; `crates/fenji-server/tests/lobby.rs` |
+| 2 | The ticket handoff | **Met.** In L1 (m3-l1), `fenji-launch` signed in, took a game token and built the launch spec. The client logged in with it, and the server took it once. On bare metal, `fenji-launch play` did the same through `umu-run` (bm-2 to bm-5). | `lobby.md` §14; #136, #140 |
+| 3 | The lobby in the real client | **Met.** L2, L3 and L5: list, create and delete; on bare metal too (bm-4, bm-5). The watchdog showed no sign in any run. In m3-l3a and m3-l3b its rule S2 didn't arm (#142, fixed in #143), and both `winedevice.exe` had started before the client. | `lobby.md` §14 |
+| 4 | Persistence | **Met.** L4 (m3-l4) listed a character from the run before after a new server process started, and so did bm-5 on bare metal. The bot's restart test runs in CI. | `lobby.md` §14; `crates/fenji-server/tests/lobby.rs` |
 | 5 | The launcher (as amended) | **Met as amended.** `fenji-launcher` and `fenji-launch` build and pass their tests. Verification works against the pinned copy. `play` starts the client on Linux only. The desktop shell moved to M4 (#146). | #134, #140 |
 | 6 | Records | **Met:** this document; `lobby.md` with REA Evidence IDs; `opcodes.md`; `login.md` §7; "M3 update" notes in the parent spec's §5.1–§5.3 and §10; §12's M3 column; PRIVACY.md, README and SECURITY.md. Gate #114 is decided, with the platform reading on it, #54 is answered as far as RE goes, and #102 is closed. | #135, #137, #141; this PR |
 
@@ -82,13 +82,15 @@ The documents:
 - a namespace with loopback only and no host daemon sockets;
 - the AGT driver watchdog armed.
 
-There was no SDK flag in any run.
+There was no SDK flag in any run. The lobby works end to end on bare metal: sign-in through `fenji-launch play` and `umu-run`, the list, create, a character surviving a server restart, and delete (bm-4, bm-5).
 
 | Run | What happened | Watchdog |
 |---|---|---|
 | bm-1 | Stopped before the client got going. | **Exit 3, proven a non-AGT false positive.** GE-Proton's own launch shim, `umu.exe`, registered GE-Proton's Discord bridge service 37 ms before it created the client. That service is user-mode (`bridge.exe --service`, type 0x10) and was never started. No `.sys` was written, no driver loaded, and the client touched no `PE` resource. `run-bare.sh setup` had built the prefix with `umu-run createprefix`, which never runs the shim, so the service wasn't in the baseline. Setup now primes the prefix through Proton's launcher, as `run-client.sh` setup already did (#144). |
 | bm-2 | Signed in on the real GPU: "in the lobby" for `tester`. Then the client died at its first frame: its X connection to the nested display broke, because that Xwayland had no GPU acceleration to present the real GPU's frames. `run-bare.sh --desktop` now runs the client on the session's own display, as a player has it (#144). | No sign. |
-| bm-3 | *(the owner's run on the desktop; result to follow)* | |
+| bm-3 | The same command as bm-2, on the nested display, with the same result. | No sign. |
+| bm-4 | `--desktop`, on the real GPU. The client signed in, listed the account's characters and created "Mai" (304). Entering the world was refused, as M3 intends (10, then 270), and the select screen stayed usable. The owner quit; exit 0. | No sign. |
+| bm-5 | `--desktop`, a new server process on the same database. The list showed "Mai" after the restart. The client created "test" and deleted it again (304, then 166). The owner quit; exit 0. The database then held "Mai" alone. | No sign. |
 
 ## Gates and the owner's rulings
 
