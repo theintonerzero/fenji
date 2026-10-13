@@ -144,13 +144,13 @@ if [ "${got[*]}" = "${want[*]}" ]; then
 else
   bad "namespace: ${got[*]}"
 fi
-mkdir -p "$TESTROOT/rt/pulse" "$TESTROOT/home2/.steam"
+mkdir -p "$TESTROOT/rt/pulse" "$TESTROOT/home2/.steam" "$TESTROOT/home2/.cache/ibus"
 touch "$TESTROOT/rt/pipewire-0" "$TESTROOT/home2/.steam/steam.pipe"
 mapfile -t got < <(XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/home2 namespace_cmd 99)
 case " ${got[*]} " in
-  *" --bind $TESTROOT/rt/pipewire-0 $TESTROOT/rt/pipewire-0 --bind $TESTROOT/rt/pulse $TESTROOT/rt/pulse "*" --ro-bind /dev/null $TESTROOT/home2/.steam/steam.pipe "*)
-    ok "audio sockets come back, and Steam's pipe is masked" ;;
-  *) bad "namespace with audio and a Steam pipe: ${got[*]}" ;;
+  *" --bind $TESTROOT/rt/pipewire-0 $TESTROOT/rt/pipewire-0 --bind $TESTROOT/rt/pulse $TESTROOT/rt/pulse "*" --ro-bind /dev/null $TESTROOT/home2/.steam/steam.pipe --tmpfs $TESTROOT/home2/.cache/ibus "*)
+    ok "audio sockets come back, Steam's pipe is masked, and IBus's sockets are hidden" ;;
+  *) bad "namespace with audio, a Steam pipe and IBus: ${got[*]}" ;;
 esac
 mapfile -t got < <(namespace_env 99)
 want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:99)
@@ -160,7 +160,7 @@ mapfile -t got < <(watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242 "${ns[@]}")
 want=(python3 -I "$WATCHDOG" watch --root "$WORK" --prefix "$WORK/compat" --out "$TESTROOT/out" --sandbox-pid 4242
   --log "$TESTROOT/io/steam-1418100.log" --go "$TESTROOT/io/.go" --tmpfs /run --bind "$TESTROOT/rt/pipewire-0"
   --bind "$TESTROOT/rt/pulse" --tmpfs /tmp --bind /tmp/.X11-unix/X99 --tmpfs /dev/shm
-  --bind "$TESTROOT/home2/.steam/steam.pipe")
+  --bind "$TESTROOT/home2/.steam/steam.pipe" --tmpfs "$TESTROOT/home2/.cache/ibus")
 if [ "${got[*]}" = "${want[*]}" ]; then
   ok "the watchdog watches the namespace and its prefix, and scans its tmpfs mounts less what it binds in"
 else
