@@ -145,9 +145,12 @@ async fn cli_writes_while_a_server_holds_the_database() {
     let held = fenji_store::Store::open(&cfg.store.path).await.unwrap();
     // A writer holds the database for a moment, as a running server's transaction would.
     let busy = held.clone();
-    let holder =
-        tokio::spawn(async move { busy.hold_write_lock(Duration::from_millis(200)).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let (taken, lock_held) = tokio::sync::oneshot::channel();
+    let holder = tokio::spawn(async move {
+        busy.hold_write_lock(Duration::from_millis(200), taken)
+            .await
+    });
+    lock_held.await.unwrap();
     let text = run(
         &cfg,
         Command::Invite {
