@@ -9,6 +9,7 @@ use bevy_ecs::system::ScheduleSystem;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
+use super::chat::Bucket;
 use super::interest::Sight;
 use super::movement::Gait;
 use super::types::*;
@@ -82,6 +83,7 @@ pub(super) struct Index {
 pub(super) struct Pending {
     pub moves: Vec<(Entity, MoveStep)>,
     pub pulls: Vec<(Entity, ActorId)>,
+    pub lines: Vec<(Entity, ChatIn)>,
 }
 
 /// The services task's channel.
@@ -118,6 +120,7 @@ impl WorldCore {
             ("inbound", phase(inbound)),
             ("movement", phase(super::movement::system)),
             ("interest", phase(super::interest::system)),
+            ("chat", phase(super::chat::system)),
             ("persist", phase(persist)),
             ("cleanup", phase(cleanup)),
         ];
@@ -151,8 +154,8 @@ pub(super) fn name_key(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
-/// Applies the tick's inputs in arrival order. Moves and pulls wait in [`Pending`] for their
-/// phases. A connection that sends more than `max_inputs_per_tick` is kicked.
+/// Applies the tick's inputs in arrival order. Moves, pulls and chat lines wait in [`Pending`] for
+/// their phases. A connection that sends more than `max_inputs_per_tick` is kicked.
 fn inbound(world: &mut World) {
     let inputs = std::mem::take(&mut world.resource_mut::<Inbox>().0);
     let max = world.resource::<Rules>().max_inputs_per_tick;
@@ -191,9 +194,10 @@ fn inbound(world: &mut World) {
                     world.resource_mut::<Pending>().moves.push((e, step));
                 }
             }
-            // Counted against the limit; the chat phase takes these.
-            WorldIn::Chat { conn, .. } => {
-                counted(world, &mut counts, max, conn);
+            WorldIn::Chat { conn, line } => {
+                if let Some(e) = counted(world, &mut counts, max, conn) {
+                    world.resource_mut::<Pending>().lines.push((e, line));
+                }
             }
         }
     }
@@ -261,6 +265,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
             Stage::Loading,
             Sight::default(),
             Gait::new(now),
+            Bucket::new(now),
         ))
         .id();
     let mut index = world.resource_mut::<Index>();
