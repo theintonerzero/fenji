@@ -18,22 +18,22 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 |---|---|---|---|---|---|
 | `0` | S→C | `STC_PROTOCOL_SCRIPT` | unpickled (FUN_1400D5850), then the scripts' handler for the message id (`data/core/client/net_manager.luac`) | `verified` | O.1, [`payloads.md`](payloads.md); M2R4B, `crates/fenji-proto/tests/fixtures.rs` (`r4b_the_server_sends_what_the_client_accepted`) |
 | `1` | S→C | `STC_PROTOCOL_CLOSE` | FUN_14029A870: the body (at most 255 bytes kept) becomes the close reason, the socket closes, state 5 | `schema` | O.1, [`transport.md`](transport.md) 7.4 |
-| `2` | S→C | `STC_PROTOCOL_TIME_SYNC` | FUN_140222E00 case 2: a `u32` (the client's clock, echoed) and a `u64` (the server's time) feed the ping estimate and the scripts' `time_manager_time_sync_resp` ([`transport.md`](transport.md) 10.6) | `schema` | O.1, [`transport.md`](transport.md) 10.6 |
+| `2` | S→C | `STC_PROTOCOL_TIME_SYNC` | FUN_140222E00 case 2: 12 bytes, a `u32` (the client's clock, echoed) and a `u64` (the server's time) that feed the ping estimate and the scripts' `time_manager_time_sync_resp` ([`transport.md`](transport.md) 10.6) | `schema` | O.1, [`transport.md`](transport.md) 10.6; [`packets/world.md`](packets/world.md) §7 |
 | `3` | S→C | `STC_PROTOCOL_TRANS_LIMIT_LV` | case 3: one `u16` | `named` | O.1 |
 | `4` | S→C | `STC_PROTOCOL_DEBUG_POS` | case 4 | `named` | O.1 |
 | `5` | S→C | `STC_PROTOCOL_GM_CHANNEL` | case 5: FUN_1401A49C0 | `named` | O.1 |
 | `6` | S→C | `STC_PROTOCOL_SYNC_ID_ENTER` | case 6 | `named` | O.1 |
-| `7` | S→C | `STC_PROTOCOL_SYNC_ENTER` | case 7 | `named` | O.1 |
-| `8` | S→C | `STC_PROTOCOL_SYNC_ENTER_FINISH` | case 8: one `u64` | `named` | O.1 |
+| `7` | S→C | `STC_PROTOCOL_SYNC_ENTER` | case 7: a `u64` actor id, the actor's type and difficulty (a byte each), a `u32` template id, then the property blob ([`packets/world.md`](packets/world.md) §4) | `schema` | O.1, [`packets/world.md`](packets/world.md) §4 |
+| `8` | S→C | `STC_PROTOCOL_SYNC_ENTER_FINISH` | case 8: one `u64`, the actor id ([`packets/world.md`](packets/world.md) 6.1) | `schema` | O.1, [`packets/world.md`](packets/world.md) 6.1 |
 | `9` | S→C | `STC_PROTOCOL_SYNC_LEAVE` | case 9: an array of `u64` | `named` | O.1 |
-| `10` | S→C | `STC_PROTOCOL_SYNC_UPDATE` | case 10 | `named` | O.1 |
+| `10` | S→C | `STC_PROTOCOL_SYNC_UPDATE` | case 10: a `u64` actor id, then a property blob in type 7's format ([`packets/world.md`](packets/world.md) §4) | `schema` | O.1, [`packets/world.md`](packets/world.md) §4 |
 | `11` | S→C | `STC_PROTOCOL_SYNC_UPDATE_FILTER` | case 11: FUN_1401AE640 | `named` | O.1 |
 | `12` | S→C | `STC_PROTOCOL_MOVE` | case 12: FUN_14008E470 | `named` | O.1 |
 | `13`–`19` | S→C | `STC_PROTOCOL_MOVE_DIR`, `_MOVE_POS`, `_MOVE_COMBAT`, `_MOVE_JUMP_POS`, `_MOVE_STOP`, `_MOVE_YAW`, `_MOVE_FINISH_CHARGING` | cases 13–19: FUN_14020FAA0 with a sub-kind each | `named` | O.1 |
 | `20` | S→C | `STC_PROTOCOL_MOVE_SYNC_SVR` | case 20: FUN_14020D100 | `named` | O.1 |
-| `21` | S→C | `STC_PROTOCOL_MOVE_BASE_PROP` | case 21: FUN_14020BA70 | `named` | O.1 |
+| `21` | S→C | `STC_PROTOCOL_MOVE_BASE_PROP` | case 21: FUN_14020BA70, 34 bytes ending in the move speed and gravity ([`packets/world.md`](packets/world.md) 6.3) | `schema` | O.1, [`packets/world.md`](packets/world.md) 6.3 |
 | `22` | S→C | `STC_PROTOCOL_MOVE_SYNC_PATH_FIND_TASK` | case 22: FUN_14020EA60 | `named` | O.1 |
-| `23` | S→C | `STC_PROTOCOL_SYNC_PROP_FORCE` | case 23: FUN_14020CE90 | `named` | O.1 |
+| `23` | S→C | `STC_PROTOCOL_SYNC_PROP_FORCE` | case 23: FUN_14020CE90, a `u64` actor id, a `u16` property (1325 the move speed or 1330 the gravity) and an `i16` value ([`packets/world.md`](packets/world.md) 6.2) | `schema` | O.1, [`packets/world.md`](packets/world.md) 6.2 |
 | `24` | S→C | `STC_PROTOCOL_ACTOR_HMAP_MASK_REFRESH` | case 24: FUN_14020E680 | `named` | O.1 |
 | `25` | S→C | `STC_PROTOCOL_OVERALL_HMAP_MASK_REFRESH` | case 25: FUN_14020E880 | `named` | O.1 |
 | `26` | S→C | `STC_PROTOCOL_MOVE_ENTER_SYNC_STATE` | case 26: FUN_14020CCE0 | `named` | O.1 |
@@ -46,8 +46,8 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 | `0xFF` | C→S | `CTS_PROTOCOL_GATE_SCRIPT` | `send_gateway` (FUN_140221940): the pickled message id and arguments, for the gate | `verified` | O.2, [`payloads.md`](payloads.md); M2R4B, `crates/fenji-proto/tests/fixtures.rs` (`r4b_client_gateway_402_decodes`) |
 | `0` | C→S | `CTS_PROTOCOL_SCRIPT` | `send` (FUN_140221A00): the pickled message id and arguments | `schema` | O.2, [`payloads.md`](payloads.md) |
 | `1` | C→S | `CTS_PROTOCOL_GM_CHANNEL` | — | `named` | O.2 |
-| `2` | C→S | `CTS_PROTOCOL_TIME_SYNC` | `send_time_sync` (FUN_140221AC0): a 13-byte body, sent once a second once a character is in the world ([`transport.md`](transport.md) 10.6) | `named` | O.2 |
-| `3` | C→S | `CTS_PROTOCOL_CLIENT_ENTER` | `send_enter` (FUN_140221BB0): a 21-byte body | `named` | O.2 |
+| `2` | C→S | `CTS_PROTOCOL_TIME_SYNC` | `send_time_sync` (FUN_140221AC0): a 13-byte body, sent once a second from 772 on ([`transport.md`](transport.md) 10.6) | `schema` | O.2, [`transport.md`](transport.md) 10.6 |
+| `3` | C→S | `CTS_PROTOCOL_CLIENT_ENTER` | `send_enter` (FUN_140221BB0): a 21-byte body, sent once the scene has loaded ([`packets/world.md`](packets/world.md) §3) | `schema` | O.2, [`packets/world.md`](packets/world.md) §3 |
 | `4` | C→S | `CTS_PROTOCOL_CLIENT_LEAVE` | `send_leave` (FUN_140221CB0): an empty body | `schema` | O.2 |
 | `5` | C→S | `CTS_PROTOCOL_SYNC_FILTER_SET` | `send_sync_filter` (FUN_140221D30): an 18-byte body | `named` | O.2 |
 | `6`–`11` | C→S | `CTS_PROTOCOL_QUERY_ACTOR_POS`, `_QUERY_ACTOR_MOVE_CMD`, `_MOVE_DIR`, `_MOVE_COMBAT`, `_MOVE_FINISH_CHARGE`, `_MOVE_DEBUG` | by table order; their senders weren't read | `named` | O.2 |
@@ -68,6 +68,7 @@ Script message ids are numbers. In a shipping client, `data/core/share/enums.lua
 | 304 | C→S | `PROTOC2S_ROLE_CREATE` | One table: the new character's name, vocation, skeleton and appearance; answered with 628 or 270 | `verified` | **Observed** (bytecode) | [`packets/lobby.md`](packets/lobby.md) §5; run M3L3 ([`packets/lobby.md`](packets/lobby.md) §14); `crates/fenji-server/tests/real_client.rs`, `crates/fenji-server/src/lobby.rs` `a_create_answers_byte_for_byte_and_a_delete_too` |
 | 166 | C→S | `PROTOC2S_ROLE_DELETE` | The pid to delete; answered with 84 or 270 | `verified` | **Observed** (bytecode) | [`packets/lobby.md`](packets/lobby.md) §7; run M3L5 ([`packets/lobby.md`](packets/lobby.md) §14); `crates/fenji-server/src/lobby.rs` `a_create_answers_byte_for_byte_and_a_delete_too`, `crates/fenji-server/tests/lobby.rs` `login_list_create_restart_list_delete` |
 | 10 | C→S | `PROTOC2S_ROLE_SELECT` | The pid to enter the world with; M3 answers with 270 | `schema` | **Observed** (bytecode) | [`packets/lobby.md`](packets/lobby.md) §10 |
+| 772 | S→C | `PROTOS2C_ACTOR_LOAD_SCENE` | Starts entering the world: the actor id, a scene table, the position `{x, y, z, yaw}` and a property-schema constant ([`packets/world.md`](packets/world.md) §2) | `schema` | **Observed** (bytecode) | [`packets/world.md`](packets/world.md) §2 |
 | 26 | C→S | `PROTOC2G_ROLE_RENAME` | Two values from the rename dialog | `named` | **Observed** (the sender) | [`packets/lobby.md`](packets/lobby.md) §2 |
 | 454 | C→S | `PROTOC2G_ROLE_REBORN` | Three values from the reborn dialog | `named` | **Observed** (the sender) | [`packets/lobby.md`](packets/lobby.md) §2 |
 | 321 | C→S | `PROTOC2G_ROLE_SLOT` | A pid, its new slot, and nil or the pid it swaps with; needs no reply | `schema` | **Observed** (bytecode) | [`packets/lobby.md`](packets/lobby.md) §2, 4.2 |

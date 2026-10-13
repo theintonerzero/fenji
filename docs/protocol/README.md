@@ -9,8 +9,9 @@ Our own written findings about the pinned client's network protocol. No decompil
 | [`transport.md`](transport.md) | Framing, header scramble, Oodle Network codec, gate handshake and variant selection | M2 |
 | [`opcodes.md`](opcodes.md) | Opcode ledger (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`), with wire values; script message ids | M2 onward |
 | [`payloads.md`](payloads.md) | The client's pickle format (script messages, the auth payload), compressed or not | M2 |
-| `properties.md` | The synced-property (`prop_*`) schema, and how sync packets carry it | M2–M4 |
+| `properties.md` | The synced-property (`prop_*`) schema, and how sync packets carry it (the blob's format is in [`packets/world.md`](packets/world.md) §4 for now) | M2–M4 |
 | [`packets/lobby.md`](packets/lobby.md) | The lobby's script messages: the character list, creating and deleting characters, error codes, close reasons, and what Fenji sends | M3 |
+| [`packets/world.md`](packets/world.md) | Entering the world: 772, the native types 3, 7, 8 and 23, the property blob, time syncs, actor ids, the creation outfit, and what Fenji sends | M4 |
 | `packets/<area>.md` | Per-opcode payload tables (`login`, `lobby`, `world`, `combat`, …) | M2–M5 |
 
 ## Opcode ledger format (`opcodes.md`)
