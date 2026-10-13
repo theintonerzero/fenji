@@ -34,9 +34,10 @@ Signs (any one triggers):
      Wine builtin; a native module loaded from a drivers directory or into a winedevice.exe process
      (Wine's builtin drivers and their imports are all builtin); a resource lookup of the named type
      "PE" (the embedded driver's type, PE/144; needs +resource); Nt/ZwLoadDriver for a service that
-     isn't in the baseline; a service key created by services.exe that isn't in the baseline (needs
-     +reg, r1-r6); CreateService for a service that isn't in the baseline, or for a baseline service
-     with an image path other than its baseline one (needs +service, r7 on); the strings
+     isn't in the baseline, or for a baseline service that isn't of a driver type (discord-bridge);
+     a service key created by services.exe that isn't in the baseline (needs +reg, r1-r6);
+     CreateService for a service that isn't in the baseline, or for a baseline service with an image
+     path other than its baseline one or none readable (needs +service, r7 on); the strings
      ProcessProtect, AGTDriver or AurogonGameTrust.
   S4 the prefix's system.reg (re-read when it changes; Wine saves it periodically and at exit): a new
      service key of a driver type (kernel or file system) or with a driver image, or a baseline
@@ -45,7 +46,7 @@ Signs (any one triggers):
   the log still hasn't shown the client's creation, so the LoadDriver sign would be blind.
   Notes only (no trigger): a builtin .sys outside the baseline set; a new service of another type;
   CreateService re-registering a baseline service with its baseline image (Proton's discord-bridge,
-  at every start); LoadDriver for a baseline service
+  at every start); LoadDriver for a baseline service of a driver type
   (Wine's own winebth fails to load in every run), the name read from the same line or, when a nested
   Wine trace split the message, from a header-less continuation in the next 5 lines (r7); LoadDriver
   logged before the client's process creation (controller ruling after r7). Everything else,
@@ -86,7 +87,9 @@ R_CLIENT_CREATE = re.compile(rb"(?:CreateProcessInternalW|NtCreateUserProcess) [
 # +service (r7 on, replacing +reg): sechost's "CreateServiceW <scm> L"name" ..." and services.exe's
 # "svcctl_CreateServiceW (L"name", ...)". The first quoted string on the line is the service name.
 R_CREATESERVICE = re.compile(rb'CreateService\w*[^"\n]*"([^"\n]*)"|CreateService\w*[^\n]*')
-R_QUOTED = re.compile(rb'"((?:[^"\\\n]|\\.)*)"')  # a debugstr_w string's text, escapes kept
+# services.exe's line ends with the image path, after the access mask: `0xf01ff, L"<path>")`
+# (m1-accept2). The display name before it can be a bare (null) (issue #148). Escapes kept.
+R_SVCCTL_IMAGE = re.compile(rb', 0x[0-9a-f]+, L"((?:[^"\\\n]|\\.)*)"\)\s*$')
 # The sandbox's tmpfs mounts (isolated-run.sh): walked whole, and the root's own entries.
 TMPFS_SUBS = ("/tmp", "/dev/shm", "/run", "/var", "/etc", HOST_HOME)
 TMPFS_SHALLOW = ("/",)
@@ -425,9 +428,10 @@ def alive(pid):
 
 # --- log rules ---------------------------------------------------------------------------------
 class LogRules:
-    def __init__(self, baseline_services, images=None):
+    def __init__(self, baseline_services, images=None, drivers=None):
         self.services = set(baseline_services)
         self.images = dict(images or {})  # baseline service -> its normalised image path
+        self.drivers = set(drivers or ())  # the baseline services of a driver type (is_driver_service)
         self.services_pids = set()
         self.winedevice_pids = set()
         self.client_ts = None  # Wine timestamp of the client's process creation, once logged
@@ -505,8 +509,12 @@ class LogRules:
                             break
             svc = n.group(1).decode("utf-8", "replace").lower() if n else None
             how = " (message split across lines)" if split else ""
-            if svc and svc in self.services:
+            if svc and svc in self.drivers:
                 notes.append((f"LoadDriver for baseline service {svc}{how}", line_at(m.start())))
+            elif svc and svc in self.services:
+                # A user-mode service (discord-bridge, Type 0x10) never goes through LoadDriver: its
+                # key now names a driver (issue #148).
+                trig.append((f"S3 LoadDriver for user-mode baseline service {svc}{how}", line_at(m.start())))
             else:
                 trig.append((f"S3 LoadDriver for non-baseline service {svc}{how}", line_at(m.start())))
         low = None
@@ -529,11 +537,16 @@ class LogRules:
             # services.exe's line carries the image path after the name, the display name and the
             # (unquoted) access mask (m1-accept2). Proton re-registers its own services at every
             # start with their baseline image; another image is a driver under a borrowed name
-            # (review I1). sechost's line has no path: a note, as services.exe's line follows.
+            # (review I1), and so is a line whose image can't be read. sechost's line has no path:
+            # a note, as services.exe's line follows.
             raw = raw_line_at(m.start())
-            quoted = R_QUOTED.findall(raw)
-            if b"svcctl_CreateService" in raw and len(quoted) >= 3:
-                image = norm_image(quoted[2].decode("utf-8", "replace"))
+            if b"svcctl_CreateService" in raw:
+                found = R_SVCCTL_IMAGE.search(raw)
+                if not found:
+                    trig.append((f"S3 CreateService for baseline service {svc}, with no readable image",
+                                 line_at(m.start())))
+                    continue
+                image = norm_image(found.group(1).decode("utf-8", "replace"))
                 if image != self.images.get(svc.lower()):
                     trig.append((f"S3 CreateService re-points baseline service {svc}", line_at(m.start())))
                     continue
@@ -632,8 +645,11 @@ def load_baseline(out):
 
 
 def baseline_rules(base):
-    """LogRules for a baseline: its service names, and each one's image path (S3 CreateService)."""
-    return LogRules(base["services"], {n: i["image"] for n, i in base.get("service_info", {}).items()})
+    """LogRules for a baseline: its service names, each one's image path (S3 CreateService), and
+    which of them are drivers (S3 LoadDriver)."""
+    info = base.get("service_info", {})
+    return LogRules(base["services"], {n: i["image"] for n, i in info.items()},
+                    {n for n, i in info.items() if is_driver_service(i)})
 
 
 def cmd_scanlog(a):
