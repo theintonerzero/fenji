@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+bevy_ecs.workspace = true
 clap.workspace = true
 fenji-auth.workspace = true
 fenji-proto.workspace = true
