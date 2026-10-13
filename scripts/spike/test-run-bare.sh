@@ -14,7 +14,9 @@ set +e # run-bare.sh sets -e; these tests check exit statuses themselves
 TESTROOT=$(mktemp -d) || { echo "FATAL: mktemp failed" >&2; exit 2; }
 readonly TESTROOT
 [ -d "$TESTROOT" ] || { echo "FATAL: no test root" >&2; exit 2; }
-trap 'rm -rf -- "$TESTROOT"' EXIT
+# Only the test shell itself removes the root: a subshell that inherited this trap must not (CI's
+# bash 5.2 lost the root mid-run while background input loops were being killed).
+trap '[ "$BASHPID" != "$$" ] || rm -rf -- "$TESTROOT"' EXIT
 WORK=$TESTROOT/work REPO=$TESTROOT/repo PINNED_COPY=$TESTROOT/nonexistent UMU=$TESTROOT/nonexistent
 PROTON=$TESTROOT/nonexistent STUBBIN=$TESTROOT/nonexistent WATCHDOG=$TESTROOT/nonexistent
 mkdir -p "$WORK/data" "$WORK/runs/old" "$TESTROOT/bin"
@@ -193,11 +195,9 @@ if [ "${got[*]}" = "${want[*]}" ]; then ok "inside a desktop run: the session's 
 inputs=(stale)
 bare_inputs 1 "$TESTROOT/out" 0 60
 if [ "${#inputs[@]}" = 0 ]; then ok "a desktop run takes no screenshots and sends no input"; else bad "desktop inputs: ${inputs[*]}"; fi
-inputs=()
-bare_inputs 0 "$TESTROOT/out" 99 60
-if [ "${#inputs[@]}" = 3 ]; then ok "a nested-display run starts its screenshots, clicks and keys"; else bad "nested inputs: ${inputs[*]-}"; fi
-kill "${inputs[@]}" 2> /dev/null
-wait "${inputs[@]}" 2> /dev/null
+# start_inputs stands in here, so the test starts no background jobs of its own.
+started=$(start_inputs() { shots=11 clicker=12 typist=13; }; inputs=(); bare_inputs 0 "$TESTROOT/out" 99 60; echo "${inputs[*]-}")
+if [ "$started" = "11 12 13" ]; then ok "a nested-display run starts its screenshots, clicks and keys"; else bad "nested inputs: $started"; fi
 
 # --- the verdict
 says 7 "didn't start the client" "fenji-launch stopping before the start is exit 7" -- bare_verdict 0 95 0 "$TESTROOT/out"
