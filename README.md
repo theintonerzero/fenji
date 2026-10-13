@@ -9,7 +9,7 @@ All the protocol and format knowledge here comes from studying our own licensed 
 
 ## Status
 
-**Not playable yet.** With M3, a Fenji server runs invite-only accounts and the character lobby. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and finds them again after a restart. Entering the world comes with M4. The game connection between the client and the server is readable and unauthenticated. It carries no password, but play over a trusted network or a VPN ([PRIVACY.md](PRIVACY.md)).
+**Not playable yet.** With M3, a Fenji server runs invite-only accounts and the character lobby. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and finds them again after a restart. Entering the world comes with M4. The game connection between the client and the server is readable and unauthenticated. It carries no password, but play over a trusted network or a VPN ([PRIVACY.md](PRIVACY.md)). Joining a server means trusting its host: the game client obeys server messages that can write files and run code on your computer. Fenji's server never sends them, but a changed server could ([PRIVACY.md](PRIVACY.md#trusting-a-servers-host)).
 
 | Milestone | What it delivers | State |
 |---|---|---|

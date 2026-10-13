@@ -52,8 +52,11 @@ impl Up {
 
 /// Script messages the server never sends (ground rule 6; lobby.md §2). 556 runs Lua bytecode,
 /// 243 and 216 replace scripts and layouts, 627 patches tables, 729 writes a file to the player's
-/// disk, and 720 and 598 open URLs.
-pub const NEVER_SEND: [i64; 7] = [556, 243, 216, 627, 729, 720, 598];
+/// disk, 720 and 598 open URLs, 68 writes files where the server says and then runs a script from
+/// disk, and 714 calls any function a module or add-on exports (M4 world spec §2.6). 374 opens a
+/// URL, 50 writes a replay file to the player's disk, and 616 runs Lua source the server sends, in
+/// an environment with no globals (lobby.md 2.3).
+pub const NEVER_SEND: [i64; 12] = [556, 243, 216, 627, 729, 720, 598, 68, 714, 374, 50, 616];
 
 /// The body of an `STC_PROTOCOL_SCRIPT` message: the pickle of `id`, then `args`. Every script
 /// message the server sends is built here, so this is where [`NEVER_SEND`] is refused.
@@ -176,6 +179,20 @@ mod tests {
                 bytes: vec![1, 2, 3]
             }
         );
+    }
+
+    #[test]
+    fn the_robot_command_and_the_remote_invoke_are_never_sent() {
+        // 68 writes files where the server says, then runs a script from disk; 714 calls any
+        // function a module or add-on exports (M4 world spec §2.6). Reading the client's other
+        // handlers found three more (lobby.md 2.3): 374 opens a URL, 50 writes a replay file to
+        // the player's disk, and 616 runs Lua source the server sends.
+        for id in [68, 714, 374, 50, 616] {
+            assert!(
+                matches!(script_body(id, &[]), Err(Error::NeverSend(i)) if i == id),
+                "{id}"
+            );
+        }
     }
 
     #[test]
