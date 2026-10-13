@@ -40,20 +40,28 @@ impl Store {
         Ok(r.rows_affected() == 1)
     }
 
+    /// Stores a new game token for the account, in place of its unspent ones: an account holds at
+    /// most one live ticket, the latest, so issuing can't pile up rows until the hourly purge.
     pub async fn create_game_token(
         &self,
         token_hash: &[u8; 32],
         account_id: i64,
         expires_at: i64,
     ) -> Result<()> {
+        let mut tx = self.begin().await?;
+        sqlx::query("DELETE FROM game_tokens WHERE account_id = ? AND used_at IS NULL")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "INSERT INTO game_tokens (token_hash, account_id, expires_at) VALUES (?, ?, ?)",
         )
         .bind(&token_hash[..])
         .bind(account_id)
         .bind(expires_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -105,6 +113,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_game_token_replaces_the_accounts_unspent_ones() {
+        let (_d, s) = store().await;
+        let a = account(&s, 1, "bob").await;
+        let b = account(&s, 2, "eve").await;
+        s.create_game_token(&h(10), b, NOW + 60_000).await.unwrap();
+        for n in 20..30 {
+            s.create_game_token(&h(n), a, NOW + 60_000).await.unwrap();
+        }
+        // Only the latest of bob's works; eve's is untouched.
+        for n in 20..29 {
+            assert_eq!(s.consume_game_token(&h(n), NOW).await.unwrap(), None, "{n}");
+        }
+        assert_eq!(s.consume_game_token(&h(29), NOW).await.unwrap(), Some(a));
+        assert_eq!(s.consume_game_token(&h(10), NOW).await.unwrap(), Some(b));
+        let rows: (i64,) = sqlx::query_as("SELECT count(*) FROM game_tokens WHERE account_id = ?")
+            .bind(a)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.0, 1,
+            "issuing doesn't pile up rows until the hourly purge"
+        );
+    }
+
+    #[tokio::test]
     async fn a_game_token_is_consumed_once_and_only_in_time() {
         let (_d, s) = store().await;
         let a = account(&s, 1, "bob").await;
@@ -137,9 +171,11 @@ mod tests {
     async fn purge_drops_expired_sessions_and_spent_tokens() {
         let (_d, s) = store().await;
         let a = account(&s, 1, "bob").await;
+        let b = account(&s, 9, "eve").await;
         s.create_session(&h(2), a, NOW, NOW + 10).await.unwrap();
         s.create_session(&h(3), a, NOW, NOW + 1_000).await.unwrap();
-        s.create_game_token(&h(4), a, NOW + 10).await.unwrap();
+        // eve's expired token: bob's next one would replace an unspent token of his own.
+        s.create_game_token(&h(4), b, NOW + 10).await.unwrap();
         s.create_game_token(&h(5), a, NOW + 1_000).await.unwrap();
         s.consume_game_token(&h(5), NOW).await.unwrap();
         s.create_game_token(&h(6), a, NOW + 1_000).await.unwrap(); // live and unused: kept

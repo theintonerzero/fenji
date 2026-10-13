@@ -27,12 +27,27 @@ pub fn verify(password: &str, phc: &str) -> Result<bool> {
     }
 }
 
+static DUMMY: OnceLock<String> = OnceLock::new();
+
+fn dummy() -> &'static str {
+    DUMMY.get_or_init(|| hash("fenji: no such account").expect("hashing a constant"))
+}
+
 /// Spends the time a real check takes, against a fixed hash, for a username that doesn't exist:
 /// so the time taken doesn't tell an unknown username from a wrong password.
 pub fn verify_dummy(password: &str) {
-    static DUMMY: OnceLock<String> = OnceLock::new();
-    let phc = DUMMY.get_or_init(|| hash("fenji: no such account").expect("hashing a constant"));
-    let _ = verify(password, phc);
+    let _ = verify(password, dummy());
+}
+
+/// Makes the fixed hash now. Made at the first unknown username instead, that sign-in would take
+/// about twice as long as any other, which would tell it apart.
+pub fn warm_dummy() {
+    dummy();
+}
+
+/// Whether the fixed hash is made.
+pub fn dummy_ready() -> bool {
+    DUMMY.get().is_some()
 }
 
 #[cfg(test)]
