@@ -180,6 +180,19 @@ mod tests {
         assert_eq!(s.list_invites().await.unwrap().len(), 1);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_missing_directory_is_reported_as_the_files_not_as_its_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = Store::open(&dir.path().join("missing").join("fenji.db"))
+            .await
+            .err()
+            .expect("no such directory")
+            .to_string();
+        assert!(e.starts_with("the database file: "), "{e}");
+        assert!(!e.contains("permissions"), "{e}");
+    }
+
     #[tokio::test]
     async fn deleted_rows_are_overwritten() {
         let (_dir, s) = test_util::store().await;

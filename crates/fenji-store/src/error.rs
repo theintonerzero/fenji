@@ -5,8 +5,9 @@ pub enum Error {
     Db(#[from] sqlx::Error),
     #[error("migration: {0}")]
     Migrate(String),
-    #[error("the database file's permissions: {0}")]
-    Permissions(#[from] std::io::Error),
+    /// Creating the database file, or taking group and other access away from it.
+    #[error("the database file: {0}")]
+    File(#[from] std::io::Error),
     #[error("the invite is unknown, used, revoked or expired")]
     InviteInvalid,
     #[error("that username is taken")]
