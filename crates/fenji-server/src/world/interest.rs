@@ -316,6 +316,47 @@ mod tests {
     }
 
     #[test]
+    fn whoever_knew_of_a_player_whose_connection_closed_hears_it_left_that_tick() {
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        // Mai's channel is the test's own, with room to spare, so only its closing stops a send.
+        let (out, mai) = tokio::sync::mpsc::channel(8);
+        h.push(WorldIn::Join {
+            player: player(2, "Mai", at(0.0, 0.0)),
+            out,
+        });
+        h.push(WorldIn::Loaded { conn: 2 });
+        h.tick(50);
+        assert!(matches!(
+            h.take(1).as_slice(),
+            [WorldOut::Announce { pid: 2, .. }]
+        ));
+        // Ren is still loading, so no one is told of it yet.
+        h.join(player(3, "Ren", at(0.0, 0.0)));
+        h.tick(50);
+        assert_eq!(h.core.players(), 3);
+        // Mai's connection goes without a word to the world. Ren's load brings its Announce, which
+        // finds Mai's channel closed in the interest phase.
+        drop(mai);
+        h.push(WorldIn::Loaded { conn: 3 });
+        h.tick(50);
+        assert_eq!(h.core.players(), 2, "Mai is let go");
+        assert_eq!(
+            h.take(1),
+            vec![
+                WorldOut::Announce {
+                    pid: 3,
+                    pos: at(0.0, 0.0).pos
+                },
+                WorldOut::Leave { pids: vec![2] }
+            ],
+            "in the same tick"
+        );
+        h.tick(50);
+        assert!(h.take(1).is_empty(), "told once");
+    }
+
+    #[test]
     fn a_replacement_that_loads_in_the_tick_it_joins_is_a_leave_then_an_announce() {
         let mut h = Harness::new();
         h.enter(player(1, "Lin", at(0.0, 0.0)));
