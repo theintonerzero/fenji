@@ -162,6 +162,24 @@ if [ -z "$(with_env XAUTHORITY= desktop_xauth)" ]; then ok "no XAUTHORITY: nothi
 if [ "$(with_env XAUTHORITY="$TESTROOT/xauth" desktop_xauth)" = "$TESTROOT/xauth" ]; then ok "the display's auth file is brought in"; else bad "xauth file"; fi
 says 2 "XAUTHORITY" "an XAUTHORITY that isn't a readable file is refused" -- with_env XAUTHORITY="$TESTROOT/none" desktop_xauth
 says 2 "--key, --type or --click" "--desktop refuses key presses and clicks" -- with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --desktop --key 5:Return
+says 2 "--key, --type or --click" "--desktop refuses a click given before it" -- with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --click 5:10,10 --desktop
+says 2 "needs a local DISPLAY" "--desktop takes ASCII digits only" -- with_env DISPLAY=$':\u0663' desktop_display
+mkdir -p "$TESTROOT/xauthdir"
+mkfifo "$TESTROOT/xauthfifo"
+says 2 "XAUTHORITY" "an XAUTHORITY that is a directory is refused" -- with_env XAUTHORITY="$TESTROOT/xauthdir" desktop_xauth
+says 2 "XAUTHORITY" "an XAUTHORITY that is a FIFO is refused" -- with_env XAUTHORITY="$TESTROOT/xauthfifo" desktop_xauth
+# in_dir DIR COMMAND...: COMMAND run from DIR.
+in_dir() {
+  cd -- "$1" || return 1
+  shift
+  "$@"
+}
+says 2 "absolute" "a relative XAUTHORITY is refused" -- in_dir "$TESTROOT" with_env XAUTHORITY=xauth desktop_xauth
+says 2 "don't go together" "setup: --desktop and --display don't go together" -- with_env DISPLAY=:0 cmd_bare_setup --desktop --display 98
+chose=$(display=99 xauth=""; with_env DISPLAY=:0 with_env XAUTHORITY="$TESTROOT/xauth" choose_display 1 0; echo "$display $xauth")
+if [ "$chose" = "0 $TESTROOT/xauth" ]; then ok "--desktop chooses the session's display and its auth file"; else bad "choose desktop: $chose"; fi
+chose=$(display=98 xauth=""; choose_display 0 1; echo "$display ${xauth:-none}")
+if [ "$chose" = "98 none" ]; then ok "without --desktop the nested display stands, with no auth file"; else bad "choose nested: $chose"; fi
 says 2 "don't go together" "--desktop and --display don't go together" -- with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --desktop --display 0
 mkdir -p "$TESTROOT/rt2"
 mapfile -t got < <(XDG_RUNTIME_DIR=$TESTROOT/rt2 HOME=$TESTROOT/nohome namespace_cmd 0 "$TESTROOT/xauth")
@@ -237,6 +255,10 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   fake_pgrep ""
   says 1 "hasn't been through Proton's launcher" "a run refuses a prefix Proton's launcher never ran in" -- \
     with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}"
+  cp -- "$TESTROOT/proton-nobridge/version" "$WORK/compat/fenji-primed"
+  says 1 "another GE-Proton build" "a run names a prefix primed by another GE-Proton build" -- \
+    with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}"
+  rm -f -- "$WORK/compat/fenji-primed"
 else
   echo "skip the unprimed-prefix run test: it needs Linux on x86_64"
 fi

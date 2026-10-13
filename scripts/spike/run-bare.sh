@@ -11,7 +11,8 @@
 #     run);
 #   - a local fenji-server, which shares the client's network namespace: that namespace has only
 #     loopback, and the host's daemon sockets (D-Bus, systemd-resolved, the desktop portal) are out
-#     of reach, so the client can reach the Fenji server and nothing else;
+#     of reach, so on a nested display the client can reach the Fenji server and nothing else
+#     (--desktop loosens this; see below);
 #   - the AGT driver watchdog armed on the namespace's PID namespace before anything in it starts,
 #     as in sandboxed runs; a gate event stops the run (exit 3);
 #   - never --gf-sdk=mocked: fenji-launch passes no SDK flag at all.
@@ -26,7 +27,7 @@
 # follow Proton's per-session logs) and its registry rule (S4) carry the rest, and the run's
 # evidence lists any new *.sys file under umu's runtime and /var/tmp. Linux on x86_64 only.
 #
-#   scripts/spike/run-bare.sh setup
+#   scripts/spike/run-bare.sh setup [--display N | --desktop]
 #   scripts/spike/run-bare.sh run NAME --server FILE --server-data DIR --username USER
 #       --password-file FILE [--timeout SECONDS] [--display N | --desktop] [--key T:KEY]...
 #       [--type T:TEXT]... [--click T:X,Y]...
@@ -38,11 +39,24 @@
 #
 # run's --server config must bind 127.0.0.1 and name 127.0.0.1 as its public_host, its [store] path
 # must lie in --server-data, a directory under re/bare-metal/, and --password-file holds the
-# account's password on its first line. The display is the nested one (:99 unless --display), where
-# screenshots and key presses can reach the client. --desktop runs the client on the session's own
-# display instead (DISPLAY), as a player has it: the display's auth file comes in read-only, and
-# there are no screenshots, key presses or clicks, which would take or reach the whole desktop. The
-# evidence goes to re/bare-metal/out/NAME; a Fenji ticket found there is redacted in place.
+# account's password on its first line. The evidence goes to re/bare-metal/out/NAME; a Fenji ticket
+# found there is redacted in place.
+#
+# The display. By default a run uses a nested display, :99 or --display N, where screenshots and
+# key presses reach the client and nothing else. The real GPU can present there only if that
+# Xwayland has glamor on, so start a dedicated one without -shm, for example
+#   Xwayland :98 -geometry 1920x1080 -ac -nolisten tcp -noreset -extension MIT-SHM &
+# and pass --display 98. isolated-run.sh's :99 keeps glamor off (-shm) so that a sandboxed client
+# gets no GPU device; a bare run's client has the GPU anyway, so never share the two displays.
+# Otherwise the real GPU's first frame ends the client (bm-2: "XIO: fatal IO error").
+# --desktop runs the client on the session's own display (DISPLAY), as a player has it. The
+# display's X authority file comes in read-only, and there are no screenshots, key presses or
+# clicks, which would take or reach the whole desktop. The client then joins the session's X
+# server: it can see the other X11 windows and the clipboard the compositor bridges into X11, and
+# its XTEST input may reach native windows through the compositor (libei), a terminal included. So
+# a desktop run limits the client's network less strictly than a nested one. The owner accepted
+# that for hands-on test runs (2026-10-13). Players run the game on their own desktop anyway; these
+# runs are a developer's.
 #
 # Exit: 0 the run finished; 3 GATE EVENT (the watchdog stopped the run: stop all runs, report);
 # 4 the watchdog failed; 5 the watchdog never armed (the client was not started); 6 the namespace
@@ -104,7 +118,7 @@ namespace_env() {
 
 # --desktop: the session's own display, as a player has it. Its number, from a local DISPLAY.
 desktop_display() {
-  [[ "${DISPLAY:-}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]] ||
+  [[ "${DISPLAY:-}" =~ ^:([0123456789]+)(\.[0123456789]+)?$ ]] ||
     misuse "--desktop needs a local DISPLAY such as :0 (DISPLAY is '${DISPLAY:-}')"
   echo "${BASH_REMATCH[1]}"
 }
@@ -114,10 +128,21 @@ desktop_display() {
 # which the namespace shows anyway.
 desktop_xauth() {
   [ -n "${XAUTHORITY:-}" ] || return 0
+  case "$XAUTHORITY" in /*) ;; *) misuse "XAUTHORITY must be an absolute path: '$XAUTHORITY'" ;; esac
   if [ ! -f "$XAUTHORITY" ] || [ ! -r "$XAUTHORITY" ]; then
     misuse "XAUTHORITY isn't a readable file: '$XAUTHORITY'"
   fi
   echo "$XAUTHORITY"
+}
+
+# The display for setup or a run, from --desktop (1 or 0) and whether --display was given (1 or 0):
+# the nested one in display, or with --desktop the session's own, whose X authority file goes in
+# xauth. Sets display and xauth.
+choose_display() {
+  [ "$1" = 1 ] || return 0
+  [ "$2" = 0 ] || misuse "--desktop and --display don't go together: --desktop is the session's own display"
+  display=$(desktop_display) || exit 2
+  xauth=$(desktop_xauth) || exit 2
 }
 
 # The host-side inputs for a run (run-client.sh's start_inputs), their PIDs in inputs. None on the
@@ -198,17 +223,26 @@ setup_env() {
 }
 
 cmd_bare_setup() {
-  [ $# -eq 0 ] || usage
+  local display=99 display_given=0 desktop=0 xauth=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --display) [ $# -ge 2 ] || usage; display=$2; display_given=1; shift 2 ;;
+      --desktop) desktop=1; shift ;;
+      *) usage ;;
+    esac
+  done
+  case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
+  choose_display "$desktop" "$display_given"
   host_guards
   if prefix_ready && prefix_primed; then
     echo "the prefix is ready: $WORK/compat"
     return 0
   fi
   mkdir -p "$WORK/compat"
-  need_display 99
+  need_display "$display"
   local ns ne se bpf prime
-  mapfile -t ns < <(namespace_cmd 99)
-  mapfile -t ne < <(namespace_env 99)
+  mapfile -t ns < <(namespace_cmd "$display" "$xauth")
+  mapfile -t ne < <(namespace_env "$display" "$xauth")
   mapfile -t se < <(setup_env)
   bpf=$(seccomp_filter)
   if ! prefix_ready; then
@@ -250,14 +284,10 @@ cmd_bare_run() {
   case "$run" in '' | */* | .* | *[!A-Za-z0-9._-]*) die "bad run name: '$run'" ;; esac
   case "$tmo" in '' | *[!0123456789]*) die "--timeout takes whole seconds" ;; esac
   case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
-  if [ "$desktop" = 1 ]; then
-    [ "$display_given" = 0 ] || misuse "--desktop and --display don't go together: --desktop is the session's own display"
-    if [ ${#presses[@]} -gt 0 ] || [ ${#clicks[@]} -gt 0 ]; then
-      misuse "--desktop takes no --key, --type or --click: they would go to whatever has focus on the desktop"
-    fi
-    display=$(desktop_display) || exit 2
-    xauth=$(desktop_xauth) || exit 2
+  if [ "$desktop" = 1 ] && { [ ${#presses[@]} -gt 0 ] || [ ${#clicks[@]} -gt 0 ]; }; then
+    misuse "--desktop takes no --key, --type or --click: they would go to whatever has focus on the desktop"
   fi
+  choose_display "$desktop" "$display_given"
   [ -n "$server_cfg" ] || misuse "--server is required: the client plays against a local fenji-server"
   [ -n "$server_data" ] || misuse "--server-data is required: the server's store lives there"
   [[ "$user" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || misuse "--username takes the account's name"
@@ -280,6 +310,9 @@ with open(sys.argv[1], "rb") as f:
 PY
   host_guards
   prefix_ready || die "no prefix; run: $0 setup"
+  if [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" != "$(proton_build)" ]; then
+    die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run; run once: $0 setup"
+  fi
   prefix_primed || die "the prefix hasn't been through Proton's launcher, so Proton's own service isn't in the watchdog's baseline; run: $0 setup"
   need_display "$display"
   check_pinned_copy
