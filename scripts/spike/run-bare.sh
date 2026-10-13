@@ -25,10 +25,10 @@
 # daemon socket in /run, /tmp or /dev/shm is. Its own /proc matters: without it, a nested bwrap
 # (umu's pressure-vessel) looks its child up in the host's /proc by a namespace PID and hangs. The
 # watchdog's scan of sandbox tmpfs mounts is off (--no-tmpfs-scan): the host's own Proton prefixes
-# would trip it. Its scan of
-# re/bare-metal (the prefix and the run's copy), its process rules (S2), its log rules (S3, which
-# follow Proton's per-session logs) and its registry rule (S4) carry the rest, and the run's
-# evidence lists any new *.sys file under umu's runtime and /var/tmp. Linux on x86_64 only.
+# would trip it. Its scan of re/bare-metal (the prefix and the run's copy), its process rules
+# (S2), its log rules (S3, which follow Proton's per-session logs) and its registry rule (S4) carry
+# the rest, and the run's evidence lists any new *.sys file under umu's runtime and /var/tmp.
+# Linux on x86_64 only.
 #
 #   scripts/spike/run-bare.sh setup (--display N | --desktop)
 #   scripts/spike/run-bare.sh run NAME --server FILE --server-data DIR --username USER
@@ -50,8 +50,9 @@
 # screenshots and key presses reach the client and nothing else. The real GPU can present there
 # only if that Xwayland has glamor on, so start a dedicated one without -shm, for example
 #   Xwayland :98 -geometry 1920x1080 -ac -nolisten tcp -noreset -extension MIT-SHM &
-# and pass --display 98. isolated-run.sh's :99 keeps glamor off (-shm) so that a sandboxed client
-# gets no GPU device; a bare run's client has the GPU anyway, so never share the two displays.
+# and pass --display 98, and run nothing else on it: with -ac, a terminal there is a shell outside
+# the namespace. isolated-run.sh's :99 keeps glamor off (-shm) so that a sandboxed client gets no
+# GPU device; a bare run's client has the GPU anyway, so never share the two displays.
 # Otherwise the real GPU's first frame ends the client (bm-2: "XIO: fatal IO error").
 # --desktop runs the client on the session's own display (DISPLAY), as a player has it. The
 # display's X authority file comes in read-only, and there are no screenshots, key presses or
@@ -70,8 +71,8 @@ set -euo pipefail
 BARE_HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=run-client.sh
 . "$BARE_HERE/run-client.sh"
-# Everything a bare run writes lives here. The pinned copy is the run's source (~/.config/fenji/env.sh
-# sets FENJI_CLIENT_PATH).
+# Everything a bare run writes lives here. The pinned copy is the run's source
+# (~/.config/fenji/env.sh sets FENJI_CLIENT_PATH).
 WORK="$REPO/re/bare-metal"
 PINNED_COPY="${FENJI_CLIENT_PATH:-}"
 UMU="${FENJI_UMU_RUN:-$HOME/.local/bin/umu-run}"
@@ -156,14 +157,13 @@ choose_display() {
   fi
   # DISPLAY parsed as isolated-run.sh parses it for --x11: [protocol/][host]:D[.S], by number.
   if [ -n "${DISPLAY:-}" ]; then
-    local d=${DISPLAY##*:} n=$display
+    local d=${DISPLAY##*:}
     d=${d%%.*}
     if [[ $DISPLAY != *:* || -z $d || $d == *[!0123456789]* ]]; then
       misuse "DISPLAY=$DISPLAY doesn't name a display number, so --display $display can't be checked against the session's display (fix or unset DISPLAY)"
     fi
     while [[ $d == 0?* ]]; do d=${d#0}; done
-    while [[ $n == 0?* ]]; do n=${n#0}; done
-    [ "$d" != "$n" ] || misuse "--display $display is the session's own display (DISPLAY=$DISPLAY); use --desktop for it"
+    [ "$d" != "$display" ] || misuse "--display $display is the session's own display (DISPLAY=$DISPLAY); use --desktop for it"
   fi
 }
 
@@ -335,7 +335,10 @@ cmd_bare_setup() {
     esac
   done
   if [ "$display_given" = 1 ]; then
-    case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
+    case "$display" in
+      0 | [123456789] | [123456789][0123456789] | [123456789][0123456789][0123456789]) ;;
+      *) die "--display takes an X display number, 0 to 999 without leading zeros, not '$display'" ;;
+    esac
   fi
   [ "$desktop" = 1 ] || [ "$display_given" = 1 ] ||
     misuse "setup needs --display N or --desktop: a dedicated nested display, or the session's own (see the header)"
@@ -392,7 +395,10 @@ cmd_bare_run() {
   case "$run" in '' | */* | .* | *[!A-Za-z0-9._-]*) die "bad run name: '$run'" ;; esac
   case "$tmo" in '' | *[!0123456789]*) die "--timeout takes whole seconds" ;; esac
   if [ "$display_given" = 1 ]; then
-    case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
+    case "$display" in
+      0 | [123456789] | [123456789][0123456789] | [123456789][0123456789][0123456789]) ;;
+      *) die "--display takes an X display number, 0 to 999 without leading zeros, not '$display'" ;;
+    esac
   fi
   if [ "$desktop" = 1 ] && { [ ${#presses[@]} -gt 0 ] || [ ${#clicks[@]} -gt 0 ]; }; then
     misuse "--desktop takes no --key, --type or --click: they would go to whatever has focus on the desktop"

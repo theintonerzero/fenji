@@ -11,6 +11,7 @@ HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=run-bare.sh
 . "$HERE/run-bare.sh"
 set +e # run-bare.sh sets -e; these tests check exit statuses themselves
+unset DISPLAY # the tests set it where they need it, so the caller's session can't change a result
 TESTROOT=$(mktemp -d) || { echo "FATAL: mktemp failed" >&2; exit 2; }
 readonly TESTROOT
 [ -d "$TESTROOT" ] || { echo "FATAL: no test root" >&2; exit 2; }
@@ -241,13 +242,20 @@ touch "$X_SOCKDIR/X91"
 lock 91 4101
 mkfifo "$X_LOCKS/.X90-lock"
 ln -s "$X_LOCKS/.X98-lock" "$X_LOCKS/.X89-lock"
-# problem N PATTERN WHAT: display N is refused with PATTERN in the reason (and in good time).
+# problem N PATTERN WHAT [CODE]: display N is refused with PATTERN in the reason, in good time, in a
+# child shell with the test root's paths and, before the check, CODE (stand-ins, other paths).
 problem() {
   local why
   # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
-  why=$(timeout 5 bash -c '. "$1"; X_LOCKS=$2 X_SOCKDIR=$3 BARE_PROC=$4; bare_display_problem "$5"' _ \
-    "$HERE/run-bare.sh" "$X_LOCKS" "$X_SOCKDIR" "$BARE_PROC" "$1")
+  why=$(timeout 5 bash -c '. "$1"; WORK=$2/work REPO=$2/repo X_LOCKS=$3 X_SOCKDIR=$4 BARE_PROC=$5
+    eval "$7"; bare_display_problem "$6"' _ \
+    "$HERE/run-bare.sh" "$TESTROOT" "$X_LOCKS" "$X_SOCKDIR" "$BARE_PROC" "$1" "${4-}")
   case "$why" in *"$2"*) ok "$3" ;; *) bad "$3: '$why'" ;; esac
+}
+# foreign PATH: CODE for problem that makes stat report PATH as uid 4242's (or ROOT=1: root's).
+foreign() {
+  # shellcheck disable=SC2016 # expanded in problem's child shell
+  printf 'stat() { if [ "${!#}" = %q ]; then local u=4242; [ -z "${ROOT:-}" ] || u=0; printf "%%s %%s\\n" "$u" "$(command stat -c %%f -- "${!#}")"; else command stat "$@"; fi; }\n' "$1"
 }
 if [ -z "$(bare_display_problem 98)" ]; then ok "a dedicated rootful Xwayland with glamor on is a nested display"; else bad "glamor-on nested: $(bare_display_problem 98)"; fi
 if [ -z "$(bare_display_problem 97)" ]; then ok "the sandbox's kind of display, glamor off, is one too"; else bad "glamor-off nested: $(bare_display_problem 97)"; fi
@@ -261,15 +269,44 @@ problem 92 "no X server socket" "a display with no socket is refused"
 problem 91 "not a socket" "a socket that is a plain file is refused"
 problem 90 "not a regular file" "a FIFO as the lock is refused, without blocking"
 problem 89 "not a regular file" "a symlink as the lock is refused"
-problem 88 "font-server" "a server whose libXfont can open sockets is refused"
+problem 88 "with font-server support" "a server whose libXfont can open sockets is refused"
 problem 87 "no libXfont" "a server whose font library can't be checked is refused"
-mkdir -p "$TESTROOT/x11-nosticky"
-chmod 0777 "$TESTROOT/x11-nosticky"
-why=$(X_SOCKDIR=$TESTROOT/x11-nosticky bare_display_problem 98)
-case "$why" in *sticky*) ok "a socket directory without the sticky bit is refused" ;; *) bad "sticky: $why" ;; esac
+# A second library that can open sockets, after a clean one.
+xserver 4110 Xwayland Xwayland :84 -ac
+mkdir -p "$BARE_PROC/4110/root/usr/lib"
+echo "calls connect" > "$BARE_PROC/4110/root/usr/lib/libXfont.so.1"
+echo "7f0000002000-7f0000003000 r--p 00000000 00:00 0    /usr/lib/libXfont.so.1" >> "$BARE_PROC/4110/maps"
+sock 84; lock 84 4110
+problem 84 "with font-server support" "every libXfont the server maps is checked, not only the first"
+# A library replaced since the server started, and one that isn't there to read.
+xserver 4108 Xwayland Xwayland :85 -ac
+echo "7f0000000000-7f0000001000 r--p 00000000 00:00 0    /usr/lib64/libXfont2.so.2.0.0 (deleted)" > "$BARE_PROC/4108/maps"
+sock 85; lock 85 4108
+problem 85 "replaced since it started" "a libXfont replaced since the server started is refused"
+xserver 4109 Xwayland Xwayland :83 -ac
+echo "7f0000000000-7f0000001000 r--p 00000000 00:00 0    /usr/lib64/libXfont2-gone.so.2" > "$BARE_PROC/4109/maps"
+sock 83; lock 83 4109
+problem 83 "not a readable file" "a libXfont that can't be read here is refused"
+problem 98 "grep failed" "a check that can't run refuses" 'grep() { return 2; }'
+# A symlink as the socket.
+ln -s "$X_SOCKDIR/X98" "$X_SOCKDIR/X86"
+lock 86 4101
+problem 86 "not a socket" "a symlink as the socket is refused"
+# Owners: a socket directory, socket or lock of another user's; a socket directory of root's is fine.
+problem 98 "belongs to uid 4242, not root or you" "another user's socket directory is refused" "$(foreign "$X_SOCKDIR")"
+problem 98 "belongs to uid 4242, not you" "another user's socket is refused" "$(foreign "$X_SOCKDIR/X98")"
+problem 98 "not a regular file of yours" "another user's lock is refused" "$(foreign "$X_LOCKS/.X98-lock")"
+# shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
+why=$(timeout 5 bash -c '. "$1"; X_LOCKS=$2 X_SOCKDIR=$3 BARE_PROC=$4 ROOT=1; eval "$5"; bare_display_problem 98' _ \
+  "$HERE/run-bare.sh" "$X_LOCKS" "$X_SOCKDIR" "$BARE_PROC" "$(foreign "$X_SOCKDIR")")
+if [ -z "$why" ]; then ok "a socket directory of root's is accepted"; else bad "root's directory: $why"; fi
+# The socket directory: sticky, and not a symlink.
+mkdir -p "$TESTROOT/x11-plain"
+chmod 0777 "$TESTROOT/x11-plain"
+python3 -I -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TESTROOT/x11-plain/X98"
+problem 98 "doesn't have the sticky bit" "a socket directory without the sticky bit is refused" "X_SOCKDIR=$(printf %q "$TESTROOT/x11-plain")"
 ln -s "$X_SOCKDIR" "$TESTROOT/x11-link"
-why=$(X_SOCKDIR=$TESTROOT/x11-link bare_display_problem 98)
-case "$why" in *"not a directory"*) ok "a socket directory that is a symlink is refused" ;; *) bad "dir link: $why" ;; esac
+problem 98 "not a directory" "a socket directory that is a symlink is refused" "X_SOCKDIR=$(printf %q "$TESTROOT/x11-link")"
 says 2 "session's own display" "--display naming the session's own display is refused" -- with_env display=98 with_env DISPLAY=:98.0 choose_display 0 1
 says 2 "session's own display" "... with DISPLAY as unix:N" -- with_env display=0 with_env DISPLAY=unix:0 choose_display 0 1
 says 2 "session's own display" "... with DISPLAY as localhost:N" -- with_env display=0 with_env DISPLAY=localhost:0 choose_display 0 1
@@ -281,6 +318,8 @@ says 2 "needs a local DISPLAY" "setup --desktop with no DISPLAY is refused" -- w
 says 2 "--display N or --desktop" "setup names its display: no default" -- cmd_bare_setup
 says 2 "" "setup: an unknown option is a usage error" -- cmd_bare_setup --print
 says 1 "display number" "setup: --display takes a number" -- cmd_bare_setup --display x
+says 1 "0 to 999" "setup: --display takes no leading zeros" -- cmd_bare_setup --display 098
+says 1 "0 to 999" "a run's --display takes 0 to 999" -- cmd_bare_run t "${GOOD[@]}" --display 1000
 
 # --- the verdict
 says 7 "didn't start the client" "fenji-launch stopping before the start is exit 7" -- bare_verdict 0 95 0 "$TESTROOT/out"
