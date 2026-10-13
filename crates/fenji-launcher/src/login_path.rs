@@ -5,12 +5,12 @@
 use std::net::SocketAddrV4;
 
 use crate::api::GameGrant;
-use crate::launch::LaunchSpec;
 
 pub trait LoginPath {
     fn name(&self) -> &'static str;
-    /// Adds what the client needs to log in to `gate` with `grant`.
-    fn apply(&self, grant: &GameGrant, gate: SocketAddrV4, spec: &mut LaunchSpec);
+    /// What the client needs to log in to `gate` with `grant`, as environment variables: a login
+    /// path never adds arguments, so the ticket can't reach a command line.
+    fn env(&self, grant: &GameGrant, gate: SocketAddrV4) -> Vec<(String, String)>;
 }
 
 /// The login paths there are, best first.
@@ -28,14 +28,16 @@ impl LoginPath for Uinfo {
         "uinfo"
     }
 
-    fn apply(&self, grant: &GameGrant, gate: SocketAddrV4, spec: &mut LaunchSpec) {
+    fn env(&self, grant: &GameGrant, gate: SocketAddrV4) -> Vec<(String, String)> {
         let uinfo = format!(
             "{}:90:{}:0:{}:{}",
             grant.server_id, grant.server_name, grant.account, grant.user_id
         );
-        spec.env.push(("gj_uinfo".into(), uinfo));
-        spec.env.push(("gj_gates".into(), gate.to_string()));
-        spec.env.push(("gj_ticket".into(), grant.ticket.clone()));
+        vec![
+            ("gj_uinfo".into(), uinfo),
+            ("gj_gates".into(), gate.to_string()),
+            ("gj_ticket".into(), grant.ticket.clone()),
+        ]
     }
 }
 
@@ -55,27 +57,17 @@ mod tests {
             account: "tester".into(),
             user_id: 5,
         };
-        let mut spec = LaunchSpec {
-            program: "x".into(),
-            args: vec![],
-            env: vec![],
-            cwd: "/".into(),
-        };
         let paths = available();
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].name(), "uinfo");
-        paths[0].apply(&grant, "10.0.0.2:7800".parse().unwrap(), &mut spec);
+        let env = paths[0].env(&grant, "10.0.0.2:7800".parse().unwrap());
         assert_eq!(
-            spec.env,
+            env,
             vec![
                 ("gj_uinfo".to_string(), "1:90:Fenji:0:tester:5".to_string()),
                 ("gj_gates".to_string(), "10.0.0.2:7800".to_string()),
                 ("gj_ticket".to_string(), "fenji1-ab".to_string()),
             ]
-        );
-        assert!(
-            spec.args.is_empty(),
-            "the ticket stays out of the command line (S17)"
         );
     }
 }

@@ -9,8 +9,14 @@ use common::*;
 
 fn launch(args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_fenji-launch"));
-    // No real umu-run (or anything else) can be found and started from a test.
-    cmd.args(args).env_remove("FENJI_PASSWORD").env("PATH", "");
+    // No real umu-run (or anything else) can be found and started from a test, and nothing
+    // reaches the real data folders.
+    cmd.args(args)
+        .env_remove("FENJI_PASSWORD")
+        .env("PATH", "")
+        .env("HOME", "/nonexistent/fenji-test-home")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CONFIG_HOME");
     for k in [
         "http_proxy",
         "HTTP_PROXY",
@@ -248,7 +254,7 @@ fn play_is_refused_off_linux_even_with_print() {
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(
         text(&out.stderr).trim_end(),
-        "fenji-launch: fenji-launch can't start the client on this system yet"
+        "fenji-launch: Fenji can't start the client on this system yet"
     );
     assert!(out.stdout.is_empty());
     assert!(seen.lock().unwrap().is_empty(), "nothing is sent");

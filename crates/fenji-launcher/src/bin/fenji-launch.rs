@@ -80,7 +80,7 @@ enum Command {
         /// Linux: the launcher's Wine prefix (by default fenji-launcher/prefix in the data folder).
         #[arg(long)]
         prefix: Option<PathBuf>,
-        /// Linux: a Proton build for PROTONPATH (by default umu-run's choice).
+        /// Linux: a Proton build for PROTONPATH (by default $PROTONPATH, else umu-run's choice).
         #[arg(long)]
         proton: Option<PathBuf>,
     },
@@ -186,7 +186,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             proton,
         } => {
             // Before anything else, --print included (plan Amendment B; ground rule 6).
-            start::check_os(Os::this())?;
+            let os = Os::this();
+            start::check_os(os)?;
             let mut note = |m: &str| eprintln!("fenji-launch: {m}");
             if print {
                 let pw = password(password_file.as_deref())?;
@@ -195,7 +196,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     username: &username,
                     password: &pw,
                 };
-                for (k, v) in start::take_ticket(&login, || Ok(()), &mut note)? {
+                for (k, v) in start::take_ticket(os, &login, || Ok(()), &mut note)? {
                     println!("{k}={v}");
                 }
                 return Ok(ExitCode::SUCCESS);
@@ -223,6 +224,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             };
             // Only the pinned build starts (ground rule 1).
             let status = start::play(
+                os,
                 &client,
                 &cwd,
                 &Manifest::pinned(),

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use common::*;
 use fenji_launcher::launch::Platform;
 use fenji_launcher::manifest::Manifest;
+use fenji_launcher::settings::Os;
 use fenji_launcher::start::{Login, play};
 
 /// A client folder of one file, `client/` in `d`, and its manifest.
@@ -76,6 +77,7 @@ fn play_prepares_the_prefix_then_starts_the_client_with_the_ticket_in_its_enviro
     let mut notes = Vec::new();
     // The client folder is given relative to where the command ran.
     let status = play(
+        Os::Linux,
         Path::new("client"),
         d.path(),
         &manifest,
@@ -161,6 +163,7 @@ fn a_prefix_that_isnt_ready_stops_the_start_before_any_password_is_sent() {
         password: "a long password",
     };
     let e = play(
+        Os::Linux,
         &d.path().join("client"),
         d.path(),
         &manifest,

@@ -46,17 +46,21 @@ pub enum Os {
     Linux,
     MacOs,
     Windows,
+    /// Any other system; it keeps Linux's folder conventions.
+    Other,
 }
 
 impl Os {
-    /// The system this build runs on (any other Unix counts as Linux).
+    /// The system this build runs on.
     pub fn this() -> Os {
-        if cfg!(windows) {
+        if cfg!(target_os = "linux") {
+            Os::Linux
+        } else if cfg!(windows) {
             Os::Windows
         } else if cfg!(target_os = "macos") {
             Os::MacOs
         } else {
-            Os::Linux
+            Os::Other
         }
     }
 }
@@ -75,7 +79,7 @@ pub fn data_dir() -> Option<PathBuf> {
 /// directory elsewhere. Relative or empty variables are ignored.
 pub fn data_dir_for(os: Os, var: impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
     match os {
-        Os::Linux => {
+        Os::Linux | Os::Other => {
             let abs = |k: &str| var(k).filter(|p| p.is_absolute() || p.has_root());
             let base =
                 abs("XDG_DATA_HOME").or_else(|| abs("HOME").map(|h| h.join(".local/share")))?;
@@ -91,7 +95,9 @@ pub fn data_dir_for(os: Os, var: impl Fn(&str) -> Option<PathBuf>) -> Option<Pat
 pub fn config_dir_for(os: Os, var: impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
     let abs = |k: &str| var(k).filter(|p| p.is_absolute() || p.has_root());
     let base = match os {
-        Os::Linux => abs("XDG_CONFIG_HOME").or_else(|| abs("HOME").map(|h| h.join(".config")))?,
+        Os::Linux | Os::Other => {
+            abs("XDG_CONFIG_HOME").or_else(|| abs("HOME").map(|h| h.join(".config")))?
+        }
         Os::MacOs => abs("HOME")?.join("Library").join("Application Support"),
         Os::Windows => abs("APPDATA")?,
     };
@@ -119,6 +125,11 @@ mod tests {
     fn each_platform_has_its_place() {
         let linux = config_dir_for(Os::Linux, vars(&[("HOME", "/home/p")]));
         assert_eq!(linux, Some(PathBuf::from("/home/p/.config/fenji-launcher")));
+        let other = data_dir_for(Os::Other, vars(&[("HOME", "/home/p")]));
+        assert_eq!(
+            other,
+            Some(PathBuf::from("/home/p/.local/share/fenji-launcher"))
+        );
         let xdg = config_dir_for(
             Os::Linux,
             vars(&[("HOME", "/home/p"), ("XDG_CONFIG_HOME", "/cfg")]),

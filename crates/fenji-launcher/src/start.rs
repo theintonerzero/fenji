@@ -15,15 +15,15 @@ use crate::manifest::Manifest;
 use crate::settings::Os;
 use crate::verify::{Level, verify};
 
-const NOT_HERE: &str = "fenji-launch can't start the client on this system yet";
+const NOT_HERE: &str = "Fenji can't start the client on this system yet";
 
 /// Refuses every system but Linux, where the client runs through umu-run. Native Windows waits on
-/// the owner's decision (plan Amendment B; ground rule 6) and macOS has no tested way; both get the
-/// same neutral answer, `--print` included.
+/// the owner's decision (plan Amendment B; ground rule 6), and macOS and the rest have no tested
+/// way; all get the same neutral answer, `--print` included.
 pub fn check_os(os: Os) -> anyhow::Result<()> {
     match os {
         Os::Linux => Ok(()),
-        Os::MacOs | Os::Windows => bail!(NOT_HERE),
+        Os::MacOs | Os::Windows | Os::Other => bail!(NOT_HERE),
     }
 }
 
@@ -148,10 +148,12 @@ fn prepare(platform: &Platform) -> anyhow::Result<()> {
         return Ok(());
     };
     let status = run(&spec)?;
-    if status.code().is_none() || !prefix_ready(prefix) {
+    if status.code().is_none() {
+        bail!("`umu-run createprefix` was stopped ({status}), so the Wine prefix may not be ready");
+    }
+    if !prefix_ready(prefix) {
         bail!(
-            "the Wine prefix in {} isn't ready: `umu-run createprefix` ended with {status}, and its \
-             output above says why",
+            "the Wine prefix in {} isn't ready; `umu-run createprefix`'s output above says why",
             prefix.display()
         );
     }
@@ -163,8 +165,16 @@ fn prepare(platform: &Platform) -> anyhow::Result<()> {
 /// never do either: only a fresh ticket's pairs may log the client in.
 pub const SECRET_ENV: [&str; 1] = ["FENJI_PASSWORD"];
 
+/// Compared without regard to case: Wine looks variables up that way.
 fn passed_on(name: &OsStr) -> bool {
-    !SECRET_ENV.iter().any(|s| name == *s) && !name.as_encoded_bytes().starts_with(b"gj_")
+    let name = name.as_encoded_bytes();
+    let secret = SECRET_ENV
+        .iter()
+        .any(|s| name.eq_ignore_ascii_case(s.as_bytes()));
+    let login = name
+        .get(..3)
+        .is_some_and(|p| p.eq_ignore_ascii_case(b"gj_"));
+    !secret && !login
 }
 
 /// The process for `spec`: its program, arguments and folder, and an environment of `parent`'s
@@ -221,13 +231,16 @@ pub struct Login<'a> {
 }
 
 /// The login path's environment for one game token: `gj_uinfo`, `gj_gates` and `gj_ticket`. The
-/// gate is checked before the password is sent (M3 spec §4), `ready` runs before the token is
-/// taken, and the session ends whatever happens; `note` hears about a failed sign-out.
+/// system is checked first ([`check_os`]), the gate before the password is sent (M3 spec §4),
+/// `ready` runs before the token is taken, and the session ends whatever happens; `note` hears
+/// about a failed sign-out.
 pub fn take_ticket(
+    os: Os,
     login: &Login,
     ready: impl FnOnce() -> anyhow::Result<()>,
     note: &mut dyn FnMut(&str),
 ) -> anyhow::Result<Vec<(String, String)>> {
+    check_os(os)?;
     let paths = available();
     let path = paths.first().context("this build has no login path")?;
     let api = ApiClient::new(login.server)?;
@@ -247,21 +260,15 @@ pub fn take_ticket(
     if (grant.gate_host.as_str(), grant.gate_port) != (info.gate_host.as_str(), info.gate_port) {
         bail!("the server named one gate in its info and another in the game token");
     }
-    let mut spec = LaunchSpec {
-        program: PathBuf::new(),
-        args: Vec::new(),
-        env: Vec::new(),
-        cwd: PathBuf::new(),
-    };
-    path.apply(&grant, gate, &mut spec);
-    Ok(spec.env)
+    Ok(path.env(&grant, gate))
 }
 
-/// Starts the game as a player's launcher does: checks `client` (anchored at `cwd`) against
-/// `manifest`, which `fenji-launch` always takes as the pinned build's (ground rule 1), makes the
-/// prefix ready, takes a ticket ([`take_ticket`]) and runs the client from its `bin64/` with the
-/// ticket in its environment. Returns how the client ended. Windows is refused here too.
+/// Starts the game as a player's launcher does: checks the system ([`check_os`]), checks `client`
+/// (anchored at `cwd`) against `manifest`, which `fenji-launch` always takes as the pinned build's
+/// (ground rule 1), makes the prefix ready, takes a ticket ([`take_ticket`]) and runs the client
+/// from its `bin64/` with the ticket in its environment. Returns how the client ended.
 pub fn play(
+    os: Os,
     client: &Path,
     cwd: &Path,
     manifest: &Manifest,
@@ -269,12 +276,13 @@ pub fn play(
     login: &Login,
     note: &mut dyn FnMut(&str),
 ) -> anyhow::Result<ExitStatus> {
+    check_os(os)?;
     if let Platform::Windows = platform {
         bail!(NOT_HERE);
     }
     let client = anchor(client, cwd);
     check_client(&client, manifest)?;
-    let pairs = take_ticket(login, || prepare(platform), note)?;
+    let pairs = take_ticket(os, login, || prepare(platform), note)?;
     let mut spec = base_spec(&client, platform);
     spec.env.extend(pairs);
     note(&format!("starting the client for {}", login.username));
@@ -285,13 +293,44 @@ pub fn play(
 mod tests {
     use super::*;
 
-    const REFUSAL: &str = "fenji-launch can't start the client on this system yet";
+    const REFUSAL: &str = "Fenji can't start the client on this system yet";
 
     #[test]
     fn only_linux_may_start_the_client_and_the_refusal_says_nothing_more() {
         assert!(check_os(Os::Linux).is_ok());
-        for os in [Os::MacOs, Os::Windows] {
+        for os in [Os::MacOs, Os::Windows, Os::Other] {
             assert_eq!(check_os(os).unwrap_err().to_string(), REFUSAL, "{os:?}");
+        }
+    }
+
+    /// The library refuses before anything else, so a GUI over it can't skip the check: the
+    /// server here would refuse a connection, so any other error means something was tried.
+    #[test]
+    fn the_library_refuses_other_systems_before_anything_is_sent() {
+        let login = Login {
+            server: "http://127.0.0.1:9",
+            username: "tester",
+            password: "a long password",
+        };
+        let platform = Platform::Linux {
+            umu_run: "/nonexistent/umu-run".into(),
+            prefix: "/nonexistent/prefix".into(),
+            proton: None,
+        };
+        for os in [Os::MacOs, Os::Windows, Os::Other] {
+            let e = take_ticket(os, &login, || Ok(()), &mut |_| {}).unwrap_err();
+            assert_eq!(e.to_string(), REFUSAL, "take_ticket on {os:?}");
+            let e = play(
+                os,
+                Path::new("/nonexistent/client"),
+                Path::new("/"),
+                &Manifest::pinned(),
+                &platform,
+                &login,
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert_eq!(e.to_string(), REFUSAL, "play on {os:?}");
         }
     }
 
@@ -304,6 +343,7 @@ mod tests {
             password: "a long password",
         };
         let e = play(
+            Os::Linux,
             Path::new("/no/such/client"),
             Path::new("/"),
             &Manifest::pinned(),
@@ -386,6 +426,13 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("isn't on PATH"), "{e}");
+        // A relative entry that does reach `good` from this process's folder is still skipped.
+        let cwd = std::env::current_dir().unwrap();
+        let up: PathBuf = cwd.components().skip(1).map(|_| "..").collect();
+        let relative = up.join(good.strip_prefix("/").unwrap());
+        assert!(relative.join("umu-run").is_file(), "{}", relative.display());
+        let path = std::env::join_paths([relative, plain]).unwrap();
+        assert!(linux_platform(opts(), Path::new("/"), Some(&path), None).is_err());
     }
 
     #[test]
@@ -440,6 +487,43 @@ mod tests {
         assert!(prefix_ready(d.path()));
     }
 
+    /// umu 1.4 ends `createprefix` with exit 1 once the prefix is built; only the prefix and a
+    /// signal decide, and the error never blames umu's normal status.
+    #[cfg(unix)]
+    #[test]
+    fn preparing_is_judged_by_the_prefix_and_by_signals() {
+        let d = tempfile::tempdir().unwrap();
+        let umu = |name: &str, body: &str| {
+            let p = d.path().join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let build =
+            "mkdir -p \"$WINEPREFIX/drive_c/windows\" && echo x > \"$WINEPREFIX/system.reg\"";
+        let platform = |umu_run: PathBuf, prefix: &str| Platform::Linux {
+            umu_run,
+            prefix: d.path().join(prefix),
+            proton: None,
+        };
+        let built = umu("built", &format!("{build}\nexit 1"));
+        assert!(
+            prepare(&platform(built, "a")).is_ok(),
+            "exit 1 with a built prefix"
+        );
+        let empty = umu("empty", "exit 1");
+        let e = format!("{:#}", prepare(&platform(empty, "b")).unwrap_err());
+        assert!(e.contains("isn't ready"), "{e}");
+        assert!(
+            !e.contains("exit status"),
+            "umu's normal exit isn't the cause: {e}"
+        );
+        let killed = umu("killed", &format!("{build}\nkill -9 $$"));
+        let e = format!("{:#}", prepare(&platform(killed, "c")).unwrap_err());
+        assert!(e.contains("signal"), "{e}");
+    }
+
     #[test]
     fn a_folder_that_isnt_the_pinned_build_is_refused() {
         let d = tempfile::tempdir().unwrap();
@@ -449,10 +533,13 @@ mod tests {
         assert!(e.contains("210 missing"), "{e}");
     }
 
+    /// Spawns the command for real: a variable the child inherits shows only in its own
+    /// environment, never in `Command::get_envs`.
+    #[cfg(unix)]
     #[test]
     fn the_child_gets_neither_the_password_nor_inherited_login_variables() {
         let spec = LaunchSpec {
-            program: "/bin/true".into(),
+            program: "/usr/bin/env".into(),
             args: vec![],
             env: vec![("gj_ticket".into(), "fenji1-new".into())],
             cwd: "/".into(),
@@ -461,30 +548,18 @@ mod tests {
             ("PATH", "/usr/bin"),
             ("FENJI_PASSWORD", "a long password"),
             ("gj_ticket", "fenji1-old"),
-            ("gj_gates", "10.0.0.9:7800"),
-            ("HOME", "/home/p"),
+            // Wine looks names up whatever their case.
+            ("GJ_GATES", "10.0.0.9:7800"),
         ]
         .map(|(k, v)| (OsString::from(k), OsString::from(v)));
-        let cmd = command(&spec, parent);
-        let mut seen: Vec<(String, String)> = cmd
-            .get_envs()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.map(|v| v.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                )
-            })
+        let out = command(&spec, parent).output().unwrap();
+        let mut seen: Vec<String> = String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
             .collect();
         seen.sort();
-        assert_eq!(
-            seen,
-            [
-                ("HOME".to_string(), "/home/p".to_string()),
-                ("PATH".to_string(), "/usr/bin".to_string()),
-                ("gj_ticket".to_string(), "fenji1-new".to_string()),
-            ]
-        );
+        assert_eq!(seen, ["PATH=/usr/bin", "gj_ticket=fenji1-new"]);
     }
 
     #[cfg(unix)]

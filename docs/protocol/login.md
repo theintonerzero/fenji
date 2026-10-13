@@ -121,7 +121,7 @@ M1 Task 10 ran the pinned client twice inside `run-client.sh`. Both runs used:
 
 From M3 the launcher path (2.8–2.10) carries a Fenji game token, and the owner chose it for players (gate #114, option a, 2026-10-13; [`packets/lobby.md`](packets/lobby.md) §12):
 - `fenji-launch play --print` signs in to the Fenji server's account API, takes a game token, signs out and prints three pairs: `gj_uinfo` (`<server id>:90:<server name>:0:<account>:<account id>`), `gj_gates` (the gate as dotted IPv4) and `gj_ticket` (the token).
-- In the M3 runs the sandboxed runner (`scripts/spike/run-client.sh --launch`) put those pairs in the unmodified client's environment, never on its command line, and started it. `fenji-launch play` starting the client itself is #138: Linux, through umu-run; native Windows waits for the AGT driver reading (ground rule 6).
+- In the M3 runs the sandboxed runner (`scripts/spike/run-client.sh --launch`) put those pairs in the unmodified client's environment, never on its command line, and started it. Without `--print`, `fenji-launch play` starts the client itself on Linux, through umu-run in the launcher's own Wine prefix, after checking the folder against the pinned build (#138). Every other system is refused for now; native Windows waits for the AGT driver reading (ground rule 6).
 - The gate takes the token from the auth payload's first value and spends it. The account in its third value must be the token's own.
 
 **The token** is `fenji1-` and 64 hex digits from 32 random bytes. The server keeps only its SHA-256. It works once, for one account, for 60 s by default (`[auth] game_token_ttl_secs`, 10 to 3600; M3 spec D3).
