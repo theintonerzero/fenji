@@ -547,9 +547,11 @@ EOF
   cat > "$F/release/fenji-launch" <<'EOF'
 #!/usr/bin/env bash
 # Records its arguments, says what fenji-launch says right before it starts the client, and plays
-# the client for FAKE_LAUNCH_SECS.
+# the client for FAKE_LAUNCH_SECS. A client that misbehaves plants a link at FAKE_PLANT, to
+# FAKE_PLANT_TO.
 printf '%s\n' "$@" > "$FAKE_LOG/launch"
 echo "starting the client" >&2
+if [ -n "${FAKE_PLANT:-}" ]; then ln -s -- "$FAKE_PLANT_TO" "$FAKE_PLANT"; fi
 sleep "${FAKE_LAUNCH_SECS:-0}"
 EOF
   cat > "$F/watchdog.py" <<'EOF'
@@ -718,6 +720,54 @@ print(*(x.getsockname()[1] for x in s))')
     bad "a nested run: rc $rc, screenshots '$(cat "$F/log/run-nested/import" 2> /dev/null)': $out"
   fi
   if [ "$secs" -lt 15 ]; then ok "a run ends with its client: the input schedulers are stopped"; else bad "a nested run took $secs s"; fi
+
+  # A run whose watchdog doesn't end cleanly (here a gate event) marks the prefix, and setup and run
+  # refuse it until it is rebuilt: a driver service that run left in the registry would start,
+  # unwatched, when Wine next boots the prefix, as setup's prime does (#148).
+  if [ ! -e "$F/work/compat/fenji-gate-event" ]; then ok "clean runs leave the prefix unmarked"; else bad "a clean run marked the prefix"; fi
+  flow run-failure "$F/work" with_env FAKE_WATCH_RC=4 cmd_bare_run w1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 4 ] && grep -q '^run w1: watchdog exit 4, ' "$F/work/compat/fenji-gate-event" 2> /dev/null; then
+    ok "a watchdog failure marks the prefix too"
+  else
+    bad "a watchdog failure: rc $rc, mark '$(cat "$F/work/compat/fenji-gate-event" 2> /dev/null)': $out"
+  fi
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  flow run-gate "$F/work" with_env FAKE_WATCH_RC=3 cmd_bare_run g1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 3 ] && grep -q '^run g1: watchdog exit 3, ' "$F/work/compat/fenji-gate-event" 2> /dev/null; then
+    ok "a gate event marks the prefix"
+  else
+    bad "a gate event: rc $rc, mark '$(cat "$F/work/compat/fenji-gate-event" 2> /dev/null)': $out"
+  fi
+  flow setup-marked "$F/work" "${on_desktop[@]}" cmd_bare_setup --desktop
+  if [ "$rc" = 1 ] && [[ $out == *"saw a gate event or a watchdog failure (run g1: watchdog exit 3, "* ]] &&
+    [ ! -e "$F/log/setup-marked/umu" ]; then
+    ok "setup refuses a prefix that saw a gate event, and starts nothing in it"
+  else
+    bad "setup on a marked prefix: rc $rc: $out"
+  fi
+  flow run-marked "$F/work" cmd_bare_run t2 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 1 ] && [[ $out == *"saw a gate event or a watchdog failure"* ]] && [ ! -e "$F/log/run-marked/bwrap" ]; then
+    ok "a run refuses a prefix that saw a gate event"
+  else
+    bad "a run on a marked prefix: rc $rc: $out"
+  fi
+  # The client can write the prefix: the mark is never written through a link it planted there,
+  # and anything at the mark's place keeps the prefix refused.
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  echo "the host's own file" > "$F/host-file"
+  flow run-planted "$F/work" with_env FAKE_WATCH_RC=3 with_env FAKE_PLANT="$F/work/compat/fenji-gate-event" \
+    with_env FAKE_PLANT_TO="$F/host-file" cmd_bare_run p1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 3 ] && [ "$(cat "$F/host-file")" = "the host's own file" ] && [[ $out == *"couldn't write the gate-event mark"* ]]; then
+    ok "the gate-event mark is never written through a link the client planted"
+  else
+    bad "a planted link at the mark: rc $rc, host file '$(cat "$F/host-file")': $out"
+  fi
+  flow run-planted-next "$F/work" cmd_bare_run t3 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 1 ] && [[ $out == *"saw a gate event or a watchdog failure;"* ]]; then
+    ok "a link at the mark's place keeps the prefix refused"
+  else
+    bad "after a planted link: rc $rc: $out"
+  fi
 else
   echo "skip the end-to-end flows: they need Linux on x86_64"
 fi
