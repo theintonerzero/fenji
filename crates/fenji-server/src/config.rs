@@ -39,6 +39,12 @@ pub struct ServerConfig {
     /// The account API.
     #[serde(default = "api_bind")]
     pub api_bind: SocketAddr,
+    /// The address players reach the account API at, which invite links name:
+    /// `https://<host>[:<port>]`, or `http://` to a loopback address (fenji-launch refuses plain
+    /// http anywhere else). Unset, links name `api_bind` when it is a loopback address, and are
+    /// left out otherwise.
+    #[serde(default)]
+    pub public_api: Option<String>,
     #[serde(default = "twenty")]
     pub max_players: u32,
     /// Peers whose `X-Forwarded-For` names the client (M3 spec D12).
@@ -166,6 +172,16 @@ impl Config {
         Ok(c)
     }
 
+    /// What invite links start with (they end `/#invite=<code>`): `public_api`, or `api_bind`
+    /// over http when that is a loopback address, or none.
+    pub fn invite_base(&self) -> Option<String> {
+        if let Some(api) = &self.server.public_api {
+            return api_origin(api);
+        }
+        let a = self.server.api_bind;
+        a.ip().is_loopback().then(|| format!("http://{a}"))
+    }
+
     fn check(&self) -> anyhow::Result<()> {
         let s = &self.server;
         if s.name.trim().is_empty() || s.name.chars().count() > 32 {
@@ -189,6 +205,14 @@ impl Config {
         if s.public_host.trim().is_empty() || s.public_host.contains([':', '/', ' ']) {
             bail!("[server] public_host: a host name or an IPv4 address, without a port");
         }
+        if s.public_api
+            .as_deref()
+            .is_some_and(|api| api_origin(api).is_none())
+        {
+            bail!(
+                "[server] public_api: https://<host>[:<port>], or http:// to a loopback address, with no path"
+            );
+        }
         if !(10..=3600).contains(&self.auth.game_token_ttl_secs) {
             bail!("[auth] game_token_ttl_secs: 10 to 3600");
         }
@@ -206,6 +230,35 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// `api` as an origin, `scheme://host[:port]` without a trailing slash, if it is one players can use:
+/// https anywhere, or http to a loopback address, as fenji-launch accepts them.
+fn api_origin(api: &str) -> Option<String> {
+    let api = api.strip_suffix('/').unwrap_or(api);
+    if api.chars().any(|c| c.is_whitespace() || c.is_control()) || api.contains(['#', '?']) {
+        return None;
+    }
+    let (https, rest) = match (api.strip_prefix("https://"), api.strip_prefix("http://")) {
+        (Some(r), _) => (true, r),
+        (None, Some(r)) => (false, r),
+        (None, None) => return None,
+    };
+    if rest.is_empty() || rest.contains('/') || rest.contains('@') {
+        return None;
+    }
+    if !https {
+        let host = match rest.strip_prefix('[') {
+            Some(v6) => v6.split_once(']')?.0,
+            None => rest.split(':').next()?,
+        };
+        let loopback =
+            host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
+        if !loopback {
+            return None;
+        }
+    }
+    Some(api.to_string())
 }
 
 #[cfg(test)]
@@ -295,5 +348,56 @@ mod tests {
             Config::parse("", Path::new("/")).is_err(),
             "a name is required"
         );
+    }
+
+    #[test]
+    fn public_api_is_https_or_loopback_http() {
+        let base = std::path::Path::new("/");
+        let parse = |api: &str| {
+            Config::parse(
+                &format!("[server]\nname = \"F\"\npublic_api = \"{api}\"\n"),
+                base,
+            )
+        };
+        let c = parse("https://play.example.net/").unwrap();
+        assert_eq!(c.invite_base().as_deref(), Some("https://play.example.net"));
+        let c = parse("https://play.example.net:8443").unwrap();
+        assert_eq!(
+            c.invite_base().as_deref(),
+            Some("https://play.example.net:8443")
+        );
+        let c = parse("http://127.0.0.1:7801").unwrap();
+        assert_eq!(c.invite_base().as_deref(), Some("http://127.0.0.1:7801"));
+        for bad in [
+            "http://play.example.net",
+            "ftp://play.example.net",
+            "https://",
+            "https://play.example.net/api",
+            "https://play.example.net#x",
+            "https://play example.net",
+            "play.example.net",
+        ] {
+            let e = parse(bad).unwrap_err().to_string();
+            assert!(e.contains("public_api"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn without_public_api_invite_links_use_a_loopback_api_bind_only() {
+        let base = std::path::Path::new("/");
+        let c = Config::parse("[server]\nname = \"F\"\n", base).unwrap();
+        assert_eq!(c.invite_base().as_deref(), Some("http://127.0.0.1:7801"));
+        let c = Config::parse(
+            "[server]\nname = \"F\"\napi_bind = \"[::1]:7801\"\nlogin_bind = \"[::1]:7800\"\n",
+            base,
+        )
+        .unwrap();
+        assert_eq!(c.invite_base().as_deref(), Some("http://[::1]:7801"));
+        let c = Config::parse(
+            "[server]\nname = \"F\"\napi_bind = \"0.0.0.0:7801\"\n",
+            base,
+        )
+        .unwrap();
+        assert_eq!(c.invite_base(), None);
     }
 }
