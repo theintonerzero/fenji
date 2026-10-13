@@ -6,7 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::hexdump::hexdump;
 
-/// Hex-dump log of everything one client connection sent, and, with `--speak`, what the stub sent.
+/// Hex-dump log of what one client connection sent (all of it, or, while holding, all but its
+/// auth), and, with `--speak`, what the stub sent.
 pub struct SessionLog {
     path: PathBuf,
     file: File,
@@ -19,7 +20,7 @@ pub struct SessionLog {
 
 /// The most client bytes a holding log buffers. A client's auth is far smaller; past this, the
 /// log stops buffering and only counts.
-pub const HOLD_MAX: usize = 1 << 20;
+const HOLD_MAX: usize = 1 << 20;
 
 impl SessionLog {
     /// Creates `<dir>/<unix_millis>-<local_port>-<peer>.log`, creating `dir` if needed.
@@ -46,11 +47,14 @@ impl SessionLog {
     }
 
     /// From now on, the client's bytes are kept back until [`SessionLog::release`]: they hold its
-    /// auth, which can carry a real platform ticket (#102).
+    /// auth, which can carry a real platform ticket (#102). Called before the first `record`, so
+    /// the held bytes start at the stream's first byte, where the auth's count starts too.
     pub fn hold(&mut self) {
+        debug_assert_eq!(self.received, 0, "hold before the first record");
         self.held = Some((Vec::new(), 0));
     }
 
+    /// Whether client bytes are being kept back.
     pub fn holding(&self) -> bool {
         self.held.is_some()
     }
@@ -264,16 +268,8 @@ mod tests {
         let path = log.path().to_path_buf();
         log.close("peer closed").unwrap();
         let text = fs::read_to_string(path).unwrap();
-        assert!(
-            text.contains("# recv 4 bytes at offset"),
-            "{}",
-            &text[..200]
-        );
-        assert!(
-            text.contains("# [10 more bytes not kept while holding]"),
-            "{}",
-            &text[text.len() - 200..]
-        );
+        assert!(text.contains("# recv 4 bytes at offset"));
+        assert!(text.contains("# [10 more bytes not kept while holding]"));
     }
 
     #[test]

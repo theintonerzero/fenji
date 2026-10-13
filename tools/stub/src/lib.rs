@@ -1,7 +1,7 @@
 //! Stub server for the protocol-discovery loop (design spec §4 B).
 //!
-//! Accepts connections from the real client and writes every received byte to a per-connection
-//! hex-dump log. By default it never answers; with `--speak` it speaks the client's transport
+//! Accepts connections from the real client and writes what it receives to a per-connection
+//! hex-dump log (all of it, unless `--no-auth-capture` keeps the auth out). By default it never answers; with `--speak` it speaks the client's transport
 //! through `fenji-proto` and logs the decoded events too (M2 spec §5).
 
 use std::path::{Path, PathBuf};

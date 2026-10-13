@@ -83,14 +83,15 @@ pub enum Event {
     Message(Message),
 }
 
-/// Where the session is. `accept` moves the client to `QUEUE` (transport.md 6.6) and `begin_work`
-/// to `WORK` (10.3).
+/// Where the session is. `accept` moves the client to `QUEUE` (transport.md 6.6) and `begin_work` or
+/// `begin_work_with` to `WORK` (10.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     AwaitAuth,
     Authed,
     Queued,
-    /// After `begin_work`: the client has been told to go to `WORK` (transport.md 10.3).
+    /// After `begin_work` or `begin_work_with`: the client has been told to go to `WORK`
+    /// (transport.md 10.3).
     Work,
     Closed,
 }
@@ -180,7 +181,9 @@ impl Server {
 
     /// How many bytes of the client's stream, from its first, the frames up to and including the
     /// one that completed its auth message took; `None` before the auth. A log that must not keep
-    /// the auth leaves out exactly these bytes.
+    /// the auth leaves out exactly these bytes. The frame that completes the auth counts whole,
+    /// with anything of a next message it also holds (the real client sends nothing more before
+    /// its answer, so that frame holds only the auth).
     pub fn auth_through(&self) -> Option<u64> {
         self.auth_through
     }

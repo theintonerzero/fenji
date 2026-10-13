@@ -40,6 +40,27 @@ struct Args {
     no_auth_capture: bool,
 }
 
+/// What the stub does on each connection, from the command line: listen only, or speak the
+/// transport with these options.
+fn mode(args: &Args) -> fenji_stub::server::Mode {
+    if !args.speak {
+        return fenji_stub::server::Mode::Listen;
+    }
+    fenji_stub::server::Mode::Speak(fenji_stub::speak::SpeakOpts {
+        variants: fenji_proto::hello::Variants {
+            down: args.down_variant,
+            up: args.up_variant,
+        },
+        auth_reply: match args.auth_reply.as_str() {
+            "ok" => fenji_stub::speak::AuthReply::Ok,
+            "reject" => fenji_stub::speak::AuthReply::Reject,
+            _ => fenji_stub::speak::AuthReply::None,
+        },
+        work_pad: usize::from(args.work_pad),
+        capture_auth: !args.no_auth_capture,
+    })
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -48,28 +69,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let args = Args::parse();
+    let mode = mode(&args);
     let out = match args.out {
         Some(out) => out,
         None => fenji_stub::default_out_dir(&std::env::current_dir()?)
             .context("no git checkout above the current directory: pass --out")?,
-    };
-
-    let mode = if args.speak {
-        fenji_stub::server::Mode::Speak(fenji_stub::speak::SpeakOpts {
-            variants: fenji_proto::hello::Variants {
-                down: args.down_variant,
-                up: args.up_variant,
-            },
-            auth_reply: match args.auth_reply.as_str() {
-                "ok" => fenji_stub::speak::AuthReply::Ok,
-                "reject" => fenji_stub::speak::AuthReply::Reject,
-                _ => fenji_stub::speak::AuthReply::None,
-            },
-            work_pad: usize::from(args.work_pad),
-            capture_auth: !args.no_auth_capture,
-        })
-    } else {
-        fenji_stub::server::Mode::Listen
     };
 
     let mut servers = JoinSet::new();
@@ -90,4 +94,33 @@ async fn main() -> anyhow::Result<()> {
         Some(result) = servers.join_next() => result??,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fenji_stub::server::Mode;
+
+    fn speak(extra: &[&str]) -> fenji_stub::speak::SpeakOpts {
+        let argv = ["fenji-stub", "--listen", "127.0.0.1:0", "--speak"];
+        let args = Args::parse_from(argv.iter().chain(extra));
+        match mode(&args) {
+            Mode::Speak(opts) => opts,
+            Mode::Listen => panic!("--speak didn't speak"),
+        }
+    }
+
+    /// The only link from the flag to the behaviour (#102): a mistake here would keep the ticket.
+    #[test]
+    fn no_auth_capture_reaches_the_speaker() {
+        assert!(speak(&[]).capture_auth);
+        assert!(!speak(&["--no-auth-capture"]).capture_auth);
+        assert_eq!(speak(&["--work-pad", "300"]).work_pad, 300);
+    }
+
+    #[test]
+    fn without_speak_the_stub_only_listens() {
+        let args = Args::parse_from(["fenji-stub", "--listen", "127.0.0.1:0"]);
+        assert!(matches!(mode(&args), Mode::Listen));
+    }
 }

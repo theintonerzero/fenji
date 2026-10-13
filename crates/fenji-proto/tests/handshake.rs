@@ -373,12 +373,40 @@ fn the_server_counts_the_bytes_the_auth_took() {
     assert_eq!(server.auth_through(), Some(up.len() as u64));
 }
 
+/// A real platform ticket can run to kilobytes, so the auth spans several frames: counted the same
+/// however the client's bytes are split into reads, and never past the auth's own frames.
+#[test]
+fn a_multi_frame_auth_is_counted_however_it_is_split() {
+    let big = AuthMessage {
+        payload: vec![0x5a; 5000],
+        ..auth()
+    };
+    for split in [1, 777, SEND_CHUNK, usize::MAX] {
+        let (mut server, hello) = Server::start(fill(9), V).unwrap();
+        let mut client = Client::new(big.clone());
+        let (_, up) = client.receive(&hello).unwrap();
+        assert!(up.len() > SEND_CHUNK, "the auth needs more than one frame");
+        let mut bytes = up.clone();
+        bytes.extend_from_slice(&client.time_sync(5));
+        for chunk in bytes.chunks(split.min(bytes.len())) {
+            server.receive(chunk).unwrap();
+        }
+        assert_eq!(
+            server.auth_through(),
+            Some(up.len() as u64),
+            "split {split}"
+        );
+    }
+}
+
 /// `begin_work` with the caller's body, such as a padded one (#102): the client gets it, and the
 /// server is in `Work`, as with `begin_work`.
 #[test]
 fn begin_work_with_sends_the_body_and_reaches_work() {
     let (mut server, mut client, _) = connect(8);
-    let body = set_net_connected();
+    let mut values = decode(&set_net_connected()).unwrap();
+    values.push(Value::Str(vec![b'.'; 300]));
+    let body = fenji_proto::pickle::encode(&values).unwrap();
     assert!(
         server.begin_work_with(&body, &StoredCodec).is_err(),
         "not before accept"

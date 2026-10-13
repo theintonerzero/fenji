@@ -164,7 +164,15 @@ pub async fn handle(
         if !decoding {
             continue;
         }
-        let got = match server.receive(&buf[..n]) {
+        let result = server.receive(&buf[..n]);
+        // Released as soon as the auth's end is known, even when its last frame also held a
+        // message that fails to decode.
+        if log.holding()
+            && let Some(through) = server.auth_through()
+        {
+            log.release(usize::try_from(through).unwrap_or(usize::MAX))?;
+        }
+        let got = match result {
             Ok(got) => got,
             Err(error) => {
                 // Keep logging raw bytes; stop decoding a stream we no longer follow.
@@ -173,11 +181,6 @@ pub async fn handle(
                 continue;
             }
         };
-        if log.holding()
-            && let Some(through) = server.auth_through()
-        {
-            log.release(usize::try_from(through).unwrap_or(usize::MAX))?;
-        }
         for event in got {
             match event {
                 Event::Auth(a) if !opts.capture_auth => {

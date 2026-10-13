@@ -262,7 +262,8 @@ async fn without_auth_capture_no_file_keeps_the_auth() {
     let tmp = tempfile::tempdir().unwrap();
     let addr = start_opts(tmp.path(), AuthReply::Ok, 0, false).await;
     let mut s = TcpStream::connect(addr).await.unwrap();
-    let ticket = b"fenji1-not-a-real-ticket".to_vec();
+    // A real platform ticket can run to kilobytes: the auth then spans frames and reads.
+    let ticket = [b"fenji1-".as_slice(), &[b'x'; 2993]].concat();
     let mut client = Client::new(AuthMessage {
         payload: ticket.clone(),
         ..auth()
@@ -271,7 +272,10 @@ async fn without_auth_capture_no_file_keeps_the_auth() {
     let mut hello = [0u8; fenji_proto::hello::HELLO_LEN];
     s.read_exact(&mut hello).await.unwrap();
     let (_, up) = client.receive(&hello).unwrap();
-    s.write_all(&up).await.unwrap();
+    for piece in up.chunks(500) {
+        s.write_all(piece).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     let work = ClientEvent::Message(Message {
         ty: 0,
         body: set_net_connected(),
@@ -308,12 +312,41 @@ async fn without_auth_capture_no_file_keeps_the_auth() {
         log.contains(&format!("# closed after {} bytes", up.len() + call.len())),
         "{log}"
     );
+    assert!(
+        log.contains("# sent 64 bytes at offset 0"),
+        "the hello is still logged"
+    );
     let names: Vec<String> = std::fs::read_dir(tmp.path())
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     assert!(names.iter().all(|n| !n.ends_with(".auth.bin")), "{names:?}");
+    // No stub file holds any 8 bytes of the auth's frames, raw or as the log's hex, nor its
+    // identifiers or the ticket.
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>();
+    for name in &names {
+        let bytes = std::fs::read(tmp.path().join(name)).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        for at in (0..up.len() - 8).step_by(4) {
+            let window = &up[at..at + 8];
+            assert!(
+                !bytes.windows(8).any(|w| w == window),
+                "{name}: raw auth bytes at {at}"
+            );
+            assert!(
+                !text.contains(&hex(window).join(" ")),
+                "{name}: auth bytes as hex at {at}"
+            );
+        }
+        for secret in [
+            "22222222222222222222222222222222",
+            "020000000001",
+            "fenji1-xxxx",
+        ] {
+            assert!(!text.contains(secret), "{name} holds {secret}");
+        }
+    }
 }
 
 #[test]
