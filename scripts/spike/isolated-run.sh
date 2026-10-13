@@ -57,7 +57,10 @@
 #     answers its file operations, often over the network): fuse, fuse.*, fuseblk, nfs, nfs4,
 #     cifs, smb3, smbfs, ncpfs, 9p, virtiofs, ceph, glusterfs, lustre, gpfs, beegfs, orangefs,
 #     gfs2, ocfs2, afs, coda, davfs, sshfs, autofs, rpc_pipefs. (A game copy on an ntfs-3g
-#     disk is fuseblk: copy it to a local filesystem.)
+#     disk is fuseblk: copy it to a local filesystem.) Or one of the kernel's own interfaces,
+#     wherever it is mounted (host controls, devices or namespaces): sysfs, proc, cgroup,
+#     cgroup2, nsfs, debugfs, tracefs, securityfs, bpf, configfs, efivarfs, pstore, selinuxfs,
+#     binfmt_misc, fusectl, devtmpfs, devpts, mqueue;
 #   - it is, or is a parent of, /, /run, /tmp/.X11-unix, /tmp/.ICE-unix, /var, /etc, /dev, /proc,
 #     $HOME, the runtime dir or a Steam dir, or lies inside /run, /dev, /proc, /sys, the X11/ICE
 #     dirs, ~/.steam, ~/.local/share/Steam, Flatpak Steam, ~/.ssh (ControlMaster sockets) or
@@ -215,14 +218,22 @@ home=${HOME:-/root}
 case "$home" in /?*) ;; *) home=/root ;; esac
 home=${home%/}
 
-# Refused filesystem types: a host daemon serves every file operation, often over the network.
+# Refused filesystem types, each with why: a host daemon serves every file operation, often over
+# the network; or the kernel's own interfaces, which hand out host controls, devices or namespaces
+# wherever they are mounted (a /sys mounted elsewhere holds the caller's own cgroup files).
 refused_fstype() {
   case "$1" in
     fuse|fuse.*|fuseblk|nfs|nfs4|cifs|smb3|smbfs|ncpfs|9p|virtiofs|ceph|glusterfs|lustre|gpfs|\
-    beegfs|orangefs|gfs2|ocfs2|afs|coda|davfs|sshfs|autofs|rpc_pipefs) return 0 ;;
+    beegfs|orangefs|gfs2|ocfs2|afs|coda|davfs|sshfs|autofs|rpc_pipefs)
+      echo "a host daemon serves it"; return 0 ;;
+    sysfs|proc|cgroup|cgroup2|nsfs|debugfs|tracefs|securityfs|bpf|configfs|efivarfs|pstore|\
+    selinuxfs|binfmt_misc|fusectl|devtmpfs|devpts|mqueue)
+      echo "the kernel's own interface: host controls, devices or namespaces"; return 0 ;;
   esac
   local t
-  for t in ${FENJI_ISOLATED_RUN_TEST_EXTRA_FSTYPES:-}; do [ "$1" = "$t" ] && return 0; done
+  for t in ${FENJI_ISOLATED_RUN_TEST_EXTRA_FSTYPES:-}; do
+    if [ "$1" = "$t" ]; then echo "a host daemon serves it"; return 0; fi
+  done
   return 1
 }
 # Mount table: mount points (octal escapes like \040 decoded) and filesystem types.
@@ -290,10 +301,11 @@ for ((i = 1; i < ${#binds[@]}; i += 2)); do
   # The filesystem b is on, and every mount below it (see mounts_at).
   mounts_at "$b"
   for ((m = 0; m < ${#below_points[@]}; m++)); do
-    ! refused_fstype "${below_types[$m]}" ||
-      die2 "refusing to bind $b: it contains a ${below_types[$m]} mount at ${below_points[$m]} (a host daemon serves it)"
+    if why=$(refused_fstype "${below_types[$m]}"); then
+      die2 "refusing to bind $b: it contains a ${below_types[$m]} mount at ${below_points[$m]} ($why)"
+    fi
   done
-  ! refused_fstype "$on_type" || die2 "refusing to bind $b: it is on a $on_type filesystem (a host daemon serves it)"
+  if why=$(refused_fstype "$on_type"); then die2 "refusing to bind $b: it is on a $on_type filesystem ($why)"; fi
   # No -xdev: bwrap binds recursively, so everything below b is visible inside. %M makes find
   # stat every entry, as the self-test's class guard does. -type would take the type readdir
   # reports, which is that of the file a mount covers, so a socket bind-mounted over a file would
