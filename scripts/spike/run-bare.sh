@@ -42,7 +42,10 @@
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
 # update off (the namespace has no network anyway), then primes it: cmd.exe started once through
 # Proton's launcher, so Proton's own service is in the watchdog's baseline (prefix_primed). A run
-# refuses an unprimed prefix, and setup primes an existing one.
+# refuses an unprimed prefix, and setup primes an existing one. A run whose watchdog doesn't exit
+# 0 (a gate event, or a watchdog failure) marks the prefix (compat/fenji-gate-event), and setup and
+# run refuse it until it is rebuilt (remove re/bare-metal/compat, then setup): a driver service that
+# run left in the registry would start, unwatched, the next time Wine boots the prefix.
 #
 # run's --server config must bind 127.0.0.1 and name 127.0.0.1 as its public_host, its [store] path
 # must lie in --server-data, a directory under re/bare-metal/, and --password-file holds the
@@ -373,6 +376,17 @@ prefix_primed() {
     grep -q '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\discord-bridge\]' "$WORK/compat/system.reg"
 }
 
+# A run whose watchdog didn't end cleanly (a gate event, or a watchdog failure) marks the prefix,
+# and setup and run refuse it until it is rebuilt: a driver service that run left in the registry
+# would start, unwatched, the next time Wine boots the prefix, as setup's prime does (#148).
+GATE_MARK=fenji-gate-event
+check_unmarked() {
+  local m="$WORK/compat/$GATE_MARK" what=""
+  [ -e "$m" ] || [ -L "$m" ] || return 0
+  if [ -f "$m" ] && [ ! -L "$m" ]; then what=" ($(head -c 200 -- "$m" | head -n 1))"; fi
+  die "the prefix saw a gate event or a watchdog failure$what; rebuild it before anything runs in it again: remove $WORK/compat, then run: $0 setup"
+}
+
 # umu-run's arguments for the prime: the prefix's cmd.exe by its unix path, which exits at once.
 prime_args() { printf '%s\n' "$WORK/compat/drive_c/windows/system32/cmd.exe" /c exit; }
 
@@ -396,6 +410,7 @@ cmd_bare_setup() {
     misuse "setup needs --display N or --desktop: a dedicated nested display, or the session's own (see the header)"
   choose_display "$desktop" "$display_given"
   host_guards
+  check_unmarked
   if prefix_ready && prefix_primed; then
     echo "the prefix is ready: $WORK/compat"
     return 0
@@ -479,6 +494,7 @@ PY
     misuse "a run needs --display N or --desktop: a dedicated nested display, or the session's own (see the header)"
   choose_display "$desktop" "$display_given"
   host_guards
+  check_unmarked
   prefix_ready || die "no prefix; run: $0 setup"
   if [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" != "$(proton_build)" ]; then
     die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run; run once: $0 setup"
@@ -595,6 +611,12 @@ PY
     wdrc=$?
   fi
   set -e
+  # The mark goes where the client could write, so never through anything already there (noclobber
+  # refuses any existing entry, a link included); anything there keeps the prefix refused anyway.
+  if [ "$wdrc" != 0 ] &&
+    ! (set -C; printf 'run %s: watchdog exit %s, %s\n' "$run" "$wdrc" "$(date -Is)" > "$PFX/$GATE_MARK") 2> /dev/null; then
+    echo "run-bare: couldn't write the gate-event mark $PFX/$GATE_MARK; don't use this prefix again: remove $WORK/compat, then run: $0 setup" >&2
+  fi
   rm -f "$OUT/.running" "$IO/.go"
   kill "${inputs[@]}" "$steamwatch" 2>/dev/null || true
   wait "${inputs[@]}" "$steamwatch" 2>/dev/null || true
