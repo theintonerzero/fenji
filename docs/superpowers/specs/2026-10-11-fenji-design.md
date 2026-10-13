@@ -246,7 +246,7 @@ SQLite (WAL) via `sqlx`. Tables: `accounts` (username, argon2id hash, created, l
 
 ### 6.6 Admin
 
-Admins are account names in `[access].admins`. Chat commands: `/reload`, `/rate <name> <value>`, `/give <item> [n]`, `/spawn <monster>`, `/tp`, `/level`, `/kick`, `/invite`, `/announce`. BRP (Bevy Remote Protocol, via `bevy_brp_extras`) binds to localhost only, so it is reachable over an SSH tunnel; the `brp` MCP uses it for live world inspection.
+Admins are account names in `[access].admins`. Chat commands (typed with `!` in place of `/` from M4 on, since the client keeps `/` lines to itself; [M4 world spec](2026-10-13-m4-world-design.md) §2.4): `/reload`, `/rate <name> <value>`, `/give <item> [n]`, `/spawn <monster>`, `/tp`, `/level`, `/kick`, `/invite`, `/announce`. BRP (Bevy Remote Protocol, via `bevy_brp_extras`) binds to localhost only, so it is reachable over an SSH tunnel; the `brp` MCP uses it for live world inspection.
 
 ### 6.7 Capacity and performance targets
 

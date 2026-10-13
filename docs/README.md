@@ -7,6 +7,7 @@
 | [`superpowers/specs/2026-10-12-m2-transport-design.md`](superpowers/specs/2026-10-12-m2-transport-design.md) | M2 design: the transport reading, `fenji-proto`, the stub's handshake ladder, the Oodle wire test and the archive helper. |
 | [`superpowers/specs/2026-10-12-m3-login-lobby-design.md`](superpowers/specs/2026-10-12-m3-login-lobby-design.md) | M3 design: accounts and the account API, the gate and the lobby, the ticket handoff and `fenji-launch`. |
 | [`superpowers/specs/2026-10-13-m4-social-sandbox-design.md`](superpowers/specs/2026-10-13-m4-social-sandbox-design.md) | M4 design: its three pieces in order (the world, hosting, the desktop launcher) and what they share. Each piece gets its own spec. |
+| [`superpowers/specs/2026-10-13-m4-world-design.md`](superpowers/specs/2026-10-13-m4-world-design.md) | M4, part 1, the world: entering one shared scene, seeing each other, movement, chat, admin commands, and how the work runs. |
 | `superpowers/plans/` | One implementation plan per milestone (M0–M5), or per piece where a milestone's spec splits it (M4), written before that work starts. |
 | [`development.md`](development.md) | Machine setup (macOS/Linux), branches, Conventional Commits, SemVer, changelog, releases. |
 | [`re/README.md`](re/README.md) | Reverse-engineering workflow: pinned build, analysis setup, sandboxed client runs, what may be committed. |
