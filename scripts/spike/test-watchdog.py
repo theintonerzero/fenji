@@ -750,5 +750,27 @@ class LogNeverRaises(unittest.TestCase):
             log.f = Full()
             log("GATE EVENT: S1 new .sys file: /x/agt.sys")  # must not raise
 
+    @unittest.skipUnless(os.path.exists("/dev/full"), "needs /dev/full")
+    def test_a_gate_event_stays_exit_3_when_closing_the_log_fails(self):
+        # A failed write leaves its line in the file's buffer, and closing the file flushes it again.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, out = pathlib.Path(tmp, "root"), pathlib.Path(tmp, "out")
+            root.mkdir()
+            out.mkdir()
+            (out / "watchdog-baseline.json").write_text(json.dumps({"sys": {}, "services": [], "service_info": {}}))
+            (root / "agt.sys").write_bytes(b"MZ")  # S1 at the first poll
+            (out / "watchdog.log").symlink_to("/dev/full")  # every write fails, as on a full disk
+            child = subprocess.Popen(["sleep", "30"])  # stands in for the sandbox; the watchdog kills it
+            try:
+                a = types.SimpleNamespace(root=str(root), out=str(out), sandbox_pid=child.pid,
+                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                          tmpfs=None, prefix=str(root / "compat" / "pfx"))
+                with open(os.devnull, "w") as quiet, contextlib.redirect_stderr(quiet):  # the log's fallback
+                    rc = wd.cmd_watch(a)
+            finally:
+                child.kill()
+                child.wait()
+            self.assertEqual(rc, 3)
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)

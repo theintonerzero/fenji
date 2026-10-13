@@ -118,7 +118,12 @@ class Log:
         return self
 
     def __exit__(self, *exc):
-        self.f.close()
+        try:
+            self.f.close()
+        except OSError:
+            # Closing flushes again what a failed write left in the buffer: on a full disk that
+            # fails too, and must not turn a gate event into an uncaught error either.
+            pass
 
     def __call__(self, msg):
         line = f"{now()} {msg}\n"
