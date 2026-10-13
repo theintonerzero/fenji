@@ -49,7 +49,7 @@ The documents:
 |---|---|---|---|
 | Parent spec §12 | What the ticket is and how Fenji issues it | **Answered and run.** A Fenji game token: `fenji1-` and 64 hex characters. It is single-use, valid for 60 s, bound to one account and stored as its SHA-256. It reaches the client in its environment as `gj_ticket`, and the client sends it as it is: its hex-decoding step can't run in this build. | M3 spec D3; `lobby.md` 12.7; `login.md` §7 |
 | #54, gate #114 | Which login path players use | **Decided by the owner, 2026-10-13: the launcher path** (option a). The client is verified against the pinned manifest, then started unmodified with `gj_uinfo`, `gj_gates` and a single-use Fenji ticket. No platform credentials are involved, and ownership rests on the host's vetting (ground rule 1). | `lobby.md` §12; #114 |
-| #54 | Whether the launcher path needs an SDK flag | **No.** In the sandbox, m3-l6 started and logged in with no `--gf-sdk` flag. On bare metal, bm-2 to bm-5 signed in the same way, through `umu-run`, on the real GPU. | `lobby.md` 12.6, §14; below |
+| #54 | Whether the launcher path needs an SDK flag | **No.** In the sandbox, m3-l6 started and logged in with no `--gf-sdk` flag. On bare metal, bm-2 to bm-6 signed in the same way, through `umu-run`, on the real GPU. | `lobby.md` 12.6, §14; below |
 | `lobby.md` §13 | What only a real-client run could settle | **Questions 7, 9, 11 and 15 settled; 1 and 5 in part.** The empty list opens creation. A real 304 is 758 bytes, sent LZ4-compressed. Nothing visibly broke when 495 was never sent. The client starts with no SDK flag. | `lobby.md` §13–14 |
 | `login.md` §1, spike-0 8.2, 4.34–4.35 | Earlier readings of the platform paths | **Corrected.** The scripts' Steam branch is dead in this build, the platform DLL's configuration search runs in `DllMain`, and `121.5.97.203:8001` is the Chinese gate fallback. | `lobby.md` 12.8 |
 
@@ -61,11 +61,11 @@ The documents:
 | D2 | Guarded bare-metal play tests on the Linux game box (Amendment B) | `run-bare.sh` enforces every guard (#144); see "Bare-metal runs" below. |
 | D3 | Task 11, the desktop shell (`apps/launcher`) | Moved to M4 by the owner's decision: v0.4.0 ships with the CLI launcher. #146 holds the owner's brief, and the owner approved the screen designs, whose tokens become Fenji's one brand identity. The host's console is a new request for M4 (#147). |
 | D4 | L7, the optional server-list rung with the mocked SDK | Not run, by a ledgered ruling: L1–L6 cover the handoff, list, create, persistence, delete and the path with no flag. Players never use the mocked SDK's server list. |
-| D5 | D8's value tree and its cycle guard | Typed scalars instead: the create request carries only scalars (ruling P1, plan Amendment A). |
-| D6 | D16's `[data] client_path` | Parsed but not read in M3: `prop_sys_equips` stays empty, so nothing comes from the operator's install (ruling P4). |
-| D7 | D17's 26 + 0x4000 bytes before the auth message | `PRE_AUTH_CAP` is 26 + 4 + 0x4000 + 512, to allow for the header, the frame lengths and time syncs (Amendment A). |
+| D5 | Spec D8's value tree and its cycle guard | Typed scalars instead: the create request carries only scalars (ruling P1, plan Amendment A). |
+| D6 | Spec D16's `[data] client_path` | Parsed but not read in M3: `prop_sys_equips` stays empty, so nothing comes from the operator's install (ruling P4). |
+| D7 | Spec D17's 26 + 0x4000 bytes before the auth message | `PRE_AUTH_CAP` is 26 + 4 + 0x4000 + 512, to allow for the header, the frame lengths and time syncs (Amendment A). |
 | D8 | The `invites` table's key | `id`, with `code_hash` unique (Amendment A). |
-| D9 | §4's limiter "per username" | Pairs of a username's hash and a network lock after 5 tries in 15 minutes, and networks (IPv6 by /64) after 20. A username only slows down, counted in one of 4096 buckets keyed per process, so the limiter never learns whether an account exists and nobody can lock another player out (Amendment A, after six security reviews). |
+| D9 | Spec §4's limiter "per username" | Pairs of a username's hash and a network lock after 5 tries in 15 minutes, and networks (IPv6 by /64) after 20. A username only slows down, counted in one of 4096 buckets keyed per process, so the limiter never learns whether an account exists and nobody can lock another player out by knowing their username, though players behind one shared address or /64 share its lock (Amendment A, after six security reviews). |
 
 ## Done when
 
@@ -84,18 +84,18 @@ The documents:
 - `umu-run` in a dedicated prefix;
 - a reflink copy of the pinned copy, never the Steam library, with Steam not running;
 - a local `fenji-server`;
-- a namespace with loopback only, where the only host sockets are the audio ones (PipeWire, Pulse) and the display's;
+- a namespace with loopback only and empty `/run`, `/tmp` and `/dev/shm`, bar the audio sockets (PipeWire, Pulse) and the display's, bound back. Sockets elsewhere in the real filesystem stay reachable, such as the input-method daemon's in `~/.cache/ibus` (#148);
 - the AGT driver watchdog armed.
 
 There was no SDK flag in any run. The lobby works end to end on bare metal: sign-in through `fenji-launch play` and `umu-run`, the list, create, a character surviving a server restart, and delete (bm-4, bm-5).
 
-bm-4 to bm-6 ran with `--desktop`, on the session's own display, which the owner allowed for hands-on test runs on 2026-10-13. There the client shares the session's X server: it can see other X11 windows and the bridged clipboard, and its input may reach native windows. So those runs limited its network less strictly than a nested display does. Automated runs use a GPU-capable nested display of their own (#144).
+bm-4 to bm-6 ran with `--desktop`, on the session's own display. The owner, who ran them, accepted that exposure for hands-on test runs on 2026-10-13. There the client shares the session's X server: it can read and type into other X11 windows, read and replace the bridged clipboard, and its XTEST input may reach native windows. Its network stayed loopback-only, but it was less isolated than on a nested display. Automated runs use a dedicated, GPU-capable nested display (#144).
 
 | Run | What happened | Watchdog |
 |---|---|---|
 | bm-1 | Stopped before the client got going. | **Exit 3, proven a non-AGT false positive.** GE-Proton's own launch shim, `umu.exe`, registered GE-Proton's Discord bridge service 37 ms before it created the client. That service is user-mode (`bridge.exe --service`, type 0x10) and was never started. No `.sys` was written, no driver loaded beyond Wine's own, and the client touched no `PE` resource. `run-bare.sh setup` had built the prefix with `umu-run createprefix`, which never runs the shim, so the service wasn't in the baseline. Setup now primes the prefix through Proton's launcher, as `run-client.sh` setup already did (#144). |
 | bm-2 | Signed in on the real GPU: "in the lobby" for `tester`. Then the client died at its first frame: its X connection broke. The display was the sandbox's `:99`, which keeps GPU acceleration off by design, so that a sandboxed client gets no GPU device, and the real GPU's frames can't be shown there. Bare runs now use a GPU-capable nested display of their own, or `--desktop` (#144). | No sign. |
-| bm-3 | The same command as bm-2, on the nested display, with the same result. | No sign. |
+| bm-3 | The same command as bm-2, on `:99` again, with the same result. | No sign. |
 | bm-4 | `--desktop`, on the real GPU. The client signed in, the empty list opened character creation, and it created "Mai" (304). Entering the world was refused, as M3 intends (10, then 270), and the select screen stayed usable. The owner quit; exit 0. | No sign. |
 | bm-5 | `--desktop`, a new server process on the same database. The list showed "Mai" after the restart. The client created "test" and deleted it again (304, then 166). The owner quit; exit 0. The database then held "Mai" alone. | No sign. |
 | bm-6 | `--desktop`. The list showed "Mai". Entering the world was refused each of the eight times it was tried (10, then 270), and the select screen stayed usable. The owner quit; exit 0. | No sign. |
@@ -123,6 +123,6 @@ Findings M4 inherits:
 - **TLS:** the server's account API speaks plain HTTP, and `fenji-launch` refuses `http://` except to this machine. Hosting for friends elsewhere needs a TLS proxy (Caddy), which is M4's deployment work, as are hosts without a domain.
 - **Time syncs in the world (#91):** the client's time-sync messages need answers once a character is in the world.
 - **Outfits:** `prop_sys_equips` is empty in M3 (ruling P4). The outfit shown at creation would come from the client's own tables in the operator's install, which is M4's to decide.
-- **The world's first messages:** a successful 10 is answered by the world, which may queue the player (605, 728) and then loads the scene (772; `lobby.md` 10.2).
+- **The world's first messages:** a successful 10 is answered by the world, which may queue the player (605, 728) and then loads the scene (772; `lobby.md` 10.2, inferred).
 - **The desktop launcher and the host's console** (#146, #147), with download and repair through DepotDownloader for Steam owners.
 - **The lobby's still-open questions** are listed in `lobby.md` §13.

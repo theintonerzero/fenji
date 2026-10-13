@@ -111,7 +111,7 @@ Every source is credited in `docs/re/sources.md`.
 
 There is no Steam sign-in and no ownership check (rule 1).
 
-**M3 update** ([`m3-summary.md`](../../re/m3-summary.md)). Built: one-time invite codes (stored as SHA-256 hashes, with labels and expiry), registration with an argon2id hash, sign-in with a limiter (a username only slows down; a username and network pair and a network lock), session tokens, and single-use game tokens (`fenji1-` and 64 hex digits, stored as SHA-256, 60 s by default, configurable from 10 s to an hour, bound to one account). The account API speaks plain HTTP, and `fenji-launch` refuses `http://` except to this machine, until M4 adds TLS. `/invite` in game waits for chat (M4).
+**M3 update** ([`m3-summary.md`](../../re/m3-summary.md)). Built: one-time invite codes (stored as SHA-256 hashes, with labels and expiry), registration with an argon2id hash, sign-in with a limiter (a username only slows down; a pair of username and network, or a network, locks), session tokens, and single-use game tokens (`fenji1-` and 64 hex digits, stored as SHA-256, 60 s by default, configurable from 10 s to an hour, bound to one account). The account API speaks plain HTTP, and `fenji-launch` refuses `http://` except to this machine; hosting elsewhere needs M4's TLS proxy (Caddy, §8). `/invite` in game waits for chat (M4).
 
 ### 5.2 Launcher (Linux + Windows)
 
