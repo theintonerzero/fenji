@@ -26,5 +26,6 @@
 | [`protocol/login.md`](protocol/login.md) | M1: how the client finds its server, and the first connection to our stub. |
 | [`protocol/transport.md`](protocol/transport.md) | M2: the client's transport: hello, variants, frames and keys, the Oodle wrapper, auth. |
 | [`protocol/packets/lobby.md`](protocol/packets/lobby.md) | M3: the lobby's script messages: the character list, creating and deleting characters, error codes and close reasons. |
+| [`protocol/packets/world.md`](protocol/packets/world.md) | M4: entering the world: 772, the native types 3, 7, 8 and 23, the property blob, time syncs and the creation outfit. |
 
 Ground rules (full text in the design spec, §2): legitimate copies only; clean room, no leaked server material; no game content in the repo; never touch live official services with modified clients; private and non-commercial.
