@@ -169,7 +169,7 @@ says 2 "XAUTHORITY" "an XAUTHORITY that isn't a readable file is refused" -- wit
 says 2 "--key, --type or --click" "--desktop refuses key presses and clicks" -- with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --desktop --key 5:Return
 says 2 "--key, --type or --click" "--desktop refuses a click given before it" -- with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --click 5:10,10 --desktop
 if locale -a 2> /dev/null | grep -qix 'en_US.utf-\?8'; then wide=en_US.UTF-8; else wide=C.UTF-8; fi
-says 2 "needs a local DISPLAY" "--desktop takes ASCII digits only" -- with_env LC_ALL="$wide" with_env DISPLAY=$':\u0663' desktop_display
+says 2 "needs a local DISPLAY" "--desktop takes ASCII digits only" -- with_env LC_ALL="$wide" with_env DISPLAY=$':\xd9\xa3' desktop_display
 mkdir -p "$TESTROOT/xauthdir"
 mkfifo "$TESTROOT/xauthfifo"
 says 2 "XAUTHORITY" "an XAUTHORITY that is a directory is refused" -- with_env XAUTHORITY="$TESTROOT/xauthdir" desktop_xauth
@@ -207,40 +207,78 @@ else
   bad "nested inputs: $started / $(cat -- "$TESTROOT/started-with" 2> /dev/null)"
 fi
 
-# --- a nested display must be a dedicated X server, never the session's own (fake /proc)
-# xserver PID COMM ARGS...: a process in the fake /proc, with its comm and NUL-separated cmdline.
+# --- a nested display must be a dedicated X server, never the session's own (fake /proc, /tmp)
+# xserver PID COMM ARGS...: a process in the fake /proc: its comm, its NUL-separated cmdline, and a
+# libXfont in its maps that has no font-server support (readable through its root).
 xserver() {
   local pid=$1 comm=$2
   shift 2
-  mkdir -p "$BARE_PROC/$pid"
+  mkdir -p "$BARE_PROC/$pid/root/usr/lib64"
   echo "$comm" > "$BARE_PROC/$pid/comm"
   printf '%s\0' "$@" > "$BARE_PROC/$pid/cmdline"
+  echo "7f0000000000-7f0000001000 r--p 00000000 00:00 0    /usr/lib64/libXfont2.so.2.0.0" > "$BARE_PROC/$pid/maps"
+  echo "a font library that opens no files over the network" > "$BARE_PROC/$pid/root/usr/lib64/libXfont2.so.2.0.0"
 }
-# lock N PID: display N's lock file, naming PID, under the test root's own X lock directory.
-lock() { printf '%10d\n' "$2" > "$TESTROOT/.X$1-lock"; }
-X_LOCKS=$TESTROOT
+# lock N PID: display N's lock file, naming PID; sock N: its socket.
+lock() { printf '%10d\n' "$2" > "$X_LOCKS/.X$1-lock"; }
+sock() { python3 -I -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$X_SOCKDIR/X$1"; }
+X_LOCKS=$TESTROOT/xlocks X_SOCKDIR=$TESTROOT/x11
+mkdir -p "$X_LOCKS" "$X_SOCKDIR"
+chmod 1777 "$X_SOCKDIR"
 xserver 4101 Xwayland Xwayland :98 -geometry 1920x1080 -ac -nolisten tcp -noreset -extension MIT-SHM
 xserver 4102 Xwayland Xwayland :97 -geometry 1280x720 -ac -nolisten tcp -noreset -extension MIT-SHM -shm
 xserver 4103 Xwayland Xwayland :0 -rootless -noreset -accessx -core -listenfd 4 -enable-ei-portal
 xserver 4104 gnome-shell /usr/bin/gnome-shell
 xserver 4105 Xwayland Xwayland :96 -ac -enable-ei-portal
-lock 98 4101
-lock 97 4102
-lock 0 4103
-lock 1 4104
-lock 96 4105
-lock 95 999999
-printf 'garbage\n' > "$TESTROOT/.X94-lock"
+xserver 4106 Xwayland Xwayland :88 -ac
+echo "calls getaddrinfo and connect" > "$BARE_PROC/4106/root/usr/lib64/libXfont2.so.2.0.0"
+xserver 4107 Xwayland Xwayland :87 -ac
+: > "$BARE_PROC/4107/maps"
+for n in 98 97 0 1 96 95 94 93 90 89 88 87; do sock "$n"; done
+lock 98 4101; lock 97 4102; lock 0 4103; lock 1 4104; lock 96 4105; lock 95 999999; lock 88 4106; lock 87 4107
+printf 'garbage\n' > "$X_LOCKS/.X94-lock"
+touch "$X_SOCKDIR/X91"
+lock 91 4101
+mkfifo "$X_LOCKS/.X90-lock"
+ln -s "$X_LOCKS/.X98-lock" "$X_LOCKS/.X89-lock"
+# problem N PATTERN WHAT: display N is refused with PATTERN in the reason (and in good time).
+problem() {
+  local why
+  # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
+  why=$(timeout 5 bash -c '. "$1"; X_LOCKS=$2 X_SOCKDIR=$3 BARE_PROC=$4; bare_display_problem "$5"' _ \
+    "$HERE/run-bare.sh" "$X_LOCKS" "$X_SOCKDIR" "$BARE_PROC" "$1")
+  case "$why" in *"$2"*) ok "$3" ;; *) bad "$3: '$why'" ;; esac
+}
 if [ -z "$(bare_display_problem 98)" ]; then ok "a dedicated rootful Xwayland with glamor on is a nested display"; else bad "glamor-on nested: $(bare_display_problem 98)"; fi
 if [ -z "$(bare_display_problem 97)" ]; then ok "the sandbox's kind of display, glamor off, is one too"; else bad "glamor-off nested: $(bare_display_problem 97)"; fi
-case "$(bare_display_problem 0)" in *rootless*) ok "a -rootless session Xwayland is refused" ;; *) bad "rootless: $(bare_display_problem 0)" ;; esac
-case "$(bare_display_problem 1)" in *gnome-shell*) ok "a display the compositor locks is refused" ;; *) bad "compositor: $(bare_display_problem 1)" ;; esac
-case "$(bare_display_problem 96)" in *ei-portal*) ok "an Xwayland that passes input to the compositor is refused" ;; *) bad "ei-portal: $(bare_display_problem 96)" ;; esac
-case "$(bare_display_problem 95)" in *"not running"*) ok "a lock naming no running process is refused" ;; *) bad "stale lock: $(bare_display_problem 95)" ;; esac
-case "$(bare_display_problem 94)" in *"process ID"*) ok "a lock without a process ID is refused" ;; *) bad "garbage lock: $(bare_display_problem 94)" ;; esac
-case "$(bare_display_problem 93)" in *"no lock"*) ok "a display with no lock is refused" ;; *) bad "no lock: $(bare_display_problem 93)" ;; esac
-says 2 "use --desktop" "--display naming the session's own display is refused" -- with_env display=98 with_env DISPLAY=:98.0 choose_display 0 1
+problem 0 rootless "a -rootless session Xwayland is refused"
+problem 1 gnome-shell "a display the compositor locks is refused"
+problem 96 ei-portal "an Xwayland that passes input to the compositor is refused"
+problem 95 "not running" "a lock naming no running process is refused"
+problem 94 "process ID" "a lock without a process ID is refused"
+problem 93 "no lock" "a display with no lock is refused"
+problem 92 "no X server socket" "a display with no socket is refused"
+problem 91 "not a socket" "a socket that is a plain file is refused"
+problem 90 "not a regular file" "a FIFO as the lock is refused, without blocking"
+problem 89 "not a regular file" "a symlink as the lock is refused"
+problem 88 "font-server" "a server whose libXfont can open sockets is refused"
+problem 87 "no libXfont" "a server whose font library can't be checked is refused"
+mkdir -p "$TESTROOT/x11-nosticky"
+chmod 0777 "$TESTROOT/x11-nosticky"
+why=$(X_SOCKDIR=$TESTROOT/x11-nosticky bare_display_problem 98)
+case "$why" in *sticky*) ok "a socket directory without the sticky bit is refused" ;; *) bad "sticky: $why" ;; esac
+ln -s "$X_SOCKDIR" "$TESTROOT/x11-link"
+why=$(X_SOCKDIR=$TESTROOT/x11-link bare_display_problem 98)
+case "$why" in *"not a directory"*) ok "a socket directory that is a symlink is refused" ;; *) bad "dir link: $why" ;; esac
+says 2 "session's own display" "--display naming the session's own display is refused" -- with_env display=98 with_env DISPLAY=:98.0 choose_display 0 1
+says 2 "session's own display" "... with DISPLAY as unix:N" -- with_env display=0 with_env DISPLAY=unix:0 choose_display 0 1
+says 2 "session's own display" "... with DISPLAY as localhost:N" -- with_env display=0 with_env DISPLAY=localhost:0 choose_display 0 1
+says 2 "session's own display" "... with leading zeros" -- with_env display=0 with_env DISPLAY=:00 choose_display 0 1
+says 2 "doesn't name a display number" "a DISPLAY that can't be parsed is refused for a nested run" -- with_env display=98 with_env DISPLAY=weird choose_display 0 1
+if (with_env display=98 with_env DISPLAY=:5 choose_display 0 1); then ok "another session display doesn't stop a nested one"; else bad "DISPLAY :5 vs 98"; fi
+if (nested_display_ok 1 1); then ok "a desktop run skips the nested-display check"; else bad "desktop bypass"; fi
 says 2 "needs a local DISPLAY" "setup --desktop with no DISPLAY is refused" -- with_env DISPLAY= cmd_bare_setup --desktop
+says 2 "--display N or --desktop" "setup names its display: no default" -- cmd_bare_setup
 says 2 "" "setup: an unknown option is a usage error" -- cmd_bare_setup --print
 says 1 "display number" "setup: --display takes a number" -- cmd_bare_setup --display x
 
@@ -306,6 +344,18 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   : > "$WORK/compat/fenji-primed"
   says 1 "before builds were recorded" "a run names a prefix primed before builds were recorded" -- \
     with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
+  # wired COMMAND...: COMMAND with need_display and seccomp_filter standing in, so it gets as far as
+  # the nested-display check, with the fakes and the fake GE-Proton.
+  # shellcheck disable=SC2329 # the stand-ins are called by run-bare.sh's functions, not here
+  wired() {
+    need_display() { :; }
+    seccomp_filter() { echo x; }
+    with_fakes with_proton "$TESTROOT/proton" "$@"
+  }
+  cp -- "$TESTROOT/proton/version" "$WORK/compat/fenji-primed"
+  says 1 "can't be a nested display" "a run checks its nested display" -- wired cmd_bare_run t "${GOOD[@]}" --display 1
+  rm -f -- "$WORK/compat/fenji-primed"
+  says 1 "can't be a nested display" "setup checks its nested display" -- wired cmd_bare_setup --display 1
   rm -f -- "$WORK/compat/fenji-primed"
 else
   echo "skip the unprimed-prefix run test: it needs Linux on x86_64"

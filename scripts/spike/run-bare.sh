@@ -10,9 +10,11 @@
 #   - Steam not running, checked before the run and every 2 s during it (Steam starting stops the
 #     run);
 #   - a local fenji-server, which shares the client's network namespace: that namespace has only
-#     loopback, and the host's daemon sockets (D-Bus, systemd-resolved, the desktop portal) are out
-#     of reach, so on a nested display the client can reach the Fenji server and nothing else
-#     (--desktop loosens this; see below);
+#     loopback, and the host's daemon sockets in /run, /tmp and /dev/shm (D-Bus, systemd-resolved,
+#     the desktop portal) are out of reach, so the client's network reaches the Fenji server only.
+#     Sockets elsewhere in the real filesystem stay reachable, such as IBus's in ~/.cache/ibus,
+#     and the audio daemon can load network modules (#148); --desktop adds the session's display
+#     (below);
 #   - the AGT driver watchdog armed on the namespace's PID namespace before anything in it starts,
 #     as in sandboxed runs; a gate event stops the run (exit 3);
 #   - never --gf-sdk=mocked: fenji-launch passes no SDK flag at all.
@@ -20,14 +22,15 @@
 # /run, /tmp and /dev/shm (bar the user's audio sockets and the display's X11 socket, bound back),
 # loopback only, its own PID namespace, and isolated-run.sh's seccomp filter against key requests
 # (a kernel DNS upcall). So home, GPU, audio and display are as on a player's machine, and no host
-# daemon socket is. Its own /proc matters: without it, a nested bwrap (umu's pressure-vessel) looks
-# its child up in the host's /proc by a namespace PID and hangs. The watchdog's scan of sandbox
-# tmpfs mounts is off (--no-tmpfs-scan): the host's own Proton prefixes would trip it. Its scan of
+# daemon socket in /run, /tmp or /dev/shm is. Its own /proc matters: without it, a nested bwrap
+# (umu's pressure-vessel) looks its child up in the host's /proc by a namespace PID and hangs. The
+# watchdog's scan of sandbox tmpfs mounts is off (--no-tmpfs-scan): the host's own Proton prefixes
+# would trip it. Its scan of
 # re/bare-metal (the prefix and the run's copy), its process rules (S2), its log rules (S3, which
 # follow Proton's per-session logs) and its registry rule (S4) carry the rest, and the run's
 # evidence lists any new *.sys file under umu's runtime and /var/tmp. Linux on x86_64 only.
 #
-#   scripts/spike/run-bare.sh setup [--display N | --desktop]
+#   scripts/spike/run-bare.sh setup (--display N | --desktop)
 #   scripts/spike/run-bare.sh run NAME --server FILE --server-data DIR --username USER
 #       --password-file FILE (--display N | --desktop) [--timeout SECONDS] [--key T:KEY]...
 #       [--type T:TEXT]... [--click T:X,Y]...
@@ -73,8 +76,9 @@ WORK="$REPO/re/bare-metal"
 PINNED_COPY="${FENJI_CLIENT_PATH:-}"
 UMU="${FENJI_UMU_RUN:-$HOME/.local/bin/umu-run}"
 GAMEID=umu-1418100
-# Where the display checks look: the X servers' lock files and /proc (the tests point both elsewhere).
+# Where the display checks look: X lock files, the X socket directory, /proc (tests move all three).
 X_LOCKS=/tmp
+X_SOCKDIR=/tmp/.X11-unix
 BARE_PROC=/proc
 
 usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$BARE_HERE/run-bare.sh" >&2; exit 2; }
@@ -96,11 +100,11 @@ host_guards() {
 }
 
 # The guard namespace's command line for display N: the real filesystem with its own /proc; empty
-# /run, /tmp and /dev/shm, so no host daemon socket (D-Bus, systemd-resolved, the portal, agents) is
-# there, bar the user's audio sockets and the display's X11 socket, bound back; Steam's pipe masked;
-# loopback only; its own PID namespace (where the watchdog arms); the seccomp filter on fd 7; and
-# nothing left when its parent goes. A second argument is a desktop run's X authority file, brought
-# in read-only after the tmpfs mounts, which would hide it.
+# /run, /tmp and /dev/shm, so no host daemon socket of those (D-Bus, systemd-resolved, the portal,
+# agents) is there, bar the user's audio sockets and the display's X11 socket, bound back; Steam's
+# pipe masked; loopback only; its own PID namespace (where the watchdog arms); the seccomp filter
+# on fd 7; and nothing left when its parent goes. A second argument is a desktop run's X authority
+# file, brought in read-only after the tmpfs mounts, which would hide it.
 namespace_cmd() {
   local display=$1 xauth=${2:-} rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
   printf '%s\n' bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$rt"
@@ -150,19 +154,47 @@ choose_display() {
     xauth=$(desktop_xauth) || exit 2
     return 0
   fi
-  if [[ "${DISPLAY:-}" =~ ^:([0123456789]+)(\.[0123456789]+)?$ ]] && [ "${BASH_REMATCH[1]}" = "$display" ]; then
-    misuse "--display $display is the session's own display (DISPLAY); use --desktop for it"
+  # DISPLAY parsed as isolated-run.sh parses it for --x11: [protocol/][host]:D[.S], by number.
+  if [ -n "${DISPLAY:-}" ]; then
+    local d=${DISPLAY##*:} n=$display
+    d=${d%%.*}
+    if [[ $DISPLAY != *:* || -z $d || $d == *[!0123456789]* ]]; then
+      misuse "DISPLAY=$DISPLAY doesn't name a display number, so --display $display can't be checked against the session's display (fix or unset DISPLAY)"
+    fi
+    while [[ $d == 0?* ]]; do d=${d#0}; done
+    while [[ $n == 0?* ]]; do n=${n#0}; done
+    [ "$d" != "$n" ] || misuse "--display $display is the session's own display (DISPLAY=$DISPLAY); use --desktop for it"
   fi
 }
 
 # Why display N isn't a nested display a bare run may use (nothing if it is). It must be a dedicated
 # rootful Xwayland, Xephyr or Xvfb: a compositor locks its session displays under its own PID, and
 # a session Xwayland runs -rootless and may pass input on to the compositor (-enable-ei-portal), as
-# isolated-run.sh's "Display" explains. Glamor and MIT-SHM may be on here, unlike in the sandbox:
-# a bare run's client has the GPU and the host's IPC namespace anyway.
+# isolated-run.sh's "Display" explains. These are isolated-run.sh's --x11 checks: the socket
+# directory, the socket and the lock (by stat without -L, so a symlink is refused, not followed,
+# and a FIFO is never opened), the server's process, and its libXfont, which must have no
+# font-server support, or the client could make the server connect anywhere from the host.
+# Glamor and MIT-SHM may be on here, unlike in the sandbox: a bare run's client has the GPU and
+# the host's IPC namespace anyway.
 bare_display_problem() {
-  local lock="$X_LOCKS/.X$1-lock" pid="" comm="" arg
-  [ -e "$lock" ] || { echo "display :$1 has no lock ($lock)"; return; }
+  local n=$1 uid st sock lock pid="" comm="" arg path last="" libs=() f r rc
+  uid=$(id -u)
+  sock="$X_SOCKDIR/X$n" lock="$X_LOCKS/.X$n-lock"
+  st=$(stat -c '%u %f' -- "$X_SOCKDIR" 2>/dev/null) || { echo "no X server socket at $sock"; return; }
+  (( (16#${st#* } & 8#170000) == 8#040000 )) || { echo "$X_SOCKDIR is not a directory (a symlink is refused too)"; return; }
+  if [ "${st% *}" != 0 ] && [ "${st% *}" != "$uid" ]; then
+    echo "$X_SOCKDIR belongs to uid ${st% *}, not root or you"
+    return
+  fi
+  (( 16#${st#* } & 8#1000 )) || { echo "$X_SOCKDIR doesn't have the sticky bit, so anyone who can write to it could replace X$n"; return; }
+  st=$(stat -c '%u %f' -- "$sock" 2>/dev/null) || { echo "no X server socket at $sock"; return; }
+  (( (16#${st#* } & 8#170000) == 8#140000 )) || { echo "$sock is not a socket (a symlink is refused too)"; return; }
+  [ "${st% *}" = "$uid" ] || { echo "$sock belongs to uid ${st% *}, not you (another user's X server)"; return; }
+  st=$(stat -c '%u %f' -- "$lock" 2>/dev/null) || { echo "display :$n has no lock ($lock)"; return; }
+  if (( (16#${st#* } & 8#170000) != 8#100000 )) || [ "${st% *}" != "$uid" ]; then
+    echo "$lock is not a regular file of yours"
+    return
+  fi
   { read -r pid < "$lock"; } 2>/dev/null || true
   case "$pid" in "" | *[!0123456789]*) echo "$lock doesn't hold a process ID"; return ;; esac
   if ! { read -r comm < "$BARE_PROC/$pid/comm"; } 2>/dev/null; then
@@ -180,6 +212,32 @@ bare_display_problem() {
         -enable-ei-portal) echo "$comm (PID $pid) passes input on to the compositor (-enable-ei-portal): start a dedicated one without it"; return ;;
       esac
     done < "$BARE_PROC/$pid/cmdline"; } 2>/dev/null || true
+  # No font-server support, checked as isolated-run.sh's x11_server_problem does: every libXfont
+  # the server maps, read through its root, refused if it opens sockets or looks up host names.
+  { while read -r _ _ _ _ _ path; do
+      case "${path##*/}" in libXfont*) [ "$path" = "$last" ] || libs+=("$path"); last=$path ;; esac
+    done < "$BARE_PROC/$pid/maps"; } 2>/dev/null || true
+  if [ "${#libs[@]}" -eq 0 ]; then
+    echo "$comm (PID $pid) maps no libXfont (or its maps can't be read), so its font library can't be checked for font-server support"
+    return
+  fi
+  for f in "${libs[@]}"; do
+    case "$f" in
+      *" (deleted)") echo "$comm (PID $pid) maps $f, a libXfont replaced since it started, which can't be checked: restart the server"; return ;;
+    esac
+    r=$BARE_PROC/$pid/root$f
+    if [ ! -f "$r" ] || [ ! -r "$r" ]; then
+      echo "$comm (PID $pid) maps $f, which is not a readable file here, so it can't be checked for font-server support"
+      return
+    fi
+    rc=0
+    LC_ALL=C grep -qaF -e getaddrinfo -e gethostbyname -e socket -e connect -- "$r" || rc=$?
+    case "$rc" in
+      0) echo "$comm (PID $pid) maps $f, a libXfont with font-server support: the client could make the server connect anywhere"; return ;;
+      1) ;;
+      *) echo "grep failed (exit $rc) on $f, so it can't be checked for font-server support"; return ;;
+    esac
+  done
 }
 
 # Dies unless a nested display (desktop 0) is a dedicated X server (bare_display_problem).
@@ -268,7 +326,7 @@ setup_env() {
 }
 
 cmd_bare_setup() {
-  local display=99 display_given=0 desktop=0 xauth=""
+  local display="" display_given=0 desktop=0 xauth=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --display) [ $# -ge 2 ] || usage; display=$2; display_given=1; shift 2 ;;
@@ -276,7 +334,11 @@ cmd_bare_setup() {
       *) usage ;;
     esac
   done
-  case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
+  if [ "$display_given" = 1 ]; then
+    case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
+  fi
+  [ "$desktop" = 1 ] || [ "$display_given" = 1 ] ||
+    misuse "setup needs --display N or --desktop: a dedicated nested display, or the session's own (see the header)"
   choose_display "$desktop" "$display_given"
   host_guards
   if prefix_ready && prefix_primed; then
