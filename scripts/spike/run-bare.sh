@@ -380,6 +380,15 @@ prefix_primed() {
 # and setup and run refuse it until it is rebuilt: a driver service that run left in the registry
 # would start, unwatched, the next time Wine boots the prefix, as setup's prime does (#148).
 GATE_MARK=fenji-gate-event
+# Creates FILE holding TEXT, refusing anything already there (a file, a link, a FIFO, a device),
+# as watchdog.py's create_exclusive does: the client can write the prefix, so this neither writes
+# through a link it planted nor waits on a FIFO.
+create_new() {
+  python3 -I -c 'import os, sys
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+os.write(fd, sys.argv[2].encode())
+os.close(fd)' "$1" "$2"
+}
 check_unmarked() {
   local m="$WORK/compat/$GATE_MARK" what=""
   [ -e "$m" ] || [ -L "$m" ] || return 0
@@ -611,10 +620,10 @@ PY
     wdrc=$?
   fi
   set -e
-  # The mark goes where the client could write, so never through anything already there (noclobber
-  # refuses any existing entry, a link included); anything there keeps the prefix refused anyway.
+  # The mark goes where the client could write: create_new refuses anything already there, and
+  # anything there keeps the prefix refused anyway.
   if [ "$wdrc" != 0 ] &&
-    ! (set -C; printf 'run %s: watchdog exit %s, %s\n' "$run" "$wdrc" "$(date -Is)" > "$PFX/$GATE_MARK") 2> /dev/null; then
+    ! create_new "$PFX/$GATE_MARK" "run $run: watchdog exit $wdrc, $(date -Is)"$'\n' 2> /dev/null; then
     echo "run-bare: couldn't write the gate-event mark $PFX/$GATE_MARK; don't use this prefix again: remove $WORK/compat, then run: $0 setup" >&2
   fi
   rm -f "$OUT/.running" "$IO/.go"

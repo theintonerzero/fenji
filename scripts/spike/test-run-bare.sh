@@ -548,10 +548,15 @@ EOF
 #!/usr/bin/env bash
 # Records its arguments, says what fenji-launch says right before it starts the client, and plays
 # the client for FAKE_LAUNCH_SECS. A client that misbehaves plants a link at FAKE_PLANT, to
-# FAKE_PLANT_TO.
+# FAKE_PLANT_TO, or a FIFO at FAKE_FIFO, which a rescuer opens after 15 s, so that a writer stalled
+# on it is let go and the test ends.
 printf '%s\n' "$@" > "$FAKE_LOG/launch"
 echo "starting the client" >&2
 if [ -n "${FAKE_PLANT:-}" ]; then ln -s -- "$FAKE_PLANT_TO" "$FAKE_PLANT"; fi
+if [ -n "${FAKE_FIFO:-}" ]; then
+  mkfifo -- "$FAKE_FIFO"
+  (sleep 15; exec 3<> "$FAKE_FIFO") > /dev/null 2>&1 &
+fi
 sleep "${FAKE_LAUNCH_SECS:-0}"
 EOF
   cat > "$F/watchdog.py" <<'EOF'
@@ -767,6 +772,16 @@ print(*(x.getsockname()[1] for x in s))')
     ok "a link at the mark's place keeps the prefix refused"
   else
     bad "after a planted link: rc $rc: $out"
+  fi
+  # Nor does a FIFO there stall the runner on its way to the verdict and the evidence.
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  flow run-fifo "$F/work" with_env FAKE_WATCH_RC=3 with_env FAKE_FIFO="$F/work/compat/fenji-gate-event" \
+    cmd_bare_run f1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 3 ] && [ "$secs" -lt 12 ] && [[ $out == *"couldn't write the gate-event mark"* ]] &&
+    [ -e "$F/work/out/f1/watchdog-exit-code" ]; then
+    ok "a FIFO the client planted at the mark's place doesn't stall the runner"
+  else
+    bad "a planted FIFO: rc $rc after $secs s: $out"
   fi
 else
   echo "skip the end-to-end flows: they need Linux on x86_64"
