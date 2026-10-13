@@ -8,7 +8,12 @@ Fenji isn't playable yet. From v0.4.0 a Fenji server runs accounts and the chara
 
 Fenji's own software sends nothing to the project or to anyone else. It has no analytics, crash reporters or update checks that phone home, and talks only to the server you point it at, and to Steam through DepotDownloader if you download your game client that way. The game client is another matter (below).
 
-On Linux the launcher starts the client through [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher), which has network habits of its own: it checks for a network route (a UDP `connect` to `1.1.1.1`, which sends nothing), downloads its Steam Linux Runtime from Valve's servers (`repo.steampowered.com`) on first use and asks them later whether it has an update, and, when you don't name a Proton build with `--proton` (or `$PROTONPATH`), checks GitHub for the latest UMU-Proton each time it starts and downloads it when it's new. Those requests come from umu, not from Fenji. They carry nothing about your account, though like any request they show your IP address.
+On Linux the launcher starts the client through [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher), which has network habits of its own:
+- it checks for a network route, with a UDP `connect` to `1.1.1.1` that sends nothing;
+- it downloads its Steam Linux Runtime from Valve's servers (`repo.steampowered.com`) on first use, and asks them later whether it has an update;
+- when you don't name a Proton build with `--proton` (or `$PROTONPATH`), it checks GitHub for the latest UMU-Proton each time it starts, and downloads it when it's new.
+
+Those requests come from umu, not from Fenji. They carry nothing about your account, though like any request they show your IP address.
 
 ## What a Fenji server stores
 

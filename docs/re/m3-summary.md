@@ -65,7 +65,7 @@ The documents:
 | D6 | Spec D16's `[data] client_path` | Parsed but not read in M3: `prop_sys_equips` stays empty, so nothing comes from the operator's install (ruling P4). |
 | D7 | Spec D17's 26 + 0x4000 bytes before the auth message | `PRE_AUTH_CAP` is 26 + 4 + 0x4000 + 512, to allow for the header, the frame lengths and time syncs (Amendment A). |
 | D8 | The `invites` table's key | `id`, with `code_hash` unique (Amendment A). |
-| D9 | Spec §4's limiter "per username" | Pairs of a username's hash and a network lock after 5 tries in 15 minutes, and networks (IPv6 by /64) after 20. A username only slows down, counted in one of 4096 buckets keyed per process, so the limiter never learns whether an account exists and nobody can lock another player out by knowing their username, though players behind one shared address or /64 share its lock (Amendment A, after six security reviews). |
+| D9 | Spec D12's limiter "per username" | Pairs of a username's hash and a network lock after 5 tries in 15 minutes, and networks (IPv6 by /64) after 20. A username only slows down, counted in one of 4096 buckets keyed per process, so the limiter never learns whether an account exists. Nobody on another network can lock a player out by knowing their username; players behind one shared address or /64 share its locks (Amendment A, after six security reviews). |
 
 ## Done when
 
@@ -84,12 +84,12 @@ The documents:
 - `umu-run` in a dedicated prefix;
 - a reflink copy of the pinned copy, never the Steam library, with Steam not running;
 - a local `fenji-server`;
-- a namespace with loopback only and empty `/run`, `/tmp` and `/dev/shm`, bar the audio sockets (PipeWire, Pulse) and the display's, bound back. Sockets elsewhere in the real filesystem stay reachable, such as the input-method daemon's in `~/.cache/ibus` (#148);
+- a namespace with loopback only and empty `/run`, `/tmp` and `/dev/shm`, bar the audio sockets (PipeWire, Pulse) and the display's, bound back. Sockets elsewhere in the real filesystem stay reachable, such as the input-method daemon's in `~/.cache/ibus`, and the audio daemon can load network modules (#148);
 - the AGT driver watchdog armed.
 
 There was no SDK flag in any run. The lobby works end to end on bare metal: sign-in through `fenji-launch play` and `umu-run`, the list, create, a character surviving a server restart, and delete (bm-4, bm-5).
 
-bm-4 to bm-6 ran with `--desktop`, on the session's own display. The owner, who ran them, accepted that exposure for hands-on test runs on 2026-10-13. There the client shares the session's X server: it can read and type into other X11 windows, read and replace the bridged clipboard, and its XTEST input may reach native windows. Its network stayed loopback-only, but it was less isolated than on a nested display. Automated runs use a dedicated, GPU-capable nested display (#144).
+bm-4 to bm-6 ran with `--desktop`, on the session's own display. There the client shares the session's X server: it can read and type into other X11 windows, read and replace the bridged clipboard, and its XTEST input may reach native windows. Its network stays loopback-only, but it is less isolated than on a nested display. The owner ran bm-4 to bm-6 and accepted that exposure for hands-on test runs on 2026-10-13. Automated runs use a dedicated, GPU-capable nested display (#144).
 
 | Run | What happened | Watchdog |
 |---|---|---|
