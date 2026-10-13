@@ -19,6 +19,11 @@ wd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wd)
 
 
+class Blocked(Exception):
+    """Raised by the alarm in tests that must not block; not an OSError, so assertRaises(OSError)
+    can't take it for the refusal."""
+
+
 class S1(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -462,6 +467,27 @@ class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
                 fh.write(b"again\n")
             got += self.drain(t)
             self.assertEqual(got, b"first session, a long line\nagain\n")
+
+    def test_a_fifo_at_the_log_path_is_refused_without_blocking(self):
+        # Review of #144: anything in the namespace can write the run's io directory, and opening a
+        # FIFO that has no writer blocks, which would stop the whole watch, not just the log rules.
+        def blocked(signum, frame):
+            raise Blocked("the watchdog blocked opening a FIFO")
+        old = signal.signal(signal.SIGALRM, blocked)
+        signal.alarm(5)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                p = pathlib.Path(d) / "steam-1418100.log"
+                p.write_bytes(b"first session\n")
+                t = wd.Tail(str(p))
+                self.assertEqual(self.drain(t), b"first session\n")
+                p.unlink()
+                os.mkfifo(p)
+                with self.assertRaises(OSError):
+                    self.drain(t)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
 
 
 class ClientCreationOverdue(unittest.TestCase):

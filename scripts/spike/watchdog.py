@@ -162,11 +162,13 @@ def compare_sys(base, cur):
 def open_regular(path):
     """A read-only file object for `path`, refusing a symlink (O_NOFOLLOW) or anything but a
     regular file: the sandbox can write the directories this reads, and a planted link must never
-    make the host read one of its own files."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    make the host read one of its own files. The open doesn't block (O_NONBLOCK), so a planted FIFO
+    with no writer is refused instead of stopping the watch."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
         raise OSError(f"not a regular file: {path}")
+    os.set_blocking(fd, True)
     return os.fdopen(fd, "rb")
 
 

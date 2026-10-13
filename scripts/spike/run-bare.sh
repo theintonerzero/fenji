@@ -32,7 +32,9 @@
 #       [--click T:X,Y]...
 #
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
-# update off (the namespace has no network anyway). run's --server config must bind 127.0.0.1 and
+# update off (the namespace has no network anyway), then primes it: cmd.exe started once through
+# Proton's launcher, so Proton's own service is in the watchdog's baseline (prefix_primed); a run
+# refuses an unprimed prefix, and setup primes an existing one. run's --server config must bind 127.0.0.1 and
 # name 127.0.0.1 as its public_host, its [store] path must lie in --server-data, a directory under
 # re/bare-metal/, and --password-file holds the account's password on its first line. The display is the nested one (:99 unless --display):
 # Xwayland on the real GPU, where screenshots and key presses can reach the client. The evidence
@@ -132,23 +134,49 @@ launch_args() {
 
 prefix_ready() { [ -f "$WORK/compat/system.reg" ] && [ -d "$WORK/compat/drive_c/windows" ]; }
 
+# Proton's launch shim (umu.exe, through which Proton starts a program named by its unix path)
+# registers GE-Proton's Discord bridge service the first time it starts anything in a prefix, and
+# createprefix never runs the shim. Unprimed, the client's own first launch registers the service,
+# and the watchdog rightly stops the run: a service that isn't in the baseline (bm-1, 2026-10-13).
+# setup primes the prefix by starting cmd.exe once through the shim, then leaves the mark; the
+# prefix is primed when the mark is there and, if this GE-Proton ships the bridge, the bridge
+# service has reached the registry on disk.
+PRIMED_MARK=fenji-primed
+prefix_primed() {
+  [ -f "$WORK/compat/$PRIMED_MARK" ] || return 1
+  [ ! -e "$PROTON/files/lib/wine/discord-rpc-bridge/bridge.exe" ] ||
+    grep -q '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\discord-bridge\]' "$WORK/compat/system.reg"
+}
+
+# umu-run's arguments for the prime: the prefix's cmd.exe by its unix path, which exits at once.
+prime_args() { printf '%s\n' "$WORK/compat/drive_c/windows/system32/cmd.exe" /c exit; }
+
 cmd_bare_setup() {
   [ $# -eq 0 ] || usage
   host_guards
-  if prefix_ready; then
-    echo "the prefix exists: $WORK/compat"
+  if prefix_ready && prefix_primed; then
+    echo "the prefix is ready: $WORK/compat"
     return 0
   fi
   mkdir -p "$WORK/compat"
   need_display 99
-  local ns ne bpf
+  local ns ne bpf prime
   mapfile -t ns < <(namespace_cmd 99)
   mapfile -t ne < <(namespace_env 99)
   bpf=$(seccomp_filter)
-  # umu-launcher 1.4 ends createprefix with exit 1 once the prefix is built: the prefix decides.
-  "${ns[@]}" "${ne[@]}" UMU_RUNTIME_UPDATE=0 PROTONPATH="$PROTON" WINEPREFIX="$WORK/compat" \
-    GAMEID="$GAMEID" "$UMU" createprefix > "$WORK/setup.log" 2>&1 7< <(printf '%b' "$bpf") || true
-  prefix_ready || die "createprefix didn't build the prefix; see $WORK/setup.log"
+  if ! prefix_ready; then
+    # umu-launcher 1.4 ends createprefix with exit 1 once the prefix is built: the prefix decides.
+    "${ns[@]}" "${ne[@]}" UMU_RUNTIME_UPDATE=0 PROTONPATH="$PROTON" WINEPREFIX="$WORK/compat" \
+      GAMEID="$GAMEID" "$UMU" createprefix > "$WORK/setup.log" 2>&1 7< <(printf '%b' "$bpf") || true
+    prefix_ready || die "createprefix didn't build the prefix; see $WORK/setup.log"
+  fi
+  # The prime (see prefix_primed). umu-run returns once Wine has ended, so the registry is on disk.
+  mapfile -t prime < <(prime_args)
+  timeout -k 10 300 "${ns[@]}" "${ne[@]}" UMU_RUNTIME_UPDATE=0 PROTONPATH="$PROTON" \
+    WINEPREFIX="$WORK/compat" GAMEID="$GAMEID" "$UMU" "${prime[@]}" >> "$WORK/setup.log" 2>&1 \
+    7< <(printf '%b' "$bpf") || die "the prime through Proton's launcher failed; see $WORK/setup.log"
+  touch "$WORK/compat/$PRIMED_MARK"
+  prefix_primed || die "Proton's launcher ran, but its bridge service isn't in the prefix's registry; see $WORK/setup.log"
   echo "prefix ready: $WORK/compat"
 }
 
@@ -196,8 +224,9 @@ with open(sys.argv[1], "rb") as f:
     sys.exit(0 if tomllib.load(f).get("server", {}).get("public_host") == "127.0.0.1" else 1)
 PY
   host_guards
-  need_display "$display"
   prefix_ready || die "no prefix; run: $0 setup"
+  prefix_primed || die "the prefix hasn't been through Proton's launcher, so Proton's own service isn't in the watchdog's baseline; run: $0 setup"
+  need_display "$display"
   check_pinned_copy
   [ -x "$STUBBIN/fenji-server" ] || die "build the server first: cargo build --release -p fenji-server"
   [ -x "$STUBBIN/fenji-launch" ] || die "build the launcher first: cargo build --release -p fenji-launcher"
@@ -319,7 +348,8 @@ PY
 # run-client.sh's verdict, in this runner's words where they differ.
 bare_verdict() {
   local wdrc=$1 wrc=$2 ran=$3 out=$4
-  if [ -e "$out/steam-started" ]; then
+  # A gate event (3) or a watchdog failure (4) wins: exit 3 is the signal to stop all runs.
+  if [ "$wdrc" = 0 ] && [ -e "$out/steam-started" ]; then
     echo "Steam started during the run, so the run was stopped (CLAUDE.md, \"Bare-metal client runs\")" >&2
     return 1
   fi

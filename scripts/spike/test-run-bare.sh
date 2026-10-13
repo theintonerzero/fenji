@@ -152,6 +152,48 @@ says 3 "GATE EVENT" "a watchdog trigger is a gate event" -- bare_verdict 3 137 1
 says 5 "never armed" "a watchdog that never armed is exit 5" -- bare_verdict 0 98 0 "$TESTROOT/out"
 guard
 if (bare_verdict 0 0 1 "$TESTROOT/out") > /dev/null 2>&1; then ok "a client that ran is a finished run"; else bad "a finished run"; fi
+mkdir -p "$TESTROOT/out"
+touch "$TESTROOT/out/steam-started"
+says 3 "GATE EVENT" "a gate event wins over Steam starting" -- bare_verdict 3 137 1 "$TESTROOT/out"
+says 4 "WATCHDOG FAILURE" "a watchdog failure wins over Steam starting" -- bare_verdict 4 137 1 "$TESTROOT/out"
+says 1 "Steam started" "Steam starting stops an otherwise clean run" -- bare_verdict 0 137 0 "$TESTROOT/out"
+rm -f -- "$TESTROOT/out/steam-started"
+
+# --- the prefix: primed through Proton's launcher, so Proton's own service is in the watchdog's baseline
+mkdir -p "$TESTROOT/proton/files/lib/wine/discord-rpc-bridge" "$TESTROOT/proton-nobridge" "$WORK/compat/drive_c/windows"
+touch "$TESTROOT/proton/files/lib/wine/discord-rpc-bridge/bridge.exe"
+printf '#!/bin/sh\n' > "$TESTROOT/proton/proton"
+printf '#!/bin/sh\n' > "$TESTROOT/umu-run"
+chmod +x "$TESTROOT/proton/proton" "$TESTROOT/umu-run"
+printf 'WINE REGISTRY Version 2\n[System\\\\ControlSet001\\\\Services\\\\BITS] 1789520096\n' > "$WORK/compat/system.reg"
+# with_proton DIR COMMAND...: COMMAND with DIR as GE-Proton and a umu-run that does nothing.
+with_proton() {
+  PROTON=$1 UMU=$TESTROOT/umu-run
+  shift
+  "$@"
+}
+primed() { (with_proton "$1" prefix_primed); }
+if primed "$TESTROOT/proton"; then bad "a prefix never primed counts as primed"; else ok "a prefix that Proton's launcher never ran in isn't primed"; fi
+touch "$WORK/compat/fenji-primed"
+if primed "$TESTROOT/proton"; then bad "a mark alone counts as primed"; else ok "the mark without Proton's bridge service on disk isn't primed"; fi
+if primed "$TESTROOT/proton-nobridge"; then ok "a GE-Proton with no bridge needs only the mark"; else bad "the mark with no bridge shipped"; fi
+printf '[System\\\\ControlSet001\\\\Services\\\\discord-bridge] 1791858207\n' >> "$WORK/compat/system.reg"
+if primed "$TESTROOT/proton"; then ok "the mark and the bridge service on disk: primed"; else bad "a primed prefix"; fi
+rm -f -- "$WORK/compat/fenji-primed"
+mapfile -t got < <(prime_args)
+want=("$WORK/compat/drive_c/windows/system32/cmd.exe" /c exit)
+if [ "${got[*]}" = "${want[*]}" ]; then
+  ok "the prime starts the prefix's cmd.exe by its unix path, which Proton starts through its launcher"
+else
+  bad "prime: ${got[*]}"
+fi
+if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
+  fake_pgrep ""
+  says 1 "hasn't been through Proton's launcher" "a run refuses a prefix Proton's launcher never ran in" -- \
+    with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}"
+else
+  echo "skip the unprimed-prefix run test: it needs Linux on x86_64"
+fi
 
 # --- the namespace for real, where it can be made: probes run inside it
 if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && command -v bwrap > /dev/null && [ -S /tmp/.X11-unix/X99 ] &&
