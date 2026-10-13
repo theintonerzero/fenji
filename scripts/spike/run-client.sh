@@ -52,7 +52,7 @@
 # collected first, best effort: a failure there is reported but never changes the exit status. A
 # Fenji ticket found in the evidence afterwards is redacted in place and listed in redactions.txt.
 set -euo pipefail
-HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO=$(cd -- "$HERE/../.." && pwd -P)
 # shellcheck source=../versions.env
 . "$REPO/scripts/versions.env"

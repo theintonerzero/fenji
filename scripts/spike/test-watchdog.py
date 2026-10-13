@@ -429,6 +429,41 @@ class BareMetal(unittest.TestCase):  # issue #139
         self.assertTrue(wd.parser().parse_args(self.WATCH + ["--no-tmpfs-scan"]).no_tmpfs_scan)
 
 
+class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
+    """GE-Proton removes and recreates its log for each session (umu's createprefix, then the
+    client), so the watchdog must leave the old file at its end and read the new one."""
+
+    def drain(self, t, polls=4):
+        out = b""
+        for _ in range(polls):
+            chunk, _ = t.read()
+            out += chunk
+        return out
+
+    def test_a_replaced_log_is_read_to_its_end_then_the_new_one_from_its_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "steam-1418100.log"
+            p.write_bytes(b"old 1\nold 2\nold partial")
+            t = wd.Tail(str(p))
+            got = self.drain(t)
+            p.unlink()
+            p.write_bytes(b"new 1\nnew 2\n")
+            got += self.drain(t)
+            self.assertEqual(got, b"old 1\nold 2\nold partial\nnew 1\nnew 2\n")
+
+    def test_a_truncated_log_is_read_again_from_its_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "steam-1418100.log"
+            p.write_bytes(b"first session, a long line\n")
+            t = wd.Tail(str(p))
+            got = self.drain(t)
+            with open(p, "r+b") as fh:
+                fh.truncate(0)
+                fh.write(b"again\n")
+            got += self.drain(t)
+            self.assertEqual(got, b"first session, a long line\nagain\n")
+
+
 class ClientCreationOverdue(unittest.TestCase):
     """Review M3: if the log never shows the client's creation, every LoadDriver would count as
     'before the client'; the watchdog stops the run instead of going blind."""

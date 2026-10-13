@@ -4,21 +4,27 @@
 # Wine prefix ready with umu-run, signs in to a local fenji-server and starts the client with a
 # fresh ticket in its environment (#139; the owner's decision on #114, 2026-10-13). Every run keeps
 # all the guards of CLAUDE.md's "Bare-metal client runs":
-#   - umu-run in a dedicated prefix (re/bare-metal/compat); the client from a reflink copy of the
-#     pinned copy (re/runs/client, from `run-client.sh setup`) made for the run, never the Steam
-#     library;
-#   - Steam not running;
+#   - umu-run in a dedicated prefix (re/bare-metal/compat); the client from a reflink copy, made for
+#     the run, of the pinned copy at $FENJI_CLIENT_PATH (never a link, never holding one, never in
+#     a Steam library);
+#   - Steam not running, checked before the run and every 2 s during it (Steam starting stops the
+#     run);
 #   - a local fenji-server, which shares the client's network namespace: that namespace has only
-#     loopback, so the client can reach the Fenji server and nothing else;
+#     loopback, and the host's daemon sockets (D-Bus, systemd-resolved, the desktop portal) are out
+#     of reach, so the client can reach the Fenji server and nothing else;
 #   - the AGT driver watchdog armed on the namespace's PID namespace before anything in it starts,
 #     as in sandboxed runs; a gate event stops the run (exit 3);
 #   - never --gf-sdk=mocked: fenji-launch passes no SDK flag at all.
-# The namespace is `bwrap --dev-bind / / --proc /proc --unshare-net --unshare-pid`: the real
-# filesystem, home, GPU, audio and display, as on a player's machine. Its own /proc matters: without
-# it, a nested bwrap (umu's pressure-vessel) looks its child up in the host's /proc by a namespace
-# PID and hangs. The watchdog's scan of sandbox tmpfs mounts is off (--no-tmpfs-scan): there are
-# none, and the host's own Proton prefixes would trip it. Its scan of re/bare-metal, its process
-# rules, its log rules and its registry rule work as in sandboxed runs. Linux only.
+# The namespace is bwrap with the real filesystem (--dev-bind / /), its own /proc, empty tmpfs
+# /run, /tmp and /dev/shm (bar the user's audio sockets and the display's X11 socket, bound back),
+# loopback only, its own PID namespace, and isolated-run.sh's seccomp filter against key requests
+# (a kernel DNS upcall). So home, GPU, audio and display are as on a player's machine, and no host
+# daemon socket is. Its own /proc matters: without it, a nested bwrap (umu's pressure-vessel) looks
+# its child up in the host's /proc by a namespace PID and hangs. The watchdog's scan of sandbox
+# tmpfs mounts is off (--no-tmpfs-scan): the host's own Proton prefixes would trip it. Its scan of
+# re/bare-metal (the prefix and the run's copy), its process rules (S2), its log rules (S3, which
+# follow Proton's per-session logs) and its registry rule (S4) carry the rest, and the run's
+# evidence lists any new *.sys file under umu's runtime and /var/tmp. Linux on x86_64 only.
 #
 #   scripts/spike/run-bare.sh setup
 #   scripts/spike/run-bare.sh run NAME --server FILE --server-data DIR --username USER
@@ -26,24 +32,24 @@
 #       [--click T:X,Y]...
 #
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
-# update off (the namespace has no network anyway). run's --server config must bind 127.0.0.1, its
-# [store] path must lie in --server-data, a directory under re/bare-metal/, and --password-file holds
-# the account's password on its first line. The display is the nested one (:99 unless --display):
+# update off (the namespace has no network anyway). run's --server config must bind 127.0.0.1 and
+# name 127.0.0.1 as its public_host, its [store] path must lie in --server-data, a directory under
+# re/bare-metal/, and --password-file holds the account's password on its first line. The display is the nested one (:99 unless --display):
 # Xwayland on the real GPU, where screenshots and key presses can reach the client. The evidence
 # goes to re/bare-metal/out/NAME; a Fenji ticket found there is redacted in place.
 #
 # Exit: 0 the run finished; 3 GATE EVENT (the watchdog stopped the run: stop all runs, report); 4 the
 # watchdog failed; 5 the watchdog never armed (the client was not started); 6 the namespace ended
 # before the client ran; 7 fenji-server or fenji-launch failed before the client started; 1 a guard
-# or the workspace refused the run; 2 a usage error.
+# or the workspace refused the run, or Steam started during it; 2 a usage error.
 set -euo pipefail
 BARE_HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=run-client.sh
 . "$BARE_HERE/run-client.sh"
-# Everything a bare run writes lives here; the sandboxed runs' copy of the pinned client is its
-# source.
+# Everything a bare run writes lives here. The pinned copy is the run's source (~/.config/fenji/env.sh
+# sets FENJI_CLIENT_PATH).
 WORK="$REPO/re/bare-metal"
-PINNED_COPY="$REPO/re/runs/client"
+PINNED_COPY="${FENJI_CLIENT_PATH:-}"
 UMU="${FENJI_UMU_RUN:-$HOME/.local/bin/umu-run}"
 GAMEID=umu-1418100
 
@@ -54,6 +60,7 @@ misuse() { echo "run-bare: $*" >&2; exit 2; }
 # The guards that hold for setup and for every run: Linux, Steam not running, no Wine left over.
 host_guards() {
   [ "$(uname -s)" = Linux ] || die "bare-metal runs are for the Linux game box only"
+  [ "$(uname -m)" = x86_64 ] || die "x86_64 only (the seccomp filter knows x86 syscall numbers only)"
   if pgrep -x steam >/dev/null || pgrep -x steamwebhelper >/dev/null; then
     die "Steam is running; quit it first (CLAUDE.md, \"Bare-metal client runs\")"
   fi
@@ -64,10 +71,47 @@ host_guards() {
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
 }
 
-# The guard namespace's command line: the real filesystem with its own /proc, loopback only, its
-# own PID namespace (where the watchdog arms), and nothing left when its parent goes.
+# The guard namespace's command line for display N: the real filesystem with its own /proc; empty
+# /run, /tmp and /dev/shm, so no host daemon socket (D-Bus, systemd-resolved, the portal, agents) is
+# there, bar the user's audio sockets and the display's X11 socket, bound back; Steam's pipe masked;
+# loopback only; its own PID namespace (where the watchdog arms); the seccomp filter on fd 7; and
+# nothing left when its parent goes.
 namespace_cmd() {
-  printf '%s\n' bwrap --dev-bind / / --proc /proc --unshare-net --unshare-pid --die-with-parent --
+  local display=$1 rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
+  printf '%s\n' bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$rt"
+  for s in pipewire-0 pulse; do
+    if [ -e "$rt/$s" ]; then printf '%s\n' --bind "$rt/$s" "$rt/$s"; fi
+  done
+  printf '%s\n' --tmpfs /tmp --bind "/tmp/.X11-unix/X$display" "/tmp/.X11-unix/X$display" --tmpfs /dev/shm
+  if [ -e "$HOME/.steam/steam.pipe" ]; then printf '%s\n' --ro-bind /dev/null "$HOME/.steam/steam.pipe"; fi
+  printf '%s\n' --unshare-net --unshare-pid --die-with-parent --seccomp 7 --
+}
+
+# The environment inside: no session bus, no agents, no Wayland (the client draws on X11 display N),
+# no password.
+namespace_env() {
+  printf '%s\n' env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD "DISPLAY=:$1"
+}
+
+# isolated-run.sh's filter: add_key, request_key and keyctl fail, so no key request can make the
+# kernel run a DNS lookup on the host's network.
+seccomp_filter() {
+  local bpf
+  bpf=$(python3 -I "$BARE_HERE/seccomp-deny-keys.py" --printf) && [ -n "$bpf" ] || die "couldn't build the seccomp filter"
+  printf '%s' "$bpf"
+}
+
+# The pinned copy, refused if it could put the Steam library, or a link, under the run.
+check_pinned_copy() {
+  [ -n "$PINNED_COPY" ] || die "FENJI_CLIENT_PATH is unset (scripts/bootstrap.sh writes it to ~/.config/fenji/env.sh)"
+  [ ! -L "$PINNED_COPY" ] || die "the pinned copy is a link: $PINNED_COPY"
+  [ -f "$PINNED_COPY/bin64/gujianol.exe" ] || die "no pinned copy at $PINNED_COPY"
+  local real
+  real=$(realpath -- "$PINNED_COPY")
+  case "$real/" in
+    */steamapps/* | "$HOME"/.steam/* | "$HOME"/.local/share/Steam/*) die "the pinned copy is in a Steam library: $real" ;;
+  esac
+  [ -z "$(find "$PINNED_COPY" -type l -print -quit)" ] || die "the pinned copy holds a link; it must hold files only"
 }
 
 # The watchdog's command line for run OUT/IO and namespace PID.
@@ -96,11 +140,14 @@ cmd_bare_setup() {
     return 0
   fi
   mkdir -p "$WORK/compat"
-  local ns
-  mapfile -t ns < <(namespace_cmd)
+  need_display 99
+  local ns ne bpf
+  mapfile -t ns < <(namespace_cmd 99)
+  mapfile -t ne < <(namespace_env 99)
+  bpf=$(seccomp_filter)
   # umu-launcher 1.4 ends createprefix with exit 1 once the prefix is built: the prefix decides.
-  "${ns[@]}" env UMU_RUNTIME_UPDATE=0 PROTONPATH="$PROTON" WINEPREFIX="$WORK/compat" \
-    GAMEID="$GAMEID" "$UMU" createprefix > "$WORK/setup.log" 2>&1 || true
+  "${ns[@]}" "${ne[@]}" UMU_RUNTIME_UPDATE=0 PROTONPATH="$PROTON" WINEPREFIX="$WORK/compat" \
+    GAMEID="$GAMEID" "$UMU" createprefix > "$WORK/setup.log" 2>&1 7< <(printf '%b' "$bpf") || true
   prefix_ready || die "createprefix didn't build the prefix; see $WORK/setup.log"
   echo "prefix ready: $WORK/compat"
 }
@@ -143,16 +190,21 @@ cmd_bare_run() {
   local login_port="" api_port="" launch_words=()
   check_server
   case "$server_data/" in "$WORK"/runs/* | "$WORK"/compat/*) misuse "--server-data can't be a run's or the prefix's directory" ;; esac
+  python3 -I - "$server_cfg" <<'PY' || misuse "--server: [server] public_host must be 127.0.0.1 (fenji-launch looks it up inside the namespace)"
+import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    sys.exit(0 if tomllib.load(f).get("server", {}).get("public_host") == "127.0.0.1" else 1)
+PY
   host_guards
   need_display "$display"
   prefix_ready || die "no prefix; run: $0 setup"
-  [ -d "$PINNED_COPY/bin64" ] || die "no pinned copy at $PINNED_COPY; run: scripts/spike/run-client.sh setup"
+  check_pinned_copy
   [ -x "$STUBBIN/fenji-server" ] || die "build the server first: cargo build --release -p fenji-server"
   [ -x "$STUBBIN/fenji-launch" ] || die "build the launcher first: cargo build --release -p fenji-launcher"
   local OUT="$WORK/out/$run" IO="$WORK/io/$run" RUN="$WORK/runs/$run" PFX="$WORK/compat"
   if [ -e "$OUT" ] || [ -e "$IO" ] || [ -e "$RUN" ]; then die "run $run exists already; pick a new name"; fi
-  mkdir -p "$OUT" "$IO/tmp" "$IO/server" "$RUN"
-  cp -a --reflink=always -- "$PINNED_COPY" "$RUN/client" ||
+  mkdir -p "$OUT" "$IO/tmp" "$IO/server" "$RUN/client"
+  cp -a --reflink=always -- "$PINNED_COPY/." "$RUN/client/" ||
     die "the client copy needs a filesystem with reflinks (btrfs, XFS); nothing was started"
   local server_copy="$IO/server/fenji.toml" channels
   cp -- "$server_cfg" "$server_copy"
@@ -161,8 +213,8 @@ cmd_bare_run() {
   # --- before: inputs and the AGT baseline
   {
     echo "run $run (bare metal), $(date -Is)"
-    echo "guards: Linux; Steam not running; no Wine running; reflink copy of $PINNED_COPY; prefix $PFX"
-    echo "namespace: $(namespace_cmd | tr '\n' ' ')"
+    echo "guards: Linux x86_64; Steam not running (and watched); no Wine running; reflink copy of $PINNED_COPY; prefix $PFX"
+    echo "namespace: $(namespace_cmd "$display" | tr '\n' ' ')$(namespace_env "$display" | tr '\n' ' ')"
     echo "launch: fenji-launch $(launch_args "$api_port" "$user" "<password file>" "$RUN/client" | tr '\n' ' ')"
     echo "server: $server_copy (login 127.0.0.1:$login_port, API 127.0.0.1:$api_port), store in $server_data"
     echo "umu-run: $UMU ($(sha256sum "$UMU" | cut -c1-16)…); GE-Proton: $PROTON"
@@ -181,12 +233,14 @@ cmd_bare_run() {
   touch "$OUT/.running"
 
   # --- the run: fenji-server and fenji-launch in one namespace, started once the watchdog has armed
-  local ns la
-  mapfile -t ns < <(namespace_cmd)
+  local ns ne la bpf
+  mapfile -t ns < <(namespace_cmd "$display")
+  mapfile -t ne < <(namespace_env "$display")
   mapfile -t la < <(launch_args "$api_port" "$user" "$pwfile" "$RUN/client")
+  bpf=$(seccomp_filter)
   set +e
   # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
-  "${ns[@]}" env -u WAYLAND_DISPLAY DISPLAY=":$display" TMPDIR="$IO/tmp" PROTON_LOG=1 \
+  "${ns[@]}" "${ne[@]}" TMPDIR="$IO/tmp" PROTON_LOG=1 \
     PROTON_LOG_DIR="$IO" PROTON_USE_XALIA=0 WINEDEBUG="$channels" UMU_RUNTIME_UPDATE=0 \
     bash -c '
       W=$1 IO=$2 BIN=$3 SERVER=$4 LPORT=$5 APORT=$6 TMO=$7 PROTON=$8
@@ -214,8 +268,20 @@ cmd_bare_run() {
       [ -e "$IO/exit-code" ] || exit 95
       exit "$rc"
     ' _ "$WORK" "$IO" "$STUBBIN" "$server_copy" "$login_port" "$api_port" "$tmo" "$PROTON" \
-    "${la[@]}" > "$OUT/namespace.out" 2>&1 &
+    "${la[@]}" > "$OUT/namespace.out" 2>&1 7< <(printf '%b' "$bpf") &
   local spid=$! wc
+  # Steam starting during the run stops it (the watchdog reads the host's /proc too).
+  (
+    while [ -e "$OUT/.running" ]; do
+      if pgrep -x steam >/dev/null || pgrep -x steamwebhelper >/dev/null; then
+        touch "$OUT/steam-started"
+        kill -KILL "$spid" 2>/dev/null
+        break
+      fi
+      sleep 2
+    done
+  ) &
+  local steamwatch=$!
   mapfile -t wc < <(watch_cmd "$OUT" "$IO" "$spid")
   "${wc[@]}" 2>> "$OUT/watchdog.err" &
   local wdpid=$!
@@ -236,8 +302,8 @@ cmd_bare_run() {
   fi
   set -e
   rm -f "$OUT/.running" "$IO/.go"
-  kill "$shots" "$clicker" "$typist" 2>/dev/null || true
-  wait "$shots" "$clicker" "$typist" 2>/dev/null || true
+  kill "$shots" "$clicker" "$typist" "$steamwatch" 2>/dev/null || true
+  wait "$shots" "$clicker" "$typist" "$steamwatch" 2>/dev/null || true
   local ran=0
   if [ -e "$IO/exit-code" ]; then ran=1; fi
   echo "$wrc" > "$OUT/namespace-exit-code"
@@ -250,12 +316,20 @@ cmd_bare_run() {
   exit "$v"
 }
 
-# run-client.sh's verdict, with fenji-launch's failure before the start named for this runner.
+# run-client.sh's verdict, in this runner's words where they differ.
 bare_verdict() {
   local wdrc=$1 wrc=$2 ran=$3 out=$4
-  if [ "$wdrc" = 0 ] && [ "$ran" != 1 ] && [ "$wrc" = 95 ]; then
-    echo "fenji-launch didn't start the client (see $out/io/launch.err)" >&2
-    return 7
+  if [ -e "$out/steam-started" ]; then
+    echo "Steam started during the run, so the run was stopped (CLAUDE.md, \"Bare-metal client runs\")" >&2
+    return 1
+  fi
+  if [ "$wdrc" = 0 ] && [ "$ran" != 1 ]; then
+    case "$wrc" in
+      95) echo "fenji-launch didn't start the client (see $out/io/launch.err)" >&2; return 7 ;;
+      96) echo "fenji-server wasn't ready (see $out/server.log); the client was not started" >&2; return 7 ;;
+      98) echo "the watchdog never armed; the client was not started" >&2; return 5 ;;
+      *) echo "the namespace ended before the client ran (exit $wrc); see $out/namespace.out" >&2; return 6 ;;
+    esac
   fi
   verdict "$wdrc" "$wrc" "$ran" "$out"
 }
@@ -278,6 +352,9 @@ collect_bare_evidence() {
   done
   find "$RUN/client" "$PFX/drive_c" -newer "$OUT/.start" -type f -not -path '*/mesa_shader_cache/*' \
     -printf '%TT\t%s\t%p\n' 2>/dev/null | sort > "$OUT/new-files.txt"
+  # Outside the watched root, where Wine's Z: or umu's container could put a file: new *.sys only.
+  find "$HOME/.local/share/umu" /var/tmp -newer "$OUT/.start" -iname '*.sys' -printf '%TT\t%s\t%p\n' \
+    2>/dev/null | sort > "$OUT/sys-elsewhere.txt"
   redact_tickets "$OUT" || bad=1
   return "$bad"
 }

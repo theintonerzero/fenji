@@ -148,12 +148,13 @@ If the server isn't ready or the launcher fails, the client isn't started and th
 ### Bare-metal runs
 
 `scripts/spike/run-bare.sh` runs the client the way a player starts it, under every guard of CLAUDE.md's "Bare-metal client runs" (#139):
-- `fenji-launch play` checks a reflink copy of the pinned copy (`re/runs/client`, made for the run), prepares the dedicated prefix `re/bare-metal/compat` with `umu-run createprefix`, signs in and starts the client through umu-run and the pinned GE-Proton. No SDK flag is ever passed.
-- Steam and Wine must not be running.
-- `fenji-server` and the client share one namespace, `bwrap --dev-bind / / --proc /proc --unshare-net --unshare-pid`: the real files, home, GPU, audio and display, but loopback only, so the client can reach the Fenji server and nothing else. The namespace needs its own `/proc`: without it, umu's pressure-vessel looks its child up in the host's `/proc` by a namespace PID and hangs.
-- The AGT driver watchdog arms on that PID namespace before anything starts, with `--no-tmpfs-scan`: the namespace has no sandbox tmpfs, and the host's own Proton prefixes would trip the scan. Its scan of `re/bare-metal`, its process and log rules and its registry rule work as in sandboxed runs.
+- **As a player starts it:** `fenji-launch play` checks a reflink copy, made for the run, of the pinned copy at `$FENJI_CLIENT_PATH`. That copy is refused if it is a link, holds a link, or sits in a Steam library. `fenji-launch` then prepares the dedicated prefix `re/bare-metal/compat` with `umu-run createprefix`, signs in, and starts the client through umu-run and the pinned GE-Proton. No SDK flag is ever passed.
+- **No Steam or Wine:** neither may be running. Steam is checked again every 2 s during the run, and Steam starting stops the run.
+- **One shared namespace:** `fenji-server` and the client run in the same one. It keeps the real files, home, GPU, audio and display. But `/run`, `/tmp` and `/dev/shm` are empty tmpfs, bar the user's audio sockets and the display's X11 socket, so no host D-Bus, systemd-resolved, portal or agent socket is there. The network is loopback only, and isolated-run.sh's seccomp filter blocks key requests. The client can reach the Fenji server and nothing else; `test-run-bare.sh` checks that from inside, where it can make the namespace.
+- **Its own `/proc`:** the namespace needs one. Without it, umu's pressure-vessel looks its child up in the host's `/proc` by a namespace PID and hangs.
+- **The watchdog:** it arms on that PID namespace before anything starts. `--no-tmpfs-scan` is on, because the host's own Proton prefixes would trip that scan. S1 scans `re/bare-metal` (the prefix and the run's copy). S2 and S4 work as in sandboxed runs, and S3 follows GE-Proton's logs, which it recreates for each session. The evidence also lists any new `*.sys` file under umu's runtime and `/var/tmp`.
 
-`run-bare.sh setup` once, then `run-bare.sh run NAME --server CONFIG --server-data DIR --username USER --password-file FILE`, with `--key`, `--type`, `--click`, `--timeout` and `--display` as in `run-client.sh`. DIR is a directory under `re/bare-metal/`; the evidence goes to `re/bare-metal/out/NAME`. The exit statuses are `run-client.sh`'s.
+Run `run-bare.sh setup` once. Then run `run-bare.sh run NAME --server CONFIG --server-data DIR --username USER --password-file FILE`, with `--key`, `--type`, `--click`, `--timeout` and `--display` as in `run-client.sh`. CONFIG must bind 127.0.0.1 and name 127.0.0.1 as its `public_host`, and DIR is a directory under `re/bare-metal/`. The evidence goes to `re/bare-metal/out/NAME`. The exit statuses are `run-client.sh`'s, plus 1 when Steam started during the run.
 
 ## Working rules
 

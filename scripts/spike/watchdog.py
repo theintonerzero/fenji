@@ -555,6 +555,17 @@ class Tail:
         self.path, self.off, self.rest, self.fh = path, 0, b"", None
         self.at_eof = False  # whether the last read reached the end of the log as it was then
 
+    def replaced(self):
+        """Whether the path now names another file than the open one, or this one shrank below
+        what was read of it. A moment with no file at the path is neither: the old one is still
+        being read."""
+        try:
+            st = os.lstat(self.path)
+        except FileNotFoundError:
+            return False
+        cur = os.fstat(self.fh.fileno())
+        return (st.st_dev, st.st_ino) != (cur.st_dev, cur.st_ino) or st.st_size < self.off
+
     def read(self, limit=16 << 20, final=False):
         """Returns (chunk, look): complete lines to scan now, and the text held back after them,
         which is look-ahead only (it is scanned on a later read). With final=True, or when nothing
@@ -569,6 +580,16 @@ class Tail:
         new = self.fh.read(limit)
         self.off += len(new)
         self.at_eof = len(new) < limit
+        if self.at_eof and self.replaced():
+            # GE-Proton removes and recreates its log for each session (umu's createprefix, then
+            # the client), and a log can be truncated: the old file is read to its end, its last
+            # partial line counts as complete, and the next read starts the new file at byte 0.
+            data = self.rest + new
+            if data and not data.endswith(b"\n"):
+                data += b"\n"
+            self.fh.close()
+            self.fh, self.off, self.rest, self.at_eof = None, 0, b"", False
+            return data, b""
         data = self.rest + new
         if final:
             self.rest = b""
