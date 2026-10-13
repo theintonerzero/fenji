@@ -1,20 +1,43 @@
 //! Text the server passes on for others to see: chat lines, announcements and command arguments.
 
-/// Characters that show nothing but change how the text around them shows: controls, the
-/// bidirectional overrides and isolates, zero-width characters and the line separators. In a line
-/// of chat or a command they could make it read as something else, in players' clients or in a
-/// host's terminal.
+/// Characters that show nothing, or change how the text around them shows:
+/// - controls, and the line and paragraph separators;
+/// - every format character (Unicode's category Cf, as of Unicode 18.0), such as the
+///   bidirectional marks, overrides and isolates, the zero-width characters and the tags;
+/// - the Hangul fillers, which show as blanks.
+///
+/// In a line of chat or a command they could make it read as something else, in players' clients
+/// or in a host's terminal, carry text no one sees, or make a line that looks empty. std has no
+/// general-category lookup, so the format characters are listed here.
 pub fn hidden(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{061C}'
+            '\u{00AD}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
+                | '\u{115F}'..='\u{1160}'
+                | '\u{180E}'
                 | '\u{200B}'..='\u{200F}'
                 | '\u{2028}'..='\u{202E}'
                 | '\u{2060}'..='\u{2064}'
                 | '\u{2066}'..='\u{2069}'
+                | '\u{206A}'..='\u{206F}'
+                | '\u{3164}'
                 | '\u{FEFF}'
+                | '\u{FFA0}'
                 | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{13430}'..='\u{1343F}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0001}'
+                | '\u{E0020}'..='\u{E007F}'
         )
 }
 
@@ -42,6 +65,10 @@ mod tests {
             "\u{2028}separator",
             "\u{FEFF}bom",
             "\u{061C}mark",
+            "soft\u{00AD}hyphen",
+            "tag\u{E0041}",
+            "\u{180E}vowel",
+            "\u{3164}",
         ] {
             assert!(!plain(bad), "{bad:?}");
         }
