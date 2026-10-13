@@ -9,14 +9,14 @@ All the protocol and format knowledge here comes from studying our own licensed 
 
 ## Status
 
-**Not playable yet.** The real client connects to Fenji's test server, completes the transport handshake and sends its first message, but it stays on the login screen: nothing after that exists yet.
+**Not playable yet.** With M3, a Fenji server runs invite-only accounts and the character lobby. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and finds them again after a restart. Entering the world comes with M4.
 
 | Milestone | What it delivers | State |
 |---|---|---|
 | M0 | Development environment, sandbox, first analysis of the client | Released, v0.1.0 |
 | M1 | Reading the client's data: archives, embedded scripts | Released, v0.2.0 |
 | M2 | The network transport and handshake, against the real client | Released, v0.3.0 |
-| M3 | Accounts, the launcher, character list and creation | Next |
+| M3 | Accounts, the launcher, character list and creation | Done; v0.4.0 is next |
 | M4 | Friends in the starting zone: moving, seeing each other, chat | Planned |
 | M5 | Monsters, combat, XP, loot and saved progress (v1) | Planned |
 
@@ -36,14 +36,18 @@ The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-des
 
 | Path | What it is |
 |---|---|
-| `crates/fenji-proto` | The client's network transport without I/O: the handshake, encryption, frames and message encoding. |
+| `crates/fenji-proto` | The client's network transport without I/O: the handshake, encryption, frames and message encoding, and the lobby's messages. |
+| `crates/fenji-server` | The server: the account API (invites, accounts, sign-in, game tokens), the gate that takes the client's login, and the character lobby. |
+| `crates/fenji-store` | The server's SQLite store: accounts, invites, sessions, game tokens and characters. |
+| `crates/fenji-auth` | Password hashing (argon2id) and the invite and token formats. |
+| `crates/fenji-launcher` | The launcher's library and `fenji-launch`, its command line: redeem an invite, check the client folder against the pinned build, and play (on Linux, through umu-launcher). |
 | `crates/fenji-data` | Reads the client's own data: its archives, file index, embedded file system and table cache. |
 | `crates/fenji-lua` | The client's Lua 5.3 dialect: parser, disassembler, normaliser. |
 | `tools/` | Command-line tools: `stub` (test server), `archive`, `luatool`, and `oodle-helper`. |
 | `scripts/` | Machine setup, the sandbox for client runs, and repository checks. |
 | `docs/` | The design, what we've learned about the client, and how we work. |
 
-The server, the account service and the launcher come in later milestones.
+The game world comes in later milestones. The launcher's window (#146) and a console for hosts (#147) come next.
 
 ## For developers
 
