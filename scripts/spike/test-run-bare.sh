@@ -483,7 +483,7 @@ fi
 if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   F=$TESTROOT/flow
   mkdir -p "$F/bin" "$F/proton/files/bin" "$F/proton/files/lib/wine/discord-rpc-bridge" "$F/release" \
-    "$F/pinned/bin64" "$F/home" "$F/log"
+    "$F/pinned/bin64" "$F/home" "$F/log" "$F/rt"
   touch "$F/pinned/bin64/gujianol.exe" "$F/proton/files/lib/wine/discord-rpc-bridge/bridge.exe" "$F/xauth"
   echo "1789520217 GE-Proton-flow" > "$F/proton/version"
   printf '#!/bin/sh\nexit 0\n' > "$F/proton/proton"
@@ -608,7 +608,7 @@ print(*(x.getsockname()[1] for x in s))')
     (
       export FAKE_LOG=$F/log/$name FAKE_REAL_SPIKE=$HERE
       WORK=$dir PROTON=$F/proton UMU=$F/umu-run STUBBIN=$F/release WATCHDOG=$F/watchdog.py
-      PINNED_COPY=$F/pinned HOME=$F/home PATH="$F/bin:$TESTROOT/bin:$PATH"
+      PINNED_COPY=$F/pinned HOME=$F/home PATH="$F/bin:$TESTROOT/bin:$PATH" XDG_RUNTIME_DIR=$F/rt
       hash -r
       need_display() { :; }
       nested_display_ok() { :; }
@@ -640,7 +640,7 @@ print(*(x.getsockname()[1] for x in s))')
     bad "setup's umu-run calls: $(printf '[%s] ' "${calls[@]}")"
   fi
   case "$(joined "$F/log/setup-new/bwrap")" in
-    *" --ro-bind $F/xauth $F/xauth "*" --ro-bind $F/xauth $F/xauth "*)
+    *" --ro-bind $F/xauth $F/xauth"*" --ro-bind $F/xauth $F/xauth "*)
       ok "setup's namespaces bring in the desktop's auth file" ;;
     *) bad "setup's namespaces: $(joined "$F/log/setup-new/bwrap")" ;;
   esac
@@ -688,7 +688,7 @@ print(*(x.getsockname()[1] for x in s))')
     bad "a desktop run: rc $rc: $out"
   fi
   case "$(joined "$F/log/run-desktop/bwrap")" in
-    *" --bind /tmp/.X11-unix/X77 /tmp/.X11-unix/X77 "*" --ro-bind $F/xauth $F/xauth "*" DISPLAY=:77 XAUTHORITY=$F/xauth "*)
+    *" --bind /tmp/.X11-unix/X77 /tmp/.X11-unix/X77"*" --ro-bind $F/xauth $F/xauth"*" DISPLAY=:77 XAUTHORITY=$F/xauth "*)
       ok "a desktop run's namespace has the session's display and its auth file" ;;
     *) bad "a desktop run's namespace: $(joined "$F/log/run-desktop/bwrap")" ;;
   esac
@@ -698,7 +698,7 @@ print(*(x.getsockname()[1] for x in s))')
     bad "baseline: $(cat "$F/log/run-desktop/watchdog")"
   fi
   case " $(grep '^watch ' "$F/log/run-desktop/watchdog") " in
-    *" --prefix $F/work/compat "*" --tmpfs /run "*" --tmpfs /tmp --bind /tmp/.X11-unix/X77 --tmpfs /dev/shm"*" --bind $F/xauth "*)
+    *" --prefix $F/work/compat"*" --tmpfs /run"*" --tmpfs /tmp --bind /tmp/.X11-unix/X77 --tmpfs /dev/shm"*" --bind $F/xauth "*)
       ok "the run's watchdog has the prefix, and the started namespace's tmpfs mounts less what it binds in" ;;
     *) bad "watch: $(grep '^watch ' "$F/log/run-desktop/watchdog")" ;;
   esac
