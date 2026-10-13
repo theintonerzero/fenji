@@ -192,11 +192,14 @@ touch "$TESTROOT/out/steam-started"
 says 3 "GATE EVENT" "a gate event wins over Steam starting" -- bare_verdict 3 137 1 "$TESTROOT/out"
 says 4 "WATCHDOG FAILURE" "a watchdog failure wins over Steam starting" -- bare_verdict 4 137 1 "$TESTROOT/out"
 says 1 "Steam started" "Steam starting stops an otherwise clean run" -- bare_verdict 0 137 0 "$TESTROOT/out"
+says 3 "Steam also started" "a gate event still reports that Steam started" -- bare_verdict 3 137 1 "$TESTROOT/out"
 rm -f -- "$TESTROOT/out/steam-started"
 
 # --- the prefix: primed through Proton's launcher, so Proton's own service is in the watchdog's baseline
 mkdir -p "$TESTROOT/proton/files/lib/wine/discord-rpc-bridge" "$TESTROOT/proton-nobridge" "$WORK/compat/drive_c/windows"
 touch "$TESTROOT/proton/files/lib/wine/discord-rpc-bridge/bridge.exe"
+echo "1789520217 GE-Proton-test" > "$TESTROOT/proton/version"
+echo "1789000000 GE-Proton-nobridge" > "$TESTROOT/proton-nobridge/version"
 printf '#!/bin/sh\n' > "$TESTROOT/proton/proton"
 printf '#!/bin/sh\n' > "$TESTROOT/umu-run"
 chmod +x "$TESTROOT/proton/proton" "$TESTROOT/umu-run"
@@ -209,12 +212,20 @@ with_proton() {
 }
 primed() { (with_proton "$1" prefix_primed); }
 if primed "$TESTROOT/proton"; then bad "a prefix never primed counts as primed"; else ok "a prefix that Proton's launcher never ran in isn't primed"; fi
-touch "$WORK/compat/fenji-primed"
+cp -- "$TESTROOT/proton/version" "$WORK/compat/fenji-primed"
 if primed "$TESTROOT/proton"; then bad "a mark alone counts as primed"; else ok "the mark without Proton's bridge service on disk isn't primed"; fi
-if primed "$TESTROOT/proton-nobridge"; then ok "a GE-Proton with no bridge needs only the mark"; else bad "the mark with no bridge shipped"; fi
+cp -- "$TESTROOT/proton-nobridge/version" "$WORK/compat/fenji-primed"
+if primed "$TESTROOT/proton-nobridge"; then ok "a GE-Proton with no bridge needs only its mark"; else bad "the mark with no bridge shipped"; fi
 printf '[System\\\\ControlSet001\\\\Services\\\\discord-bridge] 1791858207\n' >> "$WORK/compat/system.reg"
-if primed "$TESTROOT/proton"; then ok "the mark and the bridge service on disk: primed"; else bad "a primed prefix"; fi
+if primed "$TESTROOT/proton"; then bad "a prefix primed by another GE-Proton build counts as primed"; else ok "a prefix primed by another GE-Proton build isn't primed"; fi
+: > "$WORK/compat/fenji-primed"
+if primed "$TESTROOT/proton"; then bad "a mark naming no build counts as primed"; else ok "a mark that names no GE-Proton build isn't primed"; fi
+cp -- "$TESTROOT/proton/version" "$WORK/compat/fenji-primed"
+if primed "$TESTROOT/proton"; then ok "this GE-Proton build's mark and the bridge service on disk: primed"; else bad "a primed prefix"; fi
 rm -f -- "$WORK/compat/fenji-primed"
+mapfile -t got < <(PROTON=$TESTROOT/proton setup_env)
+want=(UMU_RUNTIME_UPDATE=0 "PROTONPATH=$TESTROOT/proton" "WINEPREFIX=$WORK/compat" GAMEID=umu-1418100 PROTON_USE_XALIA=0)
+if [ "${got[*]}" = "${want[*]}" ]; then ok "setup's umu-run: no runtime update, the pinned GE-Proton, the prefix, no Xalia (as in every run)"; else bad "setup env: ${got[*]}"; fi
 mapfile -t got < <(prime_args)
 want=("$WORK/compat/drive_c/windows/system32/cmd.exe" /c exit)
 if [ "${got[*]}" = "${want[*]}" ]; then

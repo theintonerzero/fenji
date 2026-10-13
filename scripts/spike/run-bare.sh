@@ -175,18 +175,27 @@ prefix_ready() { [ -f "$WORK/compat/system.reg" ] && [ -d "$WORK/compat/drive_c/
 # registers GE-Proton's Discord bridge service the first time it starts anything in a prefix, and
 # createprefix never runs the shim. Unprimed, the client's own first launch registers the service,
 # and the watchdog rightly stops the run: a service that isn't in the baseline (bm-1, 2026-10-13).
-# setup primes the prefix by starting cmd.exe once through the shim, then leaves the mark; the
-# prefix is primed when the mark is there and, if this GE-Proton ships the bridge, the bridge
-# service has reached the registry on disk.
+# setup primes the prefix by starting cmd.exe once through the shim, then leaves the mark, which
+# names the GE-Proton build that primed it. The prefix is primed when the mark names this build (a
+# new build upgrades the prefix, and its services would be new too) and, if this GE-Proton ships
+# the bridge, the bridge service has reached the registry on disk.
 PRIMED_MARK=fenji-primed
+proton_build() { cat -- "$PROTON/version" 2>/dev/null || echo unknown; }
 prefix_primed() {
   [ -f "$WORK/compat/$PRIMED_MARK" ] || return 1
+  [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" = "$(proton_build)" ] || return 1
   [ ! -e "$PROTON/files/lib/wine/discord-rpc-bridge/bridge.exe" ] ||
     grep -q '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\discord-bridge\]' "$WORK/compat/system.reg"
 }
 
 # umu-run's arguments for the prime: the prefix's cmd.exe by its unix path, which exits at once.
 prime_args() { printf '%s\n' "$WORK/compat/drive_c/windows/system32/cmd.exe" /c exit; }
+
+# umu-run's environment in setup: no runtime update (the namespace has no network anyway), the
+# pinned GE-Proton, the dedicated prefix, and no Xalia, as in every run.
+setup_env() {
+  printf '%s\n' UMU_RUNTIME_UPDATE=0 "PROTONPATH=$PROTON" "WINEPREFIX=$WORK/compat" "GAMEID=$GAMEID" PROTON_USE_XALIA=0
+}
 
 cmd_bare_setup() {
   [ $# -eq 0 ] || usage
@@ -197,22 +206,22 @@ cmd_bare_setup() {
   fi
   mkdir -p "$WORK/compat"
   need_display 99
-  local ns ne bpf prime
+  local ns ne se bpf prime
   mapfile -t ns < <(namespace_cmd 99)
   mapfile -t ne < <(namespace_env 99)
+  mapfile -t se < <(setup_env)
   bpf=$(seccomp_filter)
   if ! prefix_ready; then
     # umu-launcher 1.4 ends createprefix with exit 1 once the prefix is built: the prefix decides.
-    "${ns[@]}" "${ne[@]}" UMU_RUNTIME_UPDATE=0 PROTONPATH="$PROTON" WINEPREFIX="$WORK/compat" \
-      GAMEID="$GAMEID" "$UMU" createprefix > "$WORK/setup.log" 2>&1 7< <(printf '%b' "$bpf") || true
+    "${ns[@]}" "${ne[@]}" "${se[@]}" "$UMU" createprefix > "$WORK/setup.log" 2>&1 \
+      7< <(printf '%b' "$bpf") || true
     prefix_ready || die "createprefix didn't build the prefix; see $WORK/setup.log"
   fi
   # The prime (see prefix_primed). umu-run returns once Wine has ended, so the registry is on disk.
   mapfile -t prime < <(prime_args)
-  timeout -k 10 300 "${ns[@]}" "${ne[@]}" UMU_RUNTIME_UPDATE=0 PROTONPATH="$PROTON" \
-    WINEPREFIX="$WORK/compat" GAMEID="$GAMEID" "$UMU" "${prime[@]}" >> "$WORK/setup.log" 2>&1 \
+  timeout -k 10 300 "${ns[@]}" "${ne[@]}" "${se[@]}" "$UMU" "${prime[@]}" >> "$WORK/setup.log" 2>&1 \
     7< <(printf '%b' "$bpf") || die "the prime through Proton's launcher failed; see $WORK/setup.log"
-  touch "$WORK/compat/$PRIMED_MARK"
+  proton_build > "$WORK/compat/$PRIMED_MARK"
   prefix_primed || die "Proton's launcher ran, but its bridge service isn't in the prefix's registry; see $WORK/setup.log"
   echo "prefix ready: $WORK/compat"
 }
@@ -399,9 +408,12 @@ PY
 bare_verdict() {
   local wdrc=$1 wrc=$2 ran=$3 out=$4
   # A gate event (3) or a watchdog failure (4) wins: exit 3 is the signal to stop all runs.
-  if [ "$wdrc" = 0 ] && [ -e "$out/steam-started" ]; then
-    echo "Steam started during the run, so the run was stopped (CLAUDE.md, \"Bare-metal client runs\")" >&2
-    return 1
+  if [ -e "$out/steam-started" ]; then
+    if [ "$wdrc" = 0 ]; then
+      echo "Steam started during the run, so the run was stopped (CLAUDE.md, \"Bare-metal client runs\")" >&2
+      return 1
+    fi
+    echo "Steam also started during the run (CLAUDE.md, \"Bare-metal client runs\")" >&2
   fi
   if [ "$wdrc" = 0 ] && [ "$ran" != 1 ]; then
     case "$wrc" in
