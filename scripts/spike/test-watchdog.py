@@ -565,6 +565,7 @@ class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
             p = pathlib.Path(d) / "steam-1418100.log"
             p.write_bytes(b"old 1\nold 2\nold partial")
             t = wd.Tail(str(p))
+            self.addCleanup(t.close)
             got = self.drain(t)
             p.unlink()
             p.write_bytes(b"new 1\nnew 2\n")
@@ -576,6 +577,7 @@ class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
             p = pathlib.Path(d) / "steam-1418100.log"
             p.write_bytes(b"first session, a long line\n")
             t = wd.Tail(str(p))
+            self.addCleanup(t.close)
             got = self.drain(t)
             with open(p, "r+b") as fh:
                 fh.truncate(0)
@@ -595,6 +597,7 @@ class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
                 p = pathlib.Path(d) / "steam-1418100.log"
                 p.write_bytes(b"first session\n")
                 t = wd.Tail(str(p))
+                self.addCleanup(t.close)
                 self.assertEqual(self.drain(t), b"first session\n")
                 p.unlink()
                 os.mkfifo(p)
@@ -663,7 +666,8 @@ class SandboxWritableFiles(unittest.TestCase):
         log = self.src / "steam-1418100.log"
         log.symlink_to(self.secret)
         with self.assertRaises(OSError):
-            wd.Tail(str(log)).read()
+            with contextlib.closing(wd.Tail(str(log))) as t:
+                t.read()
 
     def test_a_planted_link_is_described_not_hashed(self):
         self.assertTrue(wd.describe_file(str(self.src / "link")).startswith("symlink to "))

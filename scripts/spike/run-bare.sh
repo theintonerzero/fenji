@@ -140,6 +140,7 @@ host_guards() {
 # mounts, which would hide it.
 namespace_cmd() {
   local display=$1 xauth=${2:-} rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
+  local cache=${XDG_CACHE_HOME:-$HOME/.cache}
   printf '%s\n' bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$rt"
   for s in pipewire-0 pulse; do
     if [ -e "$rt/$s" ]; then printf '%s\n' --bind "$rt/$s" "$rt/$s"; fi
@@ -147,6 +148,7 @@ namespace_cmd() {
   printf '%s\n' --tmpfs /tmp --bind "/tmp/.X11-unix/X$display" "/tmp/.X11-unix/X$display" --tmpfs /dev/shm
   if [ -e "$HOME/.steam/steam.pipe" ]; then printf '%s\n' --ro-bind /dev/null "$HOME/.steam/steam.pipe"; fi
   if [ -d "$HOME/.cache/ibus" ]; then printf '%s\n' --tmpfs "$HOME/.cache/ibus"; fi
+  if [ "$cache" != "$HOME/.cache" ] && [ -d "$cache/ibus" ]; then printf '%s\n' --tmpfs "$cache/ibus"; fi
   if [ -n "$xauth" ]; then printf '%s\n' --ro-bind "$xauth" "$xauth"; fi
   printf '%s\n' --unshare-net --unshare-pid --die-with-parent --seccomp 7 --
 }
