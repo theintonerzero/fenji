@@ -52,7 +52,7 @@
 # collected first, best effort: a failure there is reported but never changes the exit status. A
 # Fenji ticket found in the evidence afterwards is redacted in place and listed in redactions.txt.
 set -euo pipefail
-HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO=$(cd -- "$HERE/../.." && pwd -P)
 # shellcheck source=../versions.env
 . "$REPO/scripts/versions.env"
@@ -407,48 +407,8 @@ cmd_run() {
   python3 -I "$WATCHDOG" baseline --root "$WORK" --out "$OUT"
   touch "$OUT/.start"
 
-  # --- host-side screenshots while the run is active
-  (
-    start=$(date +%s)
-    for t in 5 10 30 60 90 120 150 180 210 240 270 295; do
-      [ "$t" -le "$tmo" ] || break
-      now=$(date +%s)
-      sl=$((start + t - now))
-      [ "$sl" -le 0 ] || sleep "$sl"
-      [ -e "$OUT/.running" ] || break
-      import -display ":$display" -window root "$OUT/screen-${t}s.png" 2>>"$OUT/screenshot.err" || true
-    done
-  ) &
-  local shots=$!
-  # --- host-side clicks on the nested display, at their times
-  (
-    start=$(date +%s)
-    for c in "${clicks[@]}"; do
-      t=${c%%:*} xy=${c#*:}
-      now=$(date +%s)
-      sl=$((start + t - now))
-      [ "$sl" -le 0 ] || sleep "$sl"
-      [ -e "$OUT/.running" ] || break
-      python3 -I "$HERE/xclick.py" --display ":$display" "${xy%,*}" "${xy#*,}" 2>>"$OUT/click.err" &&
-        echo "$(date -Is) click $c" >> "$OUT/clicks.log"
-    done
-  ) &
-  local clicker=$!
-  # --- host-side key presses and typing on the nested display, at their times
-  (
-    start=$(date +%s)
-    for p in "${presses[@]}"; do
-      kind=${p%%:*} rest=${p#*:}
-      t=${rest%%:*} what=${rest#*:}
-      now=$(date +%s)
-      sl=$((start + t - now))
-      [ "$sl" -le 0 ] || sleep "$sl"
-      [ -e "$OUT/.running" ] || break
-      python3 -I "$HERE/xkey.py" --display ":$display" "--$kind=$what" 2>>"$OUT/keys.err" &&
-        echo "$(date -Is) $kind $t:$what" >> "$OUT/keys.log"
-    done
-  ) &
-  local typist=$!
+  local shots clicker typist
+  start_inputs "$OUT" "$display" "$tmo"
   touch "$OUT/.running"
 
   # --- the sandboxed run: stub + client in one invocation, started once the watchdog has armed.
@@ -552,6 +512,55 @@ cmd_run() {
   local v=0
   finish_run "$wdrc" "$wrc" "$ran" || v=$?
   exit "$v"
+}
+
+# The host-side inputs while a run is active, each at its time from now: screenshots of the nested
+# display, the caller's clicks and its key presses (run-client.sh's cmd_run, run-bare.sh). Sets
+# shots, clicker and typist to their PIDs; each stops once OUT/.running is gone, or when killed.
+start_inputs() {
+  local out=$1 display=$2 tmo=$3
+  # --- host-side screenshots while the run is active
+  (
+    start=$(date +%s)
+    for t in 5 10 30 60 90 120 150 180 210 240 270 295; do
+      [ "$t" -le "$tmo" ] || break
+      now=$(date +%s)
+      sl=$((start + t - now))
+      [ "$sl" -le 0 ] || sleep "$sl"
+      [ -e "$out/.running" ] || break
+      import -display ":$display" -window root "$out/screen-${t}s.png" 2>>"$out/screenshot.err" || true
+    done
+  ) &
+  shots=$!
+  # --- host-side clicks on the nested display, at their times
+  (
+    start=$(date +%s)
+    for c in "${clicks[@]}"; do
+      t=${c%%:*} xy=${c#*:}
+      now=$(date +%s)
+      sl=$((start + t - now))
+      [ "$sl" -le 0 ] || sleep "$sl"
+      [ -e "$out/.running" ] || break
+      python3 -I "$HERE/xclick.py" --display ":$display" "${xy%,*}" "${xy#*,}" 2>>"$out/click.err" &&
+        echo "$(date -Is) click $c" >> "$out/clicks.log"
+    done
+  ) &
+  clicker=$!
+  # --- host-side key presses and typing on the nested display, at their times
+  (
+    start=$(date +%s)
+    for p in "${presses[@]}"; do
+      kind=${p%%:*} rest=${p#*:}
+      t=${rest%%:*} what=${rest#*:}
+      now=$(date +%s)
+      sl=$((start + t - now))
+      [ "$sl" -le 0 ] || sleep "$sl"
+      [ -e "$out/.running" ] || break
+      python3 -I "$HERE/xkey.py" --display ":$display" "--$kind=$what" 2>>"$out/keys.err" &&
+        echo "$(date -Is) $kind $t:$what" >> "$out/keys.log"
+    done
+  ) &
+  typist=$!
 }
 
 # After a run: the evidence, best effort (a failure there is reported but never changes the verdict:

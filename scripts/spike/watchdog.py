@@ -162,11 +162,13 @@ def compare_sys(base, cur):
 def open_regular(path):
     """A read-only file object for `path`, refusing a symlink (O_NOFOLLOW) or anything but a
     regular file: the sandbox can write the directories this reads, and a planted link must never
-    make the host read one of its own files."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    make the host read one of its own files. The open doesn't block (O_NONBLOCK), so a planted FIFO
+    with no writer is refused instead of stopping the watch."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
         raise OSError(f"not a regular file: {path}")
+    os.set_blocking(fd, True)
     return os.fdopen(fd, "rb")
 
 
@@ -555,6 +557,17 @@ class Tail:
         self.path, self.off, self.rest, self.fh = path, 0, b"", None
         self.at_eof = False  # whether the last read reached the end of the log as it was then
 
+    def replaced(self):
+        """Whether the path now names another file than the open one, or this one shrank below
+        what was read of it. A moment with no file at the path is neither: the old one is still
+        being read."""
+        try:
+            st = os.lstat(self.path)
+        except FileNotFoundError:
+            return False
+        cur = os.fstat(self.fh.fileno())
+        return (st.st_dev, st.st_ino) != (cur.st_dev, cur.st_ino) or st.st_size < self.off
+
     def read(self, limit=16 << 20, final=False):
         """Returns (chunk, look): complete lines to scan now, and the text held back after them,
         which is look-ahead only (it is scanned on a later read). With final=True, or when nothing
@@ -569,6 +582,16 @@ class Tail:
         new = self.fh.read(limit)
         self.off += len(new)
         self.at_eof = len(new) < limit
+        if self.at_eof and self.replaced():
+            # GE-Proton removes and recreates its log for each session (umu's createprefix, then
+            # the client), and a log can be truncated: the old file is read to its end, its last
+            # partial line counts as complete, and the next read starts the new file at byte 0.
+            data = self.rest + new
+            if data and not data.endswith(b"\n"):
+                data += b"\n"
+            self.fh.close()
+            self.fh, self.off, self.rest, self.at_eof = None, 0, b"", False
+            return data, b""
         data = self.rest + new
         if final:
             self.rest = b""
@@ -648,6 +671,9 @@ def cmd_watch(a):
     tmpfs_warned = False
     log(f"watch start: sandbox pid {spid}, root {a.root}, log {a.log}, interval {a.interval}s, "
         f"baseline {len(base_sys)} .sys / {len(base['services'])} services")
+    if a.no_tmpfs_scan:
+        log("tmpfs scan off: a bare-metal run, whose namespace sees the host's own files; "
+            "S1 covers the root")
 
     def sandbox_root_scan():
         nonlocal tmpfs_warned
@@ -667,7 +693,7 @@ def cmd_watch(a):
 
     def check_sys():
         out = compare_sys(base_sys, scan_sys(a.root))
-        if init:
+        if init and not a.no_tmpfs_scan:
             for p, st in sandbox_root_scan().items():
                 out.append(("S1 .sys file in a sandbox tmpfs mount", p, st))
         return out
@@ -860,7 +886,7 @@ def cmd_watch(a):
         raise SystemExit(4)
 
 
-def main():
+def parser():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="mode", required=True)
     b = sub.add_parser("baseline")
@@ -875,13 +901,20 @@ def main():
     w.add_argument("--bind", dest="binds", action="append", default=[],
                    help="other dirs bound into the sandbox (pruned from the tmpfs scan)")
     w.add_argument("--go", help="the start signal to create once armed (default: OUT/.go)")
+    w.add_argument("--no-tmpfs-scan", action="store_true",
+                   help="a bare-metal run (run-bare.sh): no sandbox tmpfs mounts to scan; the "
+                        "namespace sees the host's files, whose own Proton prefixes would trip S1")
     s.add_argument("files", nargs="+")
     c = sub.add_parser("collect", help="copy a sandbox-writable tree's regular files, never following a link")
     c.add_argument("--src", required=True)
     c.add_argument("--dest", required=True)
     c.add_argument("--name", dest="names", action="append", help="only these top-level names")
     c.add_argument("--exclude", action="append", default=[], help="skip these top-level names")
-    a = ap.parse_args()
+    return ap
+
+
+def main():
+    a = parser().parse_args()
     if a.mode == "collect":
         notes = collect(a.src, a.dest, names=a.names, exclude=a.exclude)
         if notes:

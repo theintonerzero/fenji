@@ -19,6 +19,11 @@ wd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wd)
 
 
+class Blocked(Exception):
+    """Raised by the alarm in tests that must not block; not an OSError, so assertRaises(OSError)
+    can't take it for the refusal."""
+
+
 class S1(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -371,7 +376,8 @@ class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
             outer = subprocess.Popen([str(d / "bin" / "bwrap"), str(d / "outer.py"), str(d), json.dumps(plan),
                                       str(out / ".go")], start_new_session=True)
             a = types.SimpleNamespace(root=str(out / "root"), out=str(out), sandbox_pid=outer.pid,
-                                      log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"))
+                                      log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                      no_tmpfs_scan=False)
             saved = wd.TMPFS_SUBS, wd.TMPFS_SHALLOW
             wd.TMPFS_SUBS = wd.TMPFS_SHALLOW = ()  # the host's own files are not this test's sandbox
             try:
@@ -415,6 +421,73 @@ class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
         rc, _ = self.watch([[0.0, "winedevice.exe", "-", 0, 2.0],
                             [0.4, "wine64", "gujianol.exe", 0.8, 2.5]])
         self.assertEqual(rc, 0)
+
+
+class BareMetal(unittest.TestCase):  # issue #139
+    """A bare-metal run has no sandbox tmpfs mounts: its namespace sees the host's filesystem,
+    whose own Proton prefixes would trip the tmpfs scan."""
+
+    WATCH = ["watch", "--root", "/r", "--out", "/o", "--sandbox-pid", "1", "--log", "/l"]
+
+    def test_the_tmpfs_scan_is_on_unless_turned_off(self):
+        self.assertFalse(wd.parser().parse_args(self.WATCH).no_tmpfs_scan)
+        self.assertTrue(wd.parser().parse_args(self.WATCH + ["--no-tmpfs-scan"]).no_tmpfs_scan)
+
+
+class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
+    """GE-Proton removes and recreates its log for each session (umu's createprefix, then the
+    client), so the watchdog must leave the old file at its end and read the new one."""
+
+    def drain(self, t, polls=4):
+        out = b""
+        for _ in range(polls):
+            chunk, _ = t.read()
+            out += chunk
+        return out
+
+    def test_a_replaced_log_is_read_to_its_end_then_the_new_one_from_its_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "steam-1418100.log"
+            p.write_bytes(b"old 1\nold 2\nold partial")
+            t = wd.Tail(str(p))
+            got = self.drain(t)
+            p.unlink()
+            p.write_bytes(b"new 1\nnew 2\n")
+            got += self.drain(t)
+            self.assertEqual(got, b"old 1\nold 2\nold partial\nnew 1\nnew 2\n")
+
+    def test_a_truncated_log_is_read_again_from_its_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "steam-1418100.log"
+            p.write_bytes(b"first session, a long line\n")
+            t = wd.Tail(str(p))
+            got = self.drain(t)
+            with open(p, "r+b") as fh:
+                fh.truncate(0)
+                fh.write(b"again\n")
+            got += self.drain(t)
+            self.assertEqual(got, b"first session, a long line\nagain\n")
+
+    def test_a_fifo_at_the_log_path_is_refused_without_blocking(self):
+        # Review of #144: anything in the namespace can write the run's io directory, and opening a
+        # FIFO that has no writer blocks, which would stop the whole watch, not just the log rules.
+        def blocked(signum, frame):
+            raise Blocked("the watchdog blocked opening a FIFO")
+        old = signal.signal(signal.SIGALRM, blocked)
+        signal.alarm(5)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                p = pathlib.Path(d) / "steam-1418100.log"
+                p.write_bytes(b"first session\n")
+                t = wd.Tail(str(p))
+                self.assertEqual(self.drain(t), b"first session\n")
+                p.unlink()
+                os.mkfifo(p)
+                with self.assertRaises(OSError):
+                    self.drain(t)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
 
 
 class ClientCreationOverdue(unittest.TestCase):
@@ -526,7 +599,8 @@ class GateEventRecord(unittest.TestCase):
             child = subprocess.Popen(["sleep", "30"])  # stands in for the sandbox; the watchdog kills it
             try:
                 a = types.SimpleNamespace(root=str(root), out=str(out), sandbox_pid=child.pid,
-                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"))
+                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                          no_tmpfs_scan=False)
                 rc = wd.cmd_watch(a)
             finally:
                 child.kill()
