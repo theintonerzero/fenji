@@ -135,7 +135,8 @@ bare_inputs() {
 # kernel run a DNS lookup on the host's network.
 seccomp_filter() {
   local bpf
-  bpf=$(python3 -I "$BARE_HERE/seccomp-deny-keys.py" --printf) && [ -n "$bpf" ] || die "couldn't build the seccomp filter"
+  bpf=$(python3 -I "$BARE_HERE/seccomp-deny-keys.py" --printf) || die "couldn't build the seccomp filter"
+  [ -n "$bpf" ] || die "couldn't build the seccomp filter"
   printf '%s' "$bpf"
 }
 
