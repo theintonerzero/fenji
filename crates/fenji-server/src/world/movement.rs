@@ -167,6 +167,8 @@ mod tests {
             Pos { yaw: f64::NAN, ..o },
             Pos { yaw: 361.0, ..o },
             Pos { x: 1.0e9, ..o },
+            // Falling is free, so only the limit refuses a drop this far.
+            Pos { z: -1.0e9, ..o },
         ] {
             let mut g = Gait::new(0);
             assert!(!g.check(&o, &bad, 1_000, 100, 1.5), "{bad:?}");
@@ -256,10 +258,30 @@ mod tests {
         h.take(1);
         h.take(2);
         h.tick(400);
-        // Three moves of 100 arrive together after a stall: 300 in 0.45 s at up to 1275/s.
-        for x in [100.0, 200.0, 300.0] {
+        // Eight moves of 100 arrive together after a stall. Lin joined 0.55 s before this tick,
+        // so its budget holds 0.55 × 1,275 = 701.25 units, and the tick's moves share it: seven
+        // fit and the eighth is refused.
+        let xs = [100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0];
+        for x in xs {
             h.push(mv(1, x, 0.0));
         }
+        h.tick(50);
+        let relayed: Vec<WorldOut> = xs[..7]
+            .iter()
+            .map(|&x| WorldOut::Moved {
+                pid: 1,
+                step: step(x, 0.0),
+            })
+            .collect();
+        assert_eq!(h.take(2), relayed, "seven, in order");
+        assert_eq!(
+            h.take(1),
+            vec![WorldOut::Correct {
+                pos: at(700.0, 0.0).pos
+            }]
+        );
+        // A ninth message in that tick would have been a flood (the harness allows eight), so the
+        // hostile move comes in the next one.
         h.push(WorldIn::Move {
             conn: 1,
             step: MoveStep {
@@ -271,11 +293,11 @@ mod tests {
             },
         });
         h.tick(50);
-        assert_eq!(h.take(2).len(), 3);
+        assert!(h.take(2).is_empty());
         assert_eq!(
             h.take(1),
             vec![WorldOut::Correct {
-                pos: at(300.0, 0.0).pos
+                pos: at(700.0, 0.0).pos
             }]
         );
     }
