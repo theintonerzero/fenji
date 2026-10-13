@@ -12,8 +12,10 @@
 #   - a local fenji-server, which shares the client's network namespace: that namespace has only
 #     loopback, and the host's daemon sockets in /run, /tmp and /dev/shm (D-Bus, systemd-resolved,
 #     the desktop portal) are out of reach, so the client's network reaches the Fenji server only.
-#     Sockets elsewhere in the real filesystem stay reachable, such as IBus's in ~/.cache/ibus,
-#     and the audio daemon can load network modules (#148); --desktop adds the session's display
+#     IBus's private sockets in ~/.cache/ibus are hidden too. Other sockets elsewhere in the real
+#     filesystem stay reachable, and so does the audio daemon: the accepted residual, as its pulse
+#     server takes load-module, so the client could load a network module on the host
+#     (module-tunnel-sink, module-native-protocol-tcp; #148). --desktop adds the session's display
 #     (below);
 #   - the AGT driver watchdog armed on the namespace's PID namespace before anything in it starts,
 #     as in sandboxed runs; a gate event stops the run (exit 3);
@@ -129,9 +131,10 @@ host_guards() {
 # The guard namespace's command line for display N: the real filesystem with its own /proc; empty
 # /run, /tmp and /dev/shm, so no host daemon socket of those (D-Bus, systemd-resolved, the portal,
 # agents) is there, bar the user's audio sockets and the display's X11 socket, bound back; Steam's
-# pipe masked; loopback only; its own PID namespace (where the watchdog arms); the seccomp filter
-# on fd 7; and nothing left when its parent goes. A second argument is a desktop run's X authority
-# file, brought in read-only after the tmpfs mounts, which would hide it.
+# pipe masked; IBus's private sockets hidden behind an empty tmpfs; loopback only; its own PID
+# namespace (where the watchdog arms); the seccomp filter on fd 7; and nothing left when its parent
+# goes. A second argument is a desktop run's X authority file, brought in read-only after the tmpfs
+# mounts, which would hide it.
 namespace_cmd() {
   local display=$1 xauth=${2:-} rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
   printf '%s\n' bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$rt"
@@ -140,6 +143,7 @@ namespace_cmd() {
   done
   printf '%s\n' --tmpfs /tmp --bind "/tmp/.X11-unix/X$display" "/tmp/.X11-unix/X$display" --tmpfs /dev/shm
   if [ -e "$HOME/.steam/steam.pipe" ]; then printf '%s\n' --ro-bind /dev/null "$HOME/.steam/steam.pipe"; fi
+  if [ -d "$HOME/.cache/ibus" ]; then printf '%s\n' --tmpfs "$HOME/.cache/ibus"; fi
   if [ -n "$xauth" ]; then printf '%s\n' --ro-bind "$xauth" "$xauth"; fi
   printf '%s\n' --unshare-net --unshare-pid --die-with-parent --seccomp 7 --
 }
