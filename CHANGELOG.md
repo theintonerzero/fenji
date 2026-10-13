@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-13
+
+### Added
+
+- **auth:** Add fenji-auth: password hashes, tokens, invite codes, rules and the limiter (#129)
+- **proto:** Type the lobby's messages and check what clients ask to store (#131)
+- **store:** Add fenji-store: accounts, invites, tokens and characters in SQLite (#130)
+- **server:** Add fenji-server with fenji.toml, the account API and admin commands (#132)
+- **server:** Add the gate and the lobby: tickets, limits, list, create and delete (#133)
+- **launcher:** Add fenji-launcher and fenji-launch: sign-in, verification, the launch spec (#134)
+- **tools:** Let client runs use fenji-server, the launcher's ticket and key presses (#136)
+- **launcher:** Let fenji-launch play start the client on Linux, as a player's launcher does (#140)
+- **tools:** Add run-bare.sh, the guarded bare-metal client runner (#144)
+
+### Fixed
+
+- **tools:** Find the client and its winedevice when Wine renames them after the watchdog first saw them (#143)
+- **tools:** Let the stub keep no auth capture, and end --work-pad in WORK (#145)
+
+### Documentation
+
+- Add the M3 (login and lobby) design and plan (#128)
+- **re:** Read the client's lobby and platform paths (#135)
+- Record the owner's decision on gate #114 and the guarded bare-metal client runs (#137)
+- **re:** Run the lobby against the real client: list, create, restart, delete (#141)
+- Record M3: the summary, the spec's M3 notes, and what changes for players and hosts (#149)
+
 ## [0.3.1] - 2026-10-12
 
 ### Added

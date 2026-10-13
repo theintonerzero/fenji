@@ -2,16 +2,26 @@
 """Tests for scripts/spike/watchdog.py's pure rules: the S1 *.sys comparison and the S3 Wine-log
 rules. Stdlib only, no sandbox and no Wine: python3 -I scripts/spike/test-watchdog.py"""
 import importlib.util
+import json
+import os
 import pathlib
+import signal
+import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("watchdog", HERE / "watchdog.py")
 wd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wd)
+
+
+class Blocked(Exception):
+    """Raised by the alarm in tests that must not block; not an OSError, so assertRaises(OSError)
+    can't take it for the refusal."""
 
 
 class S1(unittest.TestCase):
@@ -250,6 +260,236 @@ class S4Registry(unittest.TestCase):
             wd.parse_services(str(self.reg))
 
 
+class ClientRename(unittest.TestCase):  # issue #142
+    """Wine starts the client's process as wine64 and renames it once the exe is loaded, so the
+    name read when its pid first appeared can be stale."""
+
+    def proc(self, pid, start, comm, argv, alive=True):
+        return {"pid": pid, "start": start, "comm": comm, "argv": argv, "alive": alive}
+
+    def test_a_process_renamed_to_the_client_is_found(self):
+        seen = {
+            7: self.proc(7, 100, "wine64", ["/usr/bin/wine64", "C:\\SoLO\\bin64\\gujianol.exe"]),
+            8: self.proc(8, 90, "wineserver", ["wineserver"]),
+            9: self.proc(9, 95, "wine64", ["wine64"], alive=False),
+        }
+        now = {
+            7: self.proc(7, 100, "gujianol.exe", ["C:\\SoLO\\bin64\\gujianol.exe"]),
+            8: self.proc(8, 90, "wineserver", ["wineserver"]),
+            9: self.proc(9, 95, "gujianol.exe", ["gujianol.exe"]),
+        }
+        found = wd.renamed_to(seen, wd.CLIENT, now.get)
+        self.assertEqual([p for p, _ in found], [7])
+        self.assertEqual(seen[7]["comm"], "gujianol.exe")
+        self.assertEqual(wd.renamed_to(seen, wd.CLIENT, now.get), [], "found once")
+
+    def test_a_pid_now_held_by_another_process_is_not_the_client(self):
+        seen = {7: self.proc(7, 100, "wine64", ["wine64"])}
+        now = {7: self.proc(7, 250, "gujianol.exe", ["gujianol.exe"])}
+        self.assertEqual(wd.renamed_to(seen, wd.CLIENT, now.get), [])
+
+    def test_a_process_that_is_gone_is_skipped(self):
+        seen = {7: self.proc(7, 100, "wine64", ["wine64"])}
+        self.assertEqual(wd.renamed_to(seen, wd.CLIENT, lambda p: None), [])
+
+
+class TrackClient(unittest.TestCase):  # issue #142: both of S2's operands can be named late
+    def proc(self, pid, start, comm, alive=True):
+        return {"pid": pid, "start": start, "comm": comm, "argv": [comm], "alive": alive}
+
+    def test_a_client_found_late_is_the_earliest_renamed(self):
+        seen = {7: self.proc(7, 100, "wine64"), 9: self.proc(9, 90, "wine64")}
+        now = {p: self.proc(p, seen[p]["start"], "gujianol.exe") for p in seen}
+        found, hits = wd.track_client(seen, None, now.get)
+        self.assertEqual(found, (90, 9))
+        self.assertEqual(hits, [])
+
+    def test_s2_sees_a_winedevice_renamed_after_the_client(self):
+        seen = {11: self.proc(11, 150, "wine64")}
+        now = {11: self.proc(11, 150, "winedevice.exe")}
+        found, hits = wd.track_client(seen, 100, now.get)
+        self.assertIsNone(found)
+        self.assertEqual([p for p, _ in hits], [11])
+
+    def test_s2_counts_a_winedevice_that_is_gone_already(self):
+        seen = {12: self.proc(12, 150, "winedevice.exe", alive=False)}
+        self.assertEqual([p for p, _ in wd.track_client(seen, 100, lambda p: None)[1]], [12])
+
+    def test_a_winedevice_older_than_the_client_is_no_sign(self):
+        seen = {13: self.proc(13, 50, "winedevice.exe")}
+        self.assertEqual(wd.track_client(seen, 100, lambda p: None)[1], [])
+
+    def test_no_client_means_no_s2(self):
+        seen = {14: self.proc(14, 150, "winedevice.exe")}
+        self.assertEqual(wd.track_client(seen, None, lambda p: None), (None, []))
+
+
+# The stand-ins for the whole-loop tests below. Each runs through a symlink to this Python, so it
+# starts with that name, as a Wine process starts as wine64.
+_PROC = """import ctypes, sys, time
+name, rename_at, die_at = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+def until(t):
+    if t > time.time():
+        time.sleep(t - time.time())
+if name != "-":
+    until(rename_at)
+    ctypes.CDLL(None).prctl(15, name.encode(), 0, 0, 0)  # PR_SET_NAME, as Wine renames
+until(die_at)
+"""
+_INIT = """import json, os, subprocess, sys, time
+d, plan, go = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]
+deadline = time.time() + 15  # a watchdog that never arms fails the test, not the CI job
+while not os.path.exists(go):
+    if time.time() > deadline:
+        sys.exit(9)
+    time.sleep(0.005)
+t0 = time.time()
+procs = []
+for at, binary, rename, rename_t, die_t in plan:
+    if t0 + at > time.time():
+        time.sleep(t0 + at - time.time())
+    procs.append(subprocess.Popen([f"{d}/bin/{binary}", f"{d}/proc.py", rename, str(t0 + rename_t), str(t0 + die_t)]))
+for q in procs:
+    q.wait()
+"""
+_OUTER = """import subprocess, sys
+subprocess.Popen([f"{sys.argv[1]}/bin/bwrap", f"{sys.argv[1]}/init.py"] + sys.argv[1:]).wait()
+"""
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")
+class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
+    """A fake sandbox of stand-in processes renamed with prctl: no Wine and no client. Times are
+    seconds after the start signal, with margins far above the 0.05 s polls."""
+
+    def watch(self, plan):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            (d / "bin").mkdir()
+            for name in ("bwrap", "wine64", "gujianol.exe", "winedevice.exe"):
+                (d / "bin" / name).symlink_to(sys.executable)
+            for name, text in (("proc.py", _PROC), ("init.py", _INIT), ("outer.py", _OUTER)):
+                (d / name).write_text(text)
+            out = d / "out"
+            (out / "root").mkdir(parents=True)
+            (out / "watchdog-baseline.json").write_text(json.dumps({"sys": {}, "services": [], "service_info": {}}))
+            outer = subprocess.Popen([str(d / "bin" / "bwrap"), str(d / "outer.py"), str(d), json.dumps(plan),
+                                      str(out / ".go")], start_new_session=True)
+            a = types.SimpleNamespace(root=str(out / "root"), out=str(out), sandbox_pid=outer.pid,
+                                      log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                      no_tmpfs_scan=False)
+            saved = wd.TMPFS_SUBS, wd.TMPFS_SHALLOW
+            wd.TMPFS_SUBS = wd.TMPFS_SHALLOW = ()  # the host's own files are not this test's sandbox
+            try:
+                rc = wd.cmd_watch(a)
+            except SystemExit as e:  # a failure (exit 4) leaves through SystemExit
+                rc = e.code
+            finally:
+                wd.TMPFS_SUBS, wd.TMPFS_SHALLOW = saved
+                try:
+                    os.killpg(outer.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                outer.wait()
+            trig = out / "watchdog-trigger.txt"
+            return rc, trig.read_text() if trig.exists() else ""
+
+    def test_a_client_renamed_late_stays_found_and_arms_s2(self):
+        # The winedevice starts after the rename, so only a client that stayed found sees it.
+        rc, trig = self.watch([[0.0, "wine64", "gujianol.exe", 0.6, 6.0],
+                               [1.4, "winedevice.exe", "-", 0, 5.0]])
+        self.assertEqual(rc, 3)
+        self.assertIn("S2", trig)
+
+    def test_a_client_found_late_rearms_the_log_check(self):
+        # Found late, the client starts the clock for "the log never showed its creation".
+        saved = wd.client_creation_overdue.__defaults__
+        wd.client_creation_overdue.__defaults__ = (0.5,)
+        try:
+            rc, _ = self.watch([[0.0, "wine64", "gujianol.exe", 0.6, 6.0]])
+        finally:
+            wd.client_creation_overdue.__defaults__ = saved
+        self.assertEqual(rc, 4)
+
+    def test_a_winedevice_renamed_late_still_trips_s2(self):
+        rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 6.0],
+                               [0.4, "wine64", "winedevice.exe", 0.9, 5.0]])
+        self.assertEqual(rc, 3)
+        self.assertIn("S2", trig)
+
+    def test_a_winedevice_older_than_a_late_named_client_is_no_sign(self):
+        rc, _ = self.watch([[0.0, "winedevice.exe", "-", 0, 2.0],
+                            [0.4, "wine64", "gujianol.exe", 0.8, 2.5]])
+        self.assertEqual(rc, 0)
+
+
+class BareMetal(unittest.TestCase):  # issue #139
+    """A bare-metal run has no sandbox tmpfs mounts: its namespace sees the host's filesystem,
+    whose own Proton prefixes would trip the tmpfs scan."""
+
+    WATCH = ["watch", "--root", "/r", "--out", "/o", "--sandbox-pid", "1", "--log", "/l"]
+
+    def test_the_tmpfs_scan_is_on_unless_turned_off(self):
+        self.assertFalse(wd.parser().parse_args(self.WATCH).no_tmpfs_scan)
+        self.assertTrue(wd.parser().parse_args(self.WATCH + ["--no-tmpfs-scan"]).no_tmpfs_scan)
+
+
+class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
+    """GE-Proton removes and recreates its log for each session (umu's createprefix, then the
+    client), so the watchdog must leave the old file at its end and read the new one."""
+
+    def drain(self, t, polls=4):
+        out = b""
+        for _ in range(polls):
+            chunk, _ = t.read()
+            out += chunk
+        return out
+
+    def test_a_replaced_log_is_read_to_its_end_then_the_new_one_from_its_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "steam-1418100.log"
+            p.write_bytes(b"old 1\nold 2\nold partial")
+            t = wd.Tail(str(p))
+            got = self.drain(t)
+            p.unlink()
+            p.write_bytes(b"new 1\nnew 2\n")
+            got += self.drain(t)
+            self.assertEqual(got, b"old 1\nold 2\nold partial\nnew 1\nnew 2\n")
+
+    def test_a_truncated_log_is_read_again_from_its_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "steam-1418100.log"
+            p.write_bytes(b"first session, a long line\n")
+            t = wd.Tail(str(p))
+            got = self.drain(t)
+            with open(p, "r+b") as fh:
+                fh.truncate(0)
+                fh.write(b"again\n")
+            got += self.drain(t)
+            self.assertEqual(got, b"first session, a long line\nagain\n")
+
+    def test_a_fifo_at_the_log_path_is_refused_without_blocking(self):
+        # Review of #144: anything in the namespace can write the run's io directory, and opening a
+        # FIFO that has no writer blocks, which would stop the whole watch, not just the log rules.
+        def blocked(signum, frame):
+            raise Blocked("the watchdog blocked opening a FIFO")
+        old = signal.signal(signal.SIGALRM, blocked)
+        signal.alarm(5)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                p = pathlib.Path(d) / "steam-1418100.log"
+                p.write_bytes(b"first session\n")
+                t = wd.Tail(str(p))
+                self.assertEqual(self.drain(t), b"first session\n")
+                p.unlink()
+                os.mkfifo(p)
+                with self.assertRaises(OSError):
+                    self.drain(t)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+
+
 class ClientCreationOverdue(unittest.TestCase):
     """Review M3: if the log never shows the client's creation, every LoadDriver would count as
     'before the client'; the watchdog stops the run instead of going blind."""
@@ -359,7 +599,8 @@ class GateEventRecord(unittest.TestCase):
             child = subprocess.Popen(["sleep", "30"])  # stands in for the sandbox; the watchdog kills it
             try:
                 a = types.SimpleNamespace(root=str(root), out=str(out), sandbox_pid=child.pid,
-                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"))
+                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                          no_tmpfs_scan=False)
                 rc = wd.cmd_watch(a)
             finally:
                 child.kill()

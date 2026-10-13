@@ -10,6 +10,7 @@ Our own written findings about the pinned client's network protocol. No decompil
 | [`opcodes.md`](opcodes.md) | Opcode ledger (`STC_PROTOCOL_*`, `CTS_PROTOCOL_*`), with wire values; script message ids | M2 onward |
 | [`payloads.md`](payloads.md) | The client's pickle format (script messages, the auth payload), compressed or not | M2 |
 | `properties.md` | The synced-property (`prop_*`) schema, and how sync packets carry it | M2–M4 |
+| [`packets/lobby.md`](packets/lobby.md) | The lobby's script messages: the character list, creating and deleting characters, error codes, close reasons, and what Fenji sends | M3 |
 | `packets/<area>.md` | Per-opcode payload tables (`login`, `lobby`, `world`, `combat`, …) | M2–M5 |
 
 ## Opcode ledger format (`opcodes.md`)

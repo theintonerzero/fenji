@@ -121,7 +121,7 @@ How to repeat it:
 
 ## Running the client
 
-Only inside `scripts/spike/isolated-run.sh` (design spec §2 rule 4). Inside it:
+Only inside `scripts/spike/isolated-run.sh` (design spec §2 rule 4), except the guarded bare-metal play tests on the Linux game box that CLAUDE.md describes (owner's decision, 2026-10-13). Inside the sandbox:
 - the network is loopback only, and names come from a hosts file;
 - there are no host daemon sockets;
 - the display is a nested X server (`--x11 N`);
@@ -131,15 +131,42 @@ Only inside `scripts/spike/isolated-run.sh` (design spec §2 rule 4). Inside it:
 Before a run:
 - Quit Steam; the wrapper refuses to start while it runs.
 - Bind only directories that belong to the run.
-- Run the stub on loopback inside the same sandbox.
+- Run the stub on loopback inside the same sandbox. When the auth can carry a real platform ticket (a Steam or Gameforge login rather than `--gf-sdk=mocked`), pass `--stub-arg --speak --stub-arg --no-auth-capture`: no stub file then keeps the auth (#102). The client's own logs are another matter.
 
 Read the wrapper's header before the first run.
 
 The client flags that reach the login scene in a dev run are in [spike-0 §8](spike-0.md#8-runtime-observation-isolated-stub-only) (`--gf-sdk=mocked` is dev-only, gate #11). Run the client with `scripts/spike/run-client.sh setup` once, then `run-client.sh run NAME … -- ARGS`; it adds fenji-stub and the AGT driver watchdog. Exit 3 means the watchdog saw a sign of driver activity and stopped the run: stop all runs and report. The script's header lists every exit status, and the watchdog's lists the signs.
 
+From M3, a run can use Fenji's own server and the launcher's ticket instead of the stub (`cargo build --release -p fenji-server -p fenji-launcher` first):
+- `--server CONFIG` runs `fenji-server` with a copy of CONFIG (a `fenji.toml` whose `login_bind` and `api_bind` are on 127.0.0.1) and waits for both ports. Its log is the run's `server.log`. A relative `[store] path` stays in the copy's folder: a fresh database each run.
+- `--server-data DIR` keeps the database between runs. DIR is a directory under `re/runs/` that holds no link or special file, and the config's `[store] path` must be absolute and inside it. The sandbox can write DIR, so open it on the host only before the first run (to create the account), or as a copy made with `watchdog.py collect`.
+- `--launch "ARGS"` runs `fenji-launch play --print ARGS` once the server is up, and needs `--launch-password FILE`. The file reaches the sandbox only on its standard input: it is never bound, copied, recorded, or named in an argument or the evidence. The client gets only the `gj_*` pairs, and `fenji-launch` may print nothing else. `io/launch.txt` records the pairs with the ticket redacted, and any Fenji ticket found in the evidence afterwards is redacted in place and listed in `redactions.txt`.
+- `--key T:KEY` and `--type T:TEXT` press a key (an X keysym name such as `Return` or `space`) or type printable ASCII T seconds into the run, as `--click` clicks (`xkey.py`, through XTEST). Presses run in time order, none after the timeout.
+
+If the server isn't ready or the launcher fails, the client isn't started and the run exits 7.
+
+### Bare-metal runs
+
+`scripts/spike/run-bare.sh` runs the client the way a player starts it, under every guard of CLAUDE.md's "Bare-metal client runs" (#139):
+- **As a player starts it:** `fenji-launch play` checks a reflink copy, made for the run, of the pinned copy at `$FENJI_CLIENT_PATH`. That copy is refused if it is a link, holds a link, or sits in a Steam library. `fenji-launch` then prepares the dedicated prefix `re/bare-metal/compat` with `umu-run createprefix`, signs in, and starts the client through umu-run and the pinned GE-Proton. No SDK flag is ever passed.
+- **No Steam or Wine:** neither may be running. Steam is checked again every 2 s during the run, and Steam starting stops the run.
+- **One shared namespace:** `fenji-server` and the client run in the same one. It keeps the real files, home, GPU, audio and display. But `/run`, `/tmp` and `/dev/shm` are empty tmpfs, bar the user's audio sockets and the display's X11 socket, so no host D-Bus, systemd-resolved, portal or agent socket is there. Sockets elsewhere in the real filesystem stay reachable, such as IBus's in `~/.cache/ibus`, and the audio daemon can load network modules (#148). The network is loopback only, and isolated-run.sh's seccomp filter blocks key requests. The client's network reaches the Fenji server only; `test-run-bare.sh` checks that from inside, where it can make the namespace. `--desktop` loosens this (below).
+- **Its own `/proc`:** the namespace needs one. Without it, umu's pressure-vessel looks its child up in the host's `/proc` by a namespace PID and hangs.
+- **The watchdog:** it arms on that PID namespace before anything starts. `--no-tmpfs-scan` is on, because the host's own Proton prefixes would trip that scan. S1 scans `re/bare-metal` (the prefix and the run's copy). S2 and S4 work as in sandboxed runs, and S3 follows GE-Proton's logs, which it recreates for each session. The evidence also lists any new `*.sys` file under umu's runtime and `/var/tmp`.
+
+Run `run-bare.sh setup --desktop` (or `setup --display N`) once. It builds the prefix with `umu-run createprefix`, then primes it: it starts `cmd.exe` once through Proton's launcher (`umu.exe`), which registers GE-Proton's Discord bridge service. That puts the service in the watchdog's baseline. Unprimed, the client's first launch registers it, and the watchdog stops the run (bm-1, 2026-10-13). The prime's mark names the GE-Proton build. A run refuses an unprimed prefix, or one primed by another GE-Proton build, since a new build upgrades the prefix, and `setup` primes an existing one. Then run `run-bare.sh run NAME --server CONFIG --server-data DIR --username USER --password-file FILE` with either `--display N` or `--desktop`; a run has no default display. `--key`, `--type`, `--click` and `--timeout` work as in `run-client.sh`. CONFIG must bind 127.0.0.1 and name 127.0.0.1 as its `public_host`, and DIR is a directory under `re/bare-metal/`. The evidence goes to `re/bare-metal/out/NAME`. The exit statuses are `run-client.sh`'s, plus 1 when Steam started during the run, unless the watchdog stopped the run or failed: exit 3 or 4 wins, and the Steam note is printed too.
+
+The display:
+- **A nested display (`--display N`)** must be a dedicated rootful Xwayland, Xephyr or Xvfb. The runner makes `isolated-run.sh`'s `--x11` checks, bar its GPU and shared-memory rules. It refuses the session's own display (DISPLAY, by number), a display the compositor locks, a `-rootless` server, one started with `-enable-ei-portal`, and a libXfont with font-server support. It also refuses a socket directory that isn't sticky, and a socket or lock that isn't yours or is the wrong kind of file. Run nothing else on that display: with `-ac`, a terminal there is a shell outside the namespace. The real GPU can present to it only with glamor on, so start a dedicated one without `-shm`, for example `Xwayland :98 -geometry 1920x1080 -ac -nolisten tcp -noreset -extension MIT-SHM &`, and pass `--display 98`. Never share it with sandboxed runs: `isolated-run.sh`'s `:99` keeps glamor off, so that a sandboxed client gets no GPU device. With glamor off, the real GPU's first frame ends the client (bm-2). Screenshots and key presses reach the client there and nothing else.
+- **`--desktop` (`setup` takes it too)** runs the client on your session's own display, as a player has it.
+  - The display's auth file comes in read-only, and the run takes no screenshots and sends no key presses or clicks, since they would take or reach the whole desktop.
+  - The client then joins the session's X server, where it can see, read and type into other X11 windows, and read and replace the clipboard the compositor bridges into X11. Its XTEST input may also reach native windows through the compositor (libei), a terminal included.
+  - The namespace's own network stays loopback-only: the risk is the X server and the compositor as a way out of it. So a desktop run guards the client less strictly than a nested display does.
+  - The owner accepted that for hands-on test runs (2026-10-13). Players run the game on their own desktop anyway.
+
 ## Working rules
 
-- Static analysis of files on disk comes first. Runtime observation (Wine `WINEDEBUG`, the client's own log, stub sessions) happens only inside the sandbox, against our own stub or server.
+- Static analysis of files on disk comes first. Runtime observation (Wine `WINEDEBUG`, the client's own log, stub sessions) happens only inside the sandbox, against our own stub or server, or in the guarded bare-metal play tests CLAUDE.md describes.
 - Every conclusion distinguishes observation, inference and unknown, and cites evidence as set out in [Evidence for `gujianol.exe`](#evidence-for-gujianolexe). Unresolved questions go into REA with `record_unknown`.
 - Decision gates (client patching, circumventing protection, the embedded kernel driver, Oodle licensing) stop the work until the owner decides.
 - Close REA sessions (`close_binary`) when an investigation is finished. Never overwrite an evidence bundle; export to a new name.

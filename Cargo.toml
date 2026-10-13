@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["tools/stub", "tools/luatool", "tools/archive", "tools/oodle-helper", "crates/fenji-data", "crates/fenji-lua", "crates/fenji-proto"]
+members = ["tools/stub", "tools/luatool", "tools/archive", "tools/oodle-helper", "crates/fenji-data", "crates/fenji-lua", "crates/fenji-proto", "crates/fenji-auth", "crates/fenji-store", "crates/fenji-server", "crates/fenji-launcher"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.97"
 publish = false
@@ -12,18 +12,32 @@ license = "AGPL-3.0-or-later"
 [workspace.dependencies]
 aes = "0.9.3"
 anyhow = "1.0.104"
+argon2 = "0.6.0"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
 clap = { version = "4.6.7", features = ["derive"] }
+fenji-auth = { path = "crates/fenji-auth" }
 fenji-data = { path = "crates/fenji-data" }
+fenji-launcher = { path = "crates/fenji-launcher" }
 fenji-lua = { path = "crates/fenji-lua" }
 fenji-proto = { path = "crates/fenji-proto" }
+fenji-store = { path = "crates/fenji-store" }
+getrandom = "0.4.3"
 libloading = "0.9.0"
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 mlua = { version = "0.12.2", features = ["lua53", "vendored"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "http2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 sha1 = "0.11.0"
 sha2 = "0.11.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "migrate", "macros", "derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "io-util", "signal", "time"] }
+toml = "1.1.8"
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "io-util", "signal", "time", "sync"] }
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+tower-http = { version = "0.7.1", features = ["timeout"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
@@ -32,3 +46,10 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# argon2 in an unoptimised build takes seconds per hash; the tests hash often.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
