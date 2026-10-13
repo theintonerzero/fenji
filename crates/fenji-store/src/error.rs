@@ -15,6 +15,8 @@ pub enum Error {
     NameTaken,
     #[error("the account has as many characters as it may")]
     TooMany,
+    #[error("a place must be finite")]
+    NotFinite,
 }
 
 impl From<sqlx::migrate::MigrateError> for Error {

@@ -231,7 +231,7 @@ mod tests {
         want.extend(kv8("slot", 1));
         want.extend(st("prop_base_name"));
         want.extend(st("Lin"));
-        want.extend(kv8("prop_base_lv", 1));
+        want.extend(kv8("prop_base_lv", 37));
         want.extend(kv8("prop_base_vocation", 0));
         want.extend(kv8("prop_base_gender", 1));
         want.extend(kv8("prop_base_skeleton", 2));

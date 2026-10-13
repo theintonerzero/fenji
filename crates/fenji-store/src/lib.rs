@@ -15,7 +15,7 @@ mod invites;
 mod tokens;
 
 pub use accounts::{Account, AccountSummary};
-pub use characters::{Character, NewCharacter};
+pub use characters::{CREATE_LEVEL, Character, NewCharacter, Place};
 pub use error::{Error, Result};
 pub use invites::InviteRow;
 
