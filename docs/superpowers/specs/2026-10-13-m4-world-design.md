@@ -102,8 +102,12 @@ Neither is on fenji-proto's never-send list yet.
 
 ### 3.2 Characters
 
-- **Creation.** New characters are created at level 37, in their vocation's creation outfit with the head hidden. The outfit is read at creation from the operator's own install (`[data] client_path`) and never shipped. The lobby shows the same level and outfit.
-- **Storage.** The store gains each character's scene, position and outfit. When the migration runs, M3's characters become level 37 with their vocation's outfit.
+- **Creation.** New characters are created at level 37, in their vocation's creation outfit with the head hidden. The lobby shows the same level and outfit.
+- **The outfit's source** (corrected by the [world plan](../plans/2026-10-13-m4-world.md), by the owner's decision of 2026-10-13, #180).
+  - A host's server can't read the client's design tables, which are Oodle-compressed in the archives.
+  - So the outfit comes from a table of item ids that Fenji ships, documented with evidence in `docs/protocol/`.
+  - If the exe reading shows the client fills the outfit in itself from `prop_base_equips_id`, Fenji sends that and ships no ids.
+- **Storage.** The store gains each character's scene and position. The outfit follows from the vocation and the outfit choice already stored, until M5 gives characters their own equipment. When the migration runs, M3's characters become level 37.
 - **Saving.** Positions are saved when a character leaves, and every 5 minutes.
 
 ### 3.3 Seeing each other
