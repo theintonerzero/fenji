@@ -388,10 +388,26 @@ async fn lobby_loop(
                     return Ok(());
                 }
                 for event in server.receive(&buf[..n])? {
-                    if let Event::Message(m) = event {
-                        for reply in on_message(gate, account, m.ty, &m.body).await {
-                            let bytes = script_out(server, &reply)?;
+                    let Event::Message(m) = event else { continue };
+                    match on_message(gate, account, m.ty, &m.body).await {
+                        Step::Replies(replies) => {
+                            for reply in replies {
+                                let bytes = script_out(server, &reply)?;
+                                send(sock, &bytes, deadline).await?;
+                            }
+                        }
+                        Step::Leave => {
+                            tracing::info!(%peer, account = %account.username, "left (the client is quitting)");
+                            return Ok(());
+                        }
+                        Step::AccountGone => {
+                            tracing::info!(%peer, account = %account.username, "the account was deleted: closing");
+                            let bytes = server.send(Stc::Close.to_u8(), AUTH_FAILED.as_bytes(), &StoredCodec)?;
                             send(sock, &bytes, deadline).await?;
+                            if let Some(_place) = gate.waiting.take(peer.ip()) {
+                                linger(sock, gate.limits.linger).await;
+                            }
+                            return Ok(());
                         }
                     }
                 }
@@ -411,8 +427,20 @@ async fn lobby_loop(
     }
 }
 
-/// The replies to one message from a client in the lobby.
-async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Vec<Vec<u8>> {
+/// What the lobby loop does after one message from a client.
+enum Step {
+    /// Send these replies, in order, and go on.
+    Replies(Vec<Vec<u8>>),
+    /// The client is quitting (392, `CLIENT_EXIT`): close the connection.
+    Leave,
+    /// The account was deleted since the login (`fenji-server account delete`): close with the
+    /// client's own auth-failed reason.
+    AccountGone,
+}
+
+/// The step for one message from a client in the lobby. Every script message first checks that
+/// the account still exists, since an admin may delete it while its player is in the lobby.
+async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Step {
     match Up::decode(ty, body) {
         Ok(Up::Script {
             id: Value::Int(id),
@@ -420,23 +448,34 @@ async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Vec<
             gateway,
         }) => {
             tracing::trace!(id, gateway, body = %hex(body), "script message");
+            if id == fenji_proto::lobby::CLIENT_EXIT {
+                return Step::Leave;
+            }
+            match gate.accounts.store().account_by_id(account.id).await {
+                Ok(None) => return Step::AccountGone,
+                Ok(Some(_)) => {}
+                // The handler meets the same store and answers the client's screen.
+                Err(e) => tracing::error!(error = %e, "account check failed"),
+            }
             let now = gate.clock.now_ms();
-            lobby::handle(gate.accounts.store(), &gate.lobby, account, now, id, &args).await
+            Step::Replies(
+                lobby::handle(gate.accounts.store(), &gate.lobby, account, now, id, &args).await,
+            )
         }
         Ok(Up::Script { id, .. }) => {
             tracing::debug!(
                 id = id.kind(),
                 "script message without an integer id ignored"
             );
-            Vec::new()
+            Step::Replies(Vec::new())
         }
         Ok(Up::Unknown { opcode, bytes }) => {
             tracing::debug!(opcode, len = bytes.len(), "message ignored");
-            Vec::new()
+            Step::Replies(Vec::new())
         }
         Err(e) => {
             tracing::debug!(ty, len = body.len(), error = %e, "undecodable message skipped");
-            Vec::new()
+            Step::Replies(Vec::new())
         }
     }
 }
