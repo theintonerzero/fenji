@@ -648,6 +648,9 @@ def cmd_watch(a):
     tmpfs_warned = False
     log(f"watch start: sandbox pid {spid}, root {a.root}, log {a.log}, interval {a.interval}s, "
         f"baseline {len(base_sys)} .sys / {len(base['services'])} services")
+    if a.no_tmpfs_scan:
+        log("tmpfs scan off: a bare-metal run, whose namespace sees the host's own files; "
+            "S1 covers the root")
 
     def sandbox_root_scan():
         nonlocal tmpfs_warned
@@ -667,7 +670,7 @@ def cmd_watch(a):
 
     def check_sys():
         out = compare_sys(base_sys, scan_sys(a.root))
-        if init:
+        if init and not a.no_tmpfs_scan:
             for p, st in sandbox_root_scan().items():
                 out.append(("S1 .sys file in a sandbox tmpfs mount", p, st))
         return out
@@ -860,7 +863,7 @@ def cmd_watch(a):
         raise SystemExit(4)
 
 
-def main():
+def parser():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="mode", required=True)
     b = sub.add_parser("baseline")
@@ -875,13 +878,20 @@ def main():
     w.add_argument("--bind", dest="binds", action="append", default=[],
                    help="other dirs bound into the sandbox (pruned from the tmpfs scan)")
     w.add_argument("--go", help="the start signal to create once armed (default: OUT/.go)")
+    w.add_argument("--no-tmpfs-scan", action="store_true",
+                   help="a bare-metal run (run-bare.sh): no sandbox tmpfs mounts to scan; the "
+                        "namespace sees the host's files, whose own Proton prefixes would trip S1")
     s.add_argument("files", nargs="+")
     c = sub.add_parser("collect", help="copy a sandbox-writable tree's regular files, never following a link")
     c.add_argument("--src", required=True)
     c.add_argument("--dest", required=True)
     c.add_argument("--name", dest="names", action="append", help="only these top-level names")
     c.add_argument("--exclude", action="append", default=[], help="skip these top-level names")
-    a = ap.parse_args()
+    return ap
+
+
+def main():
+    a = parser().parse_args()
     if a.mode == "collect":
         notes = collect(a.src, a.dest, names=a.names, exclude=a.exclude)
         if notes:

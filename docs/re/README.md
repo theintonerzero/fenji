@@ -145,6 +145,16 @@ From M3, a run can use Fenji's own server and the launcher's ticket instead of t
 
 If the server isn't ready or the launcher fails, the client isn't started and the run exits 7.
 
+### Bare-metal runs
+
+`scripts/spike/run-bare.sh` runs the client the way a player starts it, under every guard of CLAUDE.md's "Bare-metal client runs" (#139):
+- `fenji-launch play` checks a reflink copy of the pinned copy (`re/runs/client`, made for the run), prepares the dedicated prefix `re/bare-metal/compat` with `umu-run createprefix`, signs in and starts the client through umu-run and the pinned GE-Proton. No SDK flag is ever passed.
+- Steam and Wine must not be running.
+- `fenji-server` and the client share one namespace, `bwrap --dev-bind / / --proc /proc --unshare-net --unshare-pid`: the real files, home, GPU, audio and display, but loopback only, so the client can reach the Fenji server and nothing else. The namespace needs its own `/proc`: without it, umu's pressure-vessel looks its child up in the host's `/proc` by a namespace PID and hangs.
+- The AGT driver watchdog arms on that PID namespace before anything starts, with `--no-tmpfs-scan`: the namespace has no sandbox tmpfs, and the host's own Proton prefixes would trip the scan. Its scan of `re/bare-metal`, its process and log rules and its registry rule work as in sandboxed runs.
+
+`run-bare.sh setup` once, then `run-bare.sh run NAME --server CONFIG --server-data DIR --username USER --password-file FILE`, with `--key`, `--type`, `--click`, `--timeout` and `--display` as in `run-client.sh`. DIR is a directory under `re/bare-metal/`; the evidence goes to `re/bare-metal/out/NAME`. The exit statuses are `run-client.sh`'s.
+
 ## Working rules
 
 - Static analysis of files on disk comes first. Runtime observation (Wine `WINEDEBUG`, the client's own log, stub sessions) happens only inside the sandbox, against our own stub or server, or in the guarded bare-metal play tests CLAUDE.md describes.

@@ -371,7 +371,8 @@ class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
             outer = subprocess.Popen([str(d / "bin" / "bwrap"), str(d / "outer.py"), str(d), json.dumps(plan),
                                       str(out / ".go")], start_new_session=True)
             a = types.SimpleNamespace(root=str(out / "root"), out=str(out), sandbox_pid=outer.pid,
-                                      log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"))
+                                      log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                      no_tmpfs_scan=False)
             saved = wd.TMPFS_SUBS, wd.TMPFS_SHALLOW
             wd.TMPFS_SUBS = wd.TMPFS_SHALLOW = ()  # the host's own files are not this test's sandbox
             try:
@@ -415,6 +416,17 @@ class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
         rc, _ = self.watch([[0.0, "winedevice.exe", "-", 0, 2.0],
                             [0.4, "wine64", "gujianol.exe", 0.8, 2.5]])
         self.assertEqual(rc, 0)
+
+
+class BareMetal(unittest.TestCase):  # issue #139
+    """A bare-metal run has no sandbox tmpfs mounts: its namespace sees the host's filesystem,
+    whose own Proton prefixes would trip the tmpfs scan."""
+
+    WATCH = ["watch", "--root", "/r", "--out", "/o", "--sandbox-pid", "1", "--log", "/l"]
+
+    def test_the_tmpfs_scan_is_on_unless_turned_off(self):
+        self.assertFalse(wd.parser().parse_args(self.WATCH).no_tmpfs_scan)
+        self.assertTrue(wd.parser().parse_args(self.WATCH + ["--no-tmpfs-scan"]).no_tmpfs_scan)
 
 
 class ClientCreationOverdue(unittest.TestCase):
@@ -526,7 +538,8 @@ class GateEventRecord(unittest.TestCase):
             child = subprocess.Popen(["sleep", "30"])  # stands in for the sandbox; the watchdog kills it
             try:
                 a = types.SimpleNamespace(root=str(root), out=str(out), sandbox_pid=child.pid,
-                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"))
+                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                          no_tmpfs_scan=False)
                 rc = wd.cmd_watch(a)
             finally:
                 child.kill()
