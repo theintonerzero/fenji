@@ -28,11 +28,13 @@ We'll acknowledge it within about a week, keep you posted while we fix it, and a
 
 In scope is everything in this repository, for example:
 - `fenji-proto` and every other parser of bytes that a peer or a file controls: frames, pickles, archives, table caches;
+- the never-send list in `fenji-proto` (`NEVER_SEND`): any way to make a Fenji server send one of the messages it refuses;
 - the account and launcher code (`fenji-auth`, `fenji-store`, `fenji-server`, `fenji-launcher`): password storage, tokens, rate limits;
 - the sandbox and helper scripts under `scripts/spike/` and `tools/oodle-helper`, whose isolation the project relies on;
 - CI and the release process.
 
 Out of scope:
 - **The game itself.** Swords of Legends Online's client, its anti-cheat driver, and the services of its developer, its publishers or Steam. Report problems there to their owners.
+- **What a host can do to its own players.** The game client obeys server messages that write files and run code. Fenji's server never sends them, but a host who changes it could. Joining a server means trusting its host ([PRIVACY.md](PRIVACY.md#trusting-a-servers-host)).
 - **Testing against live services.** Never point a modified or instrumented client, or any Fenji tool, at an official service. Test against your own Fenji stub or server only.
 - **Anything that needs leaked server material.** Fenji is a clean-room project ([CONTRIBUTING.md](CONTRIBUTING.md)), so we can't accept or act on findings drawn from leaked server files or source.

@@ -33,6 +33,10 @@ The game client's connection to a Fenji server is readable and unauthenticated. 
 - **No password crosses it.** Your password goes only to the server's account API; the game connection carries a ticket that works once, for one account, and expires after 60 seconds by default.
 - **Someone on that path could still take over your session.** If that matters to you, play over a VPN with your friends, or on a network you trust.
 
+## Trusting a server's host
+
+Joining a Fenji server means trusting the person who runs it. The game client obeys the server it's connected to, and some of the server's messages can write files on your computer, open web pages, replace the client's scripts or run code. Fenji's server never sends them: a list in its code refuses each one ([`lobby.md`](docs/protocol/packets/lobby.md) §2). But a server someone has changed could send them, and the client can't tell the difference. Only play on servers run by people you trust.
+
 ## What Fenji never handles
 
 - **Your Steam or Gameforge password.** You type those only into the services' own pages, or into DepotDownloader, which talks to Steam directly.
