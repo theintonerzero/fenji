@@ -350,20 +350,42 @@ def is_named(info, name):
 
 
 def renamed_to(seen, name, info_of):
-    """The live processes in `seen` that carry `name` now though they didn't when first seen,
-    each record updated. Wine starts the client's process as wine64 and renames it once the exe is
-    loaded, so a name read when the pid appeared can be stale (#142). A pid now held by another
-    process, which has another start time, is left alone."""
+    """The live processes in `seen` that carry `name` now though they didn't when first seen;
+    their records are updated in place. Wine starts its processes as wine64 and renames them, so a
+    name read when a pid appeared can be stale (#142). A pid now held by another process, which has
+    another start time, is left alone."""
     found = []
     for p, info in seen.items():
         if not info.get("alive") or is_named(info, name):
             continue
-        now = info_of(p)
-        if not now or now["start"] != info["start"] or not is_named(now, name):
+        fresh = info_of(p)
+        if not fresh or fresh["start"] != info["start"] or not is_named(fresh, name):
             continue
-        info.update(comm=now["comm"], argv=now["argv"])
+        info.update(comm=fresh["comm"], argv=fresh["argv"])
         found.append((p, info))
     return found
+
+
+def track_client(seen, client_start, info_of):
+    """One poll's late naming and rule S2, over `seen` (pid to record, as check_procs keeps it).
+    While no client is known (`client_start` is None), every live process's name is read again, and
+    the earliest-started one now named the client is returned as (start, pid). Once a client is
+    known, the names of the processes started after it are read again too, and S2's hits are the
+    winedevice.exe among them, running or gone: a client found late must not miss a short-lived
+    one. Returns (the client found this poll or None, [(pid, record)])."""
+    found = None
+    if client_start is None:
+        named = renamed_to(seen, CLIENT, info_of)
+        if named:
+            p, info = min(named, key=lambda pi: pi[1]["start"])
+            found = (info["start"], p)
+            client_start = info["start"]
+    hits = []
+    if client_start is not None:
+        later = {p: i for p, i in seen.items() if i["start"] > client_start}
+        renamed_to(later, WINEDEVICE, info_of)
+        hits = [(p, i) for p, i in later.items() if is_named(i, WINEDEVICE)]
+    return found, hits
 
 
 def ppid_map():
@@ -695,16 +717,12 @@ def cmd_watch(a):
             if info.get("alive") and p not in cur:
                 info["alive"] = False
                 log(f"proc - pid {p} comm {info['comm']!r}")
-        if client_start is None:
-            for p, info in renamed_to(seen, CLIENT, proc_info):
-                if client_start is None or info["start"] < client_start:
-                    client_start, client_pid = info["start"], p
-                    client_seen = client_seen or time.monotonic()
-                log(f"client detected after a rename: pid {p} start {info['start']}")
-        if client_start is not None:
-            for p, info in seen.items():
-                if info.get("alive") and is_named(info, WINEDEVICE) and info["start"] > client_start:
-                    out.append(("S2 winedevice.exe started after the client", p, info))
+        found, hits = track_client(seen, client_start, proc_info)
+        if found:
+            client_start, client_pid = found
+            client_seen = client_seen or time.monotonic()
+            log(f"client detected after a rename: pid {client_pid} start {client_start}")
+        out += [("S2 winedevice.exe started after the client", p, info) for p, info in hits]
         return out
 
     def check_log(final=False):
