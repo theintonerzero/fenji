@@ -17,6 +17,15 @@ async fn start(dir: &Path, auth_reply: AuthReply) -> std::net::SocketAddr {
 }
 
 async fn start_with(dir: &Path, auth_reply: AuthReply, work_pad: usize) -> std::net::SocketAddr {
+    start_opts(dir, auth_reply, work_pad, true).await
+}
+
+async fn start_opts(
+    dir: &Path,
+    auth_reply: AuthReply,
+    work_pad: usize,
+    capture_auth: bool,
+) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let opts = SpeakOpts {
@@ -26,6 +35,7 @@ async fn start_with(dir: &Path, auth_reply: AuthReply, work_pad: usize) -> std::
         },
         auth_reply,
         work_pad,
+        capture_auth,
     };
     tokio::spawn(serve(listener, dir.to_path_buf(), Mode::Speak(opts)));
     addr
@@ -137,7 +147,10 @@ async fn speaks_hello_auth_ok_then_work() {
         "{ev}"
     );
     assert!(ev.contains("\tsent\tok (stored frame)"), "{ev}");
-    assert!(ev.contains("\tsent\twork (SET_NET_CONNECTED)"), "{ev}");
+    assert!(
+        ev.contains("\tsent\twork (SET_NET_CONNECTED); state Work"),
+        "{ev}"
+    );
     assert!(ev.contains("\tcall\tgateway id=402 args=0"), "{ev}");
     assert!(ev.contains("\ttime_sync\tclient_ms=99"), "{ev}");
 }
@@ -193,7 +206,7 @@ async fn the_work_message_can_carry_padding() {
         .await
         .unwrap();
     let ev = events_with(tmp.path(), &[&line, "\tcall\tgateway id=402 args=0"], 5000).await;
-    assert!(ev.contains(&line), "{ev}");
+    assert!(ev.contains(&format!("{line}; state Work")), "{ev}");
     assert!(ev.contains("\tcall\tgateway id=402 args=0"), "{ev}");
 }
 
@@ -223,4 +236,96 @@ async fn auth_reply_reject_sends_the_reason() {
     );
     let ev = events_with(tmp.path(), &["\tsent\treject (stored frame)"], 5000).await;
     assert!(ev.contains("\tsent\treject (stored frame)"), "{ev}");
+}
+
+/// The file of `dir` with extension `ext` once it holds `want`, or as it is after `ms`.
+async fn file_with(dir: &Path, ext: &str, want: &str, ms: u64) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
+    loop {
+        let text: String = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == ext))
+            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .collect();
+        if text.contains(want) || tokio::time::Instant::now() >= deadline {
+            return text;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// --no-auth-capture (#102): the auth can hold a real platform ticket, so no file keeps it. The
+/// session log skips exactly the frames that carried it, and records what follows.
+#[tokio::test]
+async fn without_auth_capture_no_file_keeps_the_auth() {
+    let tmp = tempfile::tempdir().unwrap();
+    let addr = start_opts(tmp.path(), AuthReply::Ok, 0, false).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let ticket = b"fenji1-not-a-real-ticket".to_vec();
+    let mut client = Client::new(AuthMessage {
+        payload: ticket.clone(),
+        ..auth()
+    });
+    // The hello by hand, so the auth frames the client answers with are known.
+    let mut hello = [0u8; fenji_proto::hello::HELLO_LEN];
+    s.read_exact(&mut hello).await.unwrap();
+    let (_, up) = client.receive(&hello).unwrap();
+    s.write_all(&up).await.unwrap();
+    let work = ClientEvent::Message(Message {
+        ty: 0,
+        body: set_net_connected(),
+    });
+    pump_until(&mut s, &mut client, 5000, |e| e.contains(&work)).await;
+    let call = client.send(0xff, &[0x01, 0x04, 0x92, 0x01]).unwrap();
+    s.write_all(&call).await.unwrap();
+    let ev = events_with(tmp.path(), &["\tcall\tgateway id=402 args=0"], 5000).await;
+    assert!(
+        ev.contains(&format!(
+            "\tauth\t(not captured) payload_len={}",
+            ticket.len()
+        )),
+        "{ev}"
+    );
+    assert!(!ev.contains("dict_id") && !ev.contains("machine"), "{ev}");
+    drop(s);
+    let log = file_with(tmp.path(), "log", "# closed after", 5000).await;
+    assert!(
+        log.contains(&format!("[auth frames not captured: {} bytes]", up.len())),
+        "{log}"
+    );
+    // Inbound bytes are recorded from the auth's end on, and the call after it is there.
+    let first = log.lines().find(|l| l.starts_with("# recv")).unwrap_or("");
+    assert!(
+        first.ends_with(&format!("at offset {}", up.len())),
+        "{first}\n{log}"
+    );
+    assert!(
+        log.contains(&format!("# recv {} bytes", call.len())),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!("# closed after {} bytes", up.len() + call.len())),
+        "{log}"
+    );
+    let names: Vec<String> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.iter().all(|n| !n.ends_with(".auth.bin")), "{names:?}");
+}
+
+#[test]
+fn no_auth_capture_needs_speak() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_fenji-stub"))
+        .args(["--no-auth-capture", "--listen", "127.0.0.1:0"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--speak"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

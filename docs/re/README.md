@@ -131,7 +131,7 @@ Only inside `scripts/spike/isolated-run.sh` (design spec §2 rule 4), except the
 Before a run:
 - Quit Steam; the wrapper refuses to start while it runs.
 - Bind only directories that belong to the run.
-- Run the stub on loopback inside the same sandbox.
+- Run the stub on loopback inside the same sandbox. When the auth can carry a real platform ticket (a Steam or Gameforge login rather than `--gf-sdk=mocked`), pass `--stub-arg --no-auth-capture`: no file then keeps the auth (#102).
 
 Read the wrapper's header before the first run.
 

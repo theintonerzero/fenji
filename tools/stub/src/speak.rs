@@ -1,6 +1,7 @@
 //! `--speak`: the stub's side of the gate handshake, driven by `fenji_proto::handshake::Server`
 //! (M2 spec §5). Raw bytes in both directions go to the session log; decoded events go to
-//! `<stem>.events`; the auth body goes to `<stem>.auth.bin` for analysis (all under re/).
+//! `<stem>.events`; the auth body goes to `<stem>.auth.bin` for analysis (all under re/). With
+//! `--no-auth-capture` no file keeps the auth, which can carry a real platform ticket (#102).
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::io;
@@ -11,7 +12,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use fenji_proto::codec::StoredCodec;
 use fenji_proto::handshake::{Event, Server};
 use fenji_proto::hello::{HELLO_LEN, Variants};
-use fenji_proto::opcode::Stc;
 use fenji_proto::packet::{Up, set_net_connected};
 use fenji_proto::pickle::{self, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -43,6 +43,9 @@ pub struct SpeakOpts {
     /// 0 sends the plain message. Enough padding takes its stored packet past 251 bytes, to the
     /// `FC` prefix (transport.md 5.2, #88).
     pub work_pad: usize,
+    /// Whether the auth reaches `<stem>.auth.bin`, the events log's identifiers and the session
+    /// log. When false, the session log skips the frames that carried it (#102).
+    pub capture_auth: bool,
 }
 
 /// `PROTOG2C_SET_NET_CONNECTED` with a fifth argument of `pad` bytes.
@@ -85,6 +88,43 @@ fn other(e: impl std::fmt::Display) -> io::Error {
     io::Error::other(e.to_string())
 }
 
+/// The answer to the auth, as `opts` says: `ok` then the work message, a rejection, or nothing.
+async fn reply(
+    stream: &mut TcpStream,
+    server: &mut Server,
+    log: &mut SessionLog,
+    events: &mut EventLog,
+    opts: SpeakOpts,
+) -> io::Result<()> {
+    let answer = match opts.auth_reply {
+        AuthReply::Ok => Some((server.accept(&StoredCodec), "ok")),
+        AuthReply::Reject => Some((server.reject(REJECT_REASON, &StoredCodec), "reject")),
+        AuthReply::None => None,
+    };
+    if let Some((out, what)) = answer {
+        let out = out.map_err(other)?;
+        stream.write_all(&out).await?;
+        log.record_sent(&out)?;
+        events.line("sent", &format!("{what} (stored frame)"))?;
+    }
+    if opts.auth_reply == AuthReply::Ok {
+        // QUEUE -> WORK (transport.md 10.3-10.4).
+        let (out, what) = if opts.work_pad == 0 {
+            let out = server.begin_work(&StoredCodec);
+            (out, "work (SET_NET_CONNECTED)".to_string())
+        } else {
+            let body = padded_work(opts.work_pad);
+            let what = format!("work (SET_NET_CONNECTED, {}-byte body)", body.len());
+            (server.begin_work_with(&body, &StoredCodec), what)
+        };
+        let out = out.map_err(other)?;
+        stream.write_all(&out).await?;
+        log.record_sent(&out)?;
+        events.line("sent", &format!("{what}; state {:?}", server.state()))?;
+    }
+    Ok(())
+}
+
 pub async fn handle(
     mut stream: TcpStream,
     local: SocketAddr,
@@ -93,6 +133,9 @@ pub async fn handle(
     opts: SpeakOpts,
 ) -> io::Result<()> {
     let mut log = SessionLog::create(out_dir, local, peer)?;
+    if !opts.capture_auth {
+        log.hold();
+    }
     let mut events = EventLog::create(&log.path().with_extension("events"))?;
     tracing::info!(%peer, %local, log = %log.path().display(), "connection (speak)");
     let (mut server, hello) = Server::start(fill(), opts.variants).map_err(other)?;
@@ -130,8 +173,20 @@ pub async fn handle(
                 continue;
             }
         };
+        if log.holding()
+            && let Some(through) = server.auth_through()
+        {
+            log.release(usize::try_from(through).unwrap_or(usize::MAX))?;
+        }
         for event in got {
             match event {
+                Event::Auth(a) if !opts.capture_auth => {
+                    events.line(
+                        "auth",
+                        &format!("(not captured) payload_len={}", a.payload.len()),
+                    )?;
+                    reply(&mut stream, &mut server, &mut log, &mut events, opts).await?;
+                }
                 Event::Auth(a) => {
                     events.line(
                         "auth",
@@ -143,35 +198,7 @@ pub async fn handle(
                         ),
                     )?;
                     std::fs::write(log.path().with_extension("auth.bin"), a.to_body())?;
-                    let reply = match opts.auth_reply {
-                        AuthReply::Ok => Some((server.accept(&StoredCodec), "ok")),
-                        AuthReply::Reject => {
-                            Some((server.reject(REJECT_REASON, &StoredCodec), "reject"))
-                        }
-                        AuthReply::None => None,
-                    };
-                    if let Some((out, what)) = reply {
-                        let out = out.map_err(other)?;
-                        stream.write_all(&out).await?;
-                        log.record_sent(&out)?;
-                        events.line("sent", &format!("{what} (stored frame)"))?;
-                    }
-                    if opts.auth_reply == AuthReply::Ok {
-                        // QUEUE -> WORK (transport.md 10.3-10.4).
-                        let (out, what) = if opts.work_pad == 0 {
-                            let out = server.begin_work(&StoredCodec);
-                            (out, "work (SET_NET_CONNECTED)".to_string())
-                        } else {
-                            let body = padded_work(opts.work_pad);
-                            let what =
-                                format!("work (SET_NET_CONNECTED, {}-byte body)", body.len());
-                            (server.send(Stc::Script.to_u8(), &body, &StoredCodec), what)
-                        };
-                        let out = out.map_err(other)?;
-                        stream.write_all(&out).await?;
-                        log.record_sent(&out)?;
-                        events.line("sent", &what)?;
-                    }
+                    reply(&mut stream, &mut server, &mut log, &mut events, opts).await?;
                 }
                 Event::TimeSync(ms) => events.line("time_sync", &format!("client_ms={ms}"))?,
                 Event::Message(m) => match Up::decode(m.ty, &m.body) {

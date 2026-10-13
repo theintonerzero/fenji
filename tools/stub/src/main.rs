@@ -34,6 +34,10 @@ struct Args {
     /// client's handler ignores: 164 or more takes its stored packet to the FC prefix
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(..=4096))]
     work_pad: u16,
+    /// Keep the client's auth out of every file: no .auth.bin, no identifiers in the events, and
+    /// the session log skips its frames. For runs whose auth can carry a real platform ticket
+    #[arg(long, requires = "speak")]
+    no_auth_capture: bool,
 }
 
 #[tokio::main]
@@ -62,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
                 _ => fenji_stub::speak::AuthReply::None,
             },
             work_pad: usize::from(args.work_pad),
+            capture_auth: !args.no_auth_capture,
         })
     } else {
         fenji_stub::server::Mode::Listen

@@ -150,6 +150,10 @@ pub struct Server {
     up: UpReader,
     raw_in: Vec<u8>,
     stream_in: Vec<u8>,
+    /// Bytes of the client's stream taken as whole frames so far.
+    consumed: u64,
+    /// `consumed` once the frame that completed the auth message was taken.
+    auth_through: Option<u64>,
 }
 
 impl Server {
@@ -164,12 +168,21 @@ impl Server {
             up: UpReader::new(),
             raw_in: Vec::new(),
             stream_in: Vec::new(),
+            consumed: 0,
+            auth_through: None,
         };
         Ok((server, hello))
     }
 
     pub fn state(&self) -> State {
         self.state
+    }
+
+    /// How many bytes of the client's stream, from its first, the frames up to and including the
+    /// one that completed its auth message took; `None` before the auth. A log that must not keep
+    /// the auth leaves out exactly these bytes.
+    pub fn auth_through(&self) -> Option<u64> {
+        self.auth_through
     }
 
     /// Feeds bytes read from the client; returns the events they complete. After an error the
@@ -193,13 +206,18 @@ impl Server {
         // were split into reads.
         while let Some((frame, used)) = self.up.read(&self.raw_in[at..]) {
             at += used;
+            self.consumed += used as u64;
             match frame {
                 Frame::TimeSync(ms) => events.push(Event::TimeSync(ms)),
                 Frame::Data(mut body) => {
                     self.up_cipher.decrypt(&mut body);
                     self.stream_in.extend_from_slice(&body);
                     for m in drain_messages(&mut self.stream_in, MAX_INBOUND)? {
-                        events.push(self.take(m)?);
+                        let event = self.take(m)?;
+                        if matches!(event, Event::Auth(_)) {
+                            self.auth_through = Some(self.consumed);
+                        }
+                        events.push(event);
                     }
                 }
             }
@@ -255,10 +273,16 @@ impl Server {
     /// `STC_PROTOCOL_SCRIPT` message (transport.md 10.3–10.4). The client answers with script
     /// message 402 to the gate.
     pub fn begin_work(&mut self, codec: &dyn StreamCodec) -> Result<Vec<u8>> {
+        self.begin_work_with(&set_net_connected(), codec)
+    }
+
+    /// [`Server::begin_work`] with the caller's `PROTOG2C_SET_NET_CONNECTED` body, such as one
+    /// padded past the stored packet's one-byte prefix (#88).
+    pub fn begin_work_with(&mut self, body: &[u8], codec: &dyn StreamCodec) -> Result<Vec<u8>> {
         if self.state != State::Queued {
             return Err(self.wrong("begin work"));
         }
-        let out = self.write(Stc::Script.to_u8(), &set_net_connected(), codec)?;
+        let out = self.write(Stc::Script.to_u8(), body, codec)?;
         self.state = State::Work;
         Ok(out)
     }
