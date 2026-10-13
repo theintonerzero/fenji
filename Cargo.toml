@@ -14,6 +14,9 @@ aes = "0.9.3"
 anyhow = "1.0.104"
 argon2 = "0.6.0"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
+# The latest Bevy major. Single-threaded: without `multi_threaded`, schedules run on the world's
+# own thread.
+bevy_ecs = { version = "0.20.0", default-features = false, features = ["std"] }
 clap = { version = "4.6.7", features = ["derive"] }
 fenji-auth = { path = "crates/fenji-auth" }
 fenji-data = { path = "crates/fenji-data" }

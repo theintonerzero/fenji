@@ -1,5 +1,5 @@
-//! Running the server (M3 spec D5): one process with the game gate, the account API, and the
-//! purge of expired sessions and tokens at start-up and every hour.
+//! Running the server (M3 spec D5; M4 world spec §3.9): one process with the game gate, the world,
+//! the account API, and the purge of expired sessions and tokens at start-up and every hour.
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +17,7 @@ pub use crate::gate::GateLimits;
 use crate::gate::{Gate, Places, accept_loop};
 use crate::lobby::LobbyLimits;
 use crate::online::Online;
+use crate::world::{self, Rules, RunningWorld, TickReport, WorldHandle};
 
 /// The pinned client build this server speaks to (docs/re/pinned-build.md).
 pub const PINNED_BUILD: &str = "10015727";
@@ -26,6 +27,7 @@ pub struct RunningServer {
     pub login_addr: SocketAddr,
     pub api_addr: SocketAddr,
     accounts: Arc<Accounts>,
+    world: RunningWorld,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -34,7 +36,18 @@ impl RunningServer {
         Arc::clone(&self.accounts)
     }
 
-    /// Ends the gate (and every connection), the API and the purge, then closes the store.
+    /// The world's channel, as a connection task holds it.
+    pub fn world(&self) -> WorldHandle {
+        self.world.handle()
+    }
+
+    /// The world's tick times over the last minute.
+    pub fn ticks(&self) -> TickReport {
+        self.world.report()
+    }
+
+    /// Ends the gate (and every connection), the API and the purge, then saves everyone in the
+    /// world and stops it, then closes the store.
     pub async fn shutdown(self) {
         for t in &self.tasks {
             t.abort();
@@ -42,6 +55,7 @@ impl RunningServer {
         for t in self.tasks {
             let _ = t.await;
         }
+        self.world.stop().await;
         self.accounts.store().close().await;
     }
 }
@@ -55,6 +69,7 @@ pub async fn start(
     let store = Store::open(&cfg.store.path)
         .await
         .with_context(|| format!("opening {}", cfg.store.path.display()))?;
+    let world = world::start(Rules::from_config(cfg), store.clone())?;
     let accounts = Arc::new(Accounts::new(store, cfg.auth.clone(), Arc::clone(&clock)));
     // The fixed hash for unknown usernames, made now rather than at the first one (#132's review).
     tokio::task::spawn_blocking(fenji_auth::password::warm_dummy);
@@ -123,6 +138,7 @@ pub async fn start(
         login_addr,
         api_addr,
         accounts,
+        world,
         tasks,
     })
 }
