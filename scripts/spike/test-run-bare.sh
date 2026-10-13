@@ -243,12 +243,13 @@ lock 91 4101
 mkfifo "$X_LOCKS/.X90-lock"
 ln -s "$X_LOCKS/.X98-lock" "$X_LOCKS/.X89-lock"
 # check_in_child N [CODE]: bare_display_problem N, in good time, in a child shell with the test
-# root's paths and, before the check, CODE (stand-ins, other paths); its output, and its status.
+# root's paths and, before the check, CODE (stand-ins, other paths). Its standard output is the
+# reason, as nested_display_ok reads it, and its status is the check's.
 check_in_child() {
   # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
   timeout 5 bash -c '. "$1"; WORK=$2/work REPO=$2/repo X_LOCKS=$3 X_SOCKDIR=$4 BARE_PROC=$5
     eval "$7"; bare_display_problem "$6"' _ \
-    "$HERE/run-bare.sh" "$TESTROOT" "$X_LOCKS" "$X_SOCKDIR" "$BARE_PROC" "$1" "${2-}" 2>&1
+    "$HERE/run-bare.sh" "$TESTROOT" "$X_LOCKS" "$X_SOCKDIR" "$BARE_PROC" "$1" "${2-}"
 }
 # problem N PATTERN WHAT [CODE]: display N is refused, with PATTERN in the reason.
 problem() {
@@ -259,7 +260,7 @@ problem() {
 # accepted N WHAT [CODE]: display N passes: the check ends with status 0 and gives no reason.
 accepted() {
   local why rc
-  why=$(check_in_child "$1" "${3-}")
+  why=$(check_in_child "$1" "${3-}" 2>&1)
   rc=$?
   if [ "$rc" = 0 ] && [ -z "$why" ]; then ok "$2"; else bad "$2: exit $rc: '$why'"; fi
 }
@@ -336,6 +337,8 @@ says 1 "0 to 999" "setup: --display takes no leading zeros" -- cmd_bare_setup --
 says 1 "0 to 999" "setup: --display takes 0 to 999" -- cmd_bare_setup --display 1000
 says 1 "0 to 999" "a run's --display takes no leading zeros" -- cmd_bare_run t "${GOOD[@]}" --display 098
 says 1 "0 to 999" "a run's --display takes 0 to 999" -- cmd_bare_run t "${GOOD[@]}" --display 1000
+says 1 "umu-run not found" "setup takes a three-digit --display" -- with_fakes cmd_bare_setup --display 999
+says 1 "umu-run not found" "a run takes a three-digit --display" -- with_fakes cmd_bare_run t "${GOOD[@]}" --display 999
 
 # --- the verdict
 says 7 "didn't start the client" "fenji-launch stopping before the start is exit 7" -- bare_verdict 0 95 0 "$TESTROOT/out"
