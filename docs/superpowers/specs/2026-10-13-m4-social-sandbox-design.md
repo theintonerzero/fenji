@@ -48,9 +48,9 @@ Done when:
 - Players see each other within the parent spec's 50 m interest grid, with names, appearance and outfit. Joining, leaving, moving and going out of range update everyone.
 - Chat works nearby, across the whole server, and as whispers.
 - The server answers the client's time syncs (#91).
-- Admins (`[access].admins`) get `/tp`, `/kick`, `/announce` and `/invite` in chat, from the command set of §4.3.
+- Admins (`[access].admins`) get `!tp`, `!kick`, `!announce` and `!invite` in chat, from the command set of §4.3. They use `!` because the client keeps lines starting with `/` to itself ([world spec](2026-10-13-m4-world-design.md) §2.4).
 - A protocol bot built on `fenji-proto` (sign in, enter, move, chat) runs in CI (parent §9), and 20 bots measure the tick against the parent spec's targets (§6.7).
-- Two real clients on the owner's machine meet in the zone. Each runner gives its client a loopback-only network of its own, so the world's spec settles how two clients reach one server: one namespace for both, or a bridge between two.
+- Two real clients on the owner's machine meet in the zone. Each runner gives its client a loopback-only network of its own, so both clients run in one runner's namespace, against its one server ([world spec](2026-10-13-m4-world-design.md) §4.3).
 
 **Out of M4:**
 - emotes, teams, friends lists, mounts, NPCs and quests;
@@ -129,7 +129,7 @@ Players already in stay until the host kicks them or stops the server.
 ### 4.3 One admin command set
 
 One module in `fenji-server`, called by both the game's chat (for `[access].admins`) and the host console, with the same names and arguments.
-- The world piece builds it with `/tp`, `/kick`, `/announce` and `/invite`.
+- The world piece builds it with `!tp`, `!kick`, `!announce` and `!invite`. In chat they start with `!`, since the client keeps `/` lines to itself; the console takes them without the `!`.
 - Hosting adds the console's own commands, `online`, `accounts`, `maintenance` and `stop`, which only the console has.
 
 ### 4.4 Addresses
@@ -159,7 +159,8 @@ The pieces' specs and runs answer these, not guessing:
   - the starting scene and its spawn point;
   - the world's messages: queueing, loading the scene, the player's own character, other players entering, leaving and updating, movement and chat;
   - one connection or two;
-  - where the outfit comes from;
-  - how the runners put two real clients on one server.
+  - where the outfit comes from.
+
+  The [world spec](2026-10-13-m4-world-design.md) settles how two real clients reach one server (§4.3), and lists its own open questions (§6).
 - **Hosting:** TLS without a domain; an open game port or a VPN; packaging for Windows and macOS.
 - **The launcher:** the signing key and channel; Windows and macOS while play is Linux-only.
