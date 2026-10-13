@@ -87,7 +87,7 @@ DISCORD = r"c:\\windows\\system32\\discord\\bridge.exe --service"
 class S3(unittest.TestCase):
     def scan(self, *lines):
         rules = wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
-                            {"discord-bridge": wd.norm_image(DISCORD)})
+                            {"discord-bridge": wd.norm_image(DISCORD)}, drivers=["winebth", "mountmgr"])
         trig, notes = rules.scan(("\n".join(lines) + "\n").encode())
         return [t[0] for t in trig], [n[0] for n in notes]
 
@@ -192,6 +192,33 @@ class S3(unittest.TestCase):
         )
         self.assertEqual(trig, ["S3 LoadDriver for non-baseline service None"])
 
+    def test_a_re_point_with_a_null_display_name_triggers(self):  # issue #148
+        trig, _ = self.scan(
+            '2.000:0030:0048:trace:service:svcctl_CreateServiceW (L"discord-bridge", (null), '
+            r'0xf01ff, L"C:\\agt\\agt.sys")'
+        )
+        self.assertEqual(trig, ["S3 CreateService re-points baseline service discord-bridge"])
+
+    def test_a_null_display_name_with_the_baseline_image_is_a_note(self):  # issue #148
+        trig, notes = self.scan(
+            '2.000:0030:0048:trace:service:svcctl_CreateServiceW (L"discord-bridge", (null), '
+            f'0xf01ff, L"{DISCORD}")'
+        )
+        self.assertEqual(trig, [])
+        self.assertEqual(notes, ["CreateService for baseline service discord-bridge, with its baseline image"])
+
+    def test_a_createservice_line_without_a_readable_image_triggers(self):  # issue #148
+        trig, _ = self.scan(
+            '2.000:0030:0048:trace:service:svcctl_CreateServiceW (L"discord-bridge", '
+            'L"Wine Discord RPC Bridge", 0xf01ff, (null))'
+        )
+        self.assertEqual(trig, ["S3 CreateService for baseline service discord-bridge, with no readable image"])
+
+    def test_loaddriver_for_a_user_mode_baseline_service_after_the_client_triggers(self):  # issue #148
+        trig, notes = self.scan(CLIENT, AGT_LOADDRIVER.replace(r"Services\\AGT", r"Services\\discord-bridge"))
+        self.assertEqual(trig, ["S3 LoadDriver for user-mode baseline service discord-bridge"])
+        self.assertEqual(notes, [])
+
 
 SYSTEM_REG = r"""WINE REGISTRY Version 2
 [System\\ControlSet001\\Services\\discord-bridge] 1791759044
@@ -258,6 +285,13 @@ class S4Registry(unittest.TestCase):
         self.reg.symlink_to(secret)
         with self.assertRaises(OSError):
             wd.parse_services(str(self.reg))
+
+    def test_a_baselines_log_rules_exempt_only_its_driver_services(self):  # issue #148
+        rules = wd.baseline_rules({"services": sorted(self.base), "service_info": self.base})
+        lines = [CLIENT] + [AGT_LOADDRIVER.replace(r"Services\\AGT", "Services\\\\" + s) for s in ("winebth", "discord-bridge")]
+        trig, notes = rules.scan(("\n".join(lines) + "\n").encode())
+        self.assertEqual([t[0] for t in trig], ["S3 LoadDriver for user-mode baseline service discord-bridge"])
+        self.assertEqual([n[0] for n in notes], ["LoadDriver for baseline service winebth"])
 
 
 class ClientRename(unittest.TestCase):  # issue #142
