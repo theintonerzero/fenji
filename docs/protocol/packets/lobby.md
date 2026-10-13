@@ -307,7 +307,7 @@ The server logged what it received, not what it sent. The replies in the table (
 **Observed:**
 - **The lobby works end to end with the real client.** It covers 228's list, 628's actor and 84's values, and the client acted on each as §3–§7 read it.
 - **The creation screen's defaults.** The default pick, Fox Mage and "Girl", is vocation 7 and skeleton 3. The real 304 carried the ten keys of 5.1: voice 3, base face 1, outfit 2 and portrait 169 (`169 << 16`). It was 758 bytes, sent LZ4-compressed as 702.
-- **In the sandbox, the launcher path needs no SDK flag** (m3-l6). Bare-metal and native Windows runs are untested.
+- **The launcher path needs no SDK flag**, in the sandbox (m3-l6) and on bare metal on Linux (bm-2 to bm-6, [`../../re/m3-summary.md`](../../re/m3-summary.md)). Native Windows runs are untested.
 - **The network.** In m3-l6 the client made no name lookup and one connection, to the gate on 127.0.0.1:7800, and tried no other address. The only lookup in the Wine log is wineboot's, of the sandbox's host name, as in spike-0 8.23 and en-1. It did try one URL, the server list's fallback `file:///D://wy_debug.json` ([`../login.md`](../login.md) §1): `wine.log` shows `D:\wy_debug.json` not found, and the client logged "FAILED TO FETCH GAMEFORGE SERVER LIST!". So the list fetch runs on the launcher path even with no SDK flag; it reads a local file and uses no network.
 - **No evidence file holds a ticket or the password.** That was checked with `grep` on each run's evidence.
 
