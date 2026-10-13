@@ -339,6 +339,39 @@ async fn replaced_connections_linger_only_within_the_waiting_places() {
 }
 
 #[tokio::test]
+async fn client_exit_closes_the_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    let t = ticket(&s, "tester").await;
+    let mut bot = Bot::connect(s.login_addr, payload(&t, "tester", false)).await;
+    bot.expect_work().await;
+    bot.send(lobby::CLIENT_EXIT, &[]).await;
+    // The idle timeout is 60 s and the bot's reads give up after 5 s, so an end within 2 s is the
+    // server closing on 392 (lobby.md §2).
+    let end = tokio::time::timeout(Duration::from_secs(2), bot.next()).await;
+    assert!(
+        matches!(end, Ok(None)),
+        "392 didn't close the connection: {end:?}"
+    );
+    s.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_deleted_accounts_session_ends_at_its_next_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    let t = ticket(&s, "tester").await;
+    let mut bot = Bot::connect(s.login_addr, payload(&t, "tester", false)).await;
+    bot.expect_work().await;
+    assert!(s.accounts().store().delete_account("tester").await.unwrap());
+    bot.send(lobby::QUERY_ACTORS, &[]).await;
+    assert_eq!(bot.expect_closed().await, AUTH_FAILED.as_bytes());
+    s.shutdown().await;
+}
+
+#[tokio::test]
 async fn an_idle_client_is_closed() {
     let dir = tempfile::tempdir().unwrap();
     let limits = GateLimits {
