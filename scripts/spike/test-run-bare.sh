@@ -21,6 +21,9 @@ trap '[ "$BASHPID" = "$$" ] && rm -rf -- "$TESTROOT"' EXIT
 WORK=$TESTROOT/work REPO=$TESTROOT/repo PINNED_COPY=$TESTROOT/nonexistent UMU=$TESTROOT/nonexistent
 BARE_PROC=$TESTROOT/proc
 PROTON=$TESTROOT/nonexistent STUBBIN=$TESTROOT/nonexistent WATCHDOG=$TESTROOT/nonexistent
+# The namespace's own tmpfs mounts, as run-bare.sh names them, moved under TESTROOT (itself in /tmp).
+NS_TMPFS_REAL=("${NS_TMPFS[@]}")
+NS_TMPFS=("$TESTROOT/ns")
 mkdir -p "$WORK/data" "$WORK/runs/old" "$TESTROOT/bin"
 fails=0
 ok() { echo "ok   $1"; }
@@ -116,6 +119,19 @@ ln -s /etc/hostname "$TESTROOT/pinned/bin64/extra"
 says 1 "holds a link" "a pinned copy holding a link is refused" -- env_pinned "$TESTROOT/pinned" check_pinned_copy
 rm "$TESTROOT/pinned/bin64/extra"
 if (env_pinned "$TESTROOT/pinned" check_pinned_copy) > /dev/null 2>&1; then ok "a plain pinned copy is accepted"; else bad "a plain pinned copy"; fi
+# A home reached through a link (/home -> /var/home on Fedora Atomic): the copy's resolved path is
+# compared with the resolved home (#148).
+mkdir -p "$TESTROOT/realhome/.local/share/Steam/library/SoLO/bin64"
+touch "$TESTROOT/realhome/.local/share/Steam/library/SoLO/bin64/gujianol.exe"
+ln -s "$TESTROOT/realhome" "$TESTROOT/homelink"
+# env_pinned_home HOME COPY COMMAND...: COMMAND with that home and that pinned copy.
+env_pinned_home() {
+  HOME=$1 PINNED_COPY=$2
+  shift 2
+  "$@"
+}
+says 1 "in a Steam library" "a Steam library under a home reached through a link is refused" -- \
+  env_pinned_home "$TESTROOT/homelink" "$TESTROOT/homelink/.local/share/Steam/library/SoLO" check_pinned_copy
 
 # --- the command lines that carry the guards
 mkdir -p "$TESTROOT/rt" "$TESTROOT/nohome"
@@ -354,6 +370,29 @@ says 1 "0 to 999" "a run's --display takes no leading zeros" -- cmd_bare_run t "
 says 1 "0 to 999" "a run's --display takes 0 to 999" -- cmd_bare_run t "${GOOD[@]}" --display 1000
 says 1 "umu-run not found" "setup takes a three-digit --display" -- with_fakes cmd_bare_setup --display 999
 says 1 "umu-run not found" "a run takes a three-digit --display" -- with_fakes cmd_bare_run t "${GOOD[@]}" --display 999
+
+# --- host paths the namespace must see: none under its own tmpfs mounts, where they vanish (#148)
+mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/nohome namespace_cmd 99)
+mounts=()
+for ((i = 0; i < ${#ns[@]}; i++)); do [ "${ns[i]}" != --tmpfs ] || mounts+=("${ns[i + 1]}"); done
+if [ "${mounts[*]}" = "${NS_TMPFS_REAL[*]:-}" ]; then ok "the hidden places are the namespace's tmpfs mounts"; else bad "NS_TMPFS ${NS_TMPFS_REAL[*]:-} vs ${mounts[*]}"; fi
+mkdir -p "$TESTROOT/ns/repo" "$TESTROOT/seen"
+ln -s "$TESTROOT/ns/repo" "$TESTROOT/seen/to-ns"
+echo "a long password" > "$TESTROOT/ns/password"
+if [ "$(uname -s)" = Linux ]; then
+  says 1 "re/bare-metal is under $TESTROOT/ns" "a work directory the namespace would hide is refused" -- \
+    with_env WORK="$TESTROOT/seen/to-ns/work" with_fakes host_guards
+  says 1 "umu-run (FENJI_UMU_RUN) is under" "a umu-run the namespace would hide is refused" -- \
+    with_env UMU="$TESTROOT/seen/to-ns/umu-run" with_fakes host_guards
+  says 1 "GE-Proton (FENJI_GE_PROTON) is under" "a GE-Proton the namespace would hide is refused" -- \
+    with_env PROTON="$TESTROOT/ns/proton" with_fakes host_guards
+  says 1 "umu-run not found" "paths the namespace sees pass on to the next guard" -- \
+    with_env WORK="$TESTROOT/seen/work" with_fakes host_guards
+fi
+says 1 "target/release is under $TESTROOT/ns" "built binaries the namespace would hide are refused" -- \
+  with_env STUBBIN="$TESTROOT/ns/release" with_fakes cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
+says 2 "--password-file is under $TESTROOT/ns" "a password file the namespace would hide is refused" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --password-file "$TESTROOT/ns/password"
 
 # --- the verdict
 says 7 "didn't start the client" "fenji-launch stopping before the start is exit 7" -- bare_verdict 0 95 0 "$TESTROOT/out"
