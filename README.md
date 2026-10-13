@@ -16,7 +16,7 @@ All the protocol and format knowledge here comes from studying our own licensed 
 | M0 | Development environment, sandbox, first analysis of the client | Released, v0.1.0 |
 | M1 | Reading the client's data: archives, embedded scripts | Released, v0.2.0 |
 | M2 | The network transport and handshake, against the real client | Released, v0.3.0 |
-| M3 | Accounts, the launcher, character list and creation | All tasks merged; the final review and v0.4.0 are next |
+| M3 | Accounts, the launcher, character list and creation | Released, v0.4.0 |
 | M4 | Friends in the starting zone: moving, seeing each other, chat | Planned |
 | M5 | Monsters, combat, XP, loot and saved progress (v1) | Planned |
 
