@@ -206,6 +206,44 @@ async fn accounts_list_and_delete() {
     assert!(text.contains("deleted BOB"), "{text}");
 }
 
+#[tokio::test]
+async fn account_delete_leaves_no_copy_in_the_write_ahead_log() {
+    // PRIVACY.md, "Deleting your data". A running server keeps the database open, so the CLI's
+    // own connections closing doesn't fold the log into the file: `account delete` empties it.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path());
+    let server = fenji_store::Store::open(&cfg.store.path).await.unwrap();
+    server.create_invite(&[1; 32], None, 1, None).await.unwrap();
+    server
+        .redeem_invite(&[1; 32], "witness-in-the-log", "$witness-hash", 1)
+        .await
+        .unwrap();
+    let text = run(
+        &cfg,
+        Command::Account {
+            cmd: AccountCmd::Delete {
+                username: "witness-in-the-log".into(),
+            },
+        },
+    )
+    .await;
+    assert!(text.contains("deleted witness-in-the-log"), "{text}");
+    let mut wal = cfg.store.path.clone().into_os_string();
+    wal.push("-wal");
+    for file in [std::path::PathBuf::from(wal), cfg.store.path.clone()] {
+        let bytes = std::fs::read(&file).unwrap_or_default();
+        for witness in [&b"witness-in-the-log"[..], b"$witness-hash"] {
+            assert!(
+                !bytes.windows(witness.len()).any(|w| w == witness),
+                "{} still holds {}",
+                file.display(),
+                String::from_utf8_lossy(witness)
+            );
+        }
+    }
+    drop(server);
+}
+
 #[test]
 fn durations_parse() {
     use fenji_server::cli::parse_duration;

@@ -195,6 +195,13 @@ pub async fn admin(
         } => {
             if store.delete_account(username).await? {
                 writeln!(out, "deleted {username}, with its characters")?;
+                if !store.checkpoint().await? {
+                    writeln!(
+                        out,
+                        "the database's write-ahead log still holds older copies, as the server had \
+                         it in use; they go when SQLite next restarts the log, or when the server stops"
+                    )?;
+                }
             } else {
                 writeln!(out, "no account named {username}")?;
             }

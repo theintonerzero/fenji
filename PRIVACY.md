@@ -51,7 +51,7 @@ Developers who study the client run it inside a sandbox, against their own stub 
 Ask your server's operator. There is no self-service deletion yet. The operator runs `fenji-server account delete <username>`, and then:
 - **What goes:** your account, password hash, characters, sessions and game tokens. If you are in the lobby at the time, your connection is closed at your next action.
 - **What stays:** the invite you redeemed keeps its label, the operator's note (such as who it was for), and when it was redeemed. Its code was only ever stored as a hash.
-- **The database file:** SQLite overwrites deleted rows (`secure_delete`). The write-ahead log can still hold them until SQLite next checkpoints it: when the log reaches about 4 MB, or when the server stops.
+- **The database file:** SQLite overwrites deleted rows (`secure_delete`). `account delete` then folds the write-ahead log into the file and empties it, so the account is gone from both at once. If the server has the log in use at that moment, `account delete` says so, and older copies stay in the log until SQLite next restarts it (it then cuts the log back to nothing) or the server stops.
 - **Backups** keep a copy until they expire.
 
 The database file is readable by its owner only (mode 0600), since it holds the password hashes.
