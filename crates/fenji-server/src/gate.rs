@@ -17,7 +17,7 @@ use fenji_proto::packet::Up;
 use fenji_proto::pickle::{self, Value};
 use fenji_proto::variant::AES128;
 use fenji_store::Account;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -273,10 +273,29 @@ impl Drop for Leave<'_> {
 
 /// Writes `bytes`, or fails once `deadline` passes: a client that stops reading ends its
 /// connection instead of holding it.
-async fn send(sock: &mut TcpStream, bytes: &[u8], deadline: Duration) -> anyhow::Result<()> {
+async fn send<W: AsyncWrite + Unpin>(
+    sock: &mut W,
+    bytes: &[u8],
+    deadline: Duration,
+) -> anyhow::Result<()> {
     match tokio::time::timeout(deadline, sock.write_all(bytes)).await {
         Ok(written) => Ok(written?),
         Err(_) => bail!("the client stopped reading: a write took over {deadline:?}"),
+    }
+}
+
+/// Sends a reply within `deadline`, unless a newer login replaces the connection first: then it
+/// gives up at once and returns false. The newer login holds the account's place, and a client
+/// that stopped reading shouldn't keep this socket until the deadline, outside the caps.
+async fn send_or_replaced<W: AsyncWrite + Unpin>(
+    sock: &mut W,
+    bytes: &[u8],
+    deadline: Duration,
+    replaced: &mut oneshot::Receiver<()>,
+) -> anyhow::Result<bool> {
+    tokio::select! {
+        sent = send(sock, bytes, deadline) => sent.map(|()| true),
+        Ok(()) = &mut *replaced => Ok(false),
     }
 }
 
@@ -393,7 +412,10 @@ async fn lobby_loop(
                         Step::Replies(replies) => {
                             for reply in replies {
                                 let bytes = script_out(server, &reply)?;
-                                send(sock, &bytes, deadline).await?;
+                                if !send_or_replaced(sock, &bytes, deadline, replaced).await? {
+                                    tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                                    return Ok(());
+                                }
                             }
                         }
                         Step::Leave => {
@@ -508,6 +530,43 @@ mod tests {
     use fenji_proto::pickle::{self, Value};
 
     use super::*;
+
+    #[tokio::test]
+    async fn a_blocked_reply_gives_way_when_the_connection_is_replaced() {
+        // A pipe nobody reads: a write beyond its 64 bytes blocks, as one to a client that stopped
+        // reading does.
+        let (mut w, _unread) = tokio::io::duplex(64);
+        let (newer_login, mut replaced) = oneshot::channel();
+        let bytes = vec![0u8; 4096];
+        let send = send_or_replaced(&mut w, &bytes, Duration::from_secs(30), &mut replaced);
+        tokio::pin!(send);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut send)
+                .await
+                .is_err(),
+            "the write blocks"
+        );
+        newer_login.send(()).unwrap();
+        let sent = tokio::time::timeout(Duration::from_secs(1), send)
+            .await
+            .expect("gave way at once, not at the 30 s deadline")
+            .unwrap();
+        assert!(!sent);
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_fits_is_sent() {
+        let (mut w, mut r) = tokio::io::duplex(8192);
+        let (_newer_login, mut replaced) = oneshot::channel::<()>();
+        assert!(
+            send_or_replaced(&mut w, b"hello", Duration::from_secs(1), &mut replaced)
+                .await
+                .unwrap()
+        );
+        let mut buf = [0u8; 5];
+        r.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"hello");
+    }
 
     #[test]
     fn waiting_places_are_counted_per_network() {
