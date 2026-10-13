@@ -210,16 +210,44 @@ async fn the_work_message_can_carry_padding() {
     assert!(ev.contains("\tcall\tgateway id=402 args=0"), "{ev}");
 }
 
+/// Reads the stub's hello until the client has its answer, the auth, and sends that.
+async fn answer_hello(s: &mut TcpStream, client: &mut Client) {
+    let mut buf = [0u8; 4096];
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(5000);
+    loop {
+        let n = tokio::time::timeout_at(deadline, s.read(&mut buf))
+            .await
+            .expect("the stub's hello")
+            .unwrap();
+        assert!(n > 0, "the stub closed before its hello");
+        let (events, out) = client.receive(&buf[..n]).unwrap();
+        assert!(events.is_empty(), "{events:?}");
+        if !out.is_empty() {
+            s.write_all(&out).await.unwrap();
+            return;
+        }
+    }
+}
+
 #[tokio::test]
 async fn auth_reply_none_stays_silent() {
     let tmp = tempfile::tempdir().unwrap();
     let addr = start(tmp.path(), AuthReply::None).await;
     let mut s = TcpStream::connect(addr).await.unwrap();
     let mut client = Client::new(auth());
-    assert!(pump(&mut s, &mut client, 500).await.is_empty());
-    let ev = read_events(tmp.path());
+    answer_hello(&mut s, &mut client).await;
+    // The stub logs its decision; whatever it wrote before that was logged as sent first, and
+    // would be waiting on the socket already. No fixed window.
+    let ev = events_with(tmp.path(), &["\tsilent\t"], 5000).await;
     assert!(ev.contains("\tauth\t"), "{ev}");
+    assert!(ev.contains("\tsilent\tno answer to the auth"), "{ev}");
     assert!(!ev.contains("\tsent\t"), "{ev}");
+    let mut buf = [0u8; 1];
+    let read = s.try_read(&mut buf);
+    assert!(
+        matches!(&read, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+        "{read:?}"
+    );
 }
 
 #[tokio::test]

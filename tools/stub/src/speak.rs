@@ -106,6 +106,8 @@ async fn reply(
         stream.write_all(&out).await?;
         log.record_sent(&out)?;
         events.line("sent", &format!("{what} (stored frame)"))?;
+    } else {
+        events.line("silent", "no answer to the auth (--auth-reply none)")?;
     }
     if opts.auth_reply == AuthReply::Ok {
         // QUEUE -> WORK (transport.md 10.3-10.4).
