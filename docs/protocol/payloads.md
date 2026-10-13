@@ -35,7 +35,7 @@ The client serialises script messages and its login data with its own "pickle" f
 | `0D` | an object rebuilt by a registered constructor ("magic", P.8) | the constructor's name, then its argument, each a value |
 | `0E`, `0F`, `10` | a reference to an earlier table (P.7) | `u8`, `u16` or `u32` index |
 
-Any other tag is refused ("pkt bad type(%d)"). `fenji_proto::pickle` reads every tag, compressed or not, up to 65,536 values a packet (#84). It writes every tag, uncompressed, with the header's table count only when a reference needs it.
+Any other tag is refused ("pkt bad type(%d)"). `fenji_proto::pickle` reads every tag, compressed or not, up to 65,536 values a packet (#84). Like the client's unpacker, it takes forms the client's packers never write, such as an integer or a string length in a wider tag than it needs (P.3). Refusing them would make Fenji stricter than the game for no gain, since decoding is bounded anyway. It differs from the client in one respect: it counts each magic object toward the 31-level depth limit, which the client's unpacker doesn't (P.8), so a chain of magic objects stays bounded. It writes every tag, uncompressed, with the header's table count only when a reference needs it.
 
 ## The auth payload
 
