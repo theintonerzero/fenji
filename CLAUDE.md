@@ -4,7 +4,7 @@ Clean-room private server emulator for Swords of Legends Online (SoLO: the Weste
 
 The GitHub repository is public and licensed AGPL-3.0-or-later (`LICENSE`); `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `PRIVACY.md` and `CODE_OF_CONDUCT.md` at the root are its public face, so keep them current, and never put the owner's personal details in tracked files.
 
-**Status:** M3 (login + lobby) released as v0.4.0; summary in `docs/re/m3-summary.md` (spec `docs/superpowers/specs/2026-10-12-m3-login-lobby-design.md`, plan `docs/superpowers/plans/2026-10-12-m3-login-lobby.md`). The earlier milestones' summaries are `docs/re/m1-summary.md` and `docs/re/m2-summary.md`. Next: the v0.4.1 cleanup of M3's leftovers, then M4, whose first pieces are the desktop launcher (#146) and the host's console (#147).
+**Status:** M3 (login + lobby) released as v0.4.0, and the open M0–M3 issues fixed in v0.4.1; summary in `docs/re/m3-summary.md` (spec `docs/superpowers/specs/2026-10-12-m3-login-lobby-design.md`, plan `docs/superpowers/plans/2026-10-12-m3-login-lobby.md`). The earlier milestones' summaries are `docs/re/m1-summary.md` and `docs/re/m2-summary.md`. Next: M4, whose first pieces are the desktop launcher (#146) and the host's console (#147); the v0.4.1 review's follow-ups are #174.
 
 ## Ground rules (never break these)
 
