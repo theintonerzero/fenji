@@ -26,17 +26,13 @@ fn unzipped(body: &[u8]) -> Vec<u8> {
     lz4_flex::block::decompress(&body[4..], raw).unwrap()
 }
 
-/// The face string the fixture carries.
+/// The face string as the fixture's bytes hold it, read without the parser under test: the 490
+/// bytes after its key and its `09 EA 01` tag.
 fn fixture_face() -> Value {
-    let Up::Script { args, .. } = Up::decode(0xFF, &fixture()).unwrap() else {
-        panic!("not a script message")
-    };
-    let face = CreateRequest::parse(&args)
-        .unwrap()
-        .appearance
-        .face
-        .unwrap();
-    Value::Str(face.into_bytes())
+    let raw = unzipped(&fixture());
+    let key = b"prop_sys_avatar_feature_face";
+    let at = raw.windows(key.len()).position(|w| w == key).unwrap() + key.len() + 3;
+    Value::Str(raw[at..at + 490].to_vec())
 }
 
 #[test]
@@ -89,7 +85,15 @@ fn the_real_create_request_parses_as_the_run_recorded() {
         ["v", "2", "3", "4", "5", "7", ""],
         "six sections and a trailing ';'"
     );
-    assert!(face.starts_with("v:5;") && face.contains('|'), "{face}");
+    assert!(face.starts_with("v:5;"), "{face}");
+    assert_eq!(Value::Str(face.as_bytes().to_vec()), fixture_face());
+    // Section 7 holds two pairs joined by `|` (lobby.md 5.9).
+    let seven = face.split(';').find(|s| s.starts_with("7:")).unwrap();
+    let pairs: Vec<usize> = seven[2..]
+        .split('|')
+        .map(|p| p.split(',').count())
+        .collect();
+    assert_eq!(pairs, [2, 2], "{seven}");
 }
 
 #[tokio::test]

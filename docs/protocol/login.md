@@ -97,7 +97,9 @@ M1 Task 10 ran the pinned client twice inside `run-client.sh`. Both runs used:
 | m1-c1 | §3's server list, no click | 0 | none | none | no sign; 3,953 resource lookups, none of type `PE` | 0 |
 | m1-c2 | m1-c1 plus the player's server choice: a click on the entry "Fenji" at 150 s, then on "Bestätigen" at 156 s | 1 (port 7800, length 0, first 16 bytes: none) | `127.0.0.1` (`gethostbyname`) | 7800, once | no sign; 3,959 resource lookups, none of type `PE` | 0 |
 | m1-c3 | m1-c2 repeated after its evidence was lost (see the evidence index) | 1 (port 7800, length 0, first 16 bytes: none) | `127.0.0.1` (`gethostbyname`) | 7800, once | no sign; 3,959 resource lookups, none of type `PE` | 0 |
-| en-1 | After M1: the launcher's path (2.8–2.10), with `gj_uinfo`, `gj_gates` and `gj_ticket`; no list, no click | 1 (port 7800, length 0, first 16 bytes: none) | none by the client (wineboot's own: `isolated-run`) | 7800, once | no sign; 3,959 resource lookups, none of type `PE` | 0 |
+| en-1 | After M1: the launcher's path (2.8–2.10), with `gj_uinfo`, `gj_gates` and `gj_ticket`; no list, no click | 1 (port 7800, length 0, first 16 bytes: none) | none | 7800, once | no sign; 3,959 resource lookups, none of type `PE` | 0 |
+
+"Names looked up" counts the client's own lookups. Each run's Wine log also holds one lookup by Wine's `wineboot`, of the sandbox's host name `isolated-run` ([spike-0](../re/spike-0.md) 8.23).
 
 **Observed:**
 - **The list loads.** The client reads the list from `serverlist_url=file:///Z:/…/serverlist.json`. From 120 s, its frame "Server auswählen" offered "Fenji" (C1). Curl under Wine reads that `file://` form.
