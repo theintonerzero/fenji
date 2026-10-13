@@ -6,13 +6,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::hexdump::hexdump;
 
-/// Hex-dump log of everything one client connection sent, and, with `--speak`, what the stub sent.
+/// Hex-dump log of what one client connection sent (all of it, or, while holding, all but its
+/// auth), and, with `--speak`, what the stub sent.
 pub struct SessionLog {
     path: PathBuf,
     file: File,
     received: usize,
     sent: usize,
+    /// While holding ([`SessionLog::hold`]): the client's bytes so far, not yet written, and how
+    /// many arrived in all (the buffer stops at [`HOLD_MAX`]).
+    held: Option<(Vec<u8>, usize)>,
 }
+
+/// The most client bytes a holding log buffers. A client's auth is far smaller; past this, the
+/// log stops buffering and only counts.
+const HOLD_MAX: usize = 1 << 20;
 
 impl SessionLog {
     /// Creates `<dir>/<unix_millis>-<local_port>-<peer>.log`, creating `dir` if needed.
@@ -34,11 +42,54 @@ impl SessionLog {
             file,
             received: 0,
             sent: 0,
+            held: None,
         })
     }
 
-    /// Appends one read's bytes, offset-continuous with earlier reads.
+    /// From now on, the client's bytes are kept back until [`SessionLog::release`]: they hold its
+    /// auth, which can carry a real platform ticket (#102). Called before the first `record`, so
+    /// the held bytes start at the stream's first byte, where the auth's count starts too.
+    pub fn hold(&mut self) {
+        debug_assert_eq!(self.received, 0, "hold before the first record");
+        self.held = Some((Vec::new(), 0));
+    }
+
+    /// Whether client bytes are being kept back.
+    pub fn holding(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// Ends the hold: the first `skip` bytes held (the frames that carried the auth) become one
+    /// marker line, and the rest is recorded as usual.
+    pub fn release(&mut self, skip: usize) -> io::Result<()> {
+        let Some((held, total)) = self.held.take() else {
+            return Ok(());
+        };
+        let skip = skip.min(total);
+        writeln!(self.file, "# [auth frames not captured: {skip} bytes]")?;
+        self.received += skip;
+        // Bytes past the buffer's limit were never kept, and can't be recorded now.
+        let rest = held.get(skip..).unwrap_or(&[]);
+        let lost = total - skip - rest.len();
+        if !rest.is_empty() {
+            self.record(rest)?;
+        }
+        if lost > 0 {
+            writeln!(self.file, "# [{lost} more bytes not kept while holding]")?;
+            self.received += lost;
+        }
+        self.file.flush()
+    }
+
+    /// Appends one read's bytes, offset-continuous with earlier reads; while holding, keeps them
+    /// back instead.
     pub fn record(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if let Some((held, total)) = &mut self.held {
+            let room = HOLD_MAX.saturating_sub(held.len());
+            held.extend_from_slice(&bytes[..bytes.len().min(room)]);
+            *total += bytes.len();
+            return Ok(());
+        }
         writeln!(
             self.file,
             "# recv {} bytes at offset {}",
@@ -64,8 +115,16 @@ impl SessionLog {
         self.file.flush()
     }
 
-    /// Writes the closing line. `reason` is e.g. "peer closed" or the read error.
+    /// Writes the closing line. `reason` is e.g. "peer closed" or the read error. Bytes still held
+    /// (the auth never completed) are counted, never written.
     pub fn close(mut self, reason: &str) -> io::Result<()> {
+        if let Some((_, total)) = self.held.take() {
+            writeln!(
+                self.file,
+                "# [{total} bytes before a complete auth not captured]"
+            )?;
+            self.received += total;
+        }
         writeln!(
             self.file,
             "# closed after {} bytes: {reason}",
@@ -142,6 +201,75 @@ mod tests {
         assert!(text.contains("# sent 2 bytes at offset 0\n00000000  68 69"));
         assert!(text.contains("# recv 3 bytes at offset 0\n00000000  61 62 63"));
         assert!(text.contains("# sent 1 bytes at offset 2\n00000002  21"));
+    }
+
+    #[test]
+    fn a_held_auth_is_never_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, peer) = addrs();
+        let mut log = SessionLog::create(tmp.path(), local, peer).unwrap();
+        log.hold();
+        log.record(b"AUTH").unwrap();
+        log.record(b"Hxy").unwrap();
+        log.release(5).unwrap();
+        log.record(b"z").unwrap();
+        let path = log.path().to_path_buf();
+        log.close("peer closed").unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert!(
+            text.contains("# [auth frames not captured: 5 bytes]"),
+            "{text}"
+        );
+        assert!(
+            text.contains("# recv 2 bytes at offset 5\n00000005  78 79"),
+            "{text}"
+        );
+        assert!(text.contains("# recv 1 bytes at offset 7"), "{text}");
+        assert!(
+            !text.contains("41 55 54 48"),
+            "the held bytes stay out: {text}"
+        );
+        assert!(
+            text.ends_with("# closed after 8 bytes: peer closed\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_close_before_the_auth_completes_counts_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, peer) = addrs();
+        let mut log = SessionLog::create(tmp.path(), local, peer).unwrap();
+        log.hold();
+        log.record(b"AUT").unwrap();
+        let path = log.path().to_path_buf();
+        log.close("peer closed").unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert!(!text.contains("# recv"), "{text}");
+        assert!(
+            text.contains("# [3 bytes before a complete auth not captured]"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("# closed after 3 bytes: peer closed\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_hold_past_its_limit_counts_what_it_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, peer) = addrs();
+        let mut log = SessionLog::create(tmp.path(), local, peer).unwrap();
+        log.hold();
+        log.record(&vec![0u8; super::HOLD_MAX + 10]).unwrap();
+        log.release(super::HOLD_MAX - 4).unwrap();
+        assert_eq!(log.received(), super::HOLD_MAX + 10);
+        let path = log.path().to_path_buf();
+        log.close("peer closed").unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert!(text.contains("# recv 4 bytes at offset"));
+        assert!(text.contains("# [10 more bytes not kept while holding]"));
     }
 
     #[test]

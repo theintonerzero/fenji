@@ -345,3 +345,87 @@ fn begin_work_needs_queued() {
     server.begin_work(&StoredCodec).unwrap();
     assert!(server.begin_work(&StoredCodec).is_err(), "twice");
 }
+
+/// How many of the client's bytes the frames carrying its auth took (#102): the stub keeps them
+/// out of its session log. A time sync after the auth, in the same read, isn't counted.
+#[test]
+fn the_server_counts_the_bytes_the_auth_took() {
+    let (mut server, hello) = Server::start(fill(7), V).unwrap();
+    let mut client = Client::new(auth());
+    let (_, up) = client.receive(&hello).unwrap();
+    assert_eq!(server.auth_through(), None);
+    let mut bytes = up.clone();
+    bytes.extend_from_slice(&client.time_sync(7));
+    let got = server.receive(&bytes).unwrap();
+    assert!(
+        matches!(got.as_slice(), [Event::Auth(_), Event::TimeSync(7)]),
+        "{got:?}"
+    );
+    assert_eq!(server.auth_through(), Some(up.len() as u64));
+
+    // The same count when the bytes come one at a time.
+    let (mut server, hello) = Server::start(fill(7), V).unwrap();
+    let mut client = Client::new(auth());
+    let (_, up) = client.receive(&hello).unwrap();
+    for b in &up {
+        server.receive(std::slice::from_ref(b)).unwrap();
+    }
+    assert_eq!(server.auth_through(), Some(up.len() as u64));
+}
+
+/// A real platform ticket can run to kilobytes, so the auth spans several frames: counted the same
+/// however the client's bytes are split into reads, and never past the auth's own frames.
+#[test]
+fn a_multi_frame_auth_is_counted_however_it_is_split() {
+    let big = AuthMessage {
+        payload: vec![0x5a; 5000],
+        ..auth()
+    };
+    for split in [1, 777, SEND_CHUNK, usize::MAX] {
+        let (mut server, hello) = Server::start(fill(9), V).unwrap();
+        let mut client = Client::new(big.clone());
+        let (_, up) = client.receive(&hello).unwrap();
+        assert!(up.len() > SEND_CHUNK, "the auth needs more than one frame");
+        let mut bytes = up.clone();
+        bytes.extend_from_slice(&client.time_sync(5));
+        for chunk in bytes.chunks(split.min(bytes.len())) {
+            server.receive(chunk).unwrap();
+        }
+        assert_eq!(
+            server.auth_through(),
+            Some(up.len() as u64),
+            "split {split}"
+        );
+    }
+}
+
+/// `begin_work` with the caller's body, such as a padded one (#102): the client gets it, and the
+/// server is in `Work`, as with `begin_work`.
+#[test]
+fn begin_work_with_sends_the_body_and_reaches_work() {
+    let (mut server, mut client, _) = connect(8);
+    let mut values = decode(&set_net_connected()).unwrap();
+    values.push(Value::Str(vec![b'.'; 300]));
+    let body = fenji_proto::pickle::encode(&values).unwrap();
+    assert!(
+        server.begin_work_with(&body, &StoredCodec).is_err(),
+        "not before accept"
+    );
+    client
+        .receive(&server.accept(&StoredCodec).unwrap())
+        .unwrap();
+    let down = server.begin_work_with(&body, &StoredCodec).unwrap();
+    assert_eq!(server.state(), State::Work);
+    let (events, _) = client.receive(&down).unwrap();
+    assert_eq!(
+        events,
+        [ClientEvent::Message(Message {
+            ty: 0,
+            body: body.clone()
+        })]
+    );
+    assert!(
+        server.begin_work_with(&body, &StoredCodec).is_err(),
+        "only once"
+    );
+}
