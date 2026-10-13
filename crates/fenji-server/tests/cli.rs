@@ -8,10 +8,25 @@ use fenji_server::config::Config;
 
 fn config(dir: &Path) -> Config {
     Config::parse(
-        "[server]\nname = \"Fenji\"\npublic_host = \"play.example.net\"\n",
+        "[server]\nname = \"Fenji\"\npublic_host = \"play.example.net\"\npublic_api = \"https://play.example.net\"\n",
         dir,
     )
     .unwrap()
+}
+
+/// The code and link lines `invite create` prints under `server`.
+async fn invite_with(dir: &Path, server: &str) -> String {
+    let cfg = Config::parse(&format!("[server]\nname = \"Fenji\"\n{server}"), dir).unwrap();
+    run(
+        &cfg,
+        Command::Invite {
+            cmd: InviteCmd::Create {
+                label: None,
+                expires: None,
+            },
+        },
+    )
+    .await
 }
 
 async fn run(cfg: &Config, cmd: Command) -> String {
@@ -51,6 +66,23 @@ async fn invite_create_prints_the_code_and_a_link_with_the_code_in_the_fragment(
     .await;
     assert!(list.contains("for bob") && list.contains("open"), "{list}");
     assert!(!list.contains(code), "the list never shows codes: {list}");
+}
+
+#[tokio::test]
+async fn an_invite_link_names_the_account_api_not_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    // The default api_bind, 127.0.0.1:7801, is loopback: the link is that address, over http,
+    // which fenji-launch accepts for loopback only. public_host names the gate, not the API.
+    let text = invite_with(dir.path(), "public_host = \"127.0.0.1\"\n").await;
+    let code = text.lines().find_map(|l| l.strip_prefix("code: ")).unwrap();
+    assert!(
+        text.contains(&format!("link: http://127.0.0.1:7801/#invite={code}")),
+        "{text}"
+    );
+    // An API that listens beyond loopback, with no public_api: no link rather than a wrong one.
+    let text = invite_with(dir.path(), "api_bind = \"0.0.0.0:7801\"\n").await;
+    assert!(!text.contains("#invite="), "{text}");
+    assert!(text.contains("public_api"), "says what to set: {text}");
 }
 
 #[tokio::test]

@@ -7,6 +7,8 @@ name = "Fenji"                  # shown by the client; no colons
 public_host = "127.0.0.1"       # what launchers connect to: an IPv4 address, or a name with one
 login_bind = "127.0.0.1:7800"   # the gate: game connections
 api_bind = "127.0.0.1:7801"     # the account API; put Caddy (TLS) in front of it to face the internet
+# public_api = "https://play.example.net"   # where players reach the account API (invite links
+#                                            # name it); unset, links use api_bind when loopback
 max_players = 20
 trusted_proxies = []            # e.g. ["127.0.0.1"] when Caddy runs on this machine
 
