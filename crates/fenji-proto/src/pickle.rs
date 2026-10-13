@@ -4,11 +4,12 @@
 //! the values, each a tag and its data, little-endian. A packet of 128 bytes or more usually
 //! arrives LZ4-compressed (payloads.md P.1, P.5). Fenji reads every form the client writes,
 //! compressed or not: the header's table count, table references and "magic" objects included
-//! (payloads.md P.3), within [`MAX_DECODED`] values a packet. It writes them uncompressed, which
-//! the client reads too, and refuses an empty packet, which the client reads as no values. The
-//! client's table caches use the same format: `fenji_data::cache` reads those into an arena, as
-//! they are far larger; fenji-proto depends on nothing internal, so the two share the format, not
-//! code.
+//! (payloads.md P.3), within [`MAX_DECODED`] values a packet. Like the client's unpacker, it also
+//! takes forms the client's packers never write, such as an integer in a wider tag than it needs.
+//! It writes every form uncompressed, which the client reads too, and refuses an empty packet,
+//! which the client reads as no values. The client's table caches use the same format:
+//! `fenji_data::cache` reads those into an arena, as they are far larger; fenji-proto depends on
+//! nothing internal, so the two share the format, not code.
 use crate::{Error, Result};
 
 /// One value.
@@ -23,7 +24,10 @@ pub enum Value {
     /// Tag 0C, a null light userdata.
     Null,
     /// Tags 0E, 0F and 10: the table with this index in the order the client numbers them, which
-    /// [`tables`] lists. Only the first tables the header counts can be named (FUN_1400D4AC0).
+    /// [`tables`] lists. Only the first tables the header counts can be named (FUN_1400D4AC0). A
+    /// table is numbered before its contents, so a reference may name the table it sits in or one
+    /// around it: code that follows references must guard against cycles. Nothing in fenji-proto
+    /// follows one.
     Ref(u32),
     /// Tag 0D: a "magic" object, which the client rebuilds with the constructor registered under
     /// `name` (payloads.md P.3), e.g. a `Float4` from four numbers.
@@ -59,7 +63,8 @@ pub struct Table {
 
 /// Tables nest at most this deep. The client counts from 1 and refuses a table that takes the
 /// count past 32, both unpacking ("unpack table too depth!", FUN_1400D5850, FUN_1400D4AC0) and
-/// packing (FUN_1400D33F0, FUN_1400D3950): payloads.md P.2.
+/// packing (FUN_1400D33F0, FUN_1400D3950): payloads.md P.2. Fenji's decoder also counts each magic
+/// object as a level, which the client doesn't (P.8), so a chain of them stays bounded.
 pub const MAX_DEPTH: usize = 31;
 /// The largest raw size a compressed packet may declare ("pkt bad size, too large zip size",
 /// FUN_1400D55C0).
@@ -789,6 +794,17 @@ mod tests {
         // then token 0x50 and the last 5 literals, "WXYZ!".
         let packet = unhex("FF 00 00 18  78 01 08 15 61 62 63 64 04 00  50 57 58 59 5A 21");
         assert_eq!(decode(&packet).unwrap(), [s("abcdabcdabcdabcdWXYZ!")]);
+    }
+
+    #[test]
+    fn a_compressed_packet_may_carry_the_table_count() {
+        // P.1: the header inside the LZ4 block is read like any other, here `0x80 | 2` and a
+        // 24-bit table count of 1, so the second value may name the first table.
+        let values = [table(vec![(s("a"), s(&"x".repeat(200)))]), Value::Ref(0)];
+        let packet = encode_compressed(&values).unwrap();
+        assert_eq!(packet[0], 0xFF);
+        assert_eq!(unzip(&packet).unwrap()[..4], [0x82, 0, 0, 1]);
+        assert_eq!(decode(&packet).unwrap(), values);
     }
 
     #[test]
