@@ -43,7 +43,9 @@
 # run's --server config must bind 127.0.0.1 and name 127.0.0.1 as its public_host, its [store] path
 # must lie in --server-data, a directory under re/bare-metal/, and --password-file holds the
 # account's password on its first line. The evidence goes to re/bare-metal/out/NAME; a Fenji ticket
-# found there is redacted in place.
+# found there is redacted in place. re/bare-metal, target/release, umu-run, GE-Proton and the
+# password file must lie outside /run, /tmp and /dev/shm, links resolved: the namespace replaces
+# those with its own empty tmpfs.
 #
 # The display: a run names it, and has no default. A nested display (--display N) is a dedicated
 # rootful Xwayland, Xephyr or Xvfb, never the session's own (bare_display_problem), where
@@ -81,12 +83,31 @@ GAMEID=umu-1418100
 X_LOCKS=/tmp
 X_SOCKDIR=/tmp/.X11-unix
 BARE_PROC=/proc
+# The namespace's own tmpfs mounts (namespace_cmd), where a host path vanishes (tests move them).
+NS_TMPFS=(/run /tmp /dev/shm)
 
 usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$BARE_HERE/run-bare.sh" >&2; exit 2; }
 die() { echo "run-bare: $*" >&2; exit 1; }
 misuse() { echo "run-bare: $*" >&2; exit 2; }
 
-# The guards that hold for setup and for every run: Linux, Steam not running, no Wine left over.
+# The namespace's own tmpfs mount that hides host PATH (resolved), if one does (#148).
+ns_hides() {
+  local real m
+  real=$(realpath -m -- "$1")
+  for m in "${NS_TMPFS[@]}"; do
+    case "$real/" in "$m"/*) echo "$m"; return 0 ;; esac
+  done
+  return 1
+}
+
+# Refuses host PATH, which the namespace must see, when one of the namespace's own mounts hides it.
+check_seen() {
+  local m
+  if m=$(ns_hides "$2"); then die "$1 is under $m, which the namespace replaces with an empty tmpfs: $2"; fi
+}
+
+# The guards that hold for setup and for every run: Linux, Steam not running, no Wine left over,
+# and re/bare-metal, umu-run and GE-Proton where the namespace sees them.
 host_guards() {
   [ "$(uname -s)" = Linux ] || die "bare-metal runs are for the Linux game box only"
   [ "$(uname -m)" = x86_64 ] || die "x86_64 only (the seccomp filter knows x86 syscall numbers only)"
@@ -96,6 +117,9 @@ host_guards() {
   if pgrep -x wineserver >/dev/null || pgrep -x winedevice.exe >/dev/null; then
     die "Wine processes are already running on the host; stop them first"
   fi
+  check_seen "re/bare-metal" "$WORK"
+  check_seen "umu-run (FENJI_UMU_RUN)" "$UMU"
+  check_seen "GE-Proton (FENJI_GE_PROTON)" "$PROTON"
   [ -x "$UMU" ] || die "umu-run not found at $UMU (run scripts/bootstrap.sh)"
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
 }
@@ -281,10 +305,11 @@ check_pinned_copy() {
   [ -n "$PINNED_COPY" ] || die "FENJI_CLIENT_PATH is unset (scripts/bootstrap.sh writes it to ~/.config/fenji/env.sh)"
   [ ! -L "$PINNED_COPY" ] || die "the pinned copy is a link: $PINNED_COPY"
   [ -f "$PINNED_COPY/bin64/gujianol.exe" ] || die "no pinned copy at $PINNED_COPY"
-  local real
+  local real home
   real=$(realpath -- "$PINNED_COPY")
+  home=$(realpath -m -- "$HOME")
   case "$real/" in
-    */steamapps/* | "$HOME"/.steam/* | "$HOME"/.local/share/Steam/*) die "the pinned copy is in a Steam library: $real" ;;
+    */steamapps/* | "$home"/.steam/* | "$home"/.local/share/Steam/*) die "the pinned copy is in a Steam library: $real" ;;
   esac
   [ -z "$(find "$PINNED_COPY" -type l -print -quit)" ] || die "the pinned copy holds a link; it must hold files only"
 }
@@ -408,6 +433,11 @@ cmd_bare_run() {
     misuse "--password-file: can't read '$pwfile'"
   fi
   pwfile=$(realpath -- "$pwfile")
+  local hidden
+  if hidden=$(ns_hides "$pwfile"); then
+    misuse "--password-file is under $hidden, which the namespace replaces with an empty tmpfs: $pwfile"
+  fi
+  check_seen "target/release" "$STUBBIN"
   local c
   for c in "${clicks[@]}"; do
     [[ "$c" =~ ^[0-9]+:[0-9]+,[0-9]+$ ]] || die "--click takes T:X,Y in whole numbers, not '$c'"
