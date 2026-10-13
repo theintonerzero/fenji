@@ -54,10 +54,16 @@ impl Store {
     }
 
     /// Holds the write lock for `d`, then lets go without writing: for tests of what other writers
-    /// see while a server's transaction is open.
-    #[doc(hidden)]
-    pub async fn hold_write_lock(&self, d: Duration) -> Result<()> {
+    /// see while a server's transaction is open. `held` is sent once the lock is taken, so a test
+    /// knows the lock is held rather than guessing with a sleep.
+    #[cfg(feature = "test-util")]
+    pub async fn hold_write_lock(
+        &self,
+        d: Duration,
+        held: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<()> {
         let tx = self.begin().await?;
+        let _ = held.send(());
         tokio::time::sleep(d).await;
         tx.rollback().await?;
         Ok(())
