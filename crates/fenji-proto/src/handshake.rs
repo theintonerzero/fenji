@@ -83,8 +83,8 @@ pub enum Event {
     Message(Message),
 }
 
-/// Where the session is. `accept` moves the client to `QUEUE` (transport.md 6.6) and `begin_work` or
-/// `begin_work_with` to `WORK` (10.3).
+/// Where the session is. `accept` moves the client to `QUEUE` (transport.md 6.6), and `begin_work`
+/// or `begin_work_with` to `WORK` (10.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     AwaitAuth,

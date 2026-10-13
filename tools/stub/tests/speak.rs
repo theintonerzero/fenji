@@ -339,10 +339,12 @@ async fn without_auth_capture_no_file_keeps_the_auth() {
                 "{name}: auth bytes as hex at {at}"
             );
         }
+        let ticket_hex = hex(&ticket[..12]).concat();
         for secret in [
             "22222222222222222222222222222222",
             "020000000001",
             "fenji1-xxxx",
+            ticket_hex.as_str(),
         ] {
             assert!(!text.contains(secret), "{name} holds {secret}");
         }
