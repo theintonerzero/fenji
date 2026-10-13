@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
 use super::interest::Sight;
+use super::movement::Gait;
 use super::types::*;
 
 /// The world's settings, from fenji.toml.
@@ -79,6 +80,7 @@ pub(super) struct Index {
 /// What the inbound phase hands to later phases, this tick.
 #[derive(Resource, Default)]
 pub(super) struct Pending {
+    pub moves: Vec<(Entity, MoveStep)>,
     pub pulls: Vec<(Entity, ActorId)>,
 }
 
@@ -114,6 +116,7 @@ impl WorldCore {
         world.insert_resource(Services(services));
         let phases = vec![
             ("inbound", phase(inbound)),
+            ("movement", phase(super::movement::system)),
             ("interest", phase(super::interest::system)),
             ("persist", phase(persist)),
             ("cleanup", phase(cleanup)),
@@ -148,8 +151,8 @@ pub(super) fn name_key(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
-/// Applies the tick's inputs in arrival order. Pulls wait in [`Pending`] for the interest phase. A
-/// connection that sends more than `max_inputs_per_tick` is kicked.
+/// Applies the tick's inputs in arrival order. Moves and pulls wait in [`Pending`] for their
+/// phases. A connection that sends more than `max_inputs_per_tick` is kicked.
 fn inbound(world: &mut World) {
     let inputs = std::mem::take(&mut world.resource_mut::<Inbox>().0);
     let max = world.resource::<Rules>().max_inputs_per_tick;
@@ -183,8 +186,13 @@ fn inbound(world: &mut World) {
                     world.resource_mut::<Pending>().pulls.push((e, pid));
                 }
             }
-            // Counted against the limit; the phases that take them come with movement and chat.
-            WorldIn::Move { conn, .. } | WorldIn::Chat { conn, .. } => {
+            WorldIn::Move { conn, step } => {
+                if let Some(e) = counted(world, &mut counts, max, conn) {
+                    world.resource_mut::<Pending>().moves.push((e, step));
+                }
+            }
+            // Counted against the limit; the chat phase takes these.
+            WorldIn::Chat { conn, .. } => {
                 counted(world, &mut counts, max, conn);
             }
         }
@@ -236,6 +244,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
         }
         remove(world, old, Some(KickReason::Replaced));
     }
+    let now = world.resource::<Now>().0;
     let name = name_key(&player.look.name);
     let e = world
         .spawn((
@@ -251,6 +260,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
             Here(at),
             Stage::Loading,
             Sight::default(),
+            Gait::new(now),
         ))
         .id();
     let mut index = world.resource_mut::<Index>();
