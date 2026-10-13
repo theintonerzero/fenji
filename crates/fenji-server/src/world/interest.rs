@@ -283,4 +283,61 @@ mod tests {
             }]
         );
     }
+
+    #[test]
+    fn whoever_knew_of_a_player_that_stops_reading_hears_it_left_that_tick() {
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        // LoadScene, SelfEnter and the Announce of Lin fill Mai's channel, which it never reads.
+        h.join_with(player(2, "Mai", at(0.0, 0.0)), 3);
+        h.push(WorldIn::Loaded { conn: 2 });
+        h.tick(50);
+        assert!(matches!(
+            h.take(1).as_slice(),
+            [WorldOut::Announce { pid: 2, .. }]
+        ));
+        // Ren's Announce finds Mai's channel full in the interest phase, so Mai leaves at the end
+        // of the tick, after interest has run: only `hide` can tell Lin in time.
+        h.enter(player(3, "Ren", at(0.0, 0.0)));
+        assert_eq!(h.core.players(), 2, "Mai is let go");
+        assert_eq!(
+            h.take(1),
+            vec![
+                WorldOut::Announce {
+                    pid: 3,
+                    pos: at(0.0, 0.0).pos
+                },
+                WorldOut::Leave { pids: vec![2] }
+            ],
+            "in the same tick"
+        );
+        h.tick(50);
+        assert!(h.take(1).is_empty(), "told once");
+    }
+
+    #[test]
+    fn a_replacement_that_loads_in_the_tick_it_joins_is_a_leave_then_an_announce() {
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        h.enter(player(2, "Mai", at(300.0, 0.0)));
+        h.take(1);
+        // The newer client joins and loads in one tick, so the new actor is in the world before
+        // interest runs and stands in Lin's view under the same pid: only `hide` tells Lin.
+        h.join(Player {
+            conn: 9,
+            ..player(2, "Mai", at(-40_000.0, 0.0))
+        });
+        h.push(WorldIn::Loaded { conn: 9 });
+        h.tick(50);
+        assert_eq!(
+            h.take(1),
+            vec![
+                WorldOut::Leave { pids: vec![2] },
+                WorldOut::Announce {
+                    pid: 2,
+                    pos: at(300.0, 0.0).pos
+                }
+            ]
+        );
+    }
 }
