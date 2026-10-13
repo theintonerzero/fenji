@@ -202,8 +202,9 @@ impl CreateRequest {
                     )
                 }
                 // As the client's check_base_face (face_verification.luac 0.36): clamped to 1–2.
+                // Absent, it stays 1; present, it must be a number.
                 Some("prop_sys_avatar_feature") => {
-                    a.base_face = int(v).map_or(1, |x| x.clamp(1, 2))
+                    a.base_face = int(v).ok_or(Refusal::Malformed)?.clamp(1, 2)
                 }
                 Some("prop_sys_avatar_feature_face") => match v {
                     Value::Str(b) if b.is_empty() => {}
@@ -212,7 +213,9 @@ impl CreateRequest {
                     }
                     _ => return Err(Refusal::Malformed),
                 },
-                Some("prop_base_equips_id") => a.equips_id = int(v).map_or(1, |x| x.clamp(1, 2)),
+                Some("prop_base_equips_id") => {
+                    a.equips_id = int(v).ok_or(Refusal::Malformed)?.clamp(1, 2)
+                }
                 Some("prop_sys_portrait") => {
                     a.portrait = int(v)
                         .filter(|x| (0..=i64::from(i32::MAX)).contains(x))
