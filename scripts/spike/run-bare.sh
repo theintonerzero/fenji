@@ -144,6 +144,14 @@ desktop_xauth() {
   echo "$XAUTHORITY"
 }
 
+# --display's number, as isolated-run.sh's --x11 takes it: 0 to 999 without leading zeros.
+check_display_number() {
+  case "$1" in
+    0 | [123456789] | [123456789][0123456789] | [123456789][0123456789][0123456789]) ;;
+    *) die "--display takes an X display number, 0 to 999 without leading zeros, not '$1'" ;;
+  esac
+}
+
 # The display for setup or a run, from --desktop (1 or 0) and whether --display was given (1 or 0):
 # the nested one in display, or with --desktop the session's own, whose X authority file goes in
 # xauth. Sets display and xauth. A nested display is never the session's own: --display naming
@@ -334,12 +342,7 @@ cmd_bare_setup() {
       *) usage ;;
     esac
   done
-  if [ "$display_given" = 1 ]; then
-    case "$display" in
-      0 | [123456789] | [123456789][0123456789] | [123456789][0123456789][0123456789]) ;;
-      *) die "--display takes an X display number, 0 to 999 without leading zeros, not '$display'" ;;
-    esac
-  fi
+  [ "$display_given" = 0 ] || check_display_number "$display"
   [ "$desktop" = 1 ] || [ "$display_given" = 1 ] ||
     misuse "setup needs --display N or --desktop: a dedicated nested display, or the session's own (see the header)"
   choose_display "$desktop" "$display_given"
@@ -394,12 +397,7 @@ cmd_bare_run() {
   done
   case "$run" in '' | */* | .* | *[!A-Za-z0-9._-]*) die "bad run name: '$run'" ;; esac
   case "$tmo" in '' | *[!0123456789]*) die "--timeout takes whole seconds" ;; esac
-  if [ "$display_given" = 1 ]; then
-    case "$display" in
-      0 | [123456789] | [123456789][0123456789] | [123456789][0123456789][0123456789]) ;;
-      *) die "--display takes an X display number, 0 to 999 without leading zeros, not '$display'" ;;
-    esac
-  fi
+  [ "$display_given" = 0 ] || check_display_number "$display"
   if [ "$desktop" = 1 ] && { [ ${#presses[@]} -gt 0 ] || [ ${#clicks[@]} -gt 0 ]; }; then
     misuse "--desktop takes no --key, --type or --click: they would go to whatever has focus on the desktop"
   fi

@@ -242,23 +242,34 @@ touch "$X_SOCKDIR/X91"
 lock 91 4101
 mkfifo "$X_LOCKS/.X90-lock"
 ln -s "$X_LOCKS/.X98-lock" "$X_LOCKS/.X89-lock"
-# problem N PATTERN WHAT [CODE]: display N is refused with PATTERN in the reason, in good time, in a
-# child shell with the test root's paths and, before the check, CODE (stand-ins, other paths).
+# check_in_child N [CODE]: bare_display_problem N, in good time, in a child shell with the test
+# root's paths and, before the check, CODE (stand-ins, other paths); its output, and its status.
+check_in_child() {
+  # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
+  timeout 5 bash -c '. "$1"; WORK=$2/work REPO=$2/repo X_LOCKS=$3 X_SOCKDIR=$4 BARE_PROC=$5
+    eval "$7"; bare_display_problem "$6"' _ \
+    "$HERE/run-bare.sh" "$TESTROOT" "$X_LOCKS" "$X_SOCKDIR" "$BARE_PROC" "$1" "${2-}" 2>&1
+}
+# problem N PATTERN WHAT [CODE]: display N is refused, with PATTERN in the reason.
 problem() {
   local why
-  # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
-  why=$(timeout 5 bash -c '. "$1"; WORK=$2/work REPO=$2/repo X_LOCKS=$3 X_SOCKDIR=$4 BARE_PROC=$5
-    eval "$7"; bare_display_problem "$6"' _ \
-    "$HERE/run-bare.sh" "$TESTROOT" "$X_LOCKS" "$X_SOCKDIR" "$BARE_PROC" "$1" "${4-}")
+  why=$(check_in_child "$1" "${4-}")
   case "$why" in *"$2"*) ok "$3" ;; *) bad "$3: '$why'" ;; esac
+}
+# accepted N WHAT [CODE]: display N passes: the check ends with status 0 and gives no reason.
+accepted() {
+  local why rc
+  why=$(check_in_child "$1" "${3-}")
+  rc=$?
+  if [ "$rc" = 0 ] && [ -z "$why" ]; then ok "$2"; else bad "$2: exit $rc: '$why'"; fi
 }
 # foreign PATH: CODE for problem that makes stat report PATH as uid 4242's (or ROOT=1: root's).
 foreign() {
   # shellcheck disable=SC2016 # expanded in problem's child shell
   printf 'stat() { if [ "${!#}" = %q ]; then local u=4242; [ -z "${ROOT:-}" ] || u=0; printf "%%s %%s\\n" "$u" "$(command stat -c %%f -- "${!#}")"; else command stat "$@"; fi; }\n' "$1"
 }
-if [ -z "$(bare_display_problem 98)" ]; then ok "a dedicated rootful Xwayland with glamor on is a nested display"; else bad "glamor-on nested: $(bare_display_problem 98)"; fi
-if [ -z "$(bare_display_problem 97)" ]; then ok "the sandbox's kind of display, glamor off, is one too"; else bad "glamor-off nested: $(bare_display_problem 97)"; fi
+accepted 98 "a dedicated rootful Xwayland with glamor on is a nested display"
+accepted 97 "the sandbox's kind of display, glamor off, is one too"
 problem 0 rootless "a -rootless session Xwayland is refused"
 problem 1 gnome-shell "a display the compositor locks is refused"
 problem 96 ei-portal "an Xwayland that passes input to the compositor is refused"
@@ -296,10 +307,13 @@ problem 86 "not a socket" "a symlink as the socket is refused"
 problem 98 "belongs to uid 4242, not root or you" "another user's socket directory is refused" "$(foreign "$X_SOCKDIR")"
 problem 98 "belongs to uid 4242, not you" "another user's socket is refused" "$(foreign "$X_SOCKDIR/X98")"
 problem 98 "not a regular file of yours" "another user's lock is refused" "$(foreign "$X_LOCKS/.X98-lock")"
-# shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
-why=$(timeout 5 bash -c '. "$1"; X_LOCKS=$2 X_SOCKDIR=$3 BARE_PROC=$4 ROOT=1; eval "$5"; bare_display_problem 98' _ \
-  "$HERE/run-bare.sh" "$X_LOCKS" "$X_SOCKDIR" "$BARE_PROC" "$(foreign "$X_SOCKDIR")")
-if [ -z "$why" ]; then ok "a socket directory of root's is accepted"; else bad "root's directory: $why"; fi
+accepted 98 "a socket directory of root's is accepted" "ROOT=1; $(foreign "$X_SOCKDIR")"
+if [ "$(id -u)" != 0 ]; then
+  problem 98 "belongs to uid 0, not you" "a root-owned socket is refused" "ROOT=1; $(foreign "$X_SOCKDIR/X98")"
+  problem 98 "not a regular file of yours" "a root-owned lock is refused" "ROOT=1; $(foreign "$X_LOCKS/.X98-lock")"
+else
+  echo "skip the root-owned socket and lock tests: they need a user other than root"
+fi
 # The socket directory: sticky, and not a symlink.
 mkdir -p "$TESTROOT/x11-plain"
 chmod 0777 "$TESTROOT/x11-plain"
@@ -319,6 +333,8 @@ says 2 "--display N or --desktop" "setup names its display: no default" -- cmd_b
 says 2 "" "setup: an unknown option is a usage error" -- cmd_bare_setup --print
 says 1 "display number" "setup: --display takes a number" -- cmd_bare_setup --display x
 says 1 "0 to 999" "setup: --display takes no leading zeros" -- cmd_bare_setup --display 098
+says 1 "0 to 999" "setup: --display takes 0 to 999" -- cmd_bare_setup --display 1000
+says 1 "0 to 999" "a run's --display takes no leading zeros" -- cmd_bare_run t "${GOOD[@]}" --display 098
 says 1 "0 to 999" "a run's --display takes 0 to 999" -- cmd_bare_run t "${GOOD[@]}" --display 1000
 
 # --- the verdict
@@ -385,7 +401,7 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
     with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
   # wired COMMAND...: COMMAND with need_display and seccomp_filter standing in, so it gets as far as
   # the nested-display check, with the fakes and the fake GE-Proton.
-  # shellcheck disable=SC2329 # the stand-ins are called by run-bare.sh's functions, not here
+  # shellcheck disable=SC2317,SC2329 # the stand-ins are called by run-bare.sh's functions, not here
   wired() {
     need_display() { :; }
     seccomp_filter() { echo x; }
@@ -395,6 +411,9 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   says 1 "can't be a nested display" "a run checks its nested display" -- wired cmd_bare_run t "${GOOD[@]}" --display 1
   rm -f -- "$WORK/compat/fenji-primed"
   says 1 "can't be a nested display" "setup checks its nested display" -- wired cmd_bare_setup --display 1
+  says 2 "session's own display" "a run refuses --display naming DISPLAY" -- \
+    with_env DISPLAY=:98 wired cmd_bare_run t "${GOOD[@]}" --display 98
+  says 2 "session's own display" "setup refuses --display naming DISPLAY" -- with_env DISPLAY=:98 wired cmd_bare_setup --display 98
   rm -f -- "$WORK/compat/fenji-primed"
 else
   echo "skip the unprimed-prefix run test: it needs Linux on x86_64"
