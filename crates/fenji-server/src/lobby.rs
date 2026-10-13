@@ -1,6 +1,6 @@
 //! The lobby (M3 spec D8–D11; docs/protocol/packets/lobby.md). It lists, creates and deletes
-//! against the store, refuses `SelectActor` until M4, and ignores the rest: 402, 370, 496, 321 and
-//! 392 need no answer. Every 292 gets a 228, every 304 a 628 or a 270, and every 166 an 84 or a
+//! against the store, refuses `SelectActor` until M4, and ignores the rest: 402, 370, 496 and 321
+//! need no answer. The gate closes the connection on 392 (`CLIENT_EXIT`) before it gets here. Every 292 gets a 228, every 304 a 628 or a 270, and every 166 an 84 or a
 //! 270, because the client's screens wait for them (lobby.md §6–§7). Replies are built by
 //! `fenji_proto::lobby`, whose `script_body` refuses `NEVER_SEND`.
 use fenji_proto::lobby::{self, AccountExtras, Actor, Appearance, CreateRequest, code};

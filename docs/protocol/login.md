@@ -133,7 +133,8 @@ From M3 the launcher path (2.8–2.10) carries a Fenji game token, and the owner
 
 **Runs** ([`packets/lobby.md`](packets/lobby.md) §14, with the list, create, restart and delete runs):
 - In m3-l1 the real client logged in with such a token 8.4 s after the server came up.
-- In m3-l6 it did the same with no `--gf-sdk` flag at all: in the sandbox, the launcher path needs no SDK flag. Bare-metal and native Windows are untested.
+- In m3-l6 it did the same with no `--gf-sdk` flag at all: in the sandbox, the launcher path needs no SDK flag.
+- On bare metal on Linux, bm-2 to bm-6 did the same through `fenji-launch play` and umu-run, also with no flag ([`../re/m3-summary.md`](../re/m3-summary.md)). Native Windows is untested.
 
 ## Evidence index
 

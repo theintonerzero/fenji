@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for scripts/spike/watchdog.py's pure rules: the S1 *.sys comparison and the S3 Wine-log
 rules. Stdlib only, no sandbox and no Wine: python3 -I scripts/spike/test-watchdog.py"""
+import contextlib
 import importlib.util
 import json
 import os
@@ -87,7 +88,7 @@ DISCORD = r"c:\\windows\\system32\\discord\\bridge.exe --service"
 class S3(unittest.TestCase):
     def scan(self, *lines):
         rules = wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
-                            {"discord-bridge": wd.norm_image(DISCORD)})
+                            {"discord-bridge": wd.norm_image(DISCORD)}, drivers=["winebth", "mountmgr"])
         trig, notes = rules.scan(("\n".join(lines) + "\n").encode())
         return [t[0] for t in trig], [n[0] for n in notes]
 
@@ -192,6 +193,33 @@ class S3(unittest.TestCase):
         )
         self.assertEqual(trig, ["S3 LoadDriver for non-baseline service None"])
 
+    def test_a_re_point_with_a_null_display_name_triggers(self):  # issue #148
+        trig, _ = self.scan(
+            '2.000:0030:0048:trace:service:svcctl_CreateServiceW (L"discord-bridge", (null), '
+            r'0xf01ff, L"C:\\agt\\agt.sys")'
+        )
+        self.assertEqual(trig, ["S3 CreateService re-points baseline service discord-bridge"])
+
+    def test_a_null_display_name_with_the_baseline_image_is_a_note(self):  # issue #148
+        trig, notes = self.scan(
+            '2.000:0030:0048:trace:service:svcctl_CreateServiceW (L"discord-bridge", (null), '
+            f'0xf01ff, L"{DISCORD}")'
+        )
+        self.assertEqual(trig, [])
+        self.assertEqual(notes, ["CreateService for baseline service discord-bridge, with its baseline image"])
+
+    def test_a_createservice_line_without_a_readable_image_triggers(self):  # issue #148
+        trig, _ = self.scan(
+            '2.000:0030:0048:trace:service:svcctl_CreateServiceW (L"discord-bridge", '
+            'L"Wine Discord RPC Bridge", 0xf01ff, (null))'
+        )
+        self.assertEqual(trig, ["S3 CreateService for baseline service discord-bridge, with no readable image"])
+
+    def test_loaddriver_for_a_user_mode_baseline_service_after_the_client_triggers(self):  # issue #148
+        trig, notes = self.scan(CLIENT, AGT_LOADDRIVER.replace(r"Services\\AGT", r"Services\\discord-bridge"))
+        self.assertEqual(trig, ["S3 LoadDriver for user-mode baseline service discord-bridge"])
+        self.assertEqual(notes, [])
+
 
 SYSTEM_REG = r"""WINE REGISTRY Version 2
 [System\\ControlSet001\\Services\\discord-bridge] 1791759044
@@ -258,6 +286,13 @@ class S4Registry(unittest.TestCase):
         self.reg.symlink_to(secret)
         with self.assertRaises(OSError):
             wd.parse_services(str(self.reg))
+
+    def test_a_baselines_log_rules_exempt_only_its_driver_services(self):  # issue #148
+        rules = wd.baseline_rules({"services": sorted(self.base), "service_info": self.base})
+        lines = [CLIENT] + [AGT_LOADDRIVER.replace(r"Services\\AGT", "Services\\\\" + s) for s in ("winebth", "discord-bridge")]
+        trig, notes = rules.scan(("\n".join(lines) + "\n").encode())
+        self.assertEqual([t[0] for t in trig], ["S3 LoadDriver for user-mode baseline service discord-bridge"])
+        self.assertEqual([n[0] for n in notes], ["LoadDriver for baseline service winebth"])
 
 
 class ClientRename(unittest.TestCase):  # issue #142
@@ -355,20 +390,23 @@ for q in procs:
 _OUTER = """import subprocess, sys
 subprocess.Popen([f"{sys.argv[1]}/bin/bwrap", f"{sys.argv[1]}/init.py"] + sys.argv[1:]).wait()
 """
+# A sandbox whose bwrap never gets its init (a child named bwrap): one stand-in that ends in 1.5 s.
+_OUTER_NO_INIT = """import subprocess, sys, time
+subprocess.Popen([f"{sys.argv[1]}/bin/wine64", f"{sys.argv[1]}/proc.py", "-", "0", str(time.time() + 1.5)]).wait()
+"""
 
 
-@unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")
-class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
-    """A fake sandbox of stand-in processes renamed with prctl: no Wine and no client. Times are
-    seconds after the start signal, with margins far above the 0.05 s polls."""
+class WholeLoop(unittest.TestCase):
+    """cmd_watch itself over a fake sandbox of stand-in processes renamed with prctl: no Wine and
+    no client. Times are seconds after the start signal, with margins far above the 0.05 s polls."""
 
-    def watch(self, plan):
+    def watch(self, plan, outer_script=_OUTER, **extra):
         with tempfile.TemporaryDirectory() as tmp:
             d = pathlib.Path(tmp)
             (d / "bin").mkdir()
             for name in ("bwrap", "wine64", "gujianol.exe", "winedevice.exe"):
                 (d / "bin" / name).symlink_to(sys.executable)
-            for name, text in (("proc.py", _PROC), ("init.py", _INIT), ("outer.py", _OUTER)):
+            for name, text in (("proc.py", _PROC), ("init.py", _INIT), ("outer.py", outer_script)):
                 (d / name).write_text(text)
             out = d / "out"
             (out / "root").mkdir(parents=True)
@@ -377,7 +415,8 @@ class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
                                       str(out / ".go")], start_new_session=True)
             a = types.SimpleNamespace(root=str(out / "root"), out=str(out), sandbox_pid=outer.pid,
                                       log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
-                                      no_tmpfs_scan=False)
+                                      tmpfs=None, prefix=str(out / "root" / "compat" / "pfx"))
+            vars(a).update(extra)
             saved = wd.TMPFS_SUBS, wd.TMPFS_SHALLOW
             wd.TMPFS_SUBS = wd.TMPFS_SHALLOW = ()  # the host's own files are not this test's sandbox
             try:
@@ -391,8 +430,13 @@ class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
                 except OSError:
                     pass
                 outer.wait()
+            self.go_created = (out / ".go").exists()
             trig = out / "watchdog-trigger.txt"
             return rc, trig.read_text() if trig.exists() else ""
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")
+class RenameWholeLoop(WholeLoop):  # issue #142
 
     def test_a_client_renamed_late_stays_found_and_arms_s2(self):
         # The winedevice starts after the rename, so only a client that stayed found sees it.
@@ -423,15 +467,86 @@ class RenameWholeLoop(unittest.TestCase):  # issue #142, over cmd_watch itself
         self.assertEqual(rc, 0)
 
 
-class BareMetal(unittest.TestCase):  # issue #139
-    """A bare-metal run has no sandbox tmpfs mounts: its namespace sees the host's filesystem,
-    whose own Proton prefixes would trip the tmpfs scan."""
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")
+class BareWholeLoop(WholeLoop):  # issue #148
+    """A bare run's own tmpfs mounts (--tmpfs), seen through /proc/PID/root, and its prefix
+    (--prefix). The fake sandbox shares the host's mounts, so a host directory stands in for one."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.ns = pathlib.Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_sys_file_in_a_named_tmpfs_mount_triggers(self):
+        (self.ns / "agt.sys").write_bytes(b"MZ")
+        rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 4.0]], tmpfs=[str(self.ns)])
+        self.assertEqual(rc, 3)
+        self.assertIn("S1 .sys file in a sandbox tmpfs mount", trig)
+
+    def test_what_the_namespace_binds_into_a_tmpfs_mount_is_skipped(self):
+        (self.ns / "pulse").mkdir()
+        (self.ns / "pulse" / "agt.sys").write_bytes(b"the host's")
+        (self.ns / "X99.sys").write_bytes(b"the host's")
+        rc, _ = self.watch([[0.0, "gujianol.exe", "-", 0, 1.0]], tmpfs=[str(self.ns)],
+                           binds=[str(self.ns / "pulse"), str(self.ns / "X99.sys")])
+        self.assertEqual(rc, 0)
+
+    def test_s4_reads_the_named_prefix(self):
+        (self.ns / "system.reg").write_text(SYSTEM_REG)  # winebth: a driver service the baseline lacks
+        rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 1.0]], prefix=str(self.ns))
+        self.assertEqual(rc, 3)
+        self.assertIn("S4 new driver service in the registry", trig)
+
+    def test_no_start_signal_while_the_namespaces_init_is_unknown(self):  # the client-start guard
+        rc, _ = self.watch([], outer_script=_OUTER_NO_INIT)
+        self.assertEqual(rc, 0)
+        self.assertFalse(self.go_created)
+
+
+class BareMetal(unittest.TestCase):  # issues #139, #148
+    """A bare-metal run's namespace sees the host's files, whose own Proton prefixes would trip the
+    sandbox's tmpfs scan; its own tmpfs mounts (/run, /tmp, /dev/shm) are named with --tmpfs. Its
+    prefix is umu's, whose pfx is a link to the prefix, so the runner names it with --prefix."""
 
     WATCH = ["watch", "--root", "/r", "--out", "/o", "--sandbox-pid", "1", "--log", "/l"]
+    BASELINE = ["baseline", "--root", "/r", "--out", "/o"]
 
-    def test_the_tmpfs_scan_is_on_unless_turned_off(self):
-        self.assertFalse(wd.parser().parse_args(self.WATCH).no_tmpfs_scan)
-        self.assertTrue(wd.parser().parse_args(self.WATCH + ["--no-tmpfs-scan"]).no_tmpfs_scan)
+    def test_the_tmpfs_mounts_are_the_sandboxes_unless_named(self):
+        self.assertIsNone(wd.parser().parse_args(self.WATCH).tmpfs)
+        self.assertEqual(wd.parser().parse_args(self.WATCH + ["--tmpfs", "/tmp", "--tmpfs", "/run"]).tmpfs,
+                         ["/tmp", "/run"])
+
+    def test_baseline_and_watch_take_the_prefix(self):
+        for args in (self.WATCH, self.BASELINE):
+            self.assertIsNone(wd.parser().parse_args(args).prefix)
+            self.assertEqual(wd.parser().parse_args(args + ["--prefix", "/p"]).prefix, "/p")
+
+    def baseline_services(self, *extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, out = pathlib.Path(tmp, "root"), pathlib.Path(tmp, "out")
+            (root / "compat" / "pfx").mkdir(parents=True)
+            (root / "compat" / "pfx" / "system.reg").write_text(SYSTEM_REG)  # run-client.sh's layout
+            (root / "umu").mkdir()
+            (root / "umu" / "system.reg").write_text(SYSTEM_REG.split("\n[System\\\\ControlSet001\\\\Services\\\\winebth]")[0])
+            out.mkdir()
+            argv = ["watchdog.py", "baseline", "--root", str(root), "--out", str(out)]
+            argv += [x.replace("ROOT", str(root)) for x in extra]
+            saved = sys.argv
+            sys.argv = argv
+            try:
+                with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet):
+                    self.assertEqual(wd.main(), 0)
+            finally:
+                sys.argv = saved
+            return json.loads((out / "watchdog-baseline.json").read_text())["services"]
+
+    def test_the_baseline_reads_root_compat_pfx_by_default(self):
+        self.assertEqual(self.baseline_services(), ["discord-bridge", "winebth"])
+
+    def test_the_baseline_reads_the_named_prefix(self):
+        self.assertEqual(self.baseline_services("--prefix", "ROOT/umu"), ["discord-bridge"])
 
 
 class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
@@ -565,6 +680,14 @@ class SandboxWritableFiles(unittest.TestCase):
         hits = wd.scan_tmpfs(str(r), ["/tmp", "/home/u"], binds=["/home/u/tools/GE-Proton"])
         self.assertEqual(sorted(pathlib.Path(p).name for p in hits), ["agt.sys"])
 
+    def test_the_tmpfs_scan_skips_bound_files(self):  # issue #148: a bare run's sockets, its auth file
+        r = self.root / "proc-root"
+        (r / "tmp").mkdir(parents=True)
+        (r / "tmp" / "bound.sys").write_bytes(b"the host's")
+        (r / "tmp" / "agt.sys").write_bytes(b"MZ")
+        hits = wd.scan_tmpfs(str(r), ["/tmp"], binds=["/tmp/bound.sys"])
+        self.assertEqual(sorted(pathlib.Path(p).name for p in hits), ["agt.sys"])
+
     def test_the_tmpfs_scan_covers_the_sandbox_root_and_etc(self):  # review M2
         r = self.root / "proc-root"
         (r / "etc" / "x").mkdir(parents=True)
@@ -600,7 +723,7 @@ class GateEventRecord(unittest.TestCase):
             try:
                 a = types.SimpleNamespace(root=str(root), out=str(out), sandbox_pid=child.pid,
                                           log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
-                                          no_tmpfs_scan=False)
+                                          tmpfs=None, prefix=str(root / "compat" / "pfx"))
                 rc = wd.cmd_watch(a)
             finally:
                 child.kill()

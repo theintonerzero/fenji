@@ -17,7 +17,7 @@ use fenji_proto::packet::Up;
 use fenji_proto::pickle::{self, Value};
 use fenji_proto::variant::AES128;
 use fenji_store::Account;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -273,10 +273,29 @@ impl Drop for Leave<'_> {
 
 /// Writes `bytes`, or fails once `deadline` passes: a client that stops reading ends its
 /// connection instead of holding it.
-async fn send(sock: &mut TcpStream, bytes: &[u8], deadline: Duration) -> anyhow::Result<()> {
+async fn send<W: AsyncWrite + Unpin>(
+    sock: &mut W,
+    bytes: &[u8],
+    deadline: Duration,
+) -> anyhow::Result<()> {
     match tokio::time::timeout(deadline, sock.write_all(bytes)).await {
         Ok(written) => Ok(written?),
         Err(_) => bail!("the client stopped reading: a write took over {deadline:?}"),
+    }
+}
+
+/// Sends a reply within `deadline`, unless a newer login replaces the connection first: then it
+/// gives up at once and returns false. The newer login holds the account's place, and a client
+/// that stopped reading shouldn't keep this socket until the deadline, outside the caps.
+async fn send_or_replaced<W: AsyncWrite + Unpin>(
+    sock: &mut W,
+    bytes: &[u8],
+    deadline: Duration,
+    replaced: &mut oneshot::Receiver<()>,
+) -> anyhow::Result<bool> {
+    tokio::select! {
+        sent = send(sock, bytes, deadline) => sent.map(|()| true),
+        Ok(()) = &mut *replaced => Ok(false),
     }
 }
 
@@ -388,10 +407,29 @@ async fn lobby_loop(
                     return Ok(());
                 }
                 for event in server.receive(&buf[..n])? {
-                    if let Event::Message(m) = event {
-                        for reply in on_message(gate, account, m.ty, &m.body).await {
-                            let bytes = script_out(server, &reply)?;
+                    let Event::Message(m) = event else { continue };
+                    match on_message(gate, account, m.ty, &m.body).await {
+                        Step::Replies(replies) => {
+                            for reply in replies {
+                                let bytes = script_out(server, &reply)?;
+                                if !send_or_replaced(sock, &bytes, deadline, replaced).await? {
+                                    tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        Step::Leave => {
+                            tracing::info!(%peer, account = %account.username, "left (the client is quitting)");
+                            return Ok(());
+                        }
+                        Step::AccountGone => {
+                            tracing::info!(%peer, account = %account.username, "the account was deleted: closing");
+                            let bytes = server.send(Stc::Close.to_u8(), AUTH_FAILED.as_bytes(), &StoredCodec)?;
                             send(sock, &bytes, deadline).await?;
+                            if let Some(_place) = gate.waiting.take(peer.ip()) {
+                                linger(sock, gate.limits.linger).await;
+                            }
+                            return Ok(());
                         }
                     }
                 }
@@ -411,8 +449,20 @@ async fn lobby_loop(
     }
 }
 
-/// The replies to one message from a client in the lobby.
-async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Vec<Vec<u8>> {
+/// What the lobby loop does after one message from a client.
+enum Step {
+    /// Send these replies, in order, and go on.
+    Replies(Vec<Vec<u8>>),
+    /// The client is quitting (392, `CLIENT_EXIT`): close the connection.
+    Leave,
+    /// The account was deleted since the login (`fenji-server account delete`): close with the
+    /// client's own auth-failed reason.
+    AccountGone,
+}
+
+/// The step for one message from a client in the lobby. Every script message first checks that
+/// the account still exists, since an admin may delete it while its player is in the lobby.
+async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Step {
     match Up::decode(ty, body) {
         Ok(Up::Script {
             id: Value::Int(id),
@@ -420,23 +470,34 @@ async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Vec<
             gateway,
         }) => {
             tracing::trace!(id, gateway, body = %hex(body), "script message");
+            if id == fenji_proto::lobby::CLIENT_EXIT {
+                return Step::Leave;
+            }
+            match gate.accounts.store().account_by_id(account.id).await {
+                Ok(None) => return Step::AccountGone,
+                Ok(Some(_)) => {}
+                // The handler meets the same store and answers the client's screen.
+                Err(e) => tracing::error!(error = %e, "account check failed"),
+            }
             let now = gate.clock.now_ms();
-            lobby::handle(gate.accounts.store(), &gate.lobby, account, now, id, &args).await
+            Step::Replies(
+                lobby::handle(gate.accounts.store(), &gate.lobby, account, now, id, &args).await,
+            )
         }
         Ok(Up::Script { id, .. }) => {
             tracing::debug!(
                 id = id.kind(),
                 "script message without an integer id ignored"
             );
-            Vec::new()
+            Step::Replies(Vec::new())
         }
         Ok(Up::Unknown { opcode, bytes }) => {
             tracing::debug!(opcode, len = bytes.len(), "message ignored");
-            Vec::new()
+            Step::Replies(Vec::new())
         }
         Err(e) => {
             tracing::debug!(ty, len = body.len(), error = %e, "undecodable message skipped");
-            Vec::new()
+            Step::Replies(Vec::new())
         }
     }
 }
@@ -469,6 +530,43 @@ mod tests {
     use fenji_proto::pickle::{self, Value};
 
     use super::*;
+
+    #[tokio::test]
+    async fn a_blocked_reply_gives_way_when_the_connection_is_replaced() {
+        // A pipe nobody reads: a write beyond its 64 bytes blocks, as one to a client that stopped
+        // reading does.
+        let (mut w, _unread) = tokio::io::duplex(64);
+        let (newer_login, mut replaced) = oneshot::channel();
+        let bytes = vec![0u8; 4096];
+        let send = send_or_replaced(&mut w, &bytes, Duration::from_secs(30), &mut replaced);
+        tokio::pin!(send);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut send)
+                .await
+                .is_err(),
+            "the write blocks"
+        );
+        newer_login.send(()).unwrap();
+        let sent = tokio::time::timeout(Duration::from_secs(1), send)
+            .await
+            .expect("gave way at once, not at the 30 s deadline")
+            .unwrap();
+        assert!(!sent);
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_fits_is_sent() {
+        let (mut w, mut r) = tokio::io::duplex(8192);
+        let (_newer_login, mut replaced) = oneshot::channel::<()>();
+        assert!(
+            send_or_replaced(&mut w, b"hello", Duration::from_secs(1), &mut replaced)
+                .await
+                .unwrap()
+        );
+        let mut buf = [0u8; 5];
+        r.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"hello");
+    }
 
     #[test]
     fn waiting_places_are_counted_per_network() {

@@ -21,6 +21,9 @@ trap '[ "$BASHPID" = "$$" ] && rm -rf -- "$TESTROOT"' EXIT
 WORK=$TESTROOT/work REPO=$TESTROOT/repo PINNED_COPY=$TESTROOT/nonexistent UMU=$TESTROOT/nonexistent
 BARE_PROC=$TESTROOT/proc
 PROTON=$TESTROOT/nonexistent STUBBIN=$TESTROOT/nonexistent WATCHDOG=$TESTROOT/nonexistent
+# The namespace's own tmpfs mounts, as run-bare.sh names them, moved under TESTROOT (itself in /tmp).
+NS_TMPFS_REAL=("${NS_TMPFS[@]}")
+NS_TMPFS=("$TESTROOT/ns")
 mkdir -p "$WORK/data" "$WORK/runs/old" "$TESTROOT/bin"
 fails=0
 ok() { echo "ok   $1"; }
@@ -116,6 +119,19 @@ ln -s /etc/hostname "$TESTROOT/pinned/bin64/extra"
 says 1 "holds a link" "a pinned copy holding a link is refused" -- env_pinned "$TESTROOT/pinned" check_pinned_copy
 rm "$TESTROOT/pinned/bin64/extra"
 if (env_pinned "$TESTROOT/pinned" check_pinned_copy) > /dev/null 2>&1; then ok "a plain pinned copy is accepted"; else bad "a plain pinned copy"; fi
+# A home reached through a link (/home -> /var/home on Fedora Atomic): the copy's resolved path is
+# compared with the resolved home (#148).
+mkdir -p "$TESTROOT/realhome/.local/share/Steam/library/SoLO/bin64"
+touch "$TESTROOT/realhome/.local/share/Steam/library/SoLO/bin64/gujianol.exe"
+ln -s "$TESTROOT/realhome" "$TESTROOT/homelink"
+# env_pinned_home HOME COPY COMMAND...: COMMAND with that home and that pinned copy.
+env_pinned_home() {
+  HOME=$1 PINNED_COPY=$2
+  shift 2
+  "$@"
+}
+says 1 "in a Steam library" "a Steam library under a home reached through a link is refused" -- \
+  env_pinned_home "$TESTROOT/homelink" "$TESTROOT/homelink/.local/share/Steam/library/SoLO" check_pinned_copy
 
 # --- the command lines that carry the guards
 mkdir -p "$TESTROOT/rt" "$TESTROOT/nohome"
@@ -128,22 +144,31 @@ if [ "${got[*]}" = "${want[*]}" ]; then
 else
   bad "namespace: ${got[*]}"
 fi
-mkdir -p "$TESTROOT/rt/pulse" "$TESTROOT/home2/.steam"
+mkdir -p "$TESTROOT/rt/pulse" "$TESTROOT/home2/.steam" "$TESTROOT/home2/.cache/ibus"
 touch "$TESTROOT/rt/pipewire-0" "$TESTROOT/home2/.steam/steam.pipe"
 mapfile -t got < <(XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/home2 namespace_cmd 99)
 case " ${got[*]} " in
-  *" --bind $TESTROOT/rt/pipewire-0 $TESTROOT/rt/pipewire-0 --bind $TESTROOT/rt/pulse $TESTROOT/rt/pulse "*" --ro-bind /dev/null $TESTROOT/home2/.steam/steam.pipe "*)
-    ok "audio sockets come back, and Steam's pipe is masked" ;;
-  *) bad "namespace with audio and a Steam pipe: ${got[*]}" ;;
+  *" --bind $TESTROOT/rt/pipewire-0 $TESTROOT/rt/pipewire-0 --bind $TESTROOT/rt/pulse $TESTROOT/rt/pulse "*" --ro-bind /dev/null $TESTROOT/home2/.steam/steam.pipe --tmpfs $TESTROOT/home2/.cache/ibus "*)
+    ok "audio sockets come back, Steam's pipe is masked, and IBus's sockets are hidden" ;;
+  *) bad "namespace with audio, a Steam pipe and IBus: ${got[*]}" ;;
 esac
 mapfile -t got < <(namespace_env 99)
 want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:99)
 if [ "${got[*]}" = "${want[*]}" ]; then ok "inside: no session bus, no agents, no Wayland, no password"; else bad "env: ${got[*]}"; fi
-mapfile -t got < <(watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242)
-case " ${got[*]} " in
-  *" watch --root $WORK --out $TESTROOT/out --sandbox-pid 4242 "*" --no-tmpfs-scan "*) ok "the watchdog watches the namespace, without the tmpfs scan" ;;
-  *) bad "watch: ${got[*]}" ;;
-esac
+mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/home2 namespace_cmd 99)
+mapfile -t got < <(watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242 "${ns[@]}")
+want=(python3 -I "$WATCHDOG" watch --root "$WORK" --prefix "$WORK/compat" --out "$TESTROOT/out" --sandbox-pid 4242
+  --log "$TESTROOT/io/steam-1418100.log" --go "$TESTROOT/io/.go" --tmpfs /run --bind "$TESTROOT/rt/pipewire-0"
+  --bind "$TESTROOT/rt/pulse" --tmpfs /tmp --bind /tmp/.X11-unix/X99 --tmpfs /dev/shm
+  --bind "$TESTROOT/home2/.steam/steam.pipe" --tmpfs "$TESTROOT/home2/.cache/ibus")
+if [ "${got[*]}" = "${want[*]}" ]; then
+  ok "the watchdog watches the namespace and its prefix, and scans its tmpfs mounts less what it binds in"
+else
+  bad "watch: ${got[*]}"
+fi
+mapfile -t got < <(baseline_cmd "$TESTROOT/out")
+want=(python3 -I "$WATCHDOG" baseline --root "$WORK" --prefix "$WORK/compat" --out "$TESTROOT/out")
+if [ "${got[*]}" = "${want[*]}" ]; then ok "the baseline names the prefix too"; else bad "baseline: ${got[*]}"; fi
 mapfile -t got < <(launch_args 7801 tester "$TESTROOT/password" "$WORK/runs/t/client")
 case " ${got[*]} " in
   *gf-sdk* | *" --print "*) bad "fenji-launch gets an SDK flag or --print: ${got[*]}" ;;
@@ -194,6 +219,12 @@ want=(bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$TESTRO
   --bind /tmp/.X11-unix/X0 /tmp/.X11-unix/X0 --tmpfs /dev/shm --ro-bind "$TESTROOT/xauth" "$TESTROOT/xauth"
   --unshare-net --unshare-pid --die-with-parent --seccomp 7 --)
 if [ "${got[*]}" = "${want[*]}" ]; then ok "a desktop run brings in the display's auth file, read-only, after the tmpfs mounts"; else bad "desktop namespace: ${got[*]}"; fi
+mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt2 HOME=$TESTROOT/nohome namespace_cmd 0 "$TESTROOT/xauth")
+mapfile -t got < <(watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242 "${ns[@]}")
+case " ${got[*]} " in
+  *" --tmpfs /run --tmpfs /tmp --bind /tmp/.X11-unix/X0 --tmpfs /dev/shm --bind $TESTROOT/xauth ") ok "a desktop run's auth file is left out of the tmpfs scan" ;;
+  *) bad "desktop watch: ${got[*]}" ;;
+esac
 mapfile -t got < <(namespace_env 0 "$TESTROOT/xauth")
 want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:0 XAUTHORITY="$TESTROOT/xauth")
 if [ "${got[*]}" = "${want[*]}" ]; then ok "inside a desktop run: the session's display and its auth file"; else bad "desktop env: ${got[*]}"; fi
@@ -340,6 +371,29 @@ says 1 "0 to 999" "a run's --display takes 0 to 999" -- cmd_bare_run t "${GOOD[@
 says 1 "umu-run not found" "setup takes a three-digit --display" -- with_fakes cmd_bare_setup --display 999
 says 1 "umu-run not found" "a run takes a three-digit --display" -- with_fakes cmd_bare_run t "${GOOD[@]}" --display 999
 
+# --- host paths the namespace must see: none under its own tmpfs mounts, where they vanish (#148)
+mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/nohome namespace_cmd 99)
+mounts=()
+for ((i = 0; i < ${#ns[@]}; i++)); do [ "${ns[i]}" != --tmpfs ] || mounts+=("${ns[i + 1]}"); done
+if [ "${mounts[*]}" = "${NS_TMPFS_REAL[*]:-}" ]; then ok "the hidden places are the namespace's tmpfs mounts"; else bad "NS_TMPFS ${NS_TMPFS_REAL[*]:-} vs ${mounts[*]}"; fi
+mkdir -p "$TESTROOT/ns/repo" "$TESTROOT/seen"
+ln -s "$TESTROOT/ns/repo" "$TESTROOT/seen/to-ns"
+echo "a long password" > "$TESTROOT/ns/password"
+if [ "$(uname -s)" = Linux ]; then
+  says 1 "re/bare-metal is under $TESTROOT/ns" "a work directory the namespace would hide is refused" -- \
+    with_env WORK="$TESTROOT/seen/to-ns/work" with_fakes host_guards
+  says 1 "umu-run (FENJI_UMU_RUN) is under" "a umu-run the namespace would hide is refused" -- \
+    with_env UMU="$TESTROOT/seen/to-ns/umu-run" with_fakes host_guards
+  says 1 "GE-Proton (FENJI_GE_PROTON) is under" "a GE-Proton the namespace would hide is refused" -- \
+    with_env PROTON="$TESTROOT/ns/proton" with_fakes host_guards
+  says 1 "umu-run not found" "paths the namespace sees pass on to the next guard" -- \
+    with_env WORK="$TESTROOT/seen/work" with_fakes host_guards
+fi
+says 1 "target/release is under $TESTROOT/ns" "built binaries the namespace would hide are refused" -- \
+  with_env STUBBIN="$TESTROOT/ns/release" with_fakes cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
+says 2 "--password-file is under $TESTROOT/ns" "a password file the namespace would hide is refused" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --password-file "$TESTROOT/ns/password"
+
 # --- the verdict
 says 7 "didn't start the client" "fenji-launch stopping before the start is exit 7" -- bare_verdict 0 95 0 "$TESTROOT/out"
 says 3 "GATE EVENT" "a watchdog trigger is a gate event" -- bare_verdict 3 137 1 "$TESTROOT/out"
@@ -422,7 +476,320 @@ else
   echo "skip the unprimed-prefix run test: it needs Linux on x86_64"
 fi
 
-# --- the namespace for real, where it can be made: probes run inside it
+# --- setup and run end to end (#148). bwrap runs what follows its --, and stand-ins record what
+# they were given: umu-run (which plays createprefix and the prime), GE-Proton, fenji-server (which
+# listens), fenji-launch, screenshots (import), and the watchdog's watch mode; its baseline and
+# collect modes are the real ones. cp drops --reflink=always: the test root has no reflinks.
+if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
+  F=$TESTROOT/flow
+  mkdir -p "$F/bin" "$F/proton/files/bin" "$F/proton/files/lib/wine/discord-rpc-bridge" "$F/release" \
+    "$F/pinned/bin64" "$F/home" "$F/log" "$F/rt"
+  touch "$F/pinned/bin64/gujianol.exe" "$F/proton/files/lib/wine/discord-rpc-bridge/bridge.exe" "$F/xauth"
+  echo "1789520217 GE-Proton-flow" > "$F/proton/version"
+  printf '#!/bin/sh\nexit 0\n' > "$F/proton/proton"
+  cp -- "$F/proton/proton" "$F/proton/files/bin/wineserver"
+  cat > "$F/bin/bwrap" <<'EOF'
+#!/usr/bin/env bash
+# Records its arguments, then runs what follows --.
+{ echo "--- bwrap"; printf '%s\n' "$@"; } >> "$FAKE_LOG/bwrap"
+while [ $# -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+EOF
+  cat > "$F/bin/cp" <<'EOF'
+#!/usr/bin/env bash
+# The test root has no reflinks: --reflink=always becomes a plain copy.
+here=$(dirname -- "$0")
+args=()
+for a in "$@"; do [ "$a" = --reflink=always ] || args+=("$a"); done
+PATH=${PATH//"$here:"/} exec cp "${args[@]}"
+EOF
+  cat > "$F/bin/import" <<'EOF'
+#!/usr/bin/env bash
+echo "import $*" >> "$FAKE_LOG/import"
+EOF
+  cat > "$F/umu-run" <<'EOF'
+#!/usr/bin/env bash
+# Records its arguments and the environment it got, then plays umu-run's part: createprefix builds
+# a prefix (and exits 1, as umu-launcher 1.4 does); anything else is the prime, which registers
+# Proton's bridge service. FAKE_UMU_FAIL names a step that fails instead, changing nothing.
+{
+  echo "--- umu-run $*"
+  env | grep -E '^(UMU_RUNTIME_UPDATE|PROTONPATH|WINEPREFIX|GAMEID|PROTON_USE_XALIA|DISPLAY|XAUTHORITY)=' | LC_ALL=C sort
+} >> "$FAKE_LOG/umu"
+if [ "$1" = createprefix ]; then
+  [ "${FAKE_UMU_FAIL:-}" != createprefix ] || exit 1
+  mkdir -p "$WINEPREFIX/drive_c/windows/system32"
+  printf 'WINE REGISTRY Version 2\n' > "$WINEPREFIX/system.reg"
+  printf 'WINE REGISTRY Version 2\n' > "$WINEPREFIX/user.reg"
+  exit 1
+fi
+[ "${FAKE_UMU_FAIL:-}" != prime ] || exit 1
+printf '\n[System\\\\ControlSet001\\\\Services\\\\discord-bridge] 1\n"Type"=dword:00000010\n' >> "$WINEPREFIX/system.reg"
+EOF
+  cat > "$F/release/fenji-server" <<'EOF'
+#!/usr/bin/env python3
+"""Listens on its config's login and API addresses until it is stopped (`--config FILE run`)."""
+import socket, sys, time, tomllib
+with open(sys.argv[2], "rb") as f:
+    server = tomllib.load(f)["server"]
+held = []
+for key in ("login_bind", "api_bind"):
+    host, port = server[key].rsplit(":", 1)
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((host, int(port)))
+    s.listen()
+    held.append(s)
+while True:
+    time.sleep(1)
+EOF
+  cat > "$F/release/fenji-launch" <<'EOF'
+#!/usr/bin/env bash
+# Records its arguments, says what fenji-launch says right before it starts the client, and plays
+# the client for FAKE_LAUNCH_SECS. A client that misbehaves plants a link at FAKE_PLANT, to
+# FAKE_PLANT_TO, or a FIFO at FAKE_FIFO, which a rescuer opens after 15 s, so that a writer stalled
+# on it is let go and the test ends.
+printf '%s\n' "$@" > "$FAKE_LOG/launch"
+echo "starting the client" >&2
+if [ -n "${FAKE_PLANT:-}" ]; then ln -s -- "$FAKE_PLANT_TO" "$FAKE_PLANT"; fi
+if [ -n "${FAKE_FIFO:-}" ]; then
+  mkfifo -- "$FAKE_FIFO"
+  (sleep 15; exec 3<> "$FAKE_FIFO") > /dev/null 2>&1 &
+fi
+sleep "${FAKE_LAUNCH_SECS:-0}"
+EOF
+  cat > "$F/watchdog.py" <<'EOF'
+"""The flow tests' watchdog: watch creates the start signal, waits for the namespace to end and
+exits FAKE_WATCH_RC (0 by default); every other mode is the real watchdog's. Each call is
+recorded."""
+import os
+import sys
+import time
+
+with open(os.path.join(os.environ["FAKE_LOG"], "watchdog"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1] != "watch":
+    real = os.path.join(os.environ["FAKE_REAL_SPIKE"], "watchdog.py")
+    os.execv(sys.executable, [sys.executable, "-I", real] + sys.argv[1:])
+args = sys.argv[2:]
+open(args[args.index("--go") + 1], "x").close()
+spid = int(args[args.index("--sandbox-pid") + 1])
+
+
+def alive(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().split(") ", 1)[1][0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+
+deadline = time.monotonic() + 120
+while alive(spid) and time.monotonic() < deadline:
+    time.sleep(0.05)
+sys.exit(int(os.environ.get("FAKE_WATCH_RC", "0")))
+EOF
+  chmod +x "$F/bin/"* "$F/proton/proton" "$F/proton/files/bin/wineserver" "$F/umu-run" "$F/release/"*
+  fake_pgrep ""
+  echo "a long password" > "$F/password"
+  read -r lp ap < <(python3 -I -c 'import socket
+s = [socket.socket() for _ in range(2)]
+for x in s:
+    x.bind(("127.0.0.1", 0))
+print(*(x.getsockname()[1] for x in s))')
+  mkdir -p "$F/work/data"
+  printf '[server]\npublic_host = "127.0.0.1"\nlogin_bind = "127.0.0.1:%s"\napi_bind = "127.0.0.1:%s"\n[store]\npath = "%s"\n' \
+    "$lp" "$ap" "$F/work/data/fenji.db" > "$F/fenji.toml"
+
+  # flow NAME WORKDIR COMMAND...: COMMAND with the stand-ins, in WORKDIR, its records in $F/log/NAME;
+  # sets rc, out (its output) and secs (how long it took). The output goes to a file, not a pipe:
+  # a stopped scheduler's sleep outlives it, and would hold a pipe open.
+  # shellcheck disable=SC2317,SC2329 # the stand-ins are called by run-bare.sh's functions, not here
+  flow() {
+    local name=$1 dir=$2 t0
+    shift 2
+    mkdir -p "$F/log/$name"
+    rc=0
+    t0=$(date +%s)
+    (
+      export FAKE_LOG=$F/log/$name FAKE_REAL_SPIKE=$HERE
+      WORK=$dir PROTON=$F/proton UMU=$F/umu-run STUBBIN=$F/release WATCHDOG=$F/watchdog.py
+      PINNED_COPY=$F/pinned HOME=$F/home PATH="$F/bin:$TESTROOT/bin:$PATH" XDG_RUNTIME_DIR=$F/rt
+      hash -r
+      need_display() { :; }
+      nested_display_ok() { :; }
+      seccomp_filter() { echo x; }
+      "$@"
+    ) > "$F/log/$name/out" 2>&1 || rc=$?
+    secs=$(($(date +%s) - t0))
+    out=$(cat -- "$F/log/$name/out")
+  }
+  # joined FILE: FILE's lines joined by spaces, padded for case patterns.
+  joined() { echo " $(paste -sd ' ' -- "$1") "; }
+  # umu_blocks NAME: each umu-run call of flow NAME on one line: its arguments, then its environment.
+  umu_blocks() { awk '/^--- umu-run / { if (b) print b; b = $0; next } { b = b " " $0 } END { if (b) print b }' "$F/log/$1/umu"; }
+  on_desktop=(with_env DISPLAY=:77 with_env XAUTHORITY="$F/xauth")
+
+  # Setup: a new prefix, built and primed through Proton's launcher, with umu-run's environment.
+  flow setup-new "$F/work" "${on_desktop[@]}" cmd_bare_setup --desktop
+  if [ "$rc" = 0 ] && [ "$(cat "$F/work/compat/fenji-primed" 2> /dev/null)" = "$(cat "$F/proton/version")" ]; then
+    ok "setup builds and primes a prefix, and its mark names the GE-Proton build"
+  else
+    bad "setup: rc $rc, mark '$(cat "$F/work/compat/fenji-primed" 2> /dev/null)': $out"
+  fi
+  mapfile -t calls < <(umu_blocks setup-new)
+  want_env="DISPLAY=:77 GAMEID=umu-1418100 PROTONPATH=$F/proton PROTON_USE_XALIA=0 UMU_RUNTIME_UPDATE=0 WINEPREFIX=$F/work/compat XAUTHORITY=$F/xauth"
+  if [ "${#calls[@]}" = 2 ] && [ "${calls[0]}" = "--- umu-run createprefix $want_env" ] &&
+    [ "${calls[1]}" = "--- umu-run $F/work/compat/drive_c/windows/system32/cmd.exe /c exit $want_env" ]; then
+    ok "setup runs createprefix, then the prime, each with umu-run's environment and the display"
+  else
+    bad "setup's umu-run calls: $(printf '[%s] ' "${calls[@]}")"
+  fi
+  case "$(joined "$F/log/setup-new/bwrap")" in
+    *" --ro-bind $F/xauth $F/xauth"*" --ro-bind $F/xauth $F/xauth "*)
+      ok "setup's namespaces bring in the desktop's auth file" ;;
+    *) bad "setup's namespaces: $(joined "$F/log/setup-new/bwrap")" ;;
+  esac
+  flow setup-again "$F/work" "${on_desktop[@]}" cmd_bare_setup --desktop
+  if [ "$rc" = 0 ] && [[ $out == *"the prefix is ready"* ]] && [ ! -e "$F/log/setup-again/umu" ]; then
+    ok "setup leaves a primed prefix alone"
+  else
+    bad "setup on a primed prefix: rc $rc: $out"
+  fi
+
+  # Setup on a prefix that exists but was never primed: the prime alone.
+  mkdir -p "$F/work2/compat/drive_c/windows"
+  echo "WINE REGISTRY Version 2" > "$F/work2/compat/system.reg"
+  flow setup-unprimed "$F/work2" "${on_desktop[@]}" cmd_bare_setup --desktop
+  mapfile -t calls < <(umu_blocks setup-unprimed)
+  if [ "$rc" = 0 ] && [ "${#calls[@]}" = 1 ] && [[ ${calls[0]} == "--- umu-run $F/work2/compat/drive_c/windows/system32/cmd.exe /c exit "* ]] &&
+    [ -f "$F/work2/compat/fenji-primed" ]; then
+    ok "setup primes an existing prefix without createprefix"
+  else
+    bad "setup on an unprimed prefix: rc $rc, calls $(printf '[%s] ' "${calls[@]}"): $out"
+  fi
+
+  # A failing umu-run: exit 1, and no mark.
+  flow setup-nobuild "$F/work3" "${on_desktop[@]}" with_env FAKE_UMU_FAIL=createprefix cmd_bare_setup --desktop
+  if [ "$rc" = 1 ] && [[ $out == *"createprefix didn't build the prefix"* ]] && [ ! -e "$F/work3/compat/fenji-primed" ]; then
+    ok "a createprefix that builds nothing stops setup, with no mark"
+  else
+    bad "a failing createprefix: rc $rc: $out"
+  fi
+  flow setup-noprime "$F/work4" "${on_desktop[@]}" with_env FAKE_UMU_FAIL=prime cmd_bare_setup --desktop
+  if [ "$rc" = 1 ] && [[ $out == *"the prime through Proton's launcher failed"* ]] && [ ! -e "$F/work4/compat/fenji-primed" ]; then
+    ok "a failing prime stops setup, with no mark"
+  else
+    bad "a failing prime: rc $rc: $out"
+  fi
+
+  RUNARGS=(--server "$F/fenji.toml" --server-data "$F/work/data" --username tester --password-file "$F/password")
+  # A desktop run, end to end: the session's display and auth file, the watchdog on the prefix and
+  # the namespace's tmpfs mounts, fenji-launch as a player starts it, and no screenshots (the client
+  # plays 6 s, past the first screenshot's time).
+  flow run-desktop "$F/work" "${on_desktop[@]}" with_env FAKE_LAUNCH_SECS=6 cmd_bare_run d1 "${RUNARGS[@]}" --desktop
+  if [ "$rc" = 0 ] && [[ $out == *"run d1 done: fenji-launch exit 0, namespace exit 0, watchdog exit 0"* ]]; then
+    ok "a desktop run goes end to end"
+  else
+    bad "a desktop run: rc $rc: $out"
+  fi
+  case "$(joined "$F/log/run-desktop/bwrap")" in
+    *" --bind /tmp/.X11-unix/X77 /tmp/.X11-unix/X77"*" --ro-bind $F/xauth $F/xauth"*" DISPLAY=:77 XAUTHORITY=$F/xauth "*)
+      ok "a desktop run's namespace has the session's display and its auth file" ;;
+    *) bad "a desktop run's namespace: $(joined "$F/log/run-desktop/bwrap")" ;;
+  esac
+  if grep -qxF "baseline --root $F/work --prefix $F/work/compat --out $F/work/out/d1" "$F/log/run-desktop/watchdog"; then
+    ok "the run's baseline names the prefix"
+  else
+    bad "baseline: $(cat "$F/log/run-desktop/watchdog")"
+  fi
+  case " $(grep '^watch ' "$F/log/run-desktop/watchdog") " in
+    *" --prefix $F/work/compat"*" --tmpfs /run"*" --tmpfs /tmp --bind /tmp/.X11-unix/X77 --tmpfs /dev/shm"*" --bind $F/xauth "*)
+      ok "the run's watchdog has the prefix, and the started namespace's tmpfs mounts less what it binds in" ;;
+    *) bad "watch: $(grep '^watch ' "$F/log/run-desktop/watchdog")" ;;
+  esac
+  if [ "$(joined "$F/log/run-desktop/launch")" = " play --server http://127.0.0.1:$ap --username tester --password-file $F/password --client $F/work/runs/d1/client --prefix $F/work/compat --umu-run $F/umu-run --proton $F/proton " ]; then
+    ok "fenji-launch plays from the run's copy, as a player starts it"
+  else
+    bad "launch: $(joined "$F/log/run-desktop/launch")"
+  fi
+  if [ ! -e "$F/log/run-desktop/import" ]; then ok "a desktop run takes no screenshots"; else bad "desktop screenshots: $(cat "$F/log/run-desktop/import")"; fi
+
+  # A nested run: screenshots of its display, and the input schedulers stopped once it ends (a key
+  # press is still due at 20 s when the client is done at 6 s).
+  flow run-nested "$F/work" with_env FAKE_LAUNCH_SECS=6 cmd_bare_run n1 "${RUNARGS[@]}" --display 78 --timeout 30 --key 20:Return
+  if [ "$rc" = 0 ] && grep -qxF "import -display :78 -window root $F/work/out/n1/screen-5s.png" "$F/log/run-nested/import" 2> /dev/null; then
+    ok "a nested run screenshots its own display"
+  else
+    bad "a nested run: rc $rc, screenshots '$(cat "$F/log/run-nested/import" 2> /dev/null)': $out"
+  fi
+  if [ "$secs" -lt 15 ]; then ok "a run ends with its client: the input schedulers are stopped"; else bad "a nested run took $secs s"; fi
+
+  # A run whose watchdog doesn't end cleanly (here a gate event) marks the prefix, and setup and run
+  # refuse it until it is rebuilt: a driver service that run left in the registry would start,
+  # unwatched, when Wine next boots the prefix, as setup's prime does (#148).
+  if [ ! -e "$F/work/compat/fenji-gate-event" ]; then ok "clean runs leave the prefix unmarked"; else bad "a clean run marked the prefix"; fi
+  flow run-failure "$F/work" with_env FAKE_WATCH_RC=4 cmd_bare_run w1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 4 ] && grep -q '^run w1: watchdog exit 4, ' "$F/work/compat/fenji-gate-event" 2> /dev/null; then
+    ok "a watchdog failure marks the prefix too"
+  else
+    bad "a watchdog failure: rc $rc, mark '$(cat "$F/work/compat/fenji-gate-event" 2> /dev/null)': $out"
+  fi
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  flow run-gate "$F/work" with_env FAKE_WATCH_RC=3 cmd_bare_run g1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 3 ] && grep -q '^run g1: watchdog exit 3, ' "$F/work/compat/fenji-gate-event" 2> /dev/null; then
+    ok "a gate event marks the prefix"
+  else
+    bad "a gate event: rc $rc, mark '$(cat "$F/work/compat/fenji-gate-event" 2> /dev/null)': $out"
+  fi
+  flow setup-marked "$F/work" "${on_desktop[@]}" cmd_bare_setup --desktop
+  if [ "$rc" = 1 ] && [[ $out == *"saw a gate event or a watchdog failure (run g1: watchdog exit 3, "* ]] &&
+    [ ! -e "$F/log/setup-marked/umu" ]; then
+    ok "setup refuses a prefix that saw a gate event, and starts nothing in it"
+  else
+    bad "setup on a marked prefix: rc $rc: $out"
+  fi
+  flow run-marked "$F/work" cmd_bare_run t2 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 1 ] && [[ $out == *"saw a gate event or a watchdog failure"* ]] && [ ! -e "$F/log/run-marked/bwrap" ]; then
+    ok "a run refuses a prefix that saw a gate event"
+  else
+    bad "a run on a marked prefix: rc $rc: $out"
+  fi
+  # The client can write the prefix: the mark is never written through a link it planted there,
+  # and anything at the mark's place keeps the prefix refused.
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  echo "the host's own file" > "$F/host-file"
+  flow run-planted "$F/work" with_env FAKE_WATCH_RC=3 with_env FAKE_PLANT="$F/work/compat/fenji-gate-event" \
+    with_env FAKE_PLANT_TO="$F/host-file" cmd_bare_run p1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 3 ] && [ "$(cat "$F/host-file")" = "the host's own file" ] && [[ $out == *"couldn't write the gate-event mark"* ]]; then
+    ok "the gate-event mark is never written through a link the client planted"
+  else
+    bad "a planted link at the mark: rc $rc, host file '$(cat "$F/host-file")': $out"
+  fi
+  flow run-planted-next "$F/work" cmd_bare_run t3 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 1 ] && [[ $out == *"saw a gate event or a watchdog failure;"* ]]; then
+    ok "a link at the mark's place keeps the prefix refused"
+  else
+    bad "after a planted link: rc $rc: $out"
+  fi
+  # Nor does a FIFO there stall the runner on its way to the verdict and the evidence.
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  flow run-fifo "$F/work" with_env FAKE_WATCH_RC=3 with_env FAKE_FIFO="$F/work/compat/fenji-gate-event" \
+    cmd_bare_run f1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 3 ] && [ "$secs" -lt 12 ] && [[ $out == *"couldn't write the gate-event mark"* ]] &&
+    [ -e "$F/work/out/f1/watchdog-exit-code" ]; then
+    ok "a FIFO the client planted at the mark's place doesn't stall the runner"
+  else
+    bad "a planted FIFO: rc $rc after $secs s: $out"
+  fi
+else
+  echo "skip the end-to-end flows: they need Linux on x86_64"
+fi
+
+# --- the namespace for real, where it can be made: probes run inside it. CI runs them after it
+# installs bwrap, with a socket at /tmp/.X11-unix/X99, and sets FENJI_REQUIRE_LIVE_PROBES=1, so
+# that a skip there fails instead (#148).
 if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && command -v bwrap > /dev/null && [ -S /tmp/.X11-unix/X99 ] &&
   bwrap --dev-bind / / --unshare-net --unshare-pid true 2> /dev/null; then
   mapfile -t ns < <(namespace_cmd 99)
@@ -442,6 +809,8 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && command -v bwrap > /dev/null 
   for want in "no system bus" "no resolver socket" "no session bus" "empty /dev/shm" "the display" "loopback only" "no name lookups" "no key requests"; do
     if grep -qx "$want" <<< "$probe"; then ok "inside the namespace: $want"; else bad "inside the namespace: $want missing ($probe)"; fi
   done
+elif [ "${FENJI_REQUIRE_LIVE_PROBES:-}" = 1 ]; then
+  bad "the live namespace probes couldn't run (FENJI_REQUIRE_LIVE_PROBES=1): they need Linux on x86_64, bwrap, namespaces and /tmp/.X11-unix/X99"
 else
   echo "skip the live namespace probes: they need bwrap, namespaces and the nested display :99"
 fi

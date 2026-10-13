@@ -116,6 +116,27 @@ fn vocation_and_skeleton_must_match_the_western_screen() {
 }
 
 #[test]
+fn the_base_face_and_outfit_must_be_numbers() {
+    // prop_sys_avatar_feature (4) and prop_base_equips_id (8): a number is clamped to 1–2 as the
+    // client clamps it, an absent one is 1, and anything else is refused (Review Focus 2).
+    for index in [4, 8] {
+        for bad in [Value::Table(Table::default()), s("2"), Value::Bool(true)] {
+            let r = with(request("Lin", 0, 1), index, bad.clone());
+            assert_eq!(
+                CreateRequest::parse(&r).unwrap_err(),
+                Refusal::Malformed,
+                "index {index}: {bad:?}"
+            );
+        }
+        let r = with(request("Lin", 0, 1), index, Value::Int(7));
+        assert!(
+            CreateRequest::parse(&r).is_ok(),
+            "index {index}: a number is clamped"
+        );
+    }
+}
+
+#[test]
 fn shapes_no_client_sends_are_refused() {
     assert_eq!(CreateRequest::parse(&[]).unwrap_err(), Refusal::Malformed);
     assert_eq!(

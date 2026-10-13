@@ -203,6 +203,8 @@ mod tests {
         assert!(text.contains("# sent 1 bytes at offset 2\n00000002  21"));
     }
 
+    /// The second read mixes the auth's last byte with the first bytes after it, as one read that
+    /// holds the end of the auth's frames and the next frame does (#145's review).
     #[test]
     fn a_held_auth_is_never_written() {
         let tmp = tempfile::tempdir().unwrap();
@@ -270,6 +272,58 @@ mod tests {
         let text = fs::read_to_string(path).unwrap();
         assert!(text.contains("# recv 4 bytes at offset"));
         assert!(text.contains("# [10 more bytes not kept while holding]"));
+    }
+
+    #[test]
+    fn an_auth_longer_than_the_buffer_counts_what_it_never_kept() {
+        // The auth ends past HOLD_MAX: skip is beyond what the buffer holds, so nothing is
+        // recorded, and the bytes after the auth that weren't kept are counted.
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, peer) = addrs();
+        let mut log = SessionLog::create(tmp.path(), local, peer).unwrap();
+        log.hold();
+        log.record(&vec![7u8; super::HOLD_MAX + 10]).unwrap();
+        log.release(super::HOLD_MAX + 5).unwrap();
+        assert_eq!(log.received(), super::HOLD_MAX + 10);
+        let path = log.path().to_path_buf();
+        log.close("peer closed").unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert!(!text.contains("# recv"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "# [auth frames not captured: {} bytes]",
+                super::HOLD_MAX + 5
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains("# [5 more bytes not kept while holding]"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_close_while_holding_past_the_limit_counts_every_byte() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (local, peer) = addrs();
+        let mut log = SessionLog::create(tmp.path(), local, peer).unwrap();
+        log.hold();
+        log.record(&vec![7u8; super::HOLD_MAX + 10]).unwrap();
+        let path = log.path().to_path_buf();
+        log.close("peer closed").unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert!(!text.contains("# recv"), "{text}");
+        let all = super::HOLD_MAX + 10;
+        assert!(
+            text.contains(&format!(
+                "# [{all} bytes before a complete auth not captured]"
+            )),
+            "{text}"
+        );
+        assert!(
+            text.ends_with(&format!("# closed after {all} bytes: peer closed\n")),
+            "{text}"
+        );
     }
 
     #[test]

@@ -56,6 +56,8 @@ pub async fn start(
         .await
         .with_context(|| format!("opening {}", cfg.store.path.display()))?;
     let accounts = Arc::new(Accounts::new(store, cfg.auth.clone(), Arc::clone(&clock)));
+    // The fixed hash for unknown usernames, made now rather than at the first one (#132's review).
+    tokio::task::spawn_blocking(fenji_auth::password::warm_dummy);
     let login = TcpListener::bind(cfg.server.login_bind)
         .await
         .with_context(|| format!("can't listen on {}", cfg.server.login_bind))?;

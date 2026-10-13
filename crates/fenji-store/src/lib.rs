@@ -26,14 +26,21 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens `path`, creating it if needed, and brings its schema up to date.
+    /// Opens `path`, creating it if needed, and brings its schema up to date. The file is kept
+    /// owner-only, since it holds password hashes, and SQLite overwrites deleted rows
+    /// (`secure_delete`), so an account deleted is gone from the file too. Older copies in the
+    /// write-ahead log go with [`Store::checkpoint`], or when SQLite next restarts the log, which
+    /// it then cuts back to nothing (`journal_size_limit`), or when the last connection closes.
     pub async fn open(path: &Path) -> Result<Self> {
+        owner_only(path)?;
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true)
+            .pragma("secure_delete", "ON")
+            .pragma("journal_size_limit", "0")
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
@@ -43,16 +50,32 @@ impl Store {
         Ok(Self { pool })
     }
 
+    /// Folds the write-ahead log into the database and empties it (`wal_checkpoint(TRUNCATE)`), so
+    /// nothing deleted lingers there. False when another connection still had the log in use at
+    /// the end of the busy timeout: the log then empties when SQLite next restarts it.
+    pub async fn checkpoint(&self) -> Result<bool> {
+        let (busy, _, _): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(busy == 0)
+    }
+
     /// Closes every connection; later calls fail.
     pub async fn close(&self) {
         self.pool.close().await;
     }
 
     /// Holds the write lock for `d`, then lets go without writing: for tests of what other writers
-    /// see while a server's transaction is open.
-    #[doc(hidden)]
-    pub async fn hold_write_lock(&self, d: Duration) -> Result<()> {
+    /// see while a server's transaction is open. `held` is sent once the lock is taken, so a test
+    /// knows the lock is held rather than guessing with a sleep.
+    #[cfg(feature = "test-util")]
+    pub async fn hold_write_lock(
+        &self,
+        d: Duration,
+        held: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<()> {
         let tx = self.begin().await?;
+        let _ = held.send(());
         tokio::time::sleep(d).await;
         tx.rollback().await?;
         Ok(())
@@ -61,6 +84,39 @@ impl Store {
     async fn begin(&self) -> Result<Transaction<'static, Sqlite>> {
         Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
     }
+}
+
+/// Creates `path` owner-only (0600) if it is missing, and takes group and other access away from it
+/// and from its `-wal` and `-shm` files if they have any (a database from v0.4.0 was 0644). SQLite
+/// gives the files it creates later the main file's mode.
+#[cfg(unix)]
+fn owner_only(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+    for suffix in ["", "-wal", "-shm"] {
+        let mut p = path.as_os_str().to_owned();
+        p.push(suffix);
+        let p = std::path::PathBuf::from(p);
+        match std::fs::metadata(&p) {
+            Ok(m) if m.permissions().mode() & 0o077 != 0 => {
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn owner_only(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -122,5 +178,106 @@ mod tests {
         s.close().await;
         let s = Store::open(&path).await.unwrap();
         assert_eq!(s.list_invites().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn deleted_rows_are_overwritten() {
+        let (_dir, s) = test_util::store().await;
+        let on: (i64,) = sqlx::query_as("PRAGMA secure_delete")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(on.0, 1);
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_new_database_and_its_wal_are_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.db");
+        let s = Store::open(&path).await.unwrap();
+        s.create_invite(&[7; 32], None, 1, None).await.unwrap();
+        assert_eq!(mode(&path), 0o600);
+        let wal = dir.path().join("fenji.db-wal");
+        assert!(
+            wal.exists(),
+            "a write in WAL mode leaves the -wal file while the pool is open"
+        );
+        assert_eq!(mode(&wal), 0o600);
+        assert_eq!(mode(&dir.path().join("fenji.db-shm")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_existing_world_readable_database_is_made_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.db");
+        let s = Store::open(&path).await.unwrap();
+        s.create_invite(&[7; 32], None, 1, None).await.unwrap();
+        s.close().await;
+        for f in ["fenji.db", "fenji.db-wal", "fenji.db-shm"] {
+            let p = dir.path().join(f);
+            if p.exists() {
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+        }
+        let s = Store::open(&path).await.unwrap();
+        assert_eq!(s.list_invites().await.unwrap().len(), 1);
+        for f in ["fenji.db", "fenji.db-wal", "fenji.db-shm"] {
+            let p = dir.path().join(f);
+            if p.exists() {
+                assert_eq!(mode(&p), 0o600, "{f}");
+            }
+        }
+    }
+
+    /// The `-wal` file next to `dir`'s database (SQLite appends the suffix to the whole name).
+    fn wal(dir: &Path) -> std::path::PathBuf {
+        dir.join("fenji.db-wal")
+    }
+
+    #[tokio::test]
+    async fn the_log_is_cut_back_whenever_sqlite_restarts_it() {
+        // A checkpoint alone doesn't shrink the write-ahead log, so frames that copied a deleted
+        // row would stay in the file until overwritten (PRIVACY.md, "Deleting your data").
+        let (_d, s) = test_util::store().await;
+        let limit: i64 = sqlx::query_scalar("PRAGMA journal_size_limit")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(limit, 0);
+    }
+
+    #[tokio::test]
+    async fn a_checkpoint_empties_the_log() {
+        let (d, s) = test_util::store().await;
+        test_util::account(&s, 1, "bob").await;
+        assert!(std::fs::metadata(wal(d.path())).unwrap().len() > 0);
+        assert!(s.checkpoint().await.unwrap());
+        assert_eq!(std::fs::metadata(wal(d.path())).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_checkpoint_a_reader_holds_up_says_so() {
+        // A reader still on an older snapshot keeps its frames in use: the log can't be emptied
+        // (after the busy timeout), and the caller hears it.
+        let (_d, s) = test_util::store().await;
+        test_util::account(&s, 1, "bob").await;
+        let mut reader = s.pool.acquire().await.unwrap();
+        sqlx::query("BEGIN").execute(&mut *reader).await.unwrap();
+        let _: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&mut *reader)
+            .await
+            .unwrap();
+        test_util::account(&s, 2, "eve").await;
+        assert!(!s.checkpoint().await.unwrap());
+        sqlx::query("ROLLBACK").execute(&mut *reader).await.unwrap();
     }
 }

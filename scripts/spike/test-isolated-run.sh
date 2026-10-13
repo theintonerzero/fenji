@@ -198,7 +198,7 @@ fi
 # made unprivileged, so this uses a ramfs in a private mount namespace and the self-test-only
 # FENJI_ISOLATED_RUN_TEST_EXTRA_FSTYPES (it can only add types to the refused list). The space
 # in the path checks that /proc/self/mountinfo escapes are decoded.
-mkdir -p "$tmp/net fs/mnt" "$tmp/overmount/game" "$tmp/find-O3"
+mkdir -p "$tmp/net fs/mnt" "$tmp/overmount/game" "$tmp/find-O3" "$tmp/kernel fs/sys"
 : > "$tmp/overmount/game/data.bin"
 printf '#!/bin/sh\nexec %s -O3 "$@"\n' "$(command -v find)" > "$tmp/find-O3/find"
 chmod +x "$tmp/find-O3/find"
@@ -213,6 +213,21 @@ if unshare -rm true 2>/dev/null; then
       [ "$rc" -eq 2 ] && [[ $err == *"on a ramfs filesystem"* ]] || { echo "  on: rc=$rc $err" >&2; exit 1; }
       unset FENJI_ISOLATED_RUN_TEST_EXTRA_FSTYPES
       "$1" --ro-bind "$2" -- true' _ "$run" "$tmp/net fs"
+  # The kernel's own interfaces (sysfs, cgroup2, proc, nsfs, ...) are refused by type too, wherever
+  # they are mounted: a path check alone misses /sys mounted again elsewhere, and the socket scan
+  # refuses sysfs only because it can't read all of it, while cgroup2 reads fine. A user namespace
+  # may bind /sys only with its submounts (--rbind), which brings securityfs and cgroup2 along.
+  check "binding a dir on, or containing, a kernel interface filesystem outside /sys is refused (on / contains)" \
+    unshare -rm bash -c '
+      mount --rbind /sys "$2/sys" || exit 1
+      err=$("$1" --ro-bind "$2" -- true 2>&1); rc=$?
+      [ "$rc" -eq 2 ] && [[ $err == *"sysfs mount at $2/sys "* ]] || { echo "  contains: rc=$rc $err" >&2; exit 1; }
+      err=$("$1" --bind "$2/sys/devices" -- true 2>&1); rc=$?
+      [ "$rc" -eq 2 ] && [[ $err == *"on a sysfs filesystem"* ]] || { echo "  on: rc=$rc $err" >&2; exit 1; }
+      [ "$(stat -f -c %T "$2/sys/fs/cgroup")" = cgroup2fs ] || exit 0
+      err=$("$1" --bind "$2/sys/fs/cgroup" -- true 2>&1); rc=$?
+      [ "$rc" -eq 2 ] && [[ $err == *"on a cgroup2 filesystem"* ]] || { echo "  cgroup2: rc=$rc $err" >&2; exit 1; }' \
+    _ "$run" "$tmp/kernel fs"
   # A socket bind-mounted over a file (only root can mount one on a real host): readdir reports
   # the covered file's type, so the scan must stat every entry, whatever its link count, which is
   # 0 once the socket's own name is removed (it still takes connections through the mount). Also
@@ -525,7 +540,10 @@ t_as_run() {
     [ "$(cat /sys/devices/system/cpu/online)" = "$4" ] && echo cpu=host
     [ "$(getent hosts login.fenji.test | cut -d" " -f1)" = 127.0.0.1 ] && echo hosts=mapped
     echo hi > "$5/file" && echo rw=writable
-    touch "$6/file" 2>/dev/null || echo ro=readonly
+    python3 -I -c "import errno, sys
+try: open(sys.argv[1] + \"/file\", \"w\")
+except OSError as e: sys.exit(e.errno != errno.EROFS)
+sys.exit(1)" "$6" && echo ro=readonly
     [ "$(ip -o link show | awk -F": " "{print \$2}")" = lo ] && echo links=lo
     (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null || echo tcp=blocked
     getent hosts example.com >/dev/null 2>&1 || echo dns=blocked' \

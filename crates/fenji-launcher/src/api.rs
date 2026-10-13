@@ -20,7 +20,7 @@ pub enum ApiError {
     Insecure,
     #[error("that isn't a server address: give https://host or https://host:port")]
     BadUrl,
-    #[error("the server answered {code} (HTTP {status})")]
+    #[error("the server answered {code} (HTTP {status}){wait}", wait = wait_hint(.retry_after_secs))]
     Server {
         status: u16,
         code: String,
@@ -31,6 +31,12 @@ pub enum ApiError {
     Http(String),
     #[error("the server's answer didn't make sense: {0}")]
     Decode(String),
+}
+
+/// "; try again in N s" when the server said how long to wait.
+fn wait_hint(secs: &Option<u64>) -> String {
+    secs.map(|n| format!("; try again in {n} s"))
+        .unwrap_or_default()
 }
 
 /// What `GET /api/v1/server` says.
@@ -358,6 +364,121 @@ mod tests {
         ));
         let e = server_error(502, b"<html>Bad Gateway</html>");
         assert!(matches!(e, ApiError::Server { status: 502, ref code, .. } if code == "unknown"));
+    }
+
+    #[test]
+    fn a_rate_limited_player_is_told_how_long_to_wait() {
+        let e = server_error(429, br#"{"error":"try_later","retry_after_secs":7}"#);
+        assert!(e.to_string().contains("try again in 7 s"), "{e}");
+        let e = server_error(401, br#"{"error":"bad_credentials"}"#);
+        assert!(!e.to_string().contains("try again"), "{e}");
+    }
+
+    fn grant() -> GameGrant {
+        GameGrant {
+            ticket: format!("fenji1-{}", "0a".repeat(32)),
+            expires_in_secs: 60,
+            gate_host: "play.example.net".into(),
+            gate_port: 7800,
+            server_id: 1,
+            server_name: "Fenji".into(),
+            account: "lin_yue".into(),
+            user_id: 7,
+        }
+    }
+
+    #[test]
+    fn a_grant_takes_only_a_well_formed_ticket_and_plain_names() {
+        assert!(grant().check().is_ok());
+        let bad: Vec<(&str, GameGrant)> = vec![
+            (
+                "no prefix",
+                GameGrant {
+                    ticket: "0a".repeat(32),
+                    ..grant()
+                },
+            ),
+            (
+                "upper-case prefix",
+                GameGrant {
+                    ticket: format!("FENJI1-{}", "0a".repeat(32)),
+                    ..grant()
+                },
+            ),
+            (
+                "63 digits",
+                GameGrant {
+                    ticket: format!("fenji1-{}", "a".repeat(63)),
+                    ..grant()
+                },
+            ),
+            (
+                "65 digits",
+                GameGrant {
+                    ticket: format!("fenji1-{}", "a".repeat(65)),
+                    ..grant()
+                },
+            ),
+            (
+                "not hex",
+                GameGrant {
+                    ticket: format!("fenji1-{}", "g".repeat(64)),
+                    ..grant()
+                },
+            ),
+            (
+                "empty account",
+                GameGrant {
+                    account: String::new(),
+                    ..grant()
+                },
+            ),
+            (
+                "colon in account",
+                GameGrant {
+                    account: "a:b".into(),
+                    ..grant()
+                },
+            ),
+            (
+                "control in account",
+                GameGrant {
+                    account: "a\u{1b}[2J".into(),
+                    ..grant()
+                },
+            ),
+            (
+                "colon in server name",
+                GameGrant {
+                    server_name: "x:y".into(),
+                    ..grant()
+                },
+            ),
+            (
+                "control in server name",
+                GameGrant {
+                    server_name: "x\ny".into(),
+                    ..grant()
+                },
+            ),
+            (
+                "gate with a space",
+                GameGrant {
+                    gate_host: "play example".into(),
+                    ..grant()
+                },
+            ),
+            (
+                "gate with a port",
+                GameGrant {
+                    gate_host: "play.example.net:7800".into(),
+                    ..grant()
+                },
+            ),
+        ];
+        for (what, g) in bad {
+            assert!(matches!(g.check(), Err(ApiError::Decode(_))), "{what}");
+        }
     }
 
     #[test]

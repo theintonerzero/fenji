@@ -8,10 +8,25 @@ use fenji_server::config::Config;
 
 fn config(dir: &Path) -> Config {
     Config::parse(
-        "[server]\nname = \"Fenji\"\npublic_host = \"play.example.net\"\n",
+        "[server]\nname = \"Fenji\"\npublic_host = \"play.example.net\"\npublic_api = \"https://play.example.net\"\n",
         dir,
     )
     .unwrap()
+}
+
+/// The code and link lines `invite create` prints under `server`.
+async fn invite_with(dir: &Path, server: &str) -> String {
+    let cfg = Config::parse(&format!("[server]\nname = \"Fenji\"\n{server}"), dir).unwrap();
+    run(
+        &cfg,
+        Command::Invite {
+            cmd: InviteCmd::Create {
+                label: None,
+                expires: None,
+            },
+        },
+    )
+    .await
 }
 
 async fn run(cfg: &Config, cmd: Command) -> String {
@@ -51,6 +66,23 @@ async fn invite_create_prints_the_code_and_a_link_with_the_code_in_the_fragment(
     .await;
     assert!(list.contains("for bob") && list.contains("open"), "{list}");
     assert!(!list.contains(code), "the list never shows codes: {list}");
+}
+
+#[tokio::test]
+async fn an_invite_link_names_the_account_api_not_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    // The default api_bind, 127.0.0.1:7801, is loopback: the link is that address, over http,
+    // which fenji-launch accepts for loopback only. public_host names the gate, not the API.
+    let text = invite_with(dir.path(), "public_host = \"127.0.0.1\"\n").await;
+    let code = text.lines().find_map(|l| l.strip_prefix("code: ")).unwrap();
+    assert!(
+        text.contains(&format!("link: http://127.0.0.1:7801/#invite={code}")),
+        "{text}"
+    );
+    // An API that listens beyond loopback, with no public_api: no link rather than a wrong one.
+    let text = invite_with(dir.path(), "api_bind = \"0.0.0.0:7801\"\n").await;
+    assert!(!text.contains("#invite="), "{text}");
+    assert!(text.contains("public_api"), "says what to set: {text}");
 }
 
 #[tokio::test]
@@ -113,9 +145,12 @@ async fn cli_writes_while_a_server_holds_the_database() {
     let held = fenji_store::Store::open(&cfg.store.path).await.unwrap();
     // A writer holds the database for a moment, as a running server's transaction would.
     let busy = held.clone();
-    let holder =
-        tokio::spawn(async move { busy.hold_write_lock(Duration::from_millis(200)).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let (taken, lock_held) = tokio::sync::oneshot::channel();
+    let holder = tokio::spawn(async move {
+        busy.hold_write_lock(Duration::from_millis(200), taken)
+            .await
+    });
+    lock_held.await.unwrap();
     let text = run(
         &cfg,
         Command::Invite {
@@ -169,6 +204,44 @@ async fn accounts_list_and_delete() {
     )
     .await;
     assert!(text.contains("deleted BOB"), "{text}");
+}
+
+#[tokio::test]
+async fn account_delete_leaves_no_copy_in_the_write_ahead_log() {
+    // PRIVACY.md, "Deleting your data". A running server keeps the database open, so the CLI's
+    // own connections closing doesn't fold the log into the file: `account delete` empties it.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path());
+    let server = fenji_store::Store::open(&cfg.store.path).await.unwrap();
+    server.create_invite(&[1; 32], None, 1, None).await.unwrap();
+    server
+        .redeem_invite(&[1; 32], "witness-in-the-log", "$witness-hash", 1)
+        .await
+        .unwrap();
+    let text = run(
+        &cfg,
+        Command::Account {
+            cmd: AccountCmd::Delete {
+                username: "witness-in-the-log".into(),
+            },
+        },
+    )
+    .await;
+    assert!(text.contains("deleted witness-in-the-log"), "{text}");
+    let mut wal = cfg.store.path.clone().into_os_string();
+    wal.push("-wal");
+    for file in [std::path::PathBuf::from(wal), cfg.store.path.clone()] {
+        let bytes = std::fs::read(&file).unwrap_or_default();
+        for witness in [&b"witness-in-the-log"[..], b"$witness-hash"] {
+            assert!(
+                !bytes.windows(witness.len()).any(|w| w == witness),
+                "{} still holds {}",
+                file.display(),
+                String::from_utf8_lossy(witness)
+            );
+        }
+    }
+    drop(server);
 }
 
 #[test]

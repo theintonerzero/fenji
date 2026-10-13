@@ -7,15 +7,20 @@ kills the whole sandbox (SIGKILL: the PID namespace's init, every member, then b
 That is a gate event: stop all runs and report BLOCKED. It never reads or analyses a driver file
 beyond stat() and a SHA-256 for identification.
 
-  watchdog.py baseline --root S --out OUT
-      Snapshot of every *.sys under S and of the prefix's service keys -> OUT/watchdog-baseline.json.
-  watchdog.py watch --root S --out OUT --sandbox-pid PID --log FILE [--interval 0.5]
+  watchdog.py baseline --root S --out OUT [--prefix PFX]
+      Snapshot of every *.sys under S and of the service keys in PFX/system.reg (default: the
+      prefix at S/compat/pfx) -> OUT/watchdog-baseline.json.
+  watchdog.py watch --root S --out OUT --sandbox-pid PID --log FILE [--prefix PFX] [--interval 0.5]
       PID is the isolated-run.sh wrapper started in the background (it execs bwrap). Once the
       sandbox's PID namespace exists the watchdog arms itself and creates OUT/.go, which the command
       inside waits for before it starts the client. Exit 0: the sandbox ended, no sign seen.
       Exit 3: gate event. Exit 4: the watchdog itself failed (the sandbox is killed then too).
   watchdog.py watch ... [--go FILE]
       FILE is the start signal (default OUT/.go); it is created exclusively and never through a link.
+  watchdog.py watch ... [--tmpfs DIR]... [--bind PATH]...
+      The sandbox's own tmpfs mounts S1 scans (default: isolated-run.sh's, and the root's own
+      entries), and the paths bound into the sandbox, which that scan skips. run-bare.sh names its
+      namespace's /run, /tmp and /dev/shm, and what it binds into them from the host.
   watchdog.py collect --src DIR --dest DIR [--name N]... [--exclude N]...
       Copies DIR's regular files into DEST without following any link (links and special files are
       listed in DEST/collect-notes.txt): how the host takes evidence from directories the sandbox
@@ -27,25 +32,28 @@ Signs (any one triggers):
   S1 a *.sys under S that isn't in the baseline, or a baseline one whose identity changed: a regular
      file's size, mtime or inode, or a symlink's target or the target file's size, mtime or inode
      (sys_identity; a link merely re-created by Proton's prefix re-sync is not a change); any *.sys
-     in the sandbox's own tmpfs mounts, seen through /proc/<pid>/root of a sandbox process.
+     in the sandbox's own tmpfs mounts (--tmpfs), seen through /proc/<pid>/root of a sandbox
+     process, bar the paths bound into them (--bind).
   S2 a winedevice.exe process in the sandbox's PID namespace that started after the client
      (gujianol.exe) started. Those started before it host Wine's own drivers (the baseline).
   S3 in the Wine log, read incrementally: a .sys module (any letter case) loaded native, not as a
      Wine builtin; a native module loaded from a drivers directory or into a winedevice.exe process
      (Wine's builtin drivers and their imports are all builtin); a resource lookup of the named type
      "PE" (the embedded driver's type, PE/144; needs +resource); Nt/ZwLoadDriver for a service that
-     isn't in the baseline; a service key created by services.exe that isn't in the baseline (needs
-     +reg, r1-r6); CreateService for a service that isn't in the baseline, or for a baseline service
-     with an image path other than its baseline one (needs +service, r7 on); the strings
+     isn't in the baseline, or for a baseline service that isn't of a driver type (discord-bridge);
+     a service key created by services.exe that isn't in the baseline (needs +reg, r1-r6);
+     CreateService for a service that isn't in the baseline, or for a baseline service with an image
+     path other than its baseline one or none readable (needs +service, r7 on); the strings
      ProcessProtect, AGTDriver or AurogonGameTrust.
-  S4 the prefix's system.reg (re-read when it changes; Wine saves it periodically and at exit): a new
-     service key of a driver type (kernel or file system) or with a driver image, or a baseline
-     service whose type or image path changed, or a system.reg that is no longer a regular file.
+  S4 the prefix's system.reg (--prefix; re-read when it changes; Wine saves it periodically and at
+     exit): a new service key of a driver type (kernel or file system) or with a driver image, or a
+     baseline service whose type or image path changed, or a system.reg that is no longer a regular
+     file.
   Fail safe (exit 4, the sandbox killed): the client has run 20 s, the log scan has caught up, and
   the log still hasn't shown the client's creation, so the LoadDriver sign would be blind.
   Notes only (no trigger): a builtin .sys outside the baseline set; a new service of another type;
   CreateService re-registering a baseline service with its baseline image (Proton's discord-bridge,
-  at every start); LoadDriver for a baseline service
+  at every start); LoadDriver for a baseline service of a driver type
   (Wine's own winebth fails to load in every run), the name read from the same line or, when a nested
   Wine trace split the message, from a header-less continuation in the next 5 lines (r7); LoadDriver
   logged before the client's process creation (controller ruling after r7). Everything else,
@@ -86,7 +94,9 @@ R_CLIENT_CREATE = re.compile(rb"(?:CreateProcessInternalW|NtCreateUserProcess) [
 # +service (r7 on, replacing +reg): sechost's "CreateServiceW <scm> L"name" ..." and services.exe's
 # "svcctl_CreateServiceW (L"name", ...)". The first quoted string on the line is the service name.
 R_CREATESERVICE = re.compile(rb'CreateService\w*[^"\n]*"([^"\n]*)"|CreateService\w*[^\n]*')
-R_QUOTED = re.compile(rb'"((?:[^"\\\n]|\\.)*)"')  # a debugstr_w string's text, escapes kept
+# services.exe's line ends with the image path, after the access mask: `0xf01ff, L"<path>")`
+# (m1-accept2). The display name before it can be a bare (null) (issue #148). Escapes kept.
+R_SVCCTL_IMAGE = re.compile(rb', 0x[0-9a-f]+, L"((?:[^"\\\n]|\\.)*)"\)\s*$')
 # The sandbox's tmpfs mounts (isolated-run.sh): walked whole, and the root's own entries.
 TMPFS_SUBS = ("/tmp", "/dev/shm", "/run", "/var", "/etc", HOST_HOME)
 TMPFS_SHALLOW = ("/",)
@@ -134,6 +144,8 @@ def sys_identity(path):
 
 
 def scan_sys(root, prune=()):
+    """Each *.sys under `root`, with its identity; the paths in `prune` (directories or files) are
+    skipped."""
     found = {}
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         if prune:
@@ -141,6 +153,8 @@ def scan_sys(root, prune=()):
         for f in filenames:
             if f.lower().endswith(".sys"):
                 p = os.path.join(dirpath, f)
+                if p in prune:
+                    continue
                 try:
                     found[p] = sys_identity(p)
                 except OSError:
@@ -425,9 +439,10 @@ def alive(pid):
 
 # --- log rules ---------------------------------------------------------------------------------
 class LogRules:
-    def __init__(self, baseline_services, images=None):
+    def __init__(self, baseline_services, images=None, drivers=None):
         self.services = set(baseline_services)
         self.images = dict(images or {})  # baseline service -> its normalised image path
+        self.drivers = set(drivers or ())  # the baseline services of a driver type (is_driver_service)
         self.services_pids = set()
         self.winedevice_pids = set()
         self.client_ts = None  # Wine timestamp of the client's process creation, once logged
@@ -505,8 +520,12 @@ class LogRules:
                             break
             svc = n.group(1).decode("utf-8", "replace").lower() if n else None
             how = " (message split across lines)" if split else ""
-            if svc and svc in self.services:
+            if svc and svc in self.drivers:
                 notes.append((f"LoadDriver for baseline service {svc}{how}", line_at(m.start())))
+            elif svc and svc in self.services:
+                # A user-mode service (discord-bridge, Type 0x10) never goes through LoadDriver: its
+                # key now names a driver (issue #148).
+                trig.append((f"S3 LoadDriver for user-mode baseline service {svc}{how}", line_at(m.start())))
             else:
                 trig.append((f"S3 LoadDriver for non-baseline service {svc}{how}", line_at(m.start())))
         low = None
@@ -529,11 +548,16 @@ class LogRules:
             # services.exe's line carries the image path after the name, the display name and the
             # (unquoted) access mask (m1-accept2). Proton re-registers its own services at every
             # start with their baseline image; another image is a driver under a borrowed name
-            # (review I1). sechost's line has no path: a note, as services.exe's line follows.
+            # (review I1), and so is a line whose image can't be read. sechost's line has no path:
+            # a note, as services.exe's line follows.
             raw = raw_line_at(m.start())
-            quoted = R_QUOTED.findall(raw)
-            if b"svcctl_CreateService" in raw and len(quoted) >= 3:
-                image = norm_image(quoted[2].decode("utf-8", "replace"))
+            if b"svcctl_CreateService" in raw:
+                found = R_SVCCTL_IMAGE.search(raw)
+                if not found:
+                    trig.append((f"S3 CreateService for baseline service {svc}, with no readable image",
+                                 line_at(m.start())))
+                    continue
+                image = norm_image(found.group(1).decode("utf-8", "replace"))
                 if image != self.images.get(svc.lower()):
                     trig.append((f"S3 CreateService re-points baseline service {svc}", line_at(m.start())))
                     continue
@@ -613,13 +637,13 @@ class Tail:
 
 
 # --- modes -------------------------------------------------------------------------------------
-def system_reg(root):
-    return os.path.join(root, "compat/pfx/system.reg")
+def system_reg(prefix):
+    return os.path.join(prefix, "system.reg")
 
 
 def cmd_baseline(a):
-    info = parse_services(system_reg(a.root))
-    base = {"taken": now(), "root": a.root, "sys": scan_sys(a.root),
+    info = parse_services(system_reg(a.prefix))
+    base = {"taken": now(), "root": a.root, "prefix": a.prefix, "sys": scan_sys(a.root),
             "services": sorted(info), "service_info": info}
     with open(os.path.join(a.out, "watchdog-baseline.json"), "w") as fh:
         json.dump(base, fh, indent=1)
@@ -632,8 +656,11 @@ def load_baseline(out):
 
 
 def baseline_rules(base):
-    """LogRules for a baseline: its service names, and each one's image path (S3 CreateService)."""
-    return LogRules(base["services"], {n: i["image"] for n, i in base.get("service_info", {}).items()})
+    """LogRules for a baseline: its service names, each one's image path (S3 CreateService), and
+    which of them are drivers (S3 LoadDriver)."""
+    info = base.get("service_info", {})
+    return LogRules(base["services"], {n: i["image"] for n, i in info.items()},
+                    {n for n, i in info.items() if is_driver_service(i)})
 
 
 def cmd_scanlog(a):
@@ -657,7 +684,7 @@ def cmd_watch(a):
     base = load_baseline(a.out)
     base_sys = base["sys"]
     rules = baseline_rules(base)
-    reg_path, reg_sig = system_reg(a.root), None
+    reg_path, reg_sig = system_reg(a.prefix), None
     tail = Tail(a.log)
     spid = a.sandbox_pid
     ns = None
@@ -669,11 +696,10 @@ def cmd_watch(a):
     notes_seen = set()
     polls = 0
     tmpfs_warned = False
-    log(f"watch start: sandbox pid {spid}, root {a.root}, log {a.log}, interval {a.interval}s, "
-        f"baseline {len(base_sys)} .sys / {len(base['services'])} services")
-    if a.no_tmpfs_scan:
-        log("tmpfs scan off: a bare-metal run, whose namespace sees the host's own files; "
-            "S1 covers the root")
+    subs, shallow = (a.tmpfs, ()) if a.tmpfs else (TMPFS_SUBS, TMPFS_SHALLOW)
+    log(f"watch start: sandbox pid {spid}, root {a.root}, prefix {a.prefix}, log {a.log}, "
+        f"interval {a.interval}s, baseline {len(base_sys)} .sys / {len(base['services'])} services, "
+        f"tmpfs scan of {' '.join(subs)}{' and / (its own entries)' if shallow else ''}")
 
     def sandbox_root_scan():
         nonlocal tmpfs_warned
@@ -685,7 +711,7 @@ def cmd_watch(a):
                 os.listdir(r + "/tmp")
             except OSError:
                 continue
-            return scan_tmpfs(r, TMPFS_SUBS, [a.root] + a.binds, shallow=TMPFS_SHALLOW)
+            return scan_tmpfs(r, subs, [a.root] + a.binds, shallow=shallow)
         if cands and not tmpfs_warned:
             log("note: can't read any sandbox process's /proc/PID/root; tmpfs mounts not scanned")
             tmpfs_warned = True
@@ -693,7 +719,7 @@ def cmd_watch(a):
 
     def check_sys():
         out = compare_sys(base_sys, scan_sys(a.root))
-        if init and not a.no_tmpfs_scan:
+        if init:
             for p, st in sandbox_root_scan().items():
                 out.append(("S1 .sys file in a sandbox tmpfs mount", p, st))
         return out
@@ -895,15 +921,18 @@ def parser():
     for p in (b, w, s):
         p.add_argument("--root", required=True)
         p.add_argument("--out", required=True)
+    for p in (b, w):
+        p.add_argument("--prefix", help="the Wine prefix whose system.reg S4 reads (default: ROOT/compat/pfx)")
     w.add_argument("--sandbox-pid", type=int, required=True)
     w.add_argument("--log", required=True)
     w.add_argument("--interval", type=float, default=0.5)
     w.add_argument("--bind", dest="binds", action="append", default=[],
-                   help="other dirs bound into the sandbox (pruned from the tmpfs scan)")
+                   help="other paths bound into the sandbox (skipped by the tmpfs scan)")
     w.add_argument("--go", help="the start signal to create once armed (default: OUT/.go)")
-    w.add_argument("--no-tmpfs-scan", action="store_true",
-                   help="a bare-metal run (run-bare.sh): no sandbox tmpfs mounts to scan; the "
-                        "namespace sees the host's files, whose own Proton prefixes would trip S1")
+    w.add_argument("--tmpfs", action="append",
+                   help="a tmpfs mount of the sandbox's own to scan, instead of isolated-run.sh's (a bare "
+                        "run's /run, /tmp, /dev/shm: its namespace sees the host's other files, whose own "
+                        "Proton prefixes would trip S1)")
     s.add_argument("files", nargs="+")
     c = sub.add_parser("collect", help="copy a sandbox-writable tree's regular files, never following a link")
     c.add_argument("--src", required=True)
@@ -923,6 +952,8 @@ def main():
         return 0
     a.root = os.path.realpath(a.root)
     a.out = os.path.realpath(a.out)
+    if a.mode in ("baseline", "watch"):
+        a.prefix = a.prefix or os.path.join(a.root, "compat", "pfx")
     if a.mode == "baseline":
         cmd_baseline(a)
         return 0

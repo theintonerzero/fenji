@@ -12,8 +12,10 @@
 #   - a local fenji-server, which shares the client's network namespace: that namespace has only
 #     loopback, and the host's daemon sockets in /run, /tmp and /dev/shm (D-Bus, systemd-resolved,
 #     the desktop portal) are out of reach, so the client's network reaches the Fenji server only.
-#     Sockets elsewhere in the real filesystem stay reachable, such as IBus's in ~/.cache/ibus,
-#     and the audio daemon can load network modules (#148); --desktop adds the session's display
+#     IBus's private sockets in ~/.cache/ibus are hidden too. Other sockets elsewhere in the real
+#     filesystem stay reachable, and so does the audio daemon: the accepted residual, as its pulse
+#     server takes load-module, so the client could load a network module on the host
+#     (module-tunnel-sink, module-native-protocol-tcp; #148). --desktop adds the session's display
 #     (below);
 #   - the AGT driver watchdog armed on the namespace's PID namespace before anything in it starts,
 #     as in sandboxed runs; a gate event stops the run (exit 3);
@@ -24,10 +26,12 @@
 # (a kernel DNS upcall). So home, GPU, audio and display are as on a player's machine, and no host
 # daemon socket in /run, /tmp or /dev/shm is. Its own /proc matters: without it, a nested bwrap
 # (umu's pressure-vessel) looks its child up in the host's /proc by a namespace PID and hangs. The
-# watchdog's scan of sandbox tmpfs mounts is off (--no-tmpfs-scan): the host's own Proton prefixes
-# would trip it. Its scan of re/bare-metal (the prefix and the run's copy), its process rules
-# (S2), its log rules (S3, which follow Proton's per-session logs) and its registry rule (S4) carry
-# the rest, and the run's evidence lists any new *.sys file under umu's runtime and /var/tmp.
+# watchdog scans re/bare-metal (the prefix and the run's copy) and the namespace's own /run, /tmp
+# and /dev/shm, less what the namespace binds into them (watch_cmd); the rest of the namespace's
+# filesystem is the host's, whose own Proton prefixes would trip it. Its process rules (S2), its log
+# rules (S3, which follow Proton's per-session logs) and its registry rule (S4, on the prefix named
+# directly, not through umu's pfx link) carry the rest, and the run's evidence lists any new *.sys
+# file under umu's runtime and /var/tmp.
 # Linux on x86_64 only.
 #
 #   scripts/spike/run-bare.sh setup (--display N | --desktop)
@@ -38,12 +42,17 @@
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
 # update off (the namespace has no network anyway), then primes it: cmd.exe started once through
 # Proton's launcher, so Proton's own service is in the watchdog's baseline (prefix_primed). A run
-# refuses an unprimed prefix, and setup primes an existing one.
+# refuses an unprimed prefix, and setup primes an existing one. A run whose watchdog doesn't exit
+# 0 (a gate event, or a watchdog failure) marks the prefix (compat/fenji-gate-event), and setup and
+# run refuse it until it is rebuilt (remove re/bare-metal/compat, then setup): a driver service that
+# run left in the registry would start, unwatched, the next time Wine boots the prefix.
 #
 # run's --server config must bind 127.0.0.1 and name 127.0.0.1 as its public_host, its [store] path
 # must lie in --server-data, a directory under re/bare-metal/, and --password-file holds the
 # account's password on its first line. The evidence goes to re/bare-metal/out/NAME; a Fenji ticket
-# found there is redacted in place.
+# found there is redacted in place. re/bare-metal, target/release, umu-run, GE-Proton and the
+# password file must lie outside /run, /tmp and /dev/shm, links resolved: the namespace replaces
+# those with its own empty tmpfs.
 #
 # The display: a run names it, and has no default. A nested display (--display N) is a dedicated
 # rootful Xwayland, Xephyr or Xvfb, never the session's own (bare_display_problem), where
@@ -81,12 +90,31 @@ GAMEID=umu-1418100
 X_LOCKS=/tmp
 X_SOCKDIR=/tmp/.X11-unix
 BARE_PROC=/proc
+# The namespace's own tmpfs mounts (namespace_cmd), where a host path vanishes (tests move them).
+NS_TMPFS=(/run /tmp /dev/shm)
 
 usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$BARE_HERE/run-bare.sh" >&2; exit 2; }
 die() { echo "run-bare: $*" >&2; exit 1; }
 misuse() { echo "run-bare: $*" >&2; exit 2; }
 
-# The guards that hold for setup and for every run: Linux, Steam not running, no Wine left over.
+# The namespace's own tmpfs mount that hides host PATH (resolved), if one does (#148).
+ns_hides() {
+  local real m
+  real=$(realpath -m -- "$1")
+  for m in "${NS_TMPFS[@]}"; do
+    case "$real/" in "$m"/*) echo "$m"; return 0 ;; esac
+  done
+  return 1
+}
+
+# Refuses host PATH, which the namespace must see, when one of the namespace's own mounts hides it.
+check_seen() {
+  local m
+  if m=$(ns_hides "$2"); then die "$1 is under $m, which the namespace replaces with an empty tmpfs: $2"; fi
+}
+
+# The guards that hold for setup and for every run: Linux, Steam not running, no Wine left over,
+# and re/bare-metal, umu-run and GE-Proton where the namespace sees them.
 host_guards() {
   [ "$(uname -s)" = Linux ] || die "bare-metal runs are for the Linux game box only"
   [ "$(uname -m)" = x86_64 ] || die "x86_64 only (the seccomp filter knows x86 syscall numbers only)"
@@ -96,6 +124,9 @@ host_guards() {
   if pgrep -x wineserver >/dev/null || pgrep -x winedevice.exe >/dev/null; then
     die "Wine processes are already running on the host; stop them first"
   fi
+  check_seen "re/bare-metal" "$WORK"
+  check_seen "umu-run (FENJI_UMU_RUN)" "$UMU"
+  check_seen "GE-Proton (FENJI_GE_PROTON)" "$PROTON"
   [ -x "$UMU" ] || die "umu-run not found at $UMU (run scripts/bootstrap.sh)"
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
 }
@@ -103,9 +134,10 @@ host_guards() {
 # The guard namespace's command line for display N: the real filesystem with its own /proc; empty
 # /run, /tmp and /dev/shm, so no host daemon socket of those (D-Bus, systemd-resolved, the portal,
 # agents) is there, bar the user's audio sockets and the display's X11 socket, bound back; Steam's
-# pipe masked; loopback only; its own PID namespace (where the watchdog arms); the seccomp filter
-# on fd 7; and nothing left when its parent goes. A second argument is a desktop run's X authority
-# file, brought in read-only after the tmpfs mounts, which would hide it.
+# pipe masked; IBus's private sockets hidden behind an empty tmpfs; loopback only; its own PID
+# namespace (where the watchdog arms); the seccomp filter on fd 7; and nothing left when its parent
+# goes. A second argument is a desktop run's X authority file, brought in read-only after the tmpfs
+# mounts, which would hide it.
 namespace_cmd() {
   local display=$1 xauth=${2:-} rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
   printf '%s\n' bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$rt"
@@ -114,6 +146,7 @@ namespace_cmd() {
   done
   printf '%s\n' --tmpfs /tmp --bind "/tmp/.X11-unix/X$display" "/tmp/.X11-unix/X$display" --tmpfs /dev/shm
   if [ -e "$HOME/.steam/steam.pipe" ]; then printf '%s\n' --ro-bind /dev/null "$HOME/.steam/steam.pipe"; fi
+  if [ -d "$HOME/.cache/ibus" ]; then printf '%s\n' --tmpfs "$HOME/.cache/ibus"; fi
   if [ -n "$xauth" ]; then printf '%s\n' --ro-bind "$xauth" "$xauth"; fi
   printf '%s\n' --unshare-net --unshare-pid --die-with-parent --seccomp 7 --
 }
@@ -281,19 +314,38 @@ check_pinned_copy() {
   [ -n "$PINNED_COPY" ] || die "FENJI_CLIENT_PATH is unset (scripts/bootstrap.sh writes it to ~/.config/fenji/env.sh)"
   [ ! -L "$PINNED_COPY" ] || die "the pinned copy is a link: $PINNED_COPY"
   [ -f "$PINNED_COPY/bin64/gujianol.exe" ] || die "no pinned copy at $PINNED_COPY"
-  local real
+  local real home
   real=$(realpath -- "$PINNED_COPY")
+  home=$(realpath -m -- "$HOME")
   case "$real/" in
-    */steamapps/* | "$HOME"/.steam/* | "$HOME"/.local/share/Steam/*) die "the pinned copy is in a Steam library: $real" ;;
+    */steamapps/* | "$home"/.steam/* | "$home"/.local/share/Steam/*) die "the pinned copy is in a Steam library: $real" ;;
   esac
   [ -z "$(find "$PINNED_COPY" -type l -print -quit)" ] || die "the pinned copy holds a link; it must hold files only"
 }
 
-# The watchdog's command line for run OUT/IO and namespace PID.
+# The watchdog's command line for run OUT/IO and namespace PID, given the namespace's own command
+# line (namespace_cmd's). It names the prefix, not umu's pfx link to it. S1 scans each tmpfs mount
+# the namespace makes, through /proc/PID/root, less each path the namespace binds in (the audio and
+# X11 sockets, the auth file): the rest of its filesystem is the host's, whose own Proton prefixes
+# would trip that scan.
 watch_cmd() {
-  local out=$1 io=$2 spid=$3
-  printf '%s\n' python3 -I "$WATCHDOG" watch --root "$WORK" --out "$out" --sandbox-pid "$spid" \
-    --log "$io/steam-1418100.log" --go "$io/.go" --no-tmpfs-scan
+  local out=$1 io=$2 spid=$3 i
+  shift 3
+  local a=("$@")
+  printf '%s\n' python3 -I "$WATCHDOG" watch --root "$WORK" --prefix "$WORK/compat" --out "$out" \
+    --sandbox-pid "$spid" --log "$io/steam-1418100.log" --go "$io/.go"
+  for ((i = 0; i < ${#a[@]}; i++)); do
+    case ${a[i]} in
+      --tmpfs) printf '%s\n' --tmpfs "${a[i + 1]}" ;;
+      --bind | --ro-bind) printf '%s\n' --bind "${a[i + 2]}" ;;
+      --) break ;;
+    esac
+  done
+}
+
+# The watchdog's baseline command line for run OUT, with the prefix named as watch_cmd names it.
+baseline_cmd() {
+  printf '%s\n' python3 -I "$WATCHDOG" baseline --root "$WORK" --prefix "$WORK/compat" --out "$1"
 }
 
 # fenji-launch's arguments for a run: the player's command, with the run's client copy, the
@@ -324,6 +376,26 @@ prefix_primed() {
     grep -q '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\discord-bridge\]' "$WORK/compat/system.reg"
 }
 
+# A run whose watchdog didn't end cleanly (a gate event, or a watchdog failure) marks the prefix,
+# and setup and run refuse it until it is rebuilt: a driver service that run left in the registry
+# would start, unwatched, the next time Wine boots the prefix, as setup's prime does (#148).
+GATE_MARK=fenji-gate-event
+# Creates FILE holding TEXT, refusing anything already there (a file, a link, a FIFO, a device),
+# as watchdog.py's create_exclusive does: the client can write the prefix, so this neither writes
+# through a link it planted nor waits on a FIFO.
+create_new() {
+  python3 -I -c 'import os, sys
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+os.write(fd, sys.argv[2].encode())
+os.close(fd)' "$1" "$2"
+}
+check_unmarked() {
+  local m="$WORK/compat/$GATE_MARK" what=""
+  [ -e "$m" ] || [ -L "$m" ] || return 0
+  if [ -f "$m" ] && [ ! -L "$m" ]; then what=" ($(head -c 200 -- "$m" | head -n 1))"; fi
+  die "the prefix saw a gate event or a watchdog failure$what; rebuild it before anything runs in it again: remove $WORK/compat, then run: $0 setup"
+}
+
 # umu-run's arguments for the prime: the prefix's cmd.exe by its unix path, which exits at once.
 prime_args() { printf '%s\n' "$WORK/compat/drive_c/windows/system32/cmd.exe" /c exit; }
 
@@ -347,6 +419,7 @@ cmd_bare_setup() {
     misuse "setup needs --display N or --desktop: a dedicated nested display, or the session's own (see the header)"
   choose_display "$desktop" "$display_given"
   host_guards
+  check_unmarked
   if prefix_ready && prefix_primed; then
     echo "the prefix is ready: $WORK/compat"
     return 0
@@ -408,6 +481,11 @@ cmd_bare_run() {
     misuse "--password-file: can't read '$pwfile'"
   fi
   pwfile=$(realpath -- "$pwfile")
+  local hidden
+  if hidden=$(ns_hides "$pwfile"); then
+    misuse "--password-file is under $hidden, which the namespace replaces with an empty tmpfs: $pwfile"
+  fi
+  check_seen "target/release" "$STUBBIN"
   local c
   for c in "${clicks[@]}"; do
     [[ "$c" =~ ^[0-9]+:[0-9]+,[0-9]+$ ]] || die "--click takes T:X,Y in whole numbers, not '$c'"
@@ -425,6 +503,7 @@ PY
     misuse "a run needs --display N or --desktop: a dedicated nested display, or the session's own (see the header)"
   choose_display "$desktop" "$display_given"
   host_guards
+  check_unmarked
   prefix_ready || die "no prefix; run: $0 setup"
   if [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" != "$(proton_build)" ]; then
     die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run; run once: $0 setup"
@@ -453,7 +532,7 @@ PY
     echo "server: $server_copy (login 127.0.0.1:$login_port, API 127.0.0.1:$api_port), store in $server_data"
     echo "umu-run: $UMU ($(sha256sum "$UMU" | cut -c1-16)…); GE-Proton: $PROTON"
     echo "wine channels (WINEDEBUG, with PROTON_LOG=1): $channels"
-    echo "driver watchdog: watchdog.py sha256 $(sha256sum "$WATCHDOG" | cut -c1-16)…, --no-tmpfs-scan"
+    echo "driver watchdog: watchdog.py sha256 $(sha256sum "$WATCHDOG" | cut -c1-16)…, scanning the namespace's tmpfs mounts"
     if [ "$desktop" = 1 ]; then
       echo "display :$display, the desktop (no screenshots, keys or clicks); timeout $tmo s"
     else
@@ -463,7 +542,9 @@ PY
   find "$PFX" -iname '*.sys' -printf '%P\t%y\t%l\t%s\t%T@\n' | sort > "$OUT/sys-before.tsv"
   python3 -I "$WATCHDOG" collect --src "$PFX" --dest "$OUT/reg-before" --name system.reg --name user.reg
   grep -o '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\[^]\\]*' "$OUT/reg-before/system.reg" | sort -u > "$OUT/services-before.txt" || true
-  python3 -I "$WATCHDOG" baseline --root "$WORK" --out "$OUT"
+  local bc
+  mapfile -t bc < <(baseline_cmd "$OUT")
+  "${bc[@]}"
   touch "$OUT/.start"
 
   local shots clicker typist inputs=()
@@ -520,7 +601,7 @@ PY
     done
   ) &
   local steamwatch=$!
-  mapfile -t wc < <(watch_cmd "$OUT" "$IO" "$spid")
+  mapfile -t wc < <(watch_cmd "$OUT" "$IO" "$spid" "${ns[@]}")
   "${wc[@]}" 2>> "$OUT/watchdog.err" &
   local wdpid=$!
   # Whichever ends first. If it is the watchdog (gate event, failure, or killed), the namespace
@@ -539,6 +620,12 @@ PY
     wdrc=$?
   fi
   set -e
+  # The mark goes where the client could write: create_new refuses anything already there, and
+  # anything there keeps the prefix refused anyway.
+  if [ "$wdrc" != 0 ] &&
+    ! create_new "$PFX/$GATE_MARK" "run $run: watchdog exit $wdrc, $(date -Is)"$'\n' 2> /dev/null; then
+    echo "run-bare: couldn't write the gate-event mark $PFX/$GATE_MARK; don't use this prefix again: remove $WORK/compat, then run: $0 setup" >&2
+  fi
   rm -f "$OUT/.running" "$IO/.go"
   kill "${inputs[@]}" "$steamwatch" 2>/dev/null || true
   wait "${inputs[@]}" "$steamwatch" 2>/dev/null || true

@@ -127,12 +127,14 @@ pub async fn admin(
                 .create_invite(&code.hash(), label.as_deref(), now, expires_at)
                 .await?;
             writeln!(out, "code: {}", code.display())?;
-            writeln!(
-                out,
-                "link: https://{}/#invite={}",
-                cfg.server.public_host,
-                code.display()
-            )?;
+            match cfg.invite_base() {
+                Some(base) => writeln!(out, "link: {base}/#invite={}", code.display())?,
+                None => writeln!(
+                    out,
+                    "link: none; set [server] public_api to the address players reach the \
+                     account API at (such as https://play.example.net), or give players the code"
+                )?,
+            }
             if let Some(at) = expires_at {
                 writeln!(out, "expires: {}", time(at))?;
             }
@@ -193,6 +195,13 @@ pub async fn admin(
         } => {
             if store.delete_account(username).await? {
                 writeln!(out, "deleted {username}, with its characters")?;
+                if !store.checkpoint().await? {
+                    writeln!(
+                        out,
+                        "the database's write-ahead log still holds older copies, as the server had \
+                         it in use; they go when SQLite next restarts the log, or when the server stops"
+                    )?;
+                }
             } else {
                 writeln!(out, "no account named {username}")?;
             }
