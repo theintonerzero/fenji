@@ -33,17 +33,19 @@
 #
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
 # update off (the namespace has no network anyway), then primes it: cmd.exe started once through
-# Proton's launcher, so Proton's own service is in the watchdog's baseline (prefix_primed); a run
-# refuses an unprimed prefix, and setup primes an existing one. run's --server config must bind 127.0.0.1 and
-# name 127.0.0.1 as its public_host, its [store] path must lie in --server-data, a directory under
-# re/bare-metal/, and --password-file holds the account's password on its first line. The display is the nested one (:99 unless --display):
+# Proton's launcher, so Proton's own service is in the watchdog's baseline (prefix_primed). A run
+# refuses an unprimed prefix, and setup primes an existing one.
+#
+# run's --server config must bind 127.0.0.1 and name 127.0.0.1 as its public_host, its [store] path
+# must lie in --server-data, a directory under re/bare-metal/, and --password-file holds the
+# account's password on its first line. The display is the nested one (:99 unless --display):
 # Xwayland on the real GPU, where screenshots and key presses can reach the client. The evidence
 # goes to re/bare-metal/out/NAME; a Fenji ticket found there is redacted in place.
 #
-# Exit: 0 the run finished; 3 GATE EVENT (the watchdog stopped the run: stop all runs, report); 4 the
-# watchdog failed; 5 the watchdog never armed (the client was not started); 6 the namespace ended
-# before the client ran; 7 fenji-server or fenji-launch failed before the client started; 1 a guard
-# or the workspace refused the run, or Steam started during it; 2 a usage error.
+# Exit: 0 the run finished; 3 GATE EVENT (the watchdog stopped the run: stop all runs, report);
+# 4 the watchdog failed; 5 the watchdog never armed (the client was not started); 6 the namespace
+# ended before the client ran; 7 fenji-server or fenji-launch failed before the client started;
+# 1 a guard or the workspace refused the run, or Steam started during it; 2 a usage error.
 set -euo pipefail
 BARE_HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=run-client.sh
