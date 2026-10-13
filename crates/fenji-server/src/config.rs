@@ -161,8 +161,11 @@ impl Default for WorldConfig {
     }
 }
 
-/// The farthest a start coordinate may be from 0: 100 km, the world's own limit.
+/// The farthest a start coordinate (x, y or z) may be from 0: 100 km, the world's own limit.
 pub const COORDINATE_LIMIT: f64 = 10_000_000.0;
+
+/// The start yaw's bound in degrees: within ±360, as every position's yaw is.
+pub const YAW_LIMIT: f64 = 360.0;
 
 fn one() -> u32 {
     1
@@ -287,11 +290,12 @@ impl Config {
         if !(1..=i64::from(i32::MAX)).contains(&w.start_scene) {
             bail!("[world] start_scene: 1 to {}", i32::MAX);
         }
-        if w.start_position
-            .iter()
-            .any(|v| !v.is_finite() || v.abs() > COORDINATE_LIMIT)
-        {
-            bail!("[world] start_position: [x, y, z, yaw], four numbers within {COORDINATE_LIMIT}");
+        let [x, y, z, yaw] = w.start_position;
+        let beyond = |v: f64, limit: f64| !v.is_finite() || v.abs() > limit;
+        if [x, y, z].into_iter().any(|v| beyond(v, COORDINATE_LIMIT)) || beyond(yaw, YAW_LIMIT) {
+            bail!(
+                "[world] start_position: [x, y, z, yaw], with x, y and z from -{COORDINATE_LIMIT} to {COORDINATE_LIMIT} and the yaw from -{YAW_LIMIT} to {YAW_LIMIT} degrees"
+            );
         }
         if !(1.0..=5.0).contains(&w.move_tolerance) {
             bail!("[world] move_tolerance: 1.0 to 5.0");
@@ -459,6 +463,10 @@ mod tests {
             ),
             (
                 "[world]\nstart_position = [0.0, 0.0, 1e8, 0.0]",
+                "start_position",
+            ),
+            (
+                "[world]\nstart_position = [0.0, 0.0, 0.0, 361.0]",
                 "start_position",
             ),
             ("[world]\nmove_tolerance = 0.5", "move_tolerance"),
