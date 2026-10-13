@@ -28,7 +28,7 @@ We'll acknowledge it within about a week, keep you posted while we fix it, and a
 
 In scope is everything in this repository, for example:
 - `fenji-proto` and every other parser of bytes that a peer or a file controls: frames, pickles, archives, table caches;
-- account and launcher code once it exists: password storage, tokens, rate limits;
+- the account and launcher code (`fenji-auth`, `fenji-store`, `fenji-server`, `fenji-launcher`): password storage, tokens, rate limits;
 - the sandbox and helper scripts under `scripts/spike/` and `tools/oodle-helper`, whose isolation the project relies on;
 - CI and the release process.
 
