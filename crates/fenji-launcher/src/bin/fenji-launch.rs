@@ -1,17 +1,18 @@
 //! `fenji-launch`: the launcher's library from a terminal (M3 spec D14). It redeems invites,
-//! verifies a client folder, writes manifests, and gives the sandboxed runner a ticket's login
-//! environment. A password comes from a file or `FENJI_PASSWORD`, never from an argument.
+//! verifies a client folder, writes manifests, starts the client on Linux (through umu-run), and
+//! gives the sandboxed runner a ticket's login environment. A password comes from a file or
+//! `FENJI_PASSWORD`, never from an argument.
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use fenji_launcher::api::ApiClient;
-use fenji_launcher::launch::{LaunchSpec, resolve_ipv4};
-use fenji_launcher::login_path::available;
 use fenji_launcher::manifest::{HEADER, Manifest};
+use fenji_launcher::settings::Os;
+use fenji_launcher::start::{self, Login, UmuOptions};
 use fenji_launcher::verify::{Level, verify};
-use fenji_launcher::{invite_link, manifest};
+use fenji_launcher::{invite_link, manifest, settings};
 
 #[derive(Parser)]
 #[command(
@@ -57,8 +58,10 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Signs in, takes a game token and signs out; with --print, prints the login path's
-    /// environment as KEY=VALUE lines.
+    /// Starts the game on Linux: checks the client folder against the pinned build, gets the Wine
+    /// prefix ready, signs in, takes a game token, signs out and starts the client with the token
+    /// in its environment. With --print, prints the login path's environment as KEY=VALUE lines
+    /// instead.
     Play {
         #[arg(long)]
         server: String,
@@ -68,6 +71,18 @@ enum Command {
         password_file: Option<PathBuf>,
         #[arg(long)]
         print: bool,
+        /// The client folder, which holds bin64/ and data/.
+        #[arg(long)]
+        client: Option<PathBuf>,
+        /// Linux: umu-run (by default the one on PATH).
+        #[arg(long)]
+        umu_run: Option<PathBuf>,
+        /// Linux: the launcher's Wine prefix (by default fenji-launcher/prefix in the data folder).
+        #[arg(long)]
+        prefix: Option<PathBuf>,
+        /// Linux: a Proton build for PROTONPATH (by default $PROTONPATH, else umu-run's choice).
+        #[arg(long)]
+        proton: Option<PathBuf>,
     },
 }
 
@@ -165,47 +180,62 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             username,
             password_file,
             print,
+            client,
+            umu_run,
+            prefix,
+            proton,
         } => {
-            let paths = available();
-            let Some(path) = paths.first() else {
-                bail!("this build has no login path");
-            };
-            if !print {
-                eprintln!(
-                    "M3 doesn't start the client from here (the sandboxed runner does); use --print \
-                     to get the login environment"
-                );
+            // Before anything else, --print included (plan Amendment B; ground rule 6).
+            let os = Os::this();
+            start::check_os(os)?;
+            let mut note = |m: &str| eprintln!("fenji-launch: {m}");
+            if print {
+                let pw = password(password_file.as_deref())?;
+                let login = Login {
+                    server: &server,
+                    username: &username,
+                    password: &pw,
+                };
+                for (k, v) in start::take_ticket(os, &login, || Ok(()), &mut note)? {
+                    println!("{k}={v}");
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+            let Some(client) = client else {
+                eprintln!("fenji-launch: give the client folder with --client (or use --print)");
                 return Ok(ExitCode::from(2));
-            }
-            let pw = password(password_file.as_deref())?;
-            let api = ApiClient::new(&server)?;
-            let rt = runtime()?;
-            // The gate must be usable before any password is sent (M3 spec §4).
-            let info = rt.block_on(api.server_info())?;
-            let gate = resolve_ipv4(&info.gate_host, info.gate_port)?;
-            let session = rt.block_on(api.sign_in(&username, &pw))?;
-            let grant = rt.block_on(api.game_token(&session));
-            // The ticket is all the client needs; the session ends here either way.
-            if let Err(e) = rt.block_on(api.sign_out(session)) {
-                eprintln!("fenji-launch: signing out: {e}");
-            }
-            let grant = grant?;
-            if (grant.gate_host.as_str(), grant.gate_port)
-                != (info.gate_host.as_str(), info.gate_port)
-            {
-                bail!("the server named one gate in its info and another in the game token");
-            }
-            let mut spec = LaunchSpec {
-                program: PathBuf::new(),
-                args: Vec::new(),
-                env: Vec::new(),
-                cwd: PathBuf::new(),
             };
-            path.apply(&grant, gate, &mut spec);
-            for (k, v) in spec.env.iter().filter(|(k, _)| k.starts_with("gj_")) {
-                println!("{k}={v}");
+            let cwd = std::env::current_dir().context("reading the current folder")?;
+            let platform = start::linux_platform(
+                UmuOptions {
+                    umu_run,
+                    prefix,
+                    proton,
+                },
+                &cwd,
+                std::env::var_os("PATH").as_deref(),
+                settings::data_dir(),
+            )?;
+            let pw = password(password_file.as_deref())?;
+            let login = Login {
+                server: &server,
+                username: &username,
+                password: &pw,
+            };
+            // Only the pinned build starts (ground rule 1).
+            let status = start::play(
+                os,
+                &client,
+                &cwd,
+                &Manifest::pinned(),
+                &platform,
+                &login,
+                &mut note,
+            )?;
+            if !status.success() {
+                note(&format!("the client ended: {status}"));
             }
-            Ok(ExitCode::SUCCESS)
+            Ok(ExitCode::from(start::exit_byte(status)))
         }
     }
 }

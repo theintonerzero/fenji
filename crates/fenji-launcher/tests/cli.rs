@@ -1,13 +1,22 @@
 //! `fenji-launch` as a player or the runner calls it (M3 plan Task 7; gate #114, option a).
-use std::io::{BufRead, BufReader, Read, Write};
+mod common;
+
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Output};
-use std::sync::{Arc, Mutex};
+
+use common::*;
 
 fn launch(args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_fenji-launch"));
-    cmd.args(args).env_remove("FENJI_PASSWORD");
+    // No real umu-run (or anything else) can be found and started from a test, and nothing
+    // reaches the real data folders.
+    cmd.args(args)
+        .env_remove("FENJI_PASSWORD")
+        .env("PATH", "")
+        .env("HOME", "/nonexistent/fenji-test-home")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CONFIG_HOME");
     for k in [
         "http_proxy",
         "HTTP_PROXY",
@@ -24,83 +33,6 @@ fn launch(args: &[&str], env: &[(&str, &str)]) -> Output {
     cmd.output().unwrap()
 }
 
-fn text(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).into_owned()
-}
-
-/// What the canned API answers: a status line ("200 OK") and a JSON body, by method and path.
-type Answer = Box<dyn Fn(&str, &str) -> (&'static str, String) + Send>;
-
-/// A canned account API on 127.0.0.1 that records each request's method and path.
-fn canned(answer: Answer) -> (String, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let log = Arc::clone(&seen);
-    std::thread::spawn(move || {
-        for sock in listener.incoming() {
-            let Ok(mut sock) = sock else { return };
-            let mut reader = BufReader::new(sock.try_clone().unwrap());
-            let mut line = String::new();
-            if reader.read_line(&mut line).is_err() {
-                continue;
-            }
-            let mut len = 0;
-            loop {
-                let mut h = String::new();
-                if reader.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
-                    break;
-                }
-                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
-                    len = v.trim().parse().unwrap_or(0);
-                }
-            }
-            let mut body = vec![0; len];
-            let _ = reader.read_exact(&mut body);
-            let req: Vec<&str> = line.split(' ').take(2).collect();
-            if req.len() < 2 {
-                continue;
-            }
-            log.lock().unwrap().push(req.join(" "));
-            let (status, json) = answer(req[0], req[1]);
-            let reply = format!(
-                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}",
-                json.len()
-            );
-            let _ = sock.write_all(reply.as_bytes());
-        }
-    });
-    (format!("http://{addr}"), seen)
-}
-
-fn server_info(gate_host: &str) -> String {
-    format!(
-        r#"{{"name":"Fenji","version":"0.4.0","pinned_build":"10015727","gate_host":"{gate_host}","gate_port":7800,"server_id":1,"api_version":1}}"#
-    )
-}
-
-fn grant(server_name: &str) -> String {
-    format!(
-        r#"{{"ticket":"fenji1-{}","expires_in_secs":60,"gate_host":"127.0.0.1","gate_port":7800,"server_id":1,"server_name":"{server_name}","account":"tester","user_id":5}}"#,
-        "ab".repeat(32)
-    )
-}
-
-/// The usual answers: server info with a local gate, a session, a game token, a sign-out.
-fn usual(method: &str, path: &str) -> (&'static str, String) {
-    match (method, path) {
-        ("GET", "/api/v1/server") => ("200 OK", server_info("127.0.0.1")),
-        ("POST", "/api/v1/accounts") => ("201 Created", r#"{"username":"tester"}"#.into()),
-        ("POST", "/api/v1/sessions") => (
-            "200 OK",
-            r#"{"token":"fenji1-session","expires_at":1}"#.into(),
-        ),
-        ("POST", "/api/v1/game-tokens") => ("200 OK", grant("Fenji")),
-        ("DELETE", "/api/v1/sessions") => ("204 No Content", String::new()),
-        _ => ("404 Not Found", r#"{"error":"not_found"}"#.into()),
-    }
-}
-
 fn play(server: &str) -> Output {
     launch(
         &[
@@ -115,6 +47,7 @@ fn play(server: &str) -> Output {
     )
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn play_prints_only_the_login_paths_pairs_and_signs_out() {
     let (server, seen) = canned(Box::new(usual));
@@ -138,6 +71,7 @@ fn play_prints_only_the_login_paths_pairs_and_signs_out() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn play_checks_the_gate_before_any_password_is_sent() {
     let (server, seen) = canned(Box::new(|m, p| match (m, p) {
@@ -155,6 +89,7 @@ fn play_checks_the_gate_before_any_password_is_sent() {
     assert_eq!(*seen.lock().unwrap(), ["GET /api/v1/server"]);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_server_cannot_put_escape_sequences_on_the_terminal() {
     let (server, seen) = canned(Box::new(|m, p| match (m, p) {
@@ -167,6 +102,7 @@ fn a_server_cannot_put_escape_sequences_on_the_terminal() {
     assert_eq!(*seen.lock().unwrap(), ["GET /api/v1/server"]);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn play_signs_out_even_when_the_game_token_fails() {
     let (server, seen) = canned(Box::new(|m, p| match (m, p) {
@@ -190,6 +126,7 @@ fn play_signs_out_even_when_the_game_token_fails() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_grant_that_would_bend_the_login_fields_is_refused() {
     for name in ["Fen:ji", "Fen\\nji"] {
@@ -203,8 +140,9 @@ fn a_grant_that_would_bend_the_login_fields_is_refused() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
-fn play_without_print_starts_nothing_yet() {
+fn play_without_print_needs_a_client_folder() {
     let out = launch(
         &[
             "play",
@@ -217,10 +155,109 @@ fn play_without_print_starts_nothing_yet() {
     );
     assert_eq!(out.status.code(), Some(2));
     assert!(
-        text(&out.stderr).contains("--print"),
+        text(&out.stderr).contains("--client"),
         "{}",
         text(&out.stderr)
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn play_refuses_a_client_folder_that_isnt_the_pinned_build() {
+    let (server, seen) = canned(Box::new(usual));
+    let d = tempfile::tempdir().unwrap();
+    let out = launch(
+        &[
+            "play",
+            "--server",
+            &server,
+            "--username",
+            "tester",
+            "--client",
+            d.path().to_str().unwrap(),
+            "--umu-run",
+            "/nonexistent/umu-run",
+        ],
+        &[("FENJI_PASSWORD", "a long password")],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("isn't the pinned build"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "nothing is sent for a bad folder"
+    );
+}
+
+/// Only the pinned build starts: no other manifest can be named (ground rule 1).
+#[cfg(target_os = "linux")]
+#[test]
+fn play_takes_no_other_manifest() {
+    let out = launch(
+        &[
+            "play",
+            "--server",
+            "http://127.0.0.1:9",
+            "--username",
+            "tester",
+            "--client",
+            "/nonexistent",
+            "--manifest",
+            "/nonexistent/m.tsv",
+        ],
+        &[("FENJI_PASSWORD", "a long password")],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        text(&out.stderr).contains("unexpected argument '--manifest'"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn play_says_how_to_get_umu_run_when_it_isnt_on_path() {
+    let (server, seen) = canned(Box::new(usual));
+    let d = tempfile::tempdir().unwrap();
+    let out = launch(
+        &[
+            "play",
+            "--server",
+            &server,
+            "--username",
+            "tester",
+            "--client",
+            d.path().to_str().unwrap(),
+        ],
+        &[("FENJI_PASSWORD", "a long password")],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let err = text(&out.stderr);
+    assert!(
+        err.contains("umu-launcher") && err.contains("--umu-run"),
+        "{err}"
+    );
+    assert!(seen.lock().unwrap().is_empty(), "nothing is sent");
+}
+
+/// Every other system is refused with one neutral line, before anything is sent (plan
+/// Amendment B; ground rule 6).
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn play_is_refused_off_linux_even_with_print() {
+    let (server, seen) = canned(Box::new(usual));
+    let out = play(&server);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        text(&out.stderr).trim_end(),
+        "fenji-launch: Fenji can't start the client on this system yet"
+    );
+    assert!(out.stdout.is_empty());
+    assert!(seen.lock().unwrap().is_empty(), "nothing is sent");
 }
 
 #[test]
