@@ -13,6 +13,10 @@ use fenji_launcher::manifest::Manifest;
 use fenji_launcher::settings::Os;
 use fenji_launcher::start::{Login, play};
 
+/// Held by each test while it writes and runs its fake umu-run: a child forked by the other test
+/// while a script is still open for writing would make it "Text file busy" (ETXTBSY) to exec.
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A client folder of one file, `client/` in `d`, and its manifest.
 fn client(d: &Path) -> Manifest {
     let c = d.join("client");
@@ -60,6 +64,7 @@ fn api(log: &Path) -> String {
 
 #[test]
 fn play_prepares_the_prefix_then_starts_the_client_with_the_ticket_in_its_environment() {
+    let _spawn = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
     let d = tempfile::tempdir().unwrap();
     let manifest = client(d.path());
     let log = d.path().join("log");
@@ -148,6 +153,7 @@ fn play_prepares_the_prefix_then_starts_the_client_with_the_ticket_in_its_enviro
 
 #[test]
 fn a_prefix_that_isnt_ready_stops_the_start_before_any_password_is_sent() {
+    let _spawn = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
     let d = tempfile::tempdir().unwrap();
     let manifest = client(d.path());
     let log = d.path().join("log");

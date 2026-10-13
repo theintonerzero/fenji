@@ -295,6 +295,14 @@ mod tests {
 
     const REFUSAL: &str = "Fenji can't start the client on this system yet";
 
+    /// Held by every test that starts a process. A child forked while another test still has its
+    /// fresh script open for writing would make that script "Text file busy" (ETXTBSY) to exec.
+    static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn spawning() -> std::sync::MutexGuard<'static, ()> {
+        SPAWN.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn only_linux_may_start_the_client_and_the_refusal_says_nothing_more() {
         assert!(check_os(Os::Linux).is_ok());
@@ -492,6 +500,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn preparing_is_judged_by_the_prefix_and_by_signals() {
+        let _spawn = spawning();
         let d = tempfile::tempdir().unwrap();
         let umu = |name: &str, body: &str| {
             let p = d.path().join(name);
@@ -508,9 +517,11 @@ mod tests {
             proton: None,
         };
         let built = umu("built", &format!("{build}\nexit 1"));
+        let r = prepare(&platform(built, "a"));
         assert!(
-            prepare(&platform(built, "a")).is_ok(),
-            "exit 1 with a built prefix"
+            r.is_ok(),
+            "exit 1 with a built prefix: {:#}",
+            r.unwrap_err()
         );
         let empty = umu("empty", "exit 1");
         let e = format!("{:#}", prepare(&platform(empty, "b")).unwrap_err());
@@ -538,6 +549,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_child_gets_neither_the_password_nor_inherited_login_variables() {
+        let _spawn = spawning();
         let spec = LaunchSpec {
             program: "/usr/bin/env".into(),
             args: vec![],
@@ -565,6 +577,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_gives_the_program_its_environment_and_folder() {
+        let _spawn = spawning();
         let d = tempfile::tempdir().unwrap();
         let out = d.path().join("seen");
         let spec = LaunchSpec {
@@ -586,6 +599,7 @@ mod tests {
 
     #[test]
     fn a_program_that_cant_start_is_named() {
+        let _spawn = spawning();
         let d = tempfile::tempdir().unwrap();
         let spec = LaunchSpec {
             program: d.path().join("no-such-umu-run"),
