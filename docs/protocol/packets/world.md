@@ -1,11 +1,15 @@
-# World: entering
+# World: entering and seeing each other
 
 After the select screen's 10, the server answers with the script message 772. The client reloads its game modules, sets the player's actor id and loads the scene's map behind its loading screen, sending a time sync once a second from then on. When the map and the game's add-ons have loaded it reports the native type 3. Only then does the server send the player's own actor (type 7, with a property blob, which carries its move speed) and type 8, after which the loading screen closes and the client's in-world script messages flow. This document gives the evidence behind the values that `fenji_proto::world` uses for that, the format of the property blob that types 7 and 10 carry, the time syncs, and the creation outfit.
+
+Other players then reach a client in three steps (§14): the server announces each one in view (type 6), the client pulls them one at a time, nearest first (type 5), and the server sends each one whole (types 7 and 8); type 9 takes them away. §15 reads what lets two clients run on one machine, for the two-client runs.
 
 **Method.** This reading comes from the pinned build 10015727 (`bin64/gujianol.exe`, SHA-256 `3fdc6394de85c1224b91312d62bf2e57251625b49e8d0f3960accf8dfe5f0678`). It used three sources, all read locally and read-only:
 - the client's own scripts, disassembled and decompiled by `luatool` ([`../../re/m1-script-format.md`](../../re/m1-script-format.md));
 - the client's own caches: the protocol table, `prop_tables`, two sheets of `all_tables` and `locale_en`, read with a standard-library probe of [`../payloads.md`](../payloads.md)'s format;
 - the exe, in the shared Ghidra project and then through REA in one session (2026-10-14), after the evidence norm ([`../../re/README.md`](../../re/README.md#the-norm)); the Evidence IDs are in [REA Evidence IDs](#rea-evidence-ids). Where Ghidra's analysis made no function (0x14020DE10, 0x140210A30), the bytes were read through REA and disassembled with `objdump`. The exe's export table and its built-in property table were read with a standard-library PE reader.
+
+§14 and §15 come from a second reading (Task 12, 2026-10-14) by the same method: the scripts, the exe in the shared Ghidra project and then through REA in one session (its IDs are in the same table), the exe's import table read with a standard-library PE reader, and Task 11's server logs (§13), read for what a lone client sent.
 
 A design-time survey (L4) gave the leads, and each finding here was checked against the bytecode or the exe. Nothing was run: no client, no debugger, no script in Ghidra, and nothing in the shared project was renamed or changed. Written by a session that has not read any source rejected in [`../../re/sources.md`](../../re/sources.md). Tags follow [`../../re/spike-0.md`](../../re/spike-0.md): **Observed** (literally in a file: a constant, a bytecode operand, a table value, bytes of the exe), **Inferred** (our reading of the code), **Unknown**. Script evidence cites the engine path and the function path in its disassembly (such as `0.56`), with bytecode positions in brackets; where the decompiled text and the bytecode differ, the bytecode wins. Native evidence cites functions and addresses in the pinned exe. Evidence keys resolve in the [Evidence index](#evidence-index).
 
@@ -267,15 +271,18 @@ The other bodies' vectors are in the [world plan](../../superpowers/plans/2026-1
 
 ## 12. Open questions for the runs
 
-Only a run of the real client can settle these. Task 11's runs (`scripts/spike/run-client.sh` with `--server`) answer them; each run's prediction is written before it starts. Those runs answered 1–6 (§13); 7 and 8 are still open.
+Only a run of the real client can settle these, each run's prediction written before it starts. Task 11's runs (`scripts/spike/run-client.sh` with `--server`) answered 1–6 (§13). 7 and 9–11 are Task 13's two-client runs, which §14 and §15 prepare; 8 is still open.
 1. **The sequence works:** after 10, the loading screen for scene 5 closes and the character stands at 772's position; the server's log shows type-2 syncs from 772 on, then type 3, then the client's flushed script messages after type 8. Task 11's first world run.
 2. **The character walks** with `prop_move_speed` 100, at about 500 units a second, and whether the blob or type 23 alone would do (6.5). The same run, walking for a timed stretch.
 3. **The look:** the face, the voice and the outfit as at creation, with the head hidden (5.3). The run's screenshots.
 4. **The HUD's health bar** with 300, 304 and 1458 at their defaults (5.6). The screenshots.
 5. **Units:** that 772's x, y and z are centimetres with z up and the yaw degrees, and whether the client puts the character on the ground when the start's z is above it (2.8). The run's position reports.
 6. **A pid above 2^32** (8.3). A run with a character whose pid is seeded above 2^32.
-7. **Two clients in one Wine prefix** (world spec open question 7). The exe imports `CreateMutexW`, `OpenMutexW` and `CreateMutexA`, whose uses weren't traced. The two-client run.
+7. **Two clients in one Wine prefix** (world spec open question 7). The exe lets a second copy run beside the first (15.1), so both share one prefix, each from its own copy of the client (15.5). Task 13's first two-client run: both reach the world, and the watchdog sees no `winedevice.exe` start with the second.
 8. **The type-2 reply's effect:** that dates the client shows follow the server's time. The run, with the client's clock set away from the host's.
+9. **Seeing another player** (14.7–14.10): each client shows the other where it stands, in its creation outfit and face, with its name and a full health bar, after 6, 5, 7 and 8, and neither client logs an error for it. Task 13's first two-client run.
+10. **Leaving** (14.11): when one client's connection ends (the second client's run ends first), the other's client takes that player away on 9, and its log shows no error. The same run. Walking out of view waits for the movement slice (Task 15), since until then the world doesn't learn where a player walks, and an admin's `!tp`, which makes a 9 and a new 6, for the chat slice (Task 16).
+11. **The filter** (14.12–14.13): the client's type 5 with 32 for the other player arrives within seconds of its 7, and Fenji ignoring it changes nothing either player sees. The same run.
 
 ## 13. Runs
 
@@ -311,8 +318,88 @@ Clicks and keys went through XTEST on the nested display, and screenshots after 
 
 **Unknown:**
 - Whether the start's z (64854) is the ground there or the client put the character on it.
-- §12's questions 7 (two clients in one Wine prefix) and 8 (the reply's effect on the dates the client shows): not run.
+- §12's questions 7 (two clients in one Wine prefix, Task 13's two-client run) and 8 (the reply's effect on the dates the client shows): not run.
 - In m4-e4 alone, `g` also opened the World Map, and the client sent 85 `PROTOC2S_ITEM_COLLECTION_USE`; the same key in m4-e2 and m4-e3 only started the run.
+
+## 14. Seeing each other
+
+Another player reaches a client in three steps, and the client chooses when: the server announces it, the client pulls it, and the server sends it whole.
+
+| Step | Direction | Message | What happens | Evidence |
+|---|---|---|---|---|
+| 1 | S→C | type 6 `STC_PROTOCOL_SYNC_ID_ENTER`: the id and where it stands | the client queues the id; nothing is shown yet (14.2) | X1; S2 `0.8`; S19 `0.13`, `0.8` |
+| 2 | C→S | type 5 `CTS_PROTOCOL_SYNC_FILTER_SET`: the id and 0 | every 250 ms the client takes one queued player id, nearest first, and pulls it (14.3) | S19 `0.10`, `0.11`; X13 |
+| 3 | S→C | type 7 `STC_PROTOCOL_SYNC_ENTER` for that id | creates the actor, with its model, name board and move handle, at property 16's place (14.7–14.9) | S2 `0.9`; S3 `0.52`, `0.33`; X14 |
+| 4 | S→C | type 8 `STC_PROTOCOL_SYNC_ENTER_FINISH` for that id | combat's enter hook and `SCENE.EVENT_ACTOR_ENTER_FINISH` (14.10) | S3 `0.45`; S22 |
+| 5 | S→C | type 9 `STC_PROTOCOL_SYNC_LEAVE`: ids | an id still queued is dropped from the queue; any other actor is destroyed (14.11) | X1; S2 `0.11`; S19 `0.14`; S3 `0.46` |
+
+Type 6's body:
+
+| Offset | Bytes | Field | Pushed to the scripts as | Fenji sends | Tag |
+|---|---|---|---|---|---|
+| 0 | 8 | actor id, `u64` LE | an integer, all 64 bits | the pid | **Inferred**; offsets and widths **Observed** |
+| 8 | 4 | x, `i32` LE | an integer, sign-extended | x, rounded to the nearest integer | the same |
+| 12 | 4 | y, `i32` LE | the same | y, the same | the same |
+| 16 | 4 | z, `i32` LE | the same | z, the same | the same |
+| 20 | 1 | the fast flag | a boolean, `true` for any byte but 0 | 0 | the same |
+| 21 | 1 | the priority | an integer, 0 to 255 | 0 | the same |
+
+Type 5's body, 18 bytes:
+
+| Offset | Bytes | Content | Source | Fenji | Tag |
+|---|---|---|---|---|---|
+| 0 | 8 | the actor id, `u64` LE | the script's id, Lua stack slot 2, through `luaL_checkinteger` (FUN_140119940) | reads it | **Inferred**; widths **Observed** |
+| 8 | 4 | the value: the integer's low 32 bits | the script's value, slot 3, the same way | reads it: 0 pulls (14.13) | the same |
+| 12 | 1 | 1 | a constant | | **Observed** |
+| 13 | 4 | 0 | FUN_140246EA0 writes 0 | | **Observed** |
+| 17 | 1 | 1 when a query about the client's own process returns a non-zero value, else 0 | FUN_141157040 (14.4) | neither reads nor logs it | **Inferred** |
+
+Type 9's body is a run of actor ids, each a `u64` LE, with no count: as many as the length holds, 8 bytes each.
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 14.1 | **Type 6's body.** FUN_140222E00's case 6 (0x140222F3E–0x140222FA9) reads the id (`MOV RDX, qword`), then x, y and z with `MOVSXD`, then two bytes with `MOVZX`: it pushes the first as a boolean (FUN_140116AA0, `true` for any byte but 0) and the second as an integer (FUN_140116840). That is 22 bytes; the length isn't checked. The handler (`0.8`) passes the six values to `actor_id_enter`. | **Inferred**; offsets and widths **Observed** | X1, X12; S2 `0.8` |
+| 14.2 | **An announced id is queued, not shown.** `actor_id_enter` puts an id whose `id >> 48` is 0 in the player queue (`0.13` [1]–[2]); the flag picks the fast queue for NPC ids only ([4]). The enqueue (`0.8`) drops the id, and empties the player and NPC queues, while the client has no local player ([1]–[7]); for an id already queued it updates x, y and z only ([10]–[18]); otherwise it keeps the time, x, y, z and the priority ([19]–[45]). | **Observed** (bytecode) | S19 `0.13`, `0.8` |
+| 14.3 | **The pull.** A timer, `player_id_enters`, every 250 ms and one id each time (`0` [69]–[75]), which the timer service sets again after each call (S21 `0.6` [17]–[18]), takes one id from the player queue (`0.10`): the highest priority first ([36], [64]), then the nearest to the local player, with every coordinate × 0.01 ([18]–[20], [38]–[49]), then the earliest queued ([56]–[60]). For it, the client sends type 5 with the id and 0 (`0.11` [24]–[27]). So a client pulls at most one player every 250 ms, nearest first. NPC ids have a queue of their own, and a fast queue that takes five each time. | **Observed** (bytecode), **Inferred** (the rate) | S19 `0`, `0.10`, `0.11`; S21 |
+| 14.4 | **Type 5's body.** `send_sync_filter` (FUN_140221D30) posts type 5 with length 18 (0x12), laid out as the table above. Byte 17 comes from FUN_141157040, which picks one of four stubs by the Windows version, each a direct system call (`mov r10, rcx; mov eax, 0x16` to `0x19; syscall; ret`, at 0x14029990C), calls it with the current process and the class 7, and gives 1 when the call succeeds with a non-zero answer. That the class asks whether a debugger is attached is **Inferred**; the byte describes the player's machine, so Fenji neither reads nor logs it (as 3.2). The script's sender checks only for state 3 (S2 `0.29`), so type 5 goes out while type-0 sends are off (1.3). Two scripts send it: the pull (14.3) and the sync filter (14.12). | **Inferred**; constants, widths and the stubs' bytes **Observed** | X13; S2 `0.29`; S19 `0.11`; S20 `0.3` |
+| 14.5 | **A lone client sends no type 5.** In Task 11's runs the client sent native types 2, 3 and 8 only in the world (§13): it was told of no actor, and the filter leaves out the local player (14.12). | **Observed** (runs) | M4E1–M4E4 |
+| 14.6 | **The server may send another player's 7 without a pull** (world spec open question 4): the type-7 handler creates a non-local actor whenever a local player exists, without looking at the queue (S2 `0.9`; `actor_id_on_actor_sync` keeps only a debug history, S19). But the pull spaces out the client's model loads, nearest first, so Fenji sends it only after the pull, once: the world answers a pull only for a pid it announced and hasn't sent. A 6 for an actor the client already shows would queue it again, and that pull's 7 would reset its properties (14.7), so the world announces a pid once while it stays in view. | **Observed** (bytecode), the choice is Fenji's | S2 `0.9`; S19 `0.8`; S3 `0.52` |
+| 14.7 | **Creating another player.** `actor_system_create_actor` returns at once for an id that exists (S3 `0.52` [1]–[6]), and the type-7 handler then resets its properties from the new blob (`0.51`). Otherwise the actor is made as the player's own is (4.2): the header's type, difficulty and template, the blob, then the handles (`0.24`), and `SCENE.EVENT_ACTOR_ENTER` fires (`0.33` [152]–[156]). Only for the local id does `actor_system_local_player_enter` run. | **Observed** (bytecode) | S3 `0.52`, `0.51`, `0.33`, `0.24` |
+| 14.8 | **Where it stands is property 16.** Players get a native move handle (`0.20`, `0.21`). Its creation, `actor_move_create` (FUN_1401FF980, bound at 0x14020A3BC), starts it at property 16 (FUN_14018D230), as four integers, and does its local-player setup only when the id is the local one. The handles are made after the blob is unpacked (4.3), so 16 places another player as it places the player's own (5.2). Type 6's x, y and z only order the queue. | **Inferred**; the property offsets **Observed**: FUN_14018D230 and FUN_14018D2E0 read the class's entries at +0x1538 and +0x57F88, which are indexes 16 and 1098 at 0xB8 + index × 0x148 | X14; S3 `0.20`, `0.21`, `0.24` |
+| 14.9 | **Another player's 7 is the player's own 7 for that character** (§5). Every property in that blob is of sync class `all`, but 1325 and 1458 (`""`); none is `self` (D2). The model reads the same properties for any player (S11 `0.26`). The name board is made on `SCENE.EVENT_ACTOR_ENTER` (S23 `0.17` [33]), and among the properties it watches are the name (1) and the health (1458, 304) (S23, `BillBoardActor.luac` `0` [89]–[109]). Health draws the grey scene only for the local player: `OnLocalActorEnter` (S17 `0.4`) registers `OnHPChanged`, and another player gets `OnActorEnter` (`0.2`), which registers an animation event only; full health shows a full bar over it. The speed, 1325, is what its move handle moves it by (6.4). So V7 (§11) is also Lin's 7 as another client receives it. | **Inferred**; the classes and the handlers **Observed** | D2; S11 `0.26`; S17 `0.2`, `0.4`; S23 |
+| 14.10 | **Type 8 for another player** (S3 `0.45`) runs combat's enter hook, `recoil_on_player_enter` for a player (S22 `0.143` [24]), and fires `SCENE.EVENT_ACTOR_ENTER_FINISH`, whose one listener acts only on an actor carrying a teleport effect's custom value (S24 `0.16` [11], `0.14`). For a non-local id it leaves sending alone. Seeing a player waits for nothing in it; Fenji sends it after every 7, as the client's own flow ends each entry. | **Observed** (bytecode), **Inferred** (not needed) | S3 `0.45`; S22; S24 |
+| 14.11 | **Type 9.** FUN_140222E00's case 9 (0x140223006–0x14022304A) pushes a table of `length >> 3` ids, keyed from 1 (FUN_140116EF0, FUN_140117630). For each id the handler (S2 `0.11`) calls `actor_id_leave` (S19 `0.14`), which drops the id from whichever queue holds it, and only when none did, `actor_system_destroy_actor` (S3 `0.46`), which returns quietly for an id it doesn't know (`0.34` [4]–[9]). For the local id it calls `actor_system_local_player_leave` ([41]–[47]): **a 9 must never name the player's own pid.** | **Observed** (bytecode, offsets), **Inferred** (effect) | X1, X12; S2 `0.11`; S19 `0.14`; S3 `0.46`, `0.34` |
+| 14.12 | **The sync filter** (world spec open question 8). Every 3 s (`actor_filter_update`, S20 `0.7`) the client works out a value for each other player and NPC (`0.6`): 0 for an actor it focuses, has selected, duels (property 188) or ranks in its top 10 threat; otherwise the level of the row that type 3 `TRANS_LIMIT_LV` picked, with 32 OR-ed in when the actor isn't in its threat list (`0.4` [17]–[60], `0.5` [48]). Without a type 3 the level stays 0, so the values are 0 and 32. An actor the pass finds without a check gets one a second later (`0.7`), which then repeats at randomized intervals; each check sends type 5 with the value whenever it differs from property 1338 (`prop_move_sync_filter`, sync `client`), and sets 1338 to it (`0.3` [7]–[47]). What a value asks of the server isn't in the client: that 32 asks for less about an actor not engaged with the player is **Inferred**. | **Observed** (bytecode), **Inferred**, **Unknown** (the server's side) | S20 |
+| 14.13 | **Fenji's use of type 5.** A 5 with 0 is a pull for an id the client was told of and hasn't got, or the filter going to 0 for one it shows (a target selected). The world answers a pull only for a pid it announced and hasn't sent, so every 0 goes to the world as a pull. Fenji drops the other values: M4 has no combat or threat, and nothing to send less of. It never sends type 3. | the choices are Fenji's | 14.3, 14.12 |
+| 14.14 | **Types 10 and 11 aren't needed in M4.** Type 10 unpacks a blob into an actor the client has (S2 `0.12`; S3 `0.49`), and nothing a player shows changes in M4: a player that an admin's `!tp` moves is taken away from its viewers (9) and announced again (6). After a 5, the scripts wait for nothing but the pulled 7, so Fenji sends no type 11 (`SYNC_UPDATE_FILTER`). | **Inferred** | S2 `0.12`; S3 `0.49`; S20 `0.3` |
+
+What Fenji sends for seeing (the M4 world plan's Amendment B):
+
+| The world says, or the client sends | Fenji sends | Values |
+|---|---|---|
+| `Announce { pid, pos }` | type 6 | the pid; x, y and z rounded to the nearest integer and clamped to `i32`; the flag and the priority 0 |
+| type 5 with 0 | `WorldIn::Pull { conn, pid }` | other values, and bodies that aren't 18 bytes, go nowhere |
+| `Enter { pid, look, pos, speed }` | type 7, then type 8 | the player's own 7 for that character (§5, §11), then the pid |
+| `Leave { pids }` | type 9 | the pids as `u64` LE, in order |
+| a 6, 7 or 9 naming the connection's own pid | nothing for that pid | 14.11 |
+
+**Golden vectors**, bodies in hex:
+- Type 6, pid 258 at the default start (2366, −71735, 64854), 22 bytes: `02 01 00 00 00 00 00 00 3e 09 00 00 c9 e7 fe ff 56 fd 00 00 00 00`.
+- Type 6, pid 2^32 + 1 at (2.5, −2.5, 3 × 10^9), rounded and clamped: `01 00 00 00 01 00 00 00 03 00 00 00 fd ff ff ff ff ff ff 7f 00 00`.
+- Type 5, the pull of pid 258: `02 01 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00`.
+- Type 5, the value 32 for pid 2^32 + 1, with byte 17 set: `01 00 00 00 01 00 00 00 20 00 00 00 01 00 00 00 00 01`.
+- Type 9, pids 258 and 2^32 + 1: `02 01 00 00 00 00 00 00 01 00 00 00 01 00 00 00`.
+- Type 7 for another player: V7 (§11).
+
+## 15. Two clients on one machine
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 15.1 | **A second copy may run.** At start (FUN_14024F010) the client skips its instance check only when its command line has `--allow_multi`. The check (FUN_14024E790) creates the named mutex `GJMut1`; if that exists, it closes it and creates `GJMut2`; if that exists too, the client returns −4 and ends. So two copies run at once and a third doesn't, and no run needs `--allow_multi`. The shared project finds no read of the name the check stores (0x143114E10). | **Inferred**; the names, the flag and −4 **Observed** | X15 |
+| 15.2 | **Its other named objects are the web view's**: two queues, `c2s_webui_<t>` and `s2c_webui_<t>`, each shared memory with a `<name>_lock` mutex (FUN_140183DD0), where `t` is `_time64` in seconds when the web view starts (FUN_140188970); its helper `browserhost.exe` gets `--queueid=webui_<t>`. Two clients whose web views start in the same second in one prefix would share them; the runs saw the web view start on entering the world (§13). Every other mutex, semaphore and event the exe creates is unnamed, and its one `FindWindowA` looks for a developer tool's window (`vResourceViewer`) to send log lines to. | **Inferred**; the strings **Observed** | X17, X18 |
+| 15.3 | **Named objects are per prefix.** Wine keeps them in the prefix's wineserver, so two clients in one prefix see each other's `GJMut1` (the second takes `GJMut2`), and clients in two prefixes see nothing of each other. | **Inferred** (Wine's design) | 15.1 |
+| 15.4 | **The log is in the exe's folder**: `%s/gujianol.log`, opened with `"w"`, in the folder `GetModuleFileNameA` gives (FUN_140245560, FUN_1400B6490). Two clients from one copy would truncate and interleave one log, so each needs its own copy. | **Inferred**; the format string **Observed** | X16 |
+| 15.5 | **So two clients share one prefix, each from its own reflink copy of the client**, the second started some seconds after the first. One wineserver hosts Wine's own drivers from before the first client starts, so the watchdog's rule on a `winedevice.exe` started after the client keeps its meaning, and its rules on new `.sys` files and on the registry watch one prefix. Each client also needs its own display, and its own account, since a second login of one account replaces the first. **Unknown** until the run: whether GE-Proton's `proton run` serves two clients in one prefix, whether the second client's start brings a new `winedevice.exe`, and whether the second web view starts. The runners' design is the M4 world plan's Amendment B. | the choices are Fenji's; **Unknown** | §12 question 7 |
 
 ## Evidence index
 
@@ -321,8 +408,8 @@ Clicks and keys went through XTEST on the nested display, and screenshots after 
 | Key | Path or address | What it holds |
 |---|---|---|
 | S1 | `data/core/client/scene_manager.luac` | The main chunk `0`: 772's closure into register 62 [105] and the stubs for 772, 92, 330, 394, 490 and 733 [112]–[135]. The 772 handler (`0.56`), the `maps` lookup (`0.51`), `cli_loadmap` (`0.54`), `scene_load_scene` (`0.37`), the load update that calls `scene_start_load` (`0.47`), the local player's entry hook (`0.49`), `scene_is_in_world` (`0.19`), `scene_get_type` (`0.5`), the current tid (`0.8`) and map (`0.13`), the open-world test (`0.18`) |
-| S2 | `data/core/client/net_manager.luac` | The type handlers for 2 (`0.7`), 7 (`0.9`) and 8 (`0.10`); `send_gateway` (`0.22`), `send` (`0.25`), `send_enter` (`0.26`), `send_leave` (`0.27`), `send_time_sync` (`0.28`); `net_manager_enable_send` (`0.31`) and `net_manager_disable_send` (`0.32`) |
-| S3 | `data/core/client/actor_manager.luac` | Creating an actor (`0.33`), the actor by id (`0.39`), `actor_system_set_local_id` (`0.42`), `actor_system_enter_finish` (`0.45`), `actor_system_local_player_enter` (`0.53`), `actor_system_get_local_id` (`0.82`) |
+| S2 | `data/core/client/net_manager.luac` | The type handlers for 2 (`0.7`), 6 (`0.8`), 7 (`0.9`), 8 (`0.10`), 9 (`0.11`) and 10 (`0.12`), put in the handler table in the main chunk `0` [75]–[88]; `send_gateway` (`0.22`), `send` (`0.25`), `send_enter` (`0.26`), `send_leave` (`0.27`), `send_time_sync` (`0.28`), `net_manager_send_sync_filter` (`0.29`); `net_manager_enable_send` (`0.31`) and `net_manager_disable_send` (`0.32`) |
+| S3 | `data/core/client/actor_manager.luac` | Which actors get a move handle (`0.20`), its creation (`0.21`), the handles (`0.24`), creating an actor (`0.33`), destroying one (`0.34`, from `actor_system_destroy_actor`, `0.46`), the actor by id (`0.39`), `actor_system_set_local_id` (`0.42`), `actor_system_enter_finish` (`0.45`), `actor_system_unpack_props` (`0.49`), `actor_system_reset_props` (`0.51`), `actor_system_create_actor` (`0.52`), `actor_system_local_player_enter` (`0.53`), `actor_system_get_local_id` (`0.82`) |
 | S4 | `data/core/client/time_manager.luac` | `SERVER_TIME_SYNC_INTERVAL` (`0`), `time_manager_update` (`0.1`), `time_manager_time_sync_resp` (`0.2`) |
 | S5 | `data/core/client/main.luac` | The per-frame function (`0.9`), which calls `time_manager_update` |
 | S6 | `data/interface/system/UIMain/UIMain.luac` | The `STATE_*` constants (`0`), the net-status timer `OnTimer_CheckNetStatus` (`0.3`), `UpdateLoadScene` (`0.9`), `OnRequestLoadScene` (`0.24`), `OnLocalActorEnter` (`0.30`) |
@@ -336,13 +423,19 @@ Clicks and keys went through XTEST on the nested display, and screenshots after 
 | S14 | `data/core/modules/system/system.luac` | `RequestQuitGame` (`0.5`): 392 through `send_gateway` |
 | S15 | `data/core/share/item_logic/item_category.luac` | The equipment test on `id >> 24` (`0.0`) and the id from type and number, `type << 24` (`0.23`, `0.24`) |
 | S16 | `data/core/modules/net/net.luac` | The close-reason table in the main chunk `0` (decompiled lines 1674–1810), as in [`lobby.md`](lobby.md) S1 |
-| S17 | `data/core/modules/player/player.luac` | The player model's setup (`0.4`), `OnHPChanged` (`0.20`) and the model's update with the `PostDead` effect (`0.21`) |
+| S17 | `data/core/modules/player/player.luac` | `OnActorEnter`, for other players (`0.2`); the local player's setup, `OnLocalActorEnter` (`0.4`); `OnHPChanged` (`0.20`) and the model's update with the `PostDead` effect (`0.21`) |
 | S18 | `data/core/client/actor_interface.luac` | `GetHPRat` (`0.47`), `GetHP` (`0.48`), `GetHPMax` (`0.50`) |
+| S19 | `data/core/client/actor_id_sync.luac` | The three queues and their timers (main chunk `0`, [69]–[89]), the enqueue (`0.8`), the dequeue (`0.9`), the pick (`0.10`), the timer's pull (`0.11`), `actor_id_enter` (`0.13`), `actor_id_leave` (`0.14`); the debug history (`0.0`–`0.3`), which `actor_id_on_actor_sync` (`0.15`) only adds to |
+| S20 | `data/core/client/actor_filter.luac` | The main chunk `0`: 3000 ms [1], 32 [12], the level rows, the threat rank 10 [39]; the check that sends type 5 (`0.3`), the values for players (`0.4`) and NPCs (`0.5`), the 3-second pass (`0.6`), `actor_filter_update` (`0.7`), `actor_filter_set_lv` (`0.8`) |
+| S21 | `data/core/share/timer_service.luac` | `timer_service_insert` (`0.0`) and the update that sets a timer with an interval again (`0.6`) |
+| S22 | `data/core/combat/client/combat_system.luac` | `on_actor_enter_finish` (`0.143`), exported as `combat_on_actor_enter_finish` in the main chunk `0` [480]–[496] |
+| S23 | `data/interface/addons/BillBoard/BillBoard.luac`, `BillBoardActor.luac` | `OnLoad` (`BillBoard.luac` `0.17`): name boards on `SCENE.EVENT_ACTOR_ENTER` [33] and `SCENE.EVENT_ACTOR_LEAVE` [38]; the properties a board watches (`BillBoardActor.luac` main chunk `0` [89]–[109]) |
+| S24 | `data/core/modules/transmit/transmit_with_effect.luac` | `RegisterEvents` (`0.16`): the one listener of `SCENE.EVENT_ACTOR_ENTER_FINISH` [11], `OnActorEnterScene` (`0.14`) |
 | D1 | `data/caches/protocol_ver.new_cache` | The protocol table: 772 `PROTOS2C_ACTOR_LOAD_SCENE`, 92, 330, 394, 10, 392 |
 | D2 | `data/caches/prop_tables.new_cache` | 2,439 rows: name, type, sync class and default |
 | D3 | `data/caches/all_tables.new_cache` | `vocation_initequip_templ` (`CteateEquips`, `PreviewEquips`), `vocation_templ` (`CreateShowEquipHead`, `creator_info`), `maps` |
 | D4 | `data/caches/locale_en.new_cache` | The English texts of the close reasons and of UIMain's fallbacks |
-| X1 | FUN_140222E00 | Inbound messages by type: case 2 (0x140222E59), case 7 (0x140222FAE), case 8 (0x14022306B), and cases 21 and 23 |
+| X1 | FUN_140222E00 | Inbound messages by type: case 2 (0x140222E59), case 6 (0x140222F3E), case 7 (0x140222FAE), case 8 (0x14022306B), case 9 (0x140223006), case 10 (0x14022304F), and cases 21 and 23 |
 | X2 | FUN_140221BB0, FUN_140246E90, FUN_1402481D0, FUN_141156EA0, FUN_141156CC0 | `send_enter` and the parts of type 3's body |
 | X3 | FUN_140221AC0, FUN_140246E40, FUN_140246DF0, FUN_140A9D6A0, FUN_141156C20, FUN_140A9D650; the exports `ipvtmeg` (0x143D27000) and `curl_easy_paste` (0x143D26000) | `send_time_sync` and the two values it reads |
 | X4 | FUN_1401AF730 (bound at 0x1401AFCDC), FUN_1400E2D60, FUN_1401ACD10, FUN_14017BA60 and its jump table at 0x14017BD64, FUN_1401ACE70 | `lua_actor_props_unpack` and the blob's decoder |
@@ -353,21 +446,29 @@ Clicks and keys went through XTEST on the nested display, and screenshots after 
 | X9 | 0x14020DE10 (`move_get_move_speed_by_rat`, bound at 0x14020AAC0), 0x142F04890, 0x142F046B8; 0x140210A30 (`move_set_local_actor_id`, signature at 0x141189F00) | The rate's conversion; the local id's width |
 | X10 | FUN_1401AF2F0 (`lua_actor_new`), FUN_140222DE0 (`net_client_get_server_time`) | The id's read; the server-time estimate |
 | X11 | the exe's strings | No `equips_id` |
+| X12 | FUN_140116840 (`lua_pushinteger`), FUN_140116AA0 (`lua_pushboolean`), FUN_140116EF0 (`lua_createtable`), FUN_140117630 (`lua_rawseti`) | The Lua calls X1's cases 6 and 9 push with |
+| X13 | FUN_140221D30 (`send_sync_filter`), FUN_140119940 (`luaL_checkinteger`), FUN_140246EA0, FUN_141157040 (called through 0x1411569E0), the stubs at 0x14029990C | Type 5's body |
+| X14 | FUN_1401FF980 (`actor_move_create`, bound at 0x14020A3BC), FUN_14018D230, FUN_14018D2E0 | A move handle's start, from property 16 |
+| X15 | FUN_14024F010, FUN_14024E790 | `--allow_multi`, `GJMut1` and `GJMut2` |
+| X16 | FUN_140245560, FUN_1400B6490 | `gujianol.log` in the exe's folder |
+| X17 | FUN_140188970, FUN_140183DD0; the string at 0x141161898 | The web view's named queues and its helper's `--queueid` |
+| X18 | The exe's import table, read with a standard-library PE reader; in the shared project, the callers of `CreateMutexW` (FUN_14024E790, FUN_140183BE0, FUN_140183DD0), `OpenMutexW` (FUN_140183BE0, FUN_140183DD0), `CreateMutexA` and `CreateSemaphoreA` (FUN_140A96340), `CreateSemaphoreW` (FUN_140B0EAE0), `CreateEventA` and `CreateEventW` (each call's name argument 0) and `FindWindowA` (FUN_140A92AE0) | The exe's named objects |
 | L1 | `re/m4/entering/notes.md`, with its REA bundle in `re/m4/entering/rea/` | This reading's notes: every REA call and its ID, the unknowns recorded in REA, and what the local probes printed |
 | L2 | `re/m4/entering/builtin_props.tsv` | BUILTIN_PROPS dumped from the exe with a standard-library PE reader |
 | L3 | `re/m4/entering/vocation_sheets.json` | `vocation_initequip_templ` and `vocation_templ`, decoded from D3 with a standard-library reader |
 | L4 | `re/m4/world-survey/` | The design-time survey (entering, sync and movement, chat, the start and outfit): the leads this reading checked |
+| L5 | `re/m4/seeing/notes.md`, with its REA bundle in `re/m4/seeing/rea/` | §14 and §15's notes: every REA call and its ID, the unknowns recorded in REA, the bytecode positions and the import table |
 | M4E1 | `re/runs/out/m4-e1/`, with screenshots after 295 s in `re/m4/t11/m4-e1/` | Task 11's first world run (§13): `server.log` (trace), `gujianol.log`, `wine.log`, screenshots and the watchdog's log |
 | M4E2–M4E4 | `re/runs/out/m4-e2/` to `m4-e4/`, with screenshots in `re/m4/t11/m4-e2/` to `m4-e4/` | The same for runs m4-e2 to m4-e4 |
 | M4R | `re/m4/t11/runs.md` | The runs' predictions, written before each run, and their outcomes |
 
 ### REA Evidence IDs
 
-Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in two sessions on 2026-10-14, the second for eleven IDs the first had missed; each reading shows the function in the role the finding gives it. The session's first call, on FUN_140222E00, returned the ID [`../opcodes.md`](../opcodes.md) gives for it. An ID covers its call exactly as sent, so anyone can check it by repeating the call ([`../../re/README.md`](../../re/README.md#how-to-cite)). The IDs for FUN_140221AC0, FUN_140246E40, FUN_140246DF0 and FUN_1400B5670 are in [`../transport.md`](../transport.md), and FUN_1400D5850's in [`../payloads.md`](../payloads.md).
+Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in three sessions on 2026-10-14: the second for eleven IDs the first had missed, the third for §14 and §15; each reading shows the function in the role the finding gives it. The first and the third session's first call, on FUN_140222E00, returned the ID [`../opcodes.md`](../opcodes.md) gives for it, and the third's FUN_140221D30 did too. An ID covers its call exactly as sent, so anyone can check it by repeating the call ([`../../re/README.md`](../../re/README.md#how-to-cite)). The IDs for FUN_140221AC0, FUN_140246E40, FUN_140246DF0 and FUN_1400B5670 are in [`../transport.md`](../transport.md), and FUN_1400D5850's in [`../payloads.md`](../payloads.md).
 
 | Function or address | Cited in | Call | Evidence ID |
 |---|---|---|---|
-| FUN_140222E00 | X1; 4.1, 6.1, 7.3 | `procedure_pseudo_code {procedure: "0x140222e00"}` | `ev_4656519e08dab96fa5ad38e228a578375ef1b30907fb075530e4d9e15b4d3d20` |
+| FUN_140222E00 | X1; 4.1, 6.1, 7.3, 14.1, 14.11 | `procedure_pseudo_code {procedure: "0x140222e00"}` | `ev_4656519e08dab96fa5ad38e228a578375ef1b30907fb075530e4d9e15b4d3d20` |
 | FUN_140221BB0 | X2; 3.1 | `procedure_pseudo_code {procedure: "0x140221bb0"}` | `ev_cecccd177df87001878f48ca00d2f3afac79247d8791f6627bb9c732374b329c` |
 | FUN_140246E90 | X2; §3 | `procedure_pseudo_code {procedure: "0x140246e90"}` | `ev_6f141088ac237738a4cefbc084410bb1ba6f7406d0c8a7fcc00c6f3150cf5690` |
 | FUN_1402481D0 | X2; §3 | `procedure_pseudo_code {procedure: "0x1402481d0"}` | `ev_b0eea52e8b77836220a2b4db4f0aae98cad374e132cd2626522739d4ce8bf7a5` |
@@ -422,3 +523,24 @@ Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in two sessions on 
 | FUN_1401AF2F0 | X10; 4.2, 8.1 | `procedure_pseudo_code {procedure: "0x1401af2f0"}` | `ev_b71792ca61faa1b2784aaab20d06b1a9db9898b6f45fd6a32a9c6f1de580a6cf` |
 | FUN_140222DE0 | X10; 7.3 | `procedure_pseudo_code {procedure: "0x140222de0"}` | `ev_3942b189e3a5091a06c50210797945a849c3e9f63fd186cc7299caffeb724c9d` |
 | the exe's strings | X11; 9.1 | `search_strings {pattern: "equips_id", mode: "literal"}` | `ev_b83f8a725bb3c9d6fe73c0a77111a20a8521532dd4e2a43e2d1d1133f8a3631e` |
+| FUN_140116840 | X12; 14.1 | `procedure_pseudo_code {procedure: "0x140116840"}` | `ev_a9f123899e37112c336e28be5645c51ea7696fa8411df0a0080e2055a8c3a7ff` |
+| FUN_140116AA0 | X12; 14.1 | `procedure_pseudo_code {procedure: "0x140116aa0"}` | `ev_13cae7695fc7d0f898562b8d388082829a79fa661f064ef3fd7d95d7f36c27f7` |
+| FUN_140116EF0 | X12; 14.11 | `procedure_pseudo_code {procedure: "0x140116ef0"}` | `ev_4179452c05f8dae36b0be30e4745d3c8ec213f3ee39de0cab2c17586de8c60ac` |
+| FUN_140117630 | X12; 14.11 | `procedure_pseudo_code {procedure: "0x140117630"}` | `ev_36c69b25bc382b1740f99265034dac7c895de4ae99c7d3d370a4568e2d05d546` |
+| FUN_140221D30 | X13; 14.4 | `procedure_pseudo_code {procedure: "0x140221d30"}` | `ev_eba0244ecb8c94a02f7e0ad89c87cc89fc99e5e9a426d10e11f69e7a85bd3b30` |
+| FUN_140119940 | X13; 14.4 | `procedure_pseudo_code {procedure: "0x140119940"}` | `ev_317d15fdb99cc5d272e8006c9debd13a747baee82473b8578482a06c58c8bed9` |
+| FUN_140246EA0 | X13; 14.4 | `procedure_pseudo_code {procedure: "0x140246ea0"}` | `ev_595f9b951e97473ff677478c466f84c2ae089995dfcc46669c006dceb7072964` |
+| FUN_141157040 | X13; 14.4 | `procedure_pseudo_code {procedure: "0x141157040"}` | `ev_c1a01ca2fa792404ee4c5d5a81bf96bb73be068e209c9295e16747b0014c3aaa` |
+| 0x14029990C | X13; 14.4 | `read_bytes {address: "0x14029990c", length: 44}` | `ev_19c0f12e05e26567ca6461aaaed42b169e21f250661329a6b6736a2dca551206` |
+| FUN_1401FF980 | X14; 14.8 | `procedure_pseudo_code {procedure: "0x1401ff980"}` | `ev_b78db3f77126a938d48184527c8b92ddafeaa9b641926142a8eac9a037c181df` |
+| 0x14020A3BC | X14; 14.8 | `inspect_native_instruction {address: "0x14020a3bc"}` | `ev_3112a012a31d69195a8d3602799b83c3d69918fc0b039a1d9707bcd8400f8094` |
+| FUN_14018D230 | X14; 14.8 | `procedure_pseudo_code {procedure: "0x14018d230"}` | `ev_c6ff080c51f73928c20a74fb16b3b4a0a7094ac03539fe11c3f63900e57390cf` |
+| FUN_14018D2E0 | X14; 14.8 | `procedure_pseudo_code {procedure: "0x14018d2e0"}` | `ev_51b82cee7c67af4b06ee01c95aa0b1e8bdd88e94a63e583db2db6d7b8489eec2` |
+| FUN_14024F010 | X15; 15.1 | `procedure_pseudo_code {procedure: "0x14024f010"}` | `ev_a3fcb94db8ff9db03a63277fd36998063ab52d2143c39e1bbae5184f4dfe39a4` |
+| FUN_14024E790 | X15; 15.1 | `procedure_pseudo_code {procedure: "0x14024e790"}` | `ev_6bb7c3fb7a10c5fcfdf5bae8a699bd3c0d42449de33c3f260d3eff9078610d6f` |
+| FUN_140245560 | X16; 15.4 | `procedure_pseudo_code {procedure: "0x140245560"}` | `ev_e3a5ba6f2d95cf7eb9fcde3f5c839e3b2b8eb025a32d464feb078362aa503894` |
+| FUN_1400B6490 | X16; 15.4 | `procedure_pseudo_code {procedure: "0x1400b6490"}` | `ev_99fb299335db19ebf5904b16fd4658b06beae3a95349774e007bd4a28156f86a` |
+| FUN_140188970 | X17; 15.2 | `procedure_pseudo_code {procedure: "0x140188970"}` | `ev_1f6e131d0bfdc8aa7330e46ab43e3939d99d8008d0442243eab6ecb8fc80be22` |
+| FUN_140183DD0 | X17; 15.2 | `procedure_pseudo_code {procedure: "0x140183dd0"}` | `ev_3a6ac622b039c18d37629baeb394075fd0d1de0a1567c7be6108a5ae2b550e70` |
+| the exe's strings | X17; 15.2 | `search_strings {pattern: "c2s_webui_", mode: "literal"}` | `ev_c433afc86d18817a3e4d1ac7e2365362af0aed845c263f611921b92754363ba9` |
+| 0x141161898 | X17; 15.2 | `xrefs {address: "0x141161898"}` | `ev_89c5acdc19b29a20d8fda57fb1911fe1fd71d605ef53fabcc5785337db2c0965` |

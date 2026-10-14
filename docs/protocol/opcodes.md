@@ -22,10 +22,10 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 | `3` | S→C | `STC_PROTOCOL_TRANS_LIMIT_LV` | case 3: one `u16` | `named` | O.1 |
 | `4` | S→C | `STC_PROTOCOL_DEBUG_POS` | case 4 | `named` | O.1 |
 | `5` | S→C | `STC_PROTOCOL_GM_CHANNEL` | case 5: FUN_1401A49C0 | `named` | O.1 |
-| `6` | S→C | `STC_PROTOCOL_SYNC_ID_ENTER` | case 6 | `named` | O.1 |
+| `6` | S→C | `STC_PROTOCOL_SYNC_ID_ENTER` | case 6: a `u64` actor id, x, y and z as `i32`, a flag byte and a priority byte, 22 bytes; the client queues the id and pulls it with type 5 ([`packets/world.md`](packets/world.md) 14.1–14.3) | `schema` | O.1, [`packets/world.md`](packets/world.md) 14.1 |
 | `7` | S→C | `STC_PROTOCOL_SYNC_ENTER` | case 7: a `u64` actor id, the actor's type and difficulty (a byte each), a `u32` template id, then the property blob ([`packets/world.md`](packets/world.md) §4) | `verified` | O.1, [`packets/world.md`](packets/world.md) §4, §13 (M4E1–M4E3); `crates/fenji-proto/tests/world.rs` (`sync_enter_self_is_byte_for_byte`) |
 | `8` | S→C | `STC_PROTOCOL_SYNC_ENTER_FINISH` | case 8: one `u64`, the actor id ([`packets/world.md`](packets/world.md) 6.1) | `verified` | O.1, [`packets/world.md`](packets/world.md) 6.1, §13 (M4E1–M4E3); `crates/fenji-proto/tests/world.rs` (`sync_enter_finish_is_byte_for_byte`) |
-| `9` | S→C | `STC_PROTOCOL_SYNC_LEAVE` | case 9: an array of `u64` | `named` | O.1 |
+| `9` | S→C | `STC_PROTOCOL_SYNC_LEAVE` | case 9: actor ids, each a `u64`, as many as the body holds, with no count ([`packets/world.md`](packets/world.md) 14.11) | `schema` | O.1, [`packets/world.md`](packets/world.md) 14.11 |
 | `10` | S→C | `STC_PROTOCOL_SYNC_UPDATE` | case 10: a `u64` actor id, then a property blob in type 7's format ([`packets/world.md`](packets/world.md) §4) | `schema` | O.1, [`packets/world.md`](packets/world.md) §4 |
 | `11` | S→C | `STC_PROTOCOL_SYNC_UPDATE_FILTER` | case 11: FUN_1401AE640 | `named` | O.1 |
 | `12` | S→C | `STC_PROTOCOL_MOVE` | case 12: FUN_14008E470 | `named` | O.1 |
@@ -49,7 +49,7 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 | `2` | C→S | `CTS_PROTOCOL_TIME_SYNC` | `send_time_sync` (FUN_140221AC0): a 13-byte body, sent once a second from 772 on ([`transport.md`](transport.md) 10.6) | `verified` | O.2, [`transport.md`](transport.md) 10.6; [`packets/world.md`](packets/world.md) §13 (M4E1); `crates/fenji-server/tests/real_client.rs` (`the_real_world_bodies_fit_their_layouts`) |
 | `3` | C→S | `CTS_PROTOCOL_CLIENT_ENTER` | `send_enter` (FUN_140221BB0): a 21-byte body, sent once the scene has loaded ([`packets/world.md`](packets/world.md) §3) | `verified` | O.2, [`packets/world.md`](packets/world.md) §3, §13 (M4E1); `crates/fenji-server/tests/real_client.rs` (`the_real_world_bodies_fit_their_layouts`) |
 | `4` | C→S | `CTS_PROTOCOL_CLIENT_LEAVE` | `send_leave` (FUN_140221CB0): an empty body | `schema` | O.2 |
-| `5` | C→S | `CTS_PROTOCOL_SYNC_FILTER_SET` | `send_sync_filter` (FUN_140221D30): an 18-byte body | `named` | O.2 |
+| `5` | C→S | `CTS_PROTOCOL_SYNC_FILTER_SET` | `send_sync_filter` (FUN_140221D30): 18 bytes, the actor id as a `u64` and a 32-bit value (0 pulls an announced actor), then a byte 1, a zero `u32` and a byte about the client's own process ([`packets/world.md`](packets/world.md) 14.4) | `schema` | O.2, [`packets/world.md`](packets/world.md) 14.4, 14.12 |
 | `6`–`11` | C→S | `CTS_PROTOCOL_QUERY_ACTOR_POS`, `_QUERY_ACTOR_MOVE_CMD`, `_MOVE_DIR`, `_MOVE_COMBAT`, `_MOVE_FINISH_CHARGE`, `_MOVE_DEBUG` | by table order; their senders weren't read | `named` | O.2 |
 
 The type-0 message the client sends during auth ([`transport.md`](transport.md) §6) isn't a script message: the client builds it directly in the hello handler, before state `WORK`.
