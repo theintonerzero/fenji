@@ -474,7 +474,19 @@ async fn lobby_loop(
                     return Ok(());
                 }
                 for event in server.receive(&buf[..n])? {
-                    let Event::Message(m) = event else { continue };
+                    let m = match event {
+                        Event::Message(m) => m,
+                        // The client's ping display reads only what a server time sync sets: its
+                        // clock less the one echoed (transport.md 4.4, #269).
+                        Event::TimeSync(ms) => {
+                            if !send_or_replaced(sock, &server.time_sync(ms), deadline, replaced).await? {
+                                tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                        _ => continue,
+                    };
                     match on_message(gate, account, m.ty, &m.body).await {
                         Step::Replies(replies) => {
                             for reply in replies {

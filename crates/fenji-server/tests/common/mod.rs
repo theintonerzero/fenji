@@ -228,6 +228,28 @@ impl Bot {
         self.sock.write_all(&out).await.unwrap();
     }
 
+    /// The next event, which must be a transport-level time sync from the server (transport.md
+    /// 4.4): its clock value. `None` when another event comes first or the connection ends.
+    pub async fn next_transport_time_sync(&mut self) -> Option<u64> {
+        loop {
+            if let Some(e) = self.events.pop_front() {
+                return match e {
+                    ClientEvent::TimeSync(ms) => Some(ms),
+                    _ => None,
+                };
+            }
+            if !self.pump().await {
+                return None;
+            }
+        }
+    }
+
+    /// A transport-level time sync with `millis` as the client's clock (transport.md 4.6).
+    pub async fn send_transport_time_sync(&mut self, millis: u64) {
+        let bytes = self.client.time_sync(millis);
+        self.sock.write_all(&bytes).await.unwrap();
+    }
+
     /// The next script message: its id and arguments.
     pub async fn recv(&mut self) -> (i64, Vec<Value>) {
         let e = self.next().await.expect("a message");
