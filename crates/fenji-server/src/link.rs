@@ -1298,7 +1298,10 @@ mod tests {
         // #269: the client's ping display reads only what a transport-level time sync from the
         // server sets, the client's clock less the echoed one (transport.md 4.4). Unanswered, it
         // stays at its first value, 50 ms.
-        linked(|mut l| async move {
+        linked(|l| async move {
+            // The whole of `l`: the world's channel in it must live until the test ends, or the
+            // link sees the world let go and ends before it reads the sync.
+            let mut l = l;
             let bytes = l.client.time_sync(1_791_950_400_123);
             l.theirs.write_all(&bytes).await.unwrap();
             let mut buf = vec![0u8; 1024];

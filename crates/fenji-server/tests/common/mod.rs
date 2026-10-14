@@ -223,9 +223,14 @@ impl Bot {
 
     /// A message body exactly as given, as a gateway script message (type 0xFF): for a recorded
     /// body such as a fixture.
-    /// The next event, which must be a time sync from the server: its clock value. `None` when
-    /// another event comes first or the connection ends.
-    pub async fn next_time_sync(&mut self) -> Option<u64> {
+    pub async fn send_raw(&mut self, body: &[u8]) {
+        let out = self.client.send(0xFF, body).unwrap();
+        self.sock.write_all(&out).await.unwrap();
+    }
+
+    /// The next event, which must be a transport-level time sync from the server (transport.md
+    /// 4.4): its clock value. `None` when another event comes first or the connection ends.
+    pub async fn next_transport_time_sync(&mut self) -> Option<u64> {
         loop {
             if let Some(e) = self.events.pop_front() {
                 return match e {
@@ -240,14 +245,9 @@ impl Bot {
     }
 
     /// A transport-level time sync with `millis` as the client's clock (transport.md 4.6).
-    pub async fn send_time_sync(&mut self, millis: u64) {
+    pub async fn send_transport_time_sync(&mut self, millis: u64) {
         let bytes = self.client.time_sync(millis);
         self.sock.write_all(&bytes).await.unwrap();
-    }
-
-    pub async fn send_raw(&mut self, body: &[u8]) {
-        let out = self.client.send(0xFF, body).unwrap();
-        self.sock.write_all(&out).await.unwrap();
     }
 
     /// The next script message: its id and arguments.

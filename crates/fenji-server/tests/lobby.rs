@@ -548,6 +548,14 @@ async fn a_transport_time_sync_is_echoed_in_the_lobby() {
     let t = ticket(&s, "tester").await;
     let mut bot = Bot::connect(s.login_addr, payload(&t, "tester", false)).await;
     bot.expect_work().await;
-    bot.send_time_sync(1_791_950_400_123).await;
-    assert_eq!(bot.next_time_sync().await, Some(1_791_950_400_123));
+    bot.send_transport_time_sync(1_791_950_400_123).await;
+    assert_eq!(
+        bot.next_transport_time_sync().await,
+        Some(1_791_950_400_123)
+    );
+    // The stream stays in step after an echo: the next message still decodes.
+    bot.send(lobby::QUERY_ACTORS, &[]).await;
+    let (id, _) = bot.recv().await;
+    assert_eq!(id, lobby::ROLE_LIST);
+    s.shutdown().await.unwrap();
 }
