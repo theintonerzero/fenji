@@ -435,31 +435,41 @@ class TrackClient(unittest.TestCase):  # issue #142: both of S2's operands can b
     def proc(self, pid, start, comm, alive=True):
         return {"pid": pid, "start": start, "comm": comm, "argv": [comm], "alive": alive}
 
-    def test_a_client_found_late_is_the_earliest_renamed(self):
+    def test_clients_found_late_are_all_found_in_start_order(self):
         seen = {7: self.proc(7, 100, "wine64"), 9: self.proc(9, 90, "wine64")}
         now = {p: self.proc(p, seen[p]["start"], "gujianol.exe") for p in seen}
-        found, hits = wd.track_client(seen, None, now.get)
-        self.assertEqual(found, (90, 9))
+        found, hits = wd.track_clients(seen, {}, now.get)
+        self.assertEqual(found, [(90, 9), (100, 7)])
         self.assertEqual(hits, [])
+
+    def test_late_naming_goes_on_once_a_client_is_known(self):  # Amendment B: client 2 named late
+        seen = {7: self.proc(7, 100, "gujianol.exe"), 9: self.proc(9, 300, "wine64")}
+        now = {9: self.proc(9, 300, "gujianol.exe")}
+        found, _ = wd.track_clients(seen, {7: 100}, now.get)
+        self.assertEqual(found, [(300, 9)])
 
     def test_s2_sees_a_winedevice_renamed_after_the_client(self):
         seen = {11: self.proc(11, 150, "wine64")}
         now = {11: self.proc(11, 150, "winedevice.exe")}
-        found, hits = wd.track_client(seen, 100, now.get)
-        self.assertIsNone(found)
+        found, hits = wd.track_clients(seen, {5: 100}, now.get)
+        self.assertEqual(found, [])
         self.assertEqual([p for p, _ in hits], [11])
 
     def test_s2_counts_a_winedevice_that_is_gone_already(self):
         seen = {12: self.proc(12, 150, "winedevice.exe", alive=False)}
-        self.assertEqual([p for p, _ in wd.track_client(seen, 100, lambda p: None)[1]], [12])
+        self.assertEqual([p for p, _ in wd.track_clients(seen, {5: 100}, lambda p: None)[1]], [12])
 
     def test_a_winedevice_older_than_the_client_is_no_sign(self):
         seen = {13: self.proc(13, 50, "winedevice.exe")}
-        self.assertEqual(wd.track_client(seen, 100, lambda p: None)[1], [])
+        self.assertEqual(wd.track_clients(seen, {5: 100}, lambda p: None)[1], [])
 
     def test_no_client_means_no_s2(self):
         seen = {14: self.proc(14, 150, "winedevice.exe")}
-        self.assertEqual(wd.track_client(seen, None, lambda p: None), (None, []))
+        self.assertEqual(wd.track_clients(seen, {}, lambda p: None), ([], []))
+
+    def test_the_earliest_client_is_s2s_reference(self):  # Amendment B: whichever client's start
+        seen = {15: self.proc(15, 150, "winedevice.exe")}
+        self.assertEqual([p for p, _ in wd.track_clients(seen, {5: 100, 6: 200}, lambda p: None)[1]], [15])
 
 
 # The stand-ins for the whole-loop tests below. Each runs through a symlink to this Python, so it
@@ -503,7 +513,9 @@ class WholeLoop(unittest.TestCase):
     """cmd_watch itself over a fake sandbox of stand-in processes renamed with prctl: no Wine and
     no client. Times are seconds after the start signal, with margins far above the 0.05 s polls."""
 
-    def watch(self, plan, outer_script=_OUTER, **extra):
+    def watch(self, plan, outer_script=_OUTER, logs=None, **extra):
+        """`logs`: each client's log, its text, in the clients' order (default: one log that is
+        never written)."""
         with tempfile.TemporaryDirectory() as tmp:
             d = pathlib.Path(tmp)
             (d / "bin").mkdir()
@@ -514,10 +526,15 @@ class WholeLoop(unittest.TestCase):
             out = d / "out"
             (out / "root").mkdir(parents=True)
             (out / "watchdog-baseline.json").write_text(json.dumps({"sys": {}, "services": [], "service_info": {}}))
+            paths = [str(out / "none.log")]
+            if logs is not None:
+                paths = [str(out / f"log-{n}.log") for n in range(1, len(logs) + 1)]
+                for path, text in zip(paths, logs):
+                    pathlib.Path(path).write_text(text)
             outer = subprocess.Popen([str(d / "bin" / "bwrap"), str(d / "outer.py"), str(d), json.dumps(plan),
                                       str(out / ".go")], start_new_session=True)
             a = types.SimpleNamespace(root=str(out / "root"), out=str(out), sandbox_pid=outer.pid,
-                                      log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                      log=paths, interval=0.05, binds=[], go=str(out / ".go"),
                                       tmpfs=None, prefix=str(out / "root" / "compat" / "pfx"))
             vars(a).update(extra)
             saved = wd.TMPFS_SUBS, wd.TMPFS_SHALLOW
@@ -534,6 +551,7 @@ class WholeLoop(unittest.TestCase):
                     pass
                 outer.wait()
             self.go_created = (out / ".go").exists()
+            self.watchdog_log = (out / "watchdog.log").read_text()
             trig = out / "watchdog-trigger.txt"
             return rc, trig.read_text() if trig.exists() else ""
 
@@ -711,6 +729,199 @@ class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
             signal.signal(signal.SIGALRM, old)
 
 
+
+# Client 2's creation, in its own log: session 2's shim starting the second copy (Amendment B).
+LOG2_CLIENT = (r'3.000:0150:0154:trace:process:CreateProcessInternalW app (null) cmdline '
+               r'L"\"Z:\\c\\client2\\bin64\\gujianol.exe\""')
+
+
+@contextlib.contextmanager
+def short_grace(seconds=0.5):
+    """The fail-safe's grace, shortened for a test."""
+    saved = wd.client_creation_overdue.__defaults__
+    wd.client_creation_overdue.__defaults__ = (seconds,)
+    try:
+        yield
+    finally:
+        wd.client_creation_overdue.__defaults__ = saved
+
+
+class TwoLogs(unittest.TestCase):
+    """The clients' logs, scanned as one stream in the order of Wine's timestamps, with one rule
+    state (M4 world plan, Amendment B): the client's creation in one log dates a LoadDriver in
+    another, and a caller's ChangeServiceConfigW in its own log goes before services.exe's line in
+    the first log, which answers it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        d = pathlib.Path(self._tmp.name)
+        self.paths = [d / "1.log", d / "2.log"]
+        for p in self.paths:
+            p.write_bytes(b"")
+        self.rules = wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
+                                 {"discord-bridge": wd.norm_image(DISCORD)}, drivers=["winebth", "mountmgr"])
+        self.stream = wd.LogStream([str(p) for p in self.paths])
+        self.addCleanup(self.stream.close)
+        self.trig, self.notes = [], []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write(self, n, *lines):
+        with open(self.paths[n - 1], "ab") as fh:
+            fh.write(("\n".join(lines) + "\n").encode())
+
+    def poll(self, times=1, final=False):
+        for _ in range(times):
+            for _, chunk, look in self.stream.read(final=final):
+                trig, notes = self.rules.scan(chunk, look)
+                self.trig += [t[0] for t in trig]
+                self.notes += [n[0] for n in notes]
+
+    def test_a_loaddriver_in_log_2_after_log_1s_creation_triggers_even_when_log_2_is_read_first(self):
+        self.write(2, AGT_LOADDRIVER)  # 2.000
+        self.poll()
+        self.write(1, CLIENT)  # 1.000, written within the poll that follows
+        self.poll(4)
+        self.poll(final=True)
+        self.assertEqual(self.trig, ["S3 LoadDriver for non-baseline service agt"])
+
+    def test_a_change_across_logs_is_a_note_whichever_log_is_read_first(self):
+        caller = (open_service("discord-bridge", pid="0150").replace("2.000:0150:0138", "2.000:0150:0154"),
+                  change_config(stype=32, image=DISCORD.replace("--service", "--other"), pid="0150"))
+        for first in (1, 2):
+            with self.subTest(first=first):
+                self.setUp()
+                if first == 1:
+                    self.write(1, SVCCTL_CHANGE)
+                    self.poll()
+                    self.write(2, *caller)
+                else:
+                    self.write(2, *caller)
+                    self.poll()
+                    self.write(1, SVCCTL_CHANGE)
+                self.poll(5)
+                self.poll(final=True)
+                self.assertEqual(self.trig, [])
+                self.assertEqual(self.notes, [USER_MODE_NOTE])
+
+    def test_services_exes_change_with_no_call_before_it_in_any_log_still_triggers(self):
+        self.write(1, CLIENT, SVCCTL_CHANGE)
+        self.write(2, LOG2_CLIENT)
+        self.poll(5)
+        self.poll(final=True)
+        self.assertEqual(self.trig, [UNSEEN_CHANGE])
+
+    def test_a_split_loaddriver_is_completed_from_its_own_log_only(self):
+        # Log 1's LoadDriver names no service, and only log 2 has a line that would name one.
+        self.write(1, CLIENT, "2.000:0098:00a4:err:ntoskrnl:ZwLoadDriver flags 0x1, load_path 0000000000000000, "
+                              "name 0000000000A1F840, base 0000000000A1F838.")
+        self.write(2, "2.000:0150:0154:trace:module:LdrGetDllHandleEx L\"ntdll.dll\"",
+                   r'failed to create driver L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\winebth": c0000142')
+        self.poll(5)
+        self.poll(final=True)
+        self.assertEqual(self.trig, ["S3 LoadDriver for non-baseline service None"])
+
+    def test_a_split_loaddriver_is_completed_across_another_logs_lines(self):
+        # Log 2's line falls between log 1's LoadDriver and its continuation in time order.
+        self.write(1, CLIENT, "2.000:0098:00a4:err:ntoskrnl:ZwLoadDriver flags 0x1, load_path 0000000000000000, "
+                              "name 0000000000A1F840, base 0000000000A1F838.",
+                   '2.002:0098:00a4:trace:module:LdrGetDllHandleEx L"ntdll.dll" -> 00006FFFFFEF0000 (load path (null))',
+                   r'failed to create driver L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\winebth": c0000142')
+        self.write(2, "2.001:0150:0154:trace:process:GetEnvironmentVariableW (L\"SteamAppId\" 0 0)")
+        self.poll(5)
+        self.poll(final=True)
+        self.assertEqual(self.trig, [])
+        self.assertEqual(self.notes, ["LoadDriver for baseline service winebth (message split across lines)"])
+
+    def test_lines_come_in_time_order_each_log_in_its_own(self):
+        self.write(1, "1.000:0020:0024:trace:a one", "a line without a stamp", "3.000:0020:0024:trace:c three")
+        self.write(2, "2.000:0150:0154:trace:b two", "4.000:0150:0154:trace:d four")
+        got = []
+        for _ in range(5):
+            got += [(i, chunk) for i, chunk, _ in self.stream.read()]
+        got += [(i, chunk) for i, chunk, _ in self.stream.read(final=True)]
+        lines = [(i, line) for i, chunk in got for line in chunk.decode().splitlines()]
+        self.assertEqual(lines, [(0, "1.000:0020:0024:trace:a one"), (0, "a line without a stamp"),
+                                 (1, "2.000:0150:0154:trace:b two"), (0, "3.000:0020:0024:trace:c three"),
+                                 (1, "4.000:0150:0154:trace:d four")])
+
+    def test_a_line_waits_for_the_other_logs_held_back_lines(self):
+        # Log 1's newest lines are held back as look-ahead while it grows: log 2's later line waits.
+        self.write(1, *[f"1.{i:03d}:0020:0024:trace:line {i}" for i in range(20)])
+        self.write(2, "1.500:0150:0154:trace:late")
+        order = []
+        for _ in range(6):
+            order += [i for i, chunk, _ in self.stream.read() for _ in chunk.splitlines()]
+        order += [i for i, chunk, _ in self.stream.read(final=True) for _ in chunk.splitlines()]
+        self.assertEqual(order, [0] * 20 + [1])
+
+
+class LogsOnTheCommandLine(unittest.TestCase):
+    WATCH = ["watch", "--root", "/r", "--out", "/o", "--sandbox-pid", "1"]
+
+    def test_one_log_per_client_in_order(self):
+        a = wd.parser().parse_args(self.WATCH + ["--log", "/io/a.log", "--log", "/io/2/a.log"])
+        self.assertEqual(a.log, ["/io/a.log", "/io/2/a.log"])
+
+    def test_two_logs_naming_one_file_are_refused(self):
+        saved = sys.argv
+        sys.argv = ["watchdog.py"] + self.WATCH + ["--log", "/io/a.log", "--log", "/io/x/../a.log"]
+        try:
+            with open(os.devnull, "w") as quiet, contextlib.redirect_stderr(quiet):
+                with self.assertRaises(SystemExit) as cm:
+                    wd.main()
+        finally:
+            sys.argv = saved
+        self.assertEqual(cm.exception.code, 2)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")
+class TwoClientsWholeLoop(WholeLoop):  # Amendment B: two clients, one log each
+    """Two clients in one namespace, each tied to its own log by the order they start in."""
+
+    def test_a_client_creation_in_each_log_ends_0(self):
+        rc, _ = self.watch([[0.0, "gujianol.exe", "-", 0, 2.5], [0.5, "gujianol.exe", "-", 0, 2.5]],
+                           logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        self.assertEqual(rc, 0)
+        self.assertIn("client 1 detected: pid", self.watchdog_log)
+        self.assertIn("client 2 detected: pid", self.watchdog_log)
+
+    def test_client_1_ending_early_doesnt_answer_for_client_2(self):
+        plan = [[0.0, "gujianol.exe", "-", 0, 1.0], [2.0, "gujianol.exe", "-", 0, 5.0]]
+        with short_grace():
+            rc, _ = self.watch(plan, logs=[CLIENT + "\n", ""])
+        self.assertEqual(rc, 4)
+        self.assertIn("client 2", self.watchdog_log.split("WATCHDOG FAILURE")[1])
+        with short_grace():
+            rc, _ = self.watch(plan, logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        self.assertEqual(rc, 0)
+
+    def test_client_2_named_late_is_held_to_log_2(self):
+        plan = [[0.0, "gujianol.exe", "-", 0, 5.0], [2.0, "wine64", "gujianol.exe", 3.0, 5.0]]
+        with short_grace():
+            rc, _ = self.watch(plan, logs=[CLIENT + "\n", ""])
+        self.assertEqual(rc, 4)
+        self.assertIn("client 2 detected after a rename: pid", self.watchdog_log)
+        with short_grace():
+            rc, _ = self.watch(plan, logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        self.assertEqual(rc, 0)
+        self.assertIn("client 2 detected after a rename: pid", self.watchdog_log)
+
+    def test_s2_keeps_the_earliest_client_as_its_reference(self):
+        rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 5.0], [1.0, "winedevice.exe", "-", 0, 4.0],
+                               [2.0, "wine64", "gujianol.exe", 3.0, 5.0]],
+                              logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        self.assertEqual(rc, 3)
+        self.assertIn("S2", trig)
+
+    def test_a_third_client_with_two_logs_is_exit_4(self):
+        rc, _ = self.watch([[0.0, "gujianol.exe", "-", 0, 3.0], [0.5, "gujianol.exe", "-", 0, 3.0],
+                            [1.0, "gujianol.exe", "-", 0, 3.0]],
+                           logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        self.assertEqual(rc, 4)
+        self.assertIn("no log of its own", self.watchdog_log)
+
 class ClientCreationOverdue(unittest.TestCase):
     """Review M3: if the log never shows the client's creation, every LoadDriver would count as
     'before the client'; the watchdog stops the run instead of going blind."""
@@ -829,7 +1040,7 @@ class GateEventRecord(unittest.TestCase):
             child = subprocess.Popen(["sleep", "30"])  # stands in for the sandbox; the watchdog kills it
             try:
                 a = types.SimpleNamespace(root=str(root), out=str(out), sandbox_pid=child.pid,
-                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                          log=[str(out / "none.log")], interval=0.05, binds=[], go=str(out / ".go"),
                                           tmpfs=None, prefix=str(root / "compat" / "pfx"))
                 rc = wd.cmd_watch(a)
             finally:
@@ -866,7 +1077,7 @@ class LogNeverRaises(unittest.TestCase):
             child = subprocess.Popen(["sleep", "30"])  # stands in for the sandbox; the watchdog kills it
             try:
                 a = types.SimpleNamespace(root=str(root), out=str(out), sandbox_pid=child.pid,
-                                          log=str(out / "none.log"), interval=0.05, binds=[], go=str(out / ".go"),
+                                          log=[str(out / "none.log")], interval=0.05, binds=[], go=str(out / ".go"),
                                           tmpfs=None, prefix=str(root / "compat" / "pfx"))
                 with open(os.devnull, "w") as quiet, contextlib.redirect_stderr(quiet):  # the log's fallback
                     rc = wd.cmd_watch(a)
