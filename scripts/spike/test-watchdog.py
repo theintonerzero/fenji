@@ -496,6 +496,10 @@ procs = []
 for at, binary, rename, rename_t, die_t in plan:
     if t0 + at > time.time():
         time.sleep(t0 + at - time.time())
+    if binary == "@log":  # [at, "@log", n, text, 0]: append text to client n's log
+        with open(f"{d}/out/log-{rename}.log", "a") as fh:
+            fh.write(rename_t)
+        continue
     procs.append(subprocess.Popen([f"{d}/bin/{binary}", f"{d}/proc.py", rename, str(t0 + rename_t), str(t0 + die_t)]))
 for q in procs:
     q.wait()
@@ -584,7 +588,7 @@ class RenameWholeLoop(WholeLoop):  # issue #142
 
     def test_a_winedevice_older_than_a_late_named_client_is_no_sign(self):
         rc, _ = self.watch([[0.0, "winedevice.exe", "-", 0, 2.0],
-                            [0.4, "wine64", "gujianol.exe", 0.8, 2.5]])
+                            [0.4, "wine64", "gujianol.exe", 0.8, 2.5]], logs=[CLIENT + "\n"])
         self.assertEqual(rc, 0)
 
 
@@ -611,7 +615,7 @@ class BareWholeLoop(WholeLoop):  # issue #148
         (self.ns / "pulse" / "agt.sys").write_bytes(b"the host's")
         (self.ns / "X99.sys").write_bytes(b"the host's")
         rc, _ = self.watch([[0.0, "gujianol.exe", "-", 0, 1.0]], tmpfs=[str(self.ns)],
-                           binds=[str(self.ns / "pulse"), str(self.ns / "X99.sys")])
+                           binds=[str(self.ns / "pulse"), str(self.ns / "X99.sys")], logs=[CLIENT + "\n"])
         self.assertEqual(rc, 0)
 
     def test_s4_reads_the_named_prefix(self):
@@ -733,6 +737,22 @@ class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
 # Client 2's creation, in its own log: session 2's shim starting the second copy (Amendment B).
 LOG2_CLIENT = (r'3.000:0150:0154:trace:process:CreateProcessInternalW app (null) cmdline '
                r'L"\"Z:\\c\\client2\\bin64\\gujianol.exe\""')
+# Since client 2 runs in a Wine desktop of its own, session 2's shim starts explorer.exe with the
+# client's path in its command line, and explorer.exe starts the client (run m4-s5's log 2, its
+# paths shortened): only the last three lines create the client.
+EXPLORER_FOR_CLIENT_2 = (r'2.900:0150:0154:trace:process:CreateProcessInternalW app (null) cmdline '
+                         r'L"explorer.exe /desktop=fenji-client2,1280x720 Z:\\c\\client2\\bin64\\gujianol.exe '
+                         r'--fs=data:_index:_index", inherit 0, flags 0x400, env 0000000000000000 ((null))')
+EXPLORER_FOR_CLIENT_2_NT = (r'2.901:0150:0154:trace:process:NtCreateUserProcess '
+                            r'L"\\??\\C:\\windows\\system32\\explorer.exe" image L"C:\\windows\\system32\\explorer.exe" '
+                            r'cmdline L"explorer.exe /desktop=fenji-client2,1280x720 Z:\\c\\client2\\bin64\\gujianol.exe '
+                            r'--fs=data:_index:_index" parent (nil) machine 0')
+CLIENT2_UNQUOTED = (r'2.980:0160:0164:trace:process:CreateProcessInternalW app (null) cmdline '
+                    r'L"Z:\\c\\client2\\bin64\\gujianol.exe --fs=data:_index:_index", inherit 0, flags 0')
+CLIENT2_NT = (r'3.011:0160:0164:trace:process:NtCreateUserProcess L"\\??\\Z:\\c\\client2\\bin64\\gujianol.exe" '
+              r'image L"Z:\\c\\client2\\bin64\\gujianol.exe" cmdline L"Z:\\c\\client2\\bin64\\gujianol.exe"')
+CLIENT2_NT_PID = (r'3.030:0160:0164:trace:process:NtCreateUserProcess L"\\??\\Z:\\c\\client2\\bin64\\gujianol.exe" '
+                  r'pid 0178 tid 017c handles 0xc4/0xd8')
 
 
 @contextlib.contextmanager
@@ -963,11 +983,61 @@ class TwoClientsWholeLoop(WholeLoop):  # Amendment B: two clients, one log each
         self.assertIn("S2", trig)
 
     def test_a_third_client_with_two_logs_is_exit_4(self):
-        rc, _ = self.watch([[0.0, "gujianol.exe", "-", 0, 3.0], [0.5, "gujianol.exe", "-", 0, 3.0],
-                            [1.0, "gujianol.exe", "-", 0, 3.0]],
-                           logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 3.0], [0.5, "gujianol.exe", "-", 0, 3.0],
+                               [1.0, "gujianol.exe", "-", 0, 3.0]],
+                              logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
         self.assertEqual(rc, 4)
         self.assertIn("no log of its own", self.watchdog_log)
+        # The record names the client beyond the logs (review, Important 2).
+        self.assertRegex(trig, r"client 3 pid \d+ .*no log of its own")
+
+    def test_a_sign_in_the_poll_that_finds_a_client_beyond_the_logs_is_exit_3(self):  # review, Important 2
+        # One log, so a second gujianol.exe is a client beyond the logs. The log gets a LoadDriver
+        # after the client's creation the moment that client starts: whichever the watch sees
+        # first, the sign wins over the fail safe, and the record names the client.
+        plan = [[0.0, "gujianol.exe", "-", 0, 4.0], [1.0, "gujianol.exe", "-", 0, 4.0],
+                [1.0, "@log", 1, CLIENT + "\n" + AGT_LOADDRIVER + "\n", 0]]
+        rc, trig = self.watch(plan, logs=[""])
+        self.assertEqual(rc, 3)
+        self.assertIn("S3 LoadDriver for non-baseline service agt: " + AGT_LOADDRIVER, trig)
+        self.assertRegex(trig, r"client 2 pid \d+ .*no log of its own")
+
+    def test_a_client_found_just_before_the_end_is_held_to_its_log(self):  # Ruling R17 (a)
+        # Found well within the grace, the client was never held to its log while it ran: after the
+        # final read, a client whose log never showed a creation is exit 4.
+        rc, _ = self.watch([[0.0, "gujianol.exe", "-", 0, 1.0]], logs=[""])
+        self.assertEqual(rc, 4)
+        self.assertIn("log 1 never showed a client's creation", self.watchdog_log)
+        rc, _ = self.watch([[0.0, "gujianol.exe", "-", 0, 1.0]], logs=[CLIENT + "\n"])
+        self.assertEqual(rc, 0)
+
+    def test_the_shim_naming_client_2_for_explorer_is_not_its_creation(self):  # Ruling R17 (b)
+        # Session 2's shim starts explorer.exe for client 2's desktop, with the client's path in
+        # explorer's command line: log 2 has that line, and never the client's own creation.
+        plan = [[0.0, "gujianol.exe", "-", 0, 5.0], [2.0, "gujianol.exe", "-", 0, 5.0]]
+        with short_grace():
+            rc, _ = self.watch(plan, logs=[CLIENT + "\n", EXPLORER_FOR_CLIENT_2 + "\n"])
+        self.assertEqual(rc, 4)
+        self.assertIn("log 2 never showed a client's creation", self.watchdog_log)
+
+
+class ClientCreation(unittest.TestCase):  # Ruling R17 (b): the image actually created
+    def created(self, line):
+        return bool(wd.R_CLIENT_CREATE.search(line.encode()))
+
+    def test_the_clients_own_creation_lines_count(self):  # as runs m4-s4 and m4-s5 logged them
+        for line in (CLIENT, LOG2_CLIENT, CLIENT2_UNQUOTED, CLIENT2_NT, CLIENT2_NT_PID,
+                     r'1.0:0020:0024:trace:process:CreateProcessInternalW app L"C:\\SoLO\\bin64\\GUJIANOL.EXE" '
+                     r'cmdline L"x"'):
+            self.assertTrue(self.created(line), line)
+
+    def test_a_line_that_only_names_the_client_further_on_doesnt_count(self):
+        for line in (EXPLORER_FOR_CLIENT_2, EXPLORER_FOR_CLIENT_2_NT,
+                     r'1.0:0020:0024:trace:process:NtCreateUserProcess L"\\??\\Z:\\c\\notgujianol.exe" pid 1 tid 2',
+                     r'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline '
+                     r'L"\"C:\\windows\\command\\start.exe\" \"Z:\\c\\gujianol.exe\""'):
+            self.assertFalse(self.created(line), line)
+
 
 class ClientCreationOverdue(unittest.TestCase):
     """Review M3: if the log never shows the client's creation, every LoadDriver would count as

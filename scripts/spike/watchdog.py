@@ -124,8 +124,15 @@ R_CREATEKEY = re.compile(rb':trace:reg:NtCreateKey \(0x[0-9a-f]+,L"([^"\\\n]+)"'
 R_HEADER = re.compile(rb"\d+\.\d+:[0-9a-f]+:[0-9a-f]+:")  # "<time>:<pid>:<tid>:" (+timestamp,+pid,+tid)
 # services.exe's side of a service call (svcctl_*), which answers a caller's line in the caller's log.
 R_ANSWER = re.compile(rb"trace:service:svcctl_")
-# The client's creation (+process): steam.exe's CreateProcessInternalW, or NtCreateUserProcess.
-R_CLIENT_CREATE = re.compile(rb"(?:CreateProcessInternalW|NtCreateUserProcess) [^\n]*gujianol\.exe", re.I)
+# The client's creation (+process), by the image actually created: NtCreateUserProcess's first
+# string, CreateProcessInternalW's application name, or else the first token of its command line,
+# quoted or not. A line that only names the client further on, such as session 2's shim starting
+# `explorer.exe /desktop=… <client>` (Ruling R17), creates something else.
+R_CLIENT_CREATE = re.compile(
+    rb'NtCreateUserProcess L"(?:(?:[^"\\\n]|\\.)*\\\\)?gujianol\.exe"'
+    rb'|CreateProcessInternalW app (?:L"(?:(?:[^"\\\n]|\\.)*\\\\)?gujianol\.exe"'
+    rb'|\(null\) cmdline L"(?:\\"(?:(?:[^"\\\n]|\\\\)*\\\\)?gujianol\.exe\\"'
+    rb'|(?:(?:[^"\\\s]|\\\\)*\\\\)?gujianol\.exe[\s"]))', re.I)
 # +service (r7 on, replacing +reg): sechost's "CreateServiceW <scm> L"name" ..." and services.exe's
 # "svcctl_CreateServiceW (L"name", ...)". The first quoted string on the line is the service name.
 R_CREATESERVICE = re.compile(rb'CreateService\w*[^"\n]*"([^"\n]*)"|CreateService\w*[^\n]*')
@@ -1025,13 +1032,11 @@ def watch(a, log, stream):
         return sorted(clients.items(), key=lambda pc: pc[1]["start"])
 
     def new_client(p, start, how):
-        """Client `p` is found: numbered by its start, tied to that log, counted after it ends."""
+        """Client `p` is found: numbered by its start, tied to that log, counted after it ends. A
+        client beyond the logs ends the run with exit 4 (unanswered), once the poll's signs are read."""
         clients[p] = {"start": start, "found": time.monotonic()}
         n = [q for q, _ in by_start()].index(p) + 1
         log(f"client {n} detected{how}: pid {p} start {start}")
-        if len(clients) > len(stream.logs):
-            raise RuntimeError(f"{len(clients)} clients, but {len(stream.logs)} log(s): client pid {p} has no "
-                               "log of its own (one --log per client, in the order they start)")
 
     def check_procs():
         out = []
@@ -1071,16 +1076,29 @@ def watch(a, log, stream):
                     log(f"log note{where}: {k}: {ln}")
         return out
 
-    def check_overdue():
-        """The fail safe: client n's own log must show a client's creation (Amendment B)."""
+    def unanswered(final=False):
+        """Why the logs can't answer for a client, or None (Amendment B, Ruling R17): a client beyond
+        the logs (one --log per client, in start order); or one whose own log hasn't shown a
+        client's creation within CLIENT_LOG_GRACE, or, once the sandbox has ended and every log is
+        read (final), at all."""
+        if len(clients) > len(stream.logs):
+            n = len(stream.logs) + 1
+            return (f"{len(clients)} clients, but {len(stream.logs)} log(s): client {n} (pid {by_start()[n - 1][0]}) "
+                    "has no log of its own (one --log per client, in the order they start)")
         now_m = time.monotonic()
         for n, (p, c) in enumerate(by_start(), 1):
             f = stream.logs[n - 1]
+            if final and f.created is None:
+                return (f"the sandbox ended, and log {n} never showed a client's creation for client {n} (pid {p}): "
+                        "the LoadDriver sign was blind")
             if client_creation_overdue(c["found"], now_m, f.created, f.tail.at_eof):
-                raise RuntimeError(f"client {n} (pid {p}) has run {CLIENT_LOG_GRACE:.0f} s, but log {n} never "
-                                   "showed a client's creation: the LoadDriver sign would be blind")
+                return (f"client {n} (pid {p}) has run {CLIENT_LOG_GRACE:.0f} s, but log {n} never showed a "
+                        "client's creation: the LoadDriver sign would be blind")
+        return None
 
-    def freeze_kill_record(found):
+    def freeze_kill_record(found, failure=None):
+        """Freezes and kills the sandbox and writes the record: of a gate event (`found`, its signs),
+        or of the watchdog's `failure`."""
         t_trig = time.time()
         mem = descendants(init) if init else []
         for p in mem:
@@ -1121,9 +1139,11 @@ def watch(a, log, stream):
         # The record is best effort: failing to write it must not turn exit 3 into 4.
         try:
             with open(os.path.join(a.out, "watchdog-trigger.txt"), "w") as fh:
-                fh.write(f"GATE EVENT at {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t_trig))}\n")
+                at = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t_trig))
+                fh.write(f"WATCHDOG FAILURE at {at}: {failure}\n" if failure else f"GATE EVENT at {at}\n")
                 for n, (p, c) in enumerate(by_start(), 1):
-                    fh.write(f"client {n} pid {p} start {c['start']} (clock ticks since boot)\n")
+                    beyond = ": no log of its own" if n > len(stream.logs) else ""
+                    fh.write(f"client {n} pid {p} start {c['start']} (clock ticks since boot){beyond}\n")
                 fh.write("\n")
                 for kind, what, detail in found:
                     fh.write(f"{kind}: {what}\n")
@@ -1140,7 +1160,10 @@ def watch(a, log, stream):
                 fh.write(f"\nprocesses left after the kill: {left}; bwrap alive: {alive(spid)}\n")
         except OSError as e:
             log(f"could not write {a.out}/watchdog-trigger.txt: {e}")
-        log(f"GATE EVENT: {found[0][0]}: {found[0][1]} -> sandbox frozen and killed; left {left}")
+        if found:
+            log(f"GATE EVENT: {found[0][0]}: {found[0][1]} -> sandbox frozen and killed; left {left}")
+        else:
+            log(f"fail safe: {failure} -> sandbox frozen and killed; left {left}; record in watchdog-trigger.txt")
 
     try:
         while True:
@@ -1172,16 +1195,24 @@ def watch(a, log, stream):
                         log(f"WATCHDOG FAILURE: can't create the start signal {a.go}: {e}")
                         return 4  # the runner kills the sandbox when the watchdog ends first
             found = check_sys() + check_procs() + check_log() + (check_reg() if polls % 4 == 0 else [])
-            if found:
-                freeze_kill_record(found)
-                return 3
-            check_overdue()
-            if not sandbox_alive:
+            if not found and not sandbox_alive:
                 found = check_sys() + check_log(final=True) + check_reg()
                 if found:
                     log("sign found after the sandbox had already ended")
-                    freeze_kill_record(found)
-                    return 3
+            why = None if found else unanswered(final=not sandbox_alive)
+            if why and sandbox_alive:
+                # Exit 4 ends the run: first every log is read to its end and scanned, as at the end
+                # of a run, and the registry read, so that a sign written so far still wins.
+                found = check_log(final=True) + check_reg()
+                if found:
+                    log(f"sign found while ending the run for the fail safe ({why})")
+            if found:
+                freeze_kill_record(found)
+                return 3
+            if why:
+                freeze_kill_record([], failure=why)
+                raise RuntimeError(why)
+            if not sandbox_alive:
                 log(f"sandbox ended; no sign of driver activity in {polls} polls; client pids "
                     f"{[p for p, _ in by_start()]}; log bytes scanned {[f.tail.off for f in stream.logs]}; "
                     f"processes seen {len(seen)}")
