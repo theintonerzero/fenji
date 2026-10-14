@@ -13,6 +13,7 @@ use super::chat::Bucket;
 use super::interest::Sight;
 use super::movement::Gait;
 use super::types::*;
+use crate::commands::Command;
 
 /// The world's settings, from fenji.toml.
 #[derive(Debug, Clone, Resource)]
@@ -38,6 +39,7 @@ pub(super) struct Conn {
 #[derive(Component)]
 pub(super) struct Account {
     pub id: i64,
+    pub admin: bool,
 }
 
 /// The character: its pid, and what others see.
@@ -84,6 +86,7 @@ pub(super) struct Pending {
     pub moves: Vec<(Entity, MoveStep)>,
     pub pulls: Vec<(Entity, ActorId)>,
     pub lines: Vec<(Entity, ChatIn)>,
+    pub orders: Vec<(Entity, Command)>,
 }
 
 /// The services task's channel.
@@ -121,6 +124,7 @@ impl WorldCore {
             ("movement", phase(super::movement::system)),
             ("interest", phase(super::interest::system)),
             ("chat", phase(super::chat::system)),
+            ("admin", phase(super::admin::system)),
             ("persist", phase(persist)),
             ("cleanup", phase(cleanup)),
         ];
@@ -256,7 +260,10 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
                 id: player.conn,
                 out,
             },
-            Account { id: player.account },
+            Account {
+                id: player.account,
+                admin: player.admin,
+            },
             Actor {
                 pid: player.pid,
                 look: player.look,

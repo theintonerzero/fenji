@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use fenji_auth::invite::InviteCode;
 use fenji_store::Store;
 
 use crate::clock::Clock;
@@ -120,15 +119,15 @@ pub async fn admin(
         Command::Invite {
             cmd: InviteCmd::Create { label, expires },
         } => {
-            let code = InviteCode::generate()?;
             let expires_at = expires
                 .map(|d| now.saturating_add(i64::try_from(d.as_millis()).unwrap_or(i64::MAX)));
-            store
-                .create_invite(&code.hash(), label.as_deref(), now, expires_at)
-                .await?;
-            writeln!(out, "code: {}", code.display())?;
-            match cfg.invite_base() {
-                Some(base) => writeln!(out, "link: {base}/#invite={}", code.display())?,
+            let base = cfg.invite_base();
+            let made =
+                crate::invite::create(&store, base.as_deref(), label.as_deref(), now, expires_at)
+                    .await?;
+            writeln!(out, "code: {}", made.code)?;
+            match &made.link {
+                Some(link) => writeln!(out, "link: {link}")?,
                 None => writeln!(
                     out,
                     "link: none; set [server] public_api to the address players reach the \

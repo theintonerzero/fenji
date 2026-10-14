@@ -69,7 +69,12 @@ pub async fn start(
     let store = Store::open(&cfg.store.path)
         .await
         .with_context(|| format!("opening {}", cfg.store.path.display()))?;
-    let world = world::start(Rules::from_config(cfg), store.clone())?;
+    let world = world::start(
+        Rules::from_config(cfg),
+        store.clone(),
+        cfg.invite_base(),
+        Arc::clone(&clock),
+    )?;
     let accounts = Arc::new(Accounts::new(store, cfg.auth.clone(), Arc::clone(&clock)));
     // The fixed hash for unknown usernames, made now rather than at the first one (#132's review).
     tokio::task::spawn_blocking(fenji_auth::password::warm_dummy);

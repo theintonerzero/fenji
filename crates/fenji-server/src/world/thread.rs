@@ -11,6 +11,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 
 use super::ecs::{Rules, WorldCore};
 use super::types::WorldIn;
+use crate::clock::Clock;
 
 /// How long stopping waits for the last saves (Fenji design spec §6.7: 20 characters in 2 s).
 pub const SAVE_WAIT: Duration = Duration::from_secs(5);
@@ -114,8 +115,14 @@ pub struct RunningWorld {
     stats: Arc<Mutex<Stats>>,
 }
 
-/// Starts the world's thread and its services task, on the current tokio runtime.
-pub fn start(rules: Rules, store: Store) -> anyhow::Result<RunningWorld> {
+/// Starts the world's thread and its services task, on the current tokio runtime. `invite_base`
+/// and `clock` are for `!invite`.
+pub fn start(
+    rules: Rules,
+    store: Store,
+    invite_base: Option<String>,
+    clock: Arc<dyn Clock>,
+) -> anyhow::Result<RunningWorld> {
     let (tx, rx) = mpsc::unbounded_channel();
     let (services_tx, services_rx) = mpsc::unbounded_channel();
     let hz = rules.tick_hz.max(1);
@@ -128,7 +135,13 @@ pub fn start(rules: Rules, store: Store) -> anyhow::Result<RunningWorld> {
             let stats = Arc::clone(&stats);
             move || run(core, rx, tick, &stats)
         })?;
-    let services = tokio::spawn(super::services::run(store, services_rx));
+    let services = tokio::spawn(super::services::run(
+        store,
+        invite_base,
+        clock,
+        services_rx,
+        tx.downgrade(),
+    ));
     Ok(RunningWorld {
         handle: WorldHandle(tx),
         thread,
