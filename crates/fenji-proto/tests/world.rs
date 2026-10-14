@@ -3,7 +3,7 @@
 use fenji_proto::Error;
 use fenji_proto::lobby::Appearance;
 use fenji_proto::pickle::{self, Table, Value};
-use fenji_proto::world::{self, BlobValue, PlayerActor, SyncFilter};
+use fenji_proto::world::{self, BlobValue, MoveDetail, MoveDir, PlayerActor, SyncFilter};
 
 fn unhex(h: &str) -> Vec<u8> {
     let h: String = h.split_whitespace().collect();
@@ -568,4 +568,261 @@ fn sync_filter_set_reads_the_pid_and_the_value() {
 fn sync_leave_is_byte_for_byte() {
     assert_eq!(world::sync_leave(&[258, (1 << 32) + 1]), unhex(V10));
     assert_eq!(world::sync_leave(&[]), Vec::<u8>::new());
+}
+
+// --- Slice 3 (Amendment C): moving.
+
+/// T: 1,791,936,000,000 ms, `00 70 b5 37 a1 01 00 00`.
+const T: u64 = 1_791_936_000_000;
+
+/// V11: a type 8 at the default start with yaw −15, direction 1, yaw offset 0, rate 100, pitches −10
+/// and 10, and the facts about the machine 0x5A (world.md §16), 200 bytes.
+fn v11() -> Vec<u8> {
+    let mut b = unhex("00 70 b5 37 a1 01 00 00 3e 09 00 00 c9 e7 fe ff 56 fd 00 00");
+    b.extend(unhex("00 00 00 00 00 f1 ff 00 00 00 00"));
+    b.extend([0u8; 134]);
+    b.extend(unhex("01 f1 ff 00 00 64 00 f6 ff 0a 00"));
+    b.extend(unhex(
+        "00 00 00 80 3e 5a 00 00 00 3f 14 00 00 00 00 00 00 00 5a 5a 5a 5a 5a 00",
+    ));
+    assert_eq!(b.len(), 200);
+    b
+}
+
+/// V11b: V11's bytes 0–30 with `01 00 00 00` at 27, 119 bytes of 0, then V11's bytes 165–199.
+fn v11b() -> Vec<u8> {
+    let v = v11();
+    let mut b = v[..31].to_vec();
+    b[27..31].copy_from_slice(&[1, 0, 0, 0]);
+    b.extend([0u8; 119]);
+    b.extend(&v[165..]);
+    assert_eq!(b.len(), 185);
+    b
+}
+
+/// V14: V11 with time 0, its state blocks all `ff`, and the direction part `c8 e7 03 e8 03 ff ff
+/// 00 80 ff 7f`: direction 200, yaw 999, yaw offset 1000, rate 65535, pitches −32768 and 32767.
+fn v14() -> Vec<u8> {
+    let mut b = v11();
+    b[..8].fill(0);
+    b[31..165].fill(0xff);
+    b[165..176].copy_from_slice(&unhex("c8 e7 03 e8 03 ff ff 00 80 ff 7f"));
+    b
+}
+
+/// V15: V11 with `ff ff ff 7f` at 8 and `00 80` at 25: x at `i32::MAX`, the yaw −32768.
+fn v15() -> Vec<u8> {
+    let mut b = v11();
+    b[8..12].copy_from_slice(&unhex("ff ff ff 7f"));
+    b[25..27].copy_from_slice(&unhex("00 80"));
+    b
+}
+
+/// V11's position: the default start with yaw −15.
+const V11_POS: [f64; 4] = [2366.0, -71735.0, 64854.0, -15.0];
+
+/// V11's detail with `now_ms` = T + 100.
+const V11_DETAIL: MoveDetail = MoveDetail {
+    time: T,
+    dir: 1,
+    yaw_offset: 0,
+    rate: 100,
+    pitch: -10,
+    pitch2: 10,
+};
+
+/// V14's detail with `now_ms` = T + 100: each field held to its bounds, the time to 5 s behind.
+const V14_DETAIL: MoveDetail = MoveDetail {
+    time: 1_791_935_995_088,
+    dir: 8,
+    yaw_offset: -80,
+    rate: 340,
+    pitch: -90,
+    pitch2: 90,
+};
+
+#[test]
+fn move_dir_reads_the_position_and_bounds_the_rest() {
+    assert_eq!((world::MOVE_DIR_LEN, world::MOVE_DIR_SHORT_LEN), (200, 185));
+    // Task 15's runs: real clients' commands came up to 2.01 s late (world.md 16.15).
+    assert_eq!(
+        (world::MOVE_TIME_BEHIND, world::MOVE_TIME_AHEAD),
+        (5_000, 1_000)
+    );
+    let want = MoveDir {
+        pos: V11_POS,
+        detail: V11_DETAIL,
+        dir_yaw: -15,
+    };
+    assert_eq!(world::move_dir(&v11(), T + 100), Ok(want));
+    assert_eq!(
+        V11_DETAIL.to_bytes()[..],
+        unhex("00 70 b5 37 a1 01 00 00 01 00 00 64 00 f6 ff 0a 00")[..]
+    );
+    // The 185-byte form reads the same: its direction part is the last 35 bytes too.
+    assert_eq!(world::move_dir(&v11b(), T + 100), Ok(want));
+    // The time is held to the server's clock less 5 s to plus 1 s, then floored to 16 ms.
+    let early = world::move_dir(&v11(), T - 5_000).unwrap().detail;
+    assert_eq!(early.time, T - 4_000);
+    assert_eq!(early.to_bytes()[..8], unhex("60 60 b5 37 a1 01 00 00")[..]);
+    let edge = world::move_dir(&v11(), T + 5_000).unwrap().detail;
+    assert_eq!(edge.time, T, "5 s late is kept");
+    let late = world::move_dir(&v11(), T + 10_000).unwrap().detail;
+    assert_eq!(late.time, T + 4_992);
+    assert_eq!(late.to_bytes()[..8], unhex("80 83 b5 37 a1 01 00 00")[..]);
+}
+
+#[test]
+fn move_dir_refuses_other_lengths() {
+    let short = v11()[..199].to_vec();
+    let mut long = v11();
+    long.push(0);
+    let mut worded = v11();
+    worded[27] = 1;
+    let mut unworded = v11b();
+    unworded[27..31].fill(0);
+    for body in [short, long, worded, unworded, Vec::new()] {
+        assert_eq!(
+            world::move_dir(&body, T),
+            Err(Error::BadBody {
+                opcode: 8,
+                len: body.len()
+            })
+        );
+    }
+}
+
+#[test]
+fn a_hostile_move_is_bounded() {
+    let m = world::move_dir(&v14(), T + 100).unwrap();
+    assert_eq!(
+        m.pos, V11_POS,
+        "the position, as it is: the world checks it"
+    );
+    assert_eq!(m.detail, V14_DETAIL);
+    assert_eq!(
+        m.detail.to_bytes()[..],
+        unhex("d0 5c b5 37 a1 01 00 00 08 b0 ff 54 01 a6 ff 5a 00")[..]
+    );
+    assert_eq!(m.dir_yaw, 999, "read for the trace, as it is");
+    // A far point and a yaw past 360 are passed on as they are, for the world to refuse.
+    let far = world::move_dir(&v15(), T + 100).unwrap();
+    assert_eq!(far.pos, [2_147_483_647.0, -71735.0, 64854.0, -32768.0]);
+}
+
+#[test]
+fn move_detail_round_trips_and_is_bounded_again() {
+    assert_eq!(MoveDetail::LEN, 17);
+    let now = T + 100;
+    assert_eq!(
+        MoveDetail::from_bytes(&V11_DETAIL.to_bytes(), now),
+        Some(V11_DETAIL)
+    );
+    let bytes = V11_DETAIL.to_bytes();
+    assert_eq!(MoveDetail::from_bytes(&bytes[..16], now), None);
+    let mut long = bytes.to_vec();
+    long.push(0);
+    assert_eq!(MoveDetail::from_bytes(&long, now), None);
+    assert_eq!(MoveDetail::from_bytes(&[], now), None);
+    // V14's raw fields, as 17 bytes: bounded on the way in, as the decoder bounds them.
+    let raw = unhex("00 00 00 00 00 00 00 00 c8 e8 03 ff ff 00 80 ff 7f");
+    assert_eq!(MoveDetail::from_bytes(&raw, now), Some(V14_DETAIL));
+    // Bounding is idempotent, and a yaw offset of 180 stays, as −180 becomes 180.
+    assert_eq!(V14_DETAIL.bounded(now), V14_DETAIL);
+    let half = |yaw_offset| {
+        MoveDetail {
+            yaw_offset,
+            ..V11_DETAIL
+        }
+        .bounded(now)
+        .yaw_offset
+    };
+    assert_eq!(
+        (half(180), half(-180), half(-181), half(i16::MIN)),
+        (180, 180, 179, -8)
+    );
+}
+
+/// V12: V11's move relayed for pid 258.
+const V12: &str = "02 01 00 00 00 00 00 00 01 00 70 b5 37 a1 01 00 00 3e 09 00 00 c9 e7 fe ff
+    56 fd 00 00 f1 ff 01 f1 ff 00 00 64 00 f6 ff 0a 00";
+/// V12b: pid 2^32 + 1 at (2.5, −2.5, 3 × 10^9) with yaw 540, an empty detail at T.
+const V12B: &str = "01 00 00 00 01 00 00 00 01 00 70 b5 37 a1 01 00 00 03 00 00 00 fd ff ff ff
+    ff ff ff 7f b4 00 00 b4 00 00 00 00 00 00 00 00 00";
+/// V12c: pid 258 relayed from V14's detail and V11's position, as the world checked it.
+const V12C: &str = "02 01 00 00 00 00 00 00 01 d0 5c b5 37 a1 01 00 00 3e 09 00 00 c9 e7 fe ff
+    56 fd 00 00 f1 ff 08 f1 ff b0 ff 54 01 a6 ff 5a 00";
+
+#[test]
+fn move_dir_relay_is_byte_for_byte() {
+    assert_eq!(world::MOVE_DIR_RELAY_LEN, 42);
+    assert_eq!(
+        world::move_dir_relay(258, V11_POS, &V11_DETAIL),
+        unhex(V12)[..]
+    );
+    let still = MoveDetail {
+        time: T,
+        dir: 0,
+        yaw_offset: 0,
+        rate: 0,
+        pitch: 0,
+        pitch2: 0,
+    };
+    assert_eq!(
+        world::move_dir_relay((1 << 32) + 1, [2.5, -2.5, 3.0e9, 540.0], &still),
+        unhex(V12B)[..]
+    );
+    // NaN gives 0, the yaw folds into (−180, 180], and the clamp holds at both ends.
+    let nan = world::move_dir_relay(258, [f64::NAN; 4], &still);
+    assert_eq!(nan[17..31], [0; 14]);
+    assert_eq!(nan[32..34], [0, 0]);
+    let edges = world::move_dir_relay(258, [-3.0e9, f64::NEG_INFINITY, 0.4, -180.0], &still);
+    assert_eq!(edges[17..21], i32::MIN.to_le_bytes());
+    assert_eq!(edges[21..25], i32::MIN.to_le_bytes());
+    assert_eq!(edges[25..29], [0; 4]);
+    assert_eq!(edges[29..31], 180i16.to_le_bytes());
+    assert_eq!(
+        edges[32..34],
+        180i16.to_le_bytes(),
+        "the part repeats the header's yaw"
+    );
+}
+
+#[test]
+fn a_relay_from_a_hostile_body_carries_only_the_checked_position() {
+    // Task 15 Step 1 (Review Focus 3): what the world relays is built from the position it checked
+    // and the detail's bounded bytes, which the viewer's link bounds again; nothing else of the
+    // client's body reaches another client.
+    let now = T + 100;
+    let hostile = world::move_dir(&v14(), now).unwrap();
+    let detail = MoveDetail::from_bytes(&hostile.detail.to_bytes(), now).unwrap();
+    let checked = V11_POS;
+    assert_eq!(
+        world::move_dir_relay(258, checked, &detail),
+        unhex(V12C)[..]
+    );
+}
+
+/// V13: pid 258 put at the default start with yaw −15, with the server's clock at T.
+const V13: &str = "02 01 00 00 00 00 00 00 60 6f b5 37 a1 01 00 00 c0 00 3e 09 00 00 c9 e7 fe ff
+    56 fd 00 00 f1 ff";
+
+#[test]
+fn move_sync_svr_is_byte_for_byte() {
+    assert_eq!((world::MOVE_SYNC_SVR_LEN, world::SYNC_LAG), (32, 160));
+    assert_eq!(world::sync_time(T), T - 160);
+    assert_eq!(world::sync_time(T + 15), T - 160, "floored to 16 ms first");
+    assert_eq!(world::sync_time(T + 16), T - 144);
+    assert_eq!(world::sync_time(100), 0);
+    assert_eq!(
+        world::move_sync_svr(258, world::sync_time(T), V11_POS),
+        unhex(V13)[..]
+    );
+    let far = world::move_sync_svr((1 << 32) + 1, 0, [2.5, -2.5, 3.0e9, 540.0]);
+    assert_eq!(far[..8], unhex("01 00 00 00 01 00 00 00")[..]);
+    assert_eq!(far[16..18], [0xc0, 0x00], "the position and the yaw");
+    assert_eq!(
+        far[18..32],
+        unhex("03 00 00 00 fd ff ff ff ff ff ff 7f b4 00")[..]
+    );
 }

@@ -3,18 +3,17 @@
 //! the world, with the bot as the client.
 mod common;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
 use fenji_proto::lobby::{self, code};
 use fenji_proto::opcode::{Cts, Stc};
 use fenji_proto::pickle::{self, Value};
-use fenji_proto::world::{self, BlobValue};
+use fenji_proto::world::{self, BlobValue, MoveDetail};
 use fenji_server::clock::Clock;
 use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN, SERVER_STOPPING};
 use fenji_server::server::{GateLimits, RunningServer};
-use fenji_server::world::{MoveStep, Pos, WorldIn};
+use fenji_server::world::WorldIn;
 use fenji_store::{Place, Store};
 use tokio::net::TcpStream;
 
@@ -348,24 +347,12 @@ async fn later_world_messages_are_dropped() {
     select(&mut b, mai).await;
     enter(&mut b, mai).await;
     // Both stand at the start: the world announces each to the other (6) in the tick Mai entered,
-    // and Lin pulls Mai, so Mai's moves would reach her.
+    // and Lin pulls Mai.
     announced(&mut a, mai).await;
     announced(&mut b, lin).await;
     pulled(&mut a, mai).await;
-    // The world's moves and chat wait for their slices: Mai's move relayed to Lin, and a line for
-    // Lin, give Lin's client no bytes.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Chat waits for its slice: a line for Lin gives Lin's client no bytes.
     let world = s.world();
-    let step = MoveStep {
-        pos: Pos {
-            x: START[0] + 50.0,
-            y: START[1],
-            z: START[2],
-            yaw: START[3],
-        },
-        detail: Arc::from(&[][..]),
-    };
-    assert!(world.send(WorldIn::Move { conn: 2, step }));
     assert!(world.send(WorldIn::Tell {
         conn: 1,
         text: "a line".into()
@@ -641,5 +628,158 @@ async fn a_silent_client_in_the_world_is_closed_after_the_idle_time() {
     );
     // The world let the player go, and saved where it stood.
     saved_at(store, "tester", pid, START_PLACE).await;
+    s.shutdown().await.unwrap();
+}
+
+// --- Slice 3 (Amendment C): moving.
+
+/// A 200-byte type 8 as the client builds it (world.md §16, the plan's V11 layout): the time, x,
+/// y and z, the yaw, then the direction part with the direction, the yaw again, the yaw offset 0,
+/// the rate and the pitches 0. The state blocks and the 24 bytes after the part are 0.
+fn move_body(time: u64, at: [i32; 3], yaw: i16, dir: u8, rate: u16) -> Vec<u8> {
+    let mut b = time.to_le_bytes().to_vec();
+    for c in at {
+        b.extend(c.to_le_bytes());
+    }
+    b.extend([0; 5]);
+    b.extend(yaw.to_le_bytes());
+    b.extend([0; 138]);
+    b.push(dir);
+    b.extend(yaw.to_le_bytes());
+    b.extend([0, 0]);
+    b.extend(rate.to_le_bytes());
+    b.extend([0; 28]);
+    assert_eq!(b.len(), world::MOVE_DIR_LEN);
+    b
+}
+
+/// The test server's clock, which no test here moves: a multiple of 16.
+const NOW_MS: u64 = NOW as u64;
+
+/// Lin and Mai, each in the world at `[world]`'s start and each holding the other (6, 5, 7, 8):
+/// their bots and pids, after the world's budget for moving has had time to fill.
+async fn two_who_see_each_other(s: &RunningServer) -> (Bot, i64, Bot, i64) {
+    let (mut a, lin) = in_lobby(s, "aaa", "Lin").await;
+    select(&mut a, lin).await;
+    enter(&mut a, lin).await;
+    let (mut b, mai) = in_lobby(s, "bbb", "Mai").await;
+    select(&mut b, mai).await;
+    enter(&mut b, mai).await;
+    announced(&mut a, mai).await;
+    announced(&mut b, lin).await;
+    pulled(&mut a, mai).await;
+    pulled(&mut b, lin).await;
+    // The speed check's budget fills from the join: 300 ms hold 382 units at rate 100.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    (a, lin, b, mai)
+}
+
+#[tokio::test]
+async fn a_move_reaches_the_player_who_sees_the_mover() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut a, lin, mut b, _mai) = two_who_see_each_other(&s).await;
+    // Lin runs 50 units east from the start, facing −45°, with a time 4 s ahead of the server's.
+    let body = move_body(NOW_MS + 4_000, [150, -200, 300], -45, 1, 100);
+    a.send_native(Cts::MoveDir.to_u8(), &body).await;
+    let relay = b.recv_message().await;
+    assert_eq!(relay.ty, Stc::MoveDir.to_u8());
+    // Her position as the world checked it; the time held to a second ahead of the server's, then
+    // floored to 16 ms.
+    let detail = MoveDetail {
+        time: NOW_MS + 992,
+        dir: 1,
+        yaw_offset: 0,
+        rate: 100,
+        pitch: 0,
+        pitch2: 0,
+    };
+    assert_eq!(
+        relay.body,
+        world::move_dir_relay(lin, [150.0, -200.0, 300.0, -45.0], &detail)
+    );
+    // Lin hears nothing of her own move.
+    a.quiet(300).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_jump_too_far_is_corrected_and_not_relayed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut a, lin, mut b, _mai) = two_who_see_each_other(&s).await;
+    // 9,000 units off: past the budget's second at rate 100 and the tolerance.
+    let body = move_body(NOW_MS, [9_100, -200, 300], 90, 1, 100);
+    a.send_native(Cts::MoveDir.to_u8(), &body).await;
+    let sync = a.recv_message().await;
+    assert_eq!(
+        (sync.ty, sync.body),
+        (
+            Stc::MoveSyncSvr.to_u8(),
+            world::move_sync_svr(lin, world::sync_time(NOW_MS), START).to_vec()
+        ),
+        "where she stood"
+    );
+    b.quiet(300).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_hostile_move_body_is_corrected_and_not_relayed() {
+    // The plan's V15 (Review Focus 3): x at i32::MAX and the yaw −32768, which the world refuses.
+    // Type 8's coordinates are integers, so no body carries a NaN.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut a, lin, mut b, _mai) = two_who_see_each_other(&s).await;
+    let body = move_body(NOW_MS, [i32::MAX, -200, 300], i16::MIN, 1, 100);
+    a.send_native(Cts::MoveDir.to_u8(), &body).await;
+    let sync = a.recv_message().await;
+    assert_eq!(
+        (sync.ty, sync.body),
+        (
+            Stc::MoveSyncSvr.to_u8(),
+            world::move_sync_svr(lin, world::sync_time(NOW_MS), START).to_vec()
+        )
+    );
+    b.quiet(300).await;
+    // A move that fits after it is relayed as usual: the refusal changed nothing.
+    let body = move_body(NOW_MS, [130, -200, 300], 90, 1, 100);
+    a.send_native(Cts::MoveDir.to_u8(), &body).await;
+    assert_eq!(b.recv_message().await.ty, Stc::MoveDir.to_u8());
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_place_after_moving_is_where_the_next_session_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    select(&mut bot, pid).await;
+    enter(&mut bot, pid).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Two moves, then a stop where the second left her, facing −45°.
+    for (x, y, dir) in [(130, -200, 1), (150, -180, 1), (150, -180, 0)] {
+        let body = move_body(NOW_MS, [x, y, 300], -45, dir, 100);
+        bot.send_native(Cts::MoveDir.to_u8(), &body).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    bot.send_native(Cts::ClientLeave.to_u8(), &[]).await;
+    assert!(bot.next_is_end().await);
+    let moved = Place {
+        scene: 7,
+        x: 150.0,
+        y: -180.0,
+        z: 300.0,
+        yaw: -45.0,
+    };
+    saved_at(s.accounts().store(), "tester", pid, moved).await;
+    // The next session enters there.
+    let t = ticket(&s, "tester").await;
+    let mut again = Bot::connect(s.login_addr, payload(&t, "tester", false)).await;
+    again.expect_work().await;
+    assert_eq!(
+        select(&mut again, pid).await,
+        load_scene(pid, 7, [150.0, -180.0, 300.0, -45.0])
+    );
     s.shutdown().await.unwrap();
 }
