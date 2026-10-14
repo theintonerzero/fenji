@@ -3,8 +3,8 @@ fenji-oodle is a Rust port of the Oodle decoders in ooz
 kraken.cpp, Copyright (C) 2016, Powzix, licensed under the GNU General Public License,
 version 3 or (at your option) any later version.
 
-The port's changes are Copyright the Fenji contributors, under the same licence: see COPYING.
-Fenji as a whole is AGPL-3.0-or-later; the two combine by section 13 of each licence.
+The port's changes are Copyright (C) 2026 the Fenji contributors, under the same licence: see
+COPYING. Fenji as a whole is AGPL-3.0-or-later; the two combine by section 13 of each licence.
 
 Oodle is Epic Games' proprietary compression. This crate contains none of Epic's code; it
 decodes the format as ooz does.

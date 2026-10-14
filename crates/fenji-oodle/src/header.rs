@@ -1,3 +1,8 @@
+//! Part of fenji-oodle, a Rust port of the Oodle decoders in ooz's `kraken.cpp`
+//! (github.com/powzix/ooz, commit 05038060aa68), Copyright (C) 2016 Powzix.
+//! Changes Copyright (C) 2026 the Fenji contributors.
+//! GPL-3.0-or-later: see COPYING and NOTICE.
+//!
 //! The stream and quantum headers: ports of `Kraken_ParseHeader` (kraken.cpp:465) and
 //! `Kraken_ParseQuantumHeader` (kraken.cpp:482).
 use crate::Error;
