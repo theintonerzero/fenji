@@ -9,6 +9,7 @@ use bevy_ecs::prelude::*;
 use super::ecs::{Actor, Conn, Doomed, Here, Now, Pending, Rules, Stage, deliver};
 use super::interest::{Seen, Sight};
 use super::types::*;
+use crate::config::MOVE_TOLERANCE;
 
 /// Units per second at speed rate 100 (world spec §2.3: about 500 cm/s).
 pub const RUN: f64 = 500.0;
@@ -16,10 +17,9 @@ pub const RUN: f64 = 500.0;
 pub const SPRINT: f64 = 1.7;
 /// The highest speed rate the client allows (world spec §2.3).
 pub const MAX_RATE: i64 = 340;
-/// The farthest a coordinate may be from 0: 100 km.
-pub const LIMIT: f64 = 10_000_000.0;
-/// The largest yaw, either way, in degrees.
-pub const YAW_LIMIT: f64 = 360.0;
+/// The farthest a coordinate may be from 0, and the largest yaw: config's, so that every start
+/// it takes is a point the world takes.
+pub use crate::config::{COORDINATE_LIMIT as LIMIT, YAW_LIMIT};
 /// The most movement a player can save up, in seconds.
 pub const BURST_SECS: f64 = 1.0;
 
@@ -27,6 +27,18 @@ pub const BURST_SECS: f64 = 1.0;
 /// mode, so this is the sprint.
 pub fn top_speed(rate: i64) -> f64 {
     rate.clamp(0, MAX_RATE) as f64 / 100.0 * RUN * SPRINT
+}
+
+/// `tolerance` held to config's range, a non-finite one as the least. Config parsing keeps others
+/// out, but [`Rules`] can be built without it, and an infinite tolerance would make the budget
+/// infinite (∞ × 0 is NaN, which `min` drops).
+fn bounded(tolerance: f64) -> f64 {
+    let (least, most) = (*MOVE_TOLERANCE.start(), *MOVE_TOLERANCE.end());
+    if tolerance.is_finite() {
+        tolerance.clamp(least, most)
+    } else {
+        least
+    }
 }
 
 /// A point the world takes: finite, within [`LIMIT`], with a yaw within [`YAW_LIMIT`].
@@ -59,7 +71,7 @@ impl Gait {
         if !valid(to) {
             return false;
         }
-        let per_sec = top_speed(rate) * tolerance;
+        let per_sec = top_speed(rate) * bounded(tolerance);
         let elapsed = now_ms.saturating_sub(self.at_ms) as f64 / 1000.0;
         self.at_ms = self.at_ms.max(now_ms);
         self.budget = (self.budget + per_sec * elapsed).min(per_sec * BURST_SECS);
@@ -182,10 +194,75 @@ mod tests {
             g.check(&o, &at(0.0, 0.0).pos, 1_000, 100, 1.5),
             "standing still always passes"
         );
+        // Only the 10 ms since 5,000 count: 12.75 units, not the 4 s since the time that went back.
         assert!(
-            g.check(&o, &at(5.0, 0.0).pos, 5_010, 100, 1.5),
+            !g.check(&o, &at(13.0, 0.0).pos, 5_010, 100, 1.5),
+            "the budget fills from the latest time"
+        );
+        assert!(
+            g.check(&o, &at(12.0, 0.0).pos, 5_010, 100, 1.5),
             "and the budget fills again"
         );
+    }
+
+    #[test]
+    fn a_tolerance_beyond_the_configs_range_is_held_to_it() {
+        let o = at(0.0, 0.0).pos;
+        // Whether a new player may move `x` units a second after joining.
+        let in_a_second = |tolerance: f64, x: f64| {
+            Gait::new(1_000).check(&o, &at(x, 0.0).pos, 2_000, 100, tolerance)
+        };
+        // A non-finite one counts as 1.0: 850 units a second, and nothing at once.
+        for tolerance in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let mut g = Gait::new(1_000);
+            assert!(
+                !g.check(&o, &at(100_000.0, 0.0).pos, 1_000, 100, tolerance),
+                "{tolerance}: at once"
+            );
+            assert!(in_a_second(tolerance, 850.0), "{tolerance}");
+            assert!(!in_a_second(tolerance, 851.0), "{tolerance}");
+        }
+        // A finite one is held to 1.0 to 5.0: 850 to 4,250 units a second.
+        assert!(in_a_second(1.0e9, 4_250.0));
+        assert!(!in_a_second(1.0e9, 4_251.0));
+        assert!(in_a_second(0.0, 850.0));
+        assert!(!in_a_second(0.0, 851.0));
+    }
+
+    #[test]
+    fn the_world_takes_exactly_the_points_its_config_does() {
+        use crate::config::{COORDINATE_LIMIT, YAW_LIMIT};
+        let edge = Pos {
+            x: COORDINATE_LIMIT,
+            y: -COORDINATE_LIMIT,
+            z: COORDINATE_LIMIT,
+            yaw: -YAW_LIMIT,
+        };
+        assert!(valid(&edge));
+        for beyond in [
+            Pos {
+                x: COORDINATE_LIMIT.next_up(),
+                ..edge
+            },
+            Pos {
+                y: (-COORDINATE_LIMIT).next_down(),
+                ..edge
+            },
+            Pos {
+                z: COORDINATE_LIMIT.next_up(),
+                ..edge
+            },
+            Pos {
+                yaw: YAW_LIMIT.next_up(),
+                ..edge
+            },
+            Pos {
+                yaw: (-YAW_LIMIT).next_down(),
+                ..edge
+            },
+        ] {
+            assert!(!valid(&beyond), "{beyond:?}");
+        }
     }
 
     #[test]
