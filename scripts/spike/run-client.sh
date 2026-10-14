@@ -46,9 +46,12 @@
 #       order they start), with its own timeout (--timeout2, default --timeout) and Proton log
 #       (io/NAME/2), and with --launch, its own account (--launch2 and --launch-password2, required
 #       then; that password is the second line of the sandbox's standard input). --click, --key and
-#       --type take 2@T:... for client 2's display, T counted from the run's start. Client 2's
-#       timeout ends its proton run; if its gujianol.exe is still there 10 s later, the sandbox
-#       ends that process by its own pid (end_client): wineserver -k would end client 1 too. The
+#       --type take 2@T:... for client 2's display, T counted from the run's start. Client 2 runs
+#       in a Wine desktop of its own (explorer.exe /desktop=fenji-client2,1280x720): on the one
+#       desktop both share, input reached whichever window the desktop picked (runs m4-s0 to
+#       m4-s2), whatever X display it came from. Client 2's timeout ends its proton run; if its
+#       gujianol.exe is still there 10 s later, the sandbox ends that process by its own pid
+#       (end_client): wineserver -k would end client 1 too. The
 #       wineserver stops once both clients have ended. Client 2's evidence: OUT/client2/ (its
 #       gujianol.log, Log_gujianol.htm and install-root files), OUT/wine-2.log,
 #       OUT/screen-2-<T>s.png and io/exit-code-2.
@@ -672,7 +675,11 @@ cmd_run() {
             unset pairs2 kv
             export DISPLAY=":$D2" PROTON_LOG_DIR="$IO/2" DXVK_LOG_PATH="$IO/2"
             cd "$W/client2/bin64" || exit 99
-            timeout -k 10 "$TMO2" python3 "$PROTON/proton" run "$W/client2/bin64/gujianol.exe" "$@" > "$IO/2/proton.out" 2>&1
+            # In a Wine desktop of its own (run m4-s2): on the one desktop both clients share, input
+            # reached whichever window that desktop picked, whatever X display it came from.
+            exe2="Z:${W//\//\\}\\client2\\bin64\\gujianol.exe"
+            timeout -k 10 "$TMO2" python3 "$PROTON/proton" run explorer.exe "/desktop=fenji-client2,1280x720" \
+              "$exe2" "$@" > "$IO/2/proton.out" 2>&1
             rc=$?
             echo "$rc" > "$IO/exit-code-2"
             # The timeout ends client 2'"'"'s proton run, not the client, and wineserver -k would end

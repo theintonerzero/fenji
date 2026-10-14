@@ -452,10 +452,18 @@ cat > "$F/proton/proton" <<'EOF'
 #!/usr/bin/env python3
 import json, os, subprocess, sys, time
 assert sys.argv[1] == "run"
-exe, log, here = sys.argv[2], os.environ["FAKE_LOG"], os.path.dirname(sys.argv[2])
-client = subprocess.Popen([exe, "-c", "import time; time.sleep(120)"], start_new_session=True,
+exe, args, log = sys.argv[2], sys.argv[3:], os.environ["FAKE_LOG"]
+# explorer.exe /desktop=NAME,SIZE PROGRAM ARGS: PROGRAM in a desktop of its own, its argv[0] the
+# Windows path, as Wine shows it.
+program, argv0 = exe, exe
+if exe == "explorer.exe":
+    assert args[0].startswith("/desktop="), args
+    argv0 = args[1]
+    program = argv0[2:].replace("\\", "/") if argv0[:2].upper() == "Z:" else argv0
+here = os.path.dirname(program)
+client = subprocess.Popen([argv0, "-c", "import time; time.sleep(120)"], executable=program, start_new_session=True,
                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-record = {"t": time.time(), "exe": exe, "args": sys.argv[3:], "cwd": os.getcwd(), "pid": client.pid,
+record = {"t": time.time(), "exe": exe, "args": args, "program": program, "cwd": os.getcwd(), "pid": client.pid,
           "display": os.environ.get("DISPLAY"), "log_dir": os.environ.get("PROTON_LOG_DIR"),
           "pairs": sorted(f"{k}={v}" for k, v in os.environ.items() if k.startswith("gj_"))}
 with open(os.path.join(log, "proton"), "a") as f:
@@ -463,7 +471,7 @@ with open(os.path.join(log, "proton"), "a") as f:
 with open(os.path.join(log, "clients"), "a") as f:
     f.write(f"{client.pid}\n")
 with open(os.path.join(os.environ["PROTON_LOG_DIR"], "steam-1418100.log"), "a") as f:
-    f.write(f"1.000:0020:0024:trace:process:a fake client {exe}\n")
+    f.write(f"1.000:0020:0024:trace:process:a fake client {program}\n")
 for name in ("gujianol.log", "fake-cache.bin"):
     with open(os.path.join(here, name), "a") as f:
         f.write("written by the client\n")
@@ -616,11 +624,20 @@ esac
 p1=$(field two 1 pid) p2=$(field two 2 pid)
 if [ "$(field two 1 exe)" = "\"$W2/client/bin64/gujianol.exe\"" ] && [ "$(field two 1 cwd)" = "\"$W2/client/bin64\"" ] &&
   [ "$(field two 1 display)" = '":99"' ] && [ "$(field two 1 log_dir)" = "\"$IO2\"" ] &&
-  [ "$(field two 2 exe)" = "\"$W2/client2/bin64/gujianol.exe\"" ] && [ "$(field two 2 cwd)" = "\"$W2/client2/bin64\"" ] &&
+  [ "$(field two 2 program)" = "\"$W2/client2/bin64/gujianol.exe\"" ] && [ "$(field two 2 cwd)" = "\"$W2/client2/bin64\"" ] &&
   [ "$(field two 2 display)" = '":98"' ] && [ "$(field two 2 log_dir)" = "\"$IO2/2\"" ]; then
   ok "each client runs from its own copy, on its own display, with its own Proton log"
 else
   bad "the clients' places: $(cat "$F/log/two/proton")"
+fi
+# Client 2 runs in a Wine desktop of its own (run m4-s2): on one desktop, each client's input went
+# to whichever window that desktop picked, whatever display it came from.
+win2="Z:${W2//\//\\}\\client2\\bin64\\gujianol.exe"
+if [ "$(field two 1 exe)" = "\"$W2/client/bin64/gujianol.exe\"" ] && [ "$(field two 2 exe)" = '"explorer.exe"' ] &&
+  [ "$(field two 2 args)" = "$(python3 -I -c 'import json, sys; print(json.dumps(["/desktop=fenji-client2,1280x720", sys.argv[1], "--fs=data:_index:_index"]))' "$win2")" ]; then
+  ok "client 2 runs in a Wine desktop of its own, its program by its Windows path; client 1 as before"
+else
+  bad "client 2's command: $(field two 2 exe) $(field two 2 args)"
 fi
 pairs1=$(field two 1 pairs) pairs2=$(field two 2 pairs)
 if [[ $pairs1 == *":tester:1"* && $pairs1 != *second* && $pairs2 == *":second:1"* && $pairs2 != *tester* ]] &&
