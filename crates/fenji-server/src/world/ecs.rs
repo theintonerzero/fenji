@@ -348,8 +348,11 @@ pub(super) fn doom(world: &mut World, e: Entity, reason: Option<KickReason>) {
 }
 
 /// Tells every player whose client knows of `pid` that it has gone (9), and forgets it there.
+/// Players leaving this tick aren't told: their connections are closing, and at shutdown, when
+/// everyone leaves, telling each of the others would be N² Leaves that could fill a channel before
+/// its `Kicked` (#222).
 pub(super) fn hide(world: &mut World, pid: ActorId) {
-    let mut viewers = world.query::<(Entity, &mut Sight)>();
+    let mut viewers = world.query_filtered::<(Entity, &mut Sight), Without<Doomed>>();
     let told: Vec<Entity> = viewers
         .iter_mut(world)
         .filter_map(|(v, mut sight)| sight.0.remove(&pid).map(|_| v))
@@ -774,6 +777,38 @@ mod tests {
         assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Shutdown)]);
         assert_eq!(h.take(2), vec![WorldOut::Kicked(KickReason::Shutdown)]);
         assert_eq!(h.saves().len(), 2);
+        assert_eq!(h.core.players(), 0);
+    }
+
+    #[test]
+    fn at_shutdown_no_leaver_hears_of_another_and_each_hears_why() {
+        // #222: telling leavers that the others left is N² Leaves, and one that fills a channel
+        // pushes out its Kicked(Shutdown). Each channel here has room for one more message.
+        const N: u64 = 4;
+        let mut h = Harness::new();
+        for c in 1..=N {
+            // LoadScene, SelfEnter, and an Announce of each of the others, all unread.
+            let room = N as usize + 2;
+            h.join_with(player(c, &format!("P{c}"), at(0.0, 0.0)), room);
+            h.push(WorldIn::Loaded { conn: c });
+        }
+        h.tick(50);
+        h.push(WorldIn::Shutdown);
+        h.tick(50);
+        for c in 1..=N {
+            let got = h.take(c);
+            let leaves = got
+                .iter()
+                .filter(|m| matches!(m, WorldOut::Leave { .. }))
+                .count();
+            assert_eq!(leaves, 0, "{c}: {got:?}");
+            assert_eq!(
+                got.last(),
+                Some(&WorldOut::Kicked(KickReason::Shutdown)),
+                "{c}: {got:?}"
+            );
+        }
+        assert_eq!(h.saves().len(), N as usize, "everyone is saved");
         assert_eq!(h.core.players(), 0);
     }
 
