@@ -631,9 +631,9 @@ const V11_DETAIL: MoveDetail = MoveDetail {
     pitch2: 10,
 };
 
-/// V14's detail with `now_ms` = T + 100: each field held to its bounds.
+/// V14's detail with `now_ms` = T + 100: each field held to its bounds, the time to 5 s behind.
 const V14_DETAIL: MoveDetail = MoveDetail {
-    time: 1_791_935_998_096,
+    time: 1_791_935_995_088,
     dir: 8,
     yaw_offset: -80,
     rate: 340,
@@ -644,6 +644,11 @@ const V14_DETAIL: MoveDetail = MoveDetail {
 #[test]
 fn move_dir_reads_the_position_and_bounds_the_rest() {
     assert_eq!((world::MOVE_DIR_LEN, world::MOVE_DIR_SHORT_LEN), (200, 185));
+    // Task 15's runs: real clients' commands came up to 2.01 s late (world.md 16.15).
+    assert_eq!(
+        (world::MOVE_TIME_BEHIND, world::MOVE_TIME_AHEAD),
+        (5_000, 1_000)
+    );
     let want = MoveDir {
         pos: V11_POS,
         detail: V11_DETAIL,
@@ -656,13 +661,15 @@ fn move_dir_reads_the_position_and_bounds_the_rest() {
     );
     // The 185-byte form reads the same: its direction part is the last 35 bytes too.
     assert_eq!(world::move_dir(&v11b(), T + 100), Ok(want));
-    // The time is held to the server's clock less 2 s to plus 1 s, then floored to 16 ms.
+    // The time is held to the server's clock less 5 s to plus 1 s, then floored to 16 ms.
     let early = world::move_dir(&v11(), T - 5_000).unwrap().detail;
     assert_eq!(early.time, T - 4_000);
     assert_eq!(early.to_bytes()[..8], unhex("60 60 b5 37 a1 01 00 00")[..]);
-    let late = world::move_dir(&v11(), T + 5_000).unwrap().detail;
-    assert_eq!(late.time, T + 2_992);
-    assert_eq!(late.to_bytes()[..8], unhex("b0 7b b5 37 a1 01 00 00")[..]);
+    let edge = world::move_dir(&v11(), T + 5_000).unwrap().detail;
+    assert_eq!(edge.time, T, "5 s late is kept");
+    let late = world::move_dir(&v11(), T + 10_000).unwrap().detail;
+    assert_eq!(late.time, T + 4_992);
+    assert_eq!(late.to_bytes()[..8], unhex("80 83 b5 37 a1 01 00 00")[..]);
 }
 
 #[test]
@@ -695,7 +702,7 @@ fn a_hostile_move_is_bounded() {
     assert_eq!(m.detail, V14_DETAIL);
     assert_eq!(
         m.detail.to_bytes()[..],
-        unhex("90 68 b5 37 a1 01 00 00 08 b0 ff 54 01 a6 ff 5a 00")[..]
+        unhex("d0 5c b5 37 a1 01 00 00 08 b0 ff 54 01 a6 ff 5a 00")[..]
     );
     assert_eq!(m.dir_yaw, 999, "read for the trace, as it is");
     // A far point and a yaw past 360 are passed on as they are, for the world to refuse.
@@ -743,7 +750,7 @@ const V12: &str = "02 01 00 00 00 00 00 00 01 00 70 b5 37 a1 01 00 00 3e 09 00 0
 const V12B: &str = "01 00 00 00 01 00 00 00 01 00 70 b5 37 a1 01 00 00 03 00 00 00 fd ff ff ff
     ff ff ff 7f b4 00 00 b4 00 00 00 00 00 00 00 00 00";
 /// V12c: pid 258 relayed from V14's detail and V11's position, as the world checked it.
-const V12C: &str = "02 01 00 00 00 00 00 00 01 90 68 b5 37 a1 01 00 00 3e 09 00 00 c9 e7 fe ff
+const V12C: &str = "02 01 00 00 00 00 00 00 01 d0 5c b5 37 a1 01 00 00 3e 09 00 00 c9 e7 fe ff
     56 fd 00 00 f1 ff 08 f1 ff b0 ff 54 01 a6 ff 5a 00";
 
 #[test]

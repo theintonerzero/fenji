@@ -1463,9 +1463,9 @@ mod tests {
                     yaw: -15.0
                 }
             );
-            // V14's bounded detail: T − 1,904, direction 8, offset −80, rate 340, pitches ±90.
+            // V14's bounded detail: T − 4,912, direction 8, offset −80, rate 340, pitches ±90.
             let want = [
-                0x90, 0x68, 0xb5, 0x37, 0xa1, 0x01, 0x00, 0x00, 0x08, 0xb0, 0xff, 0x54, 0x01, 0xa6,
+                0xd0, 0x5c, 0xb5, 0x37, 0xa1, 0x01, 0x00, 0x00, 0x08, 0xb0, 0xff, 0x54, 0x01, 0xa6,
                 0xff, 0x5a, 0x00,
             ];
             assert_eq!(step.detail[..], want);

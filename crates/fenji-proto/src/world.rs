@@ -539,8 +539,10 @@ pub const MOVE_DIR_LEN: usize = 200;
 pub const MOVE_DIR_SHORT_LEN: usize = 185;
 /// The direction part and the 24 bytes after it: the last 35 bytes of a type 8 (world.md 16.4).
 const MOVE_DIR_TAIL: usize = 35;
-/// How far a move's time may lag or lead the server's clock, in ms (world.md 16.15).
-pub const MOVE_TIME_BEHIND: u64 = 2_000;
+/// How far a move's time may lag or lead the server's clock, in ms (world.md 16.15). In Task 15's
+/// runs, real clients' commands came 0.27 to 2.01 s after their times, and none ahead; the client
+/// keeps 16 s of history for a late one (16.8), so 5 s leaves room and stays well inside it.
+pub const MOVE_TIME_BEHIND: u64 = 5_000;
 pub const MOVE_TIME_AHEAD: u64 = 1_000;
 /// The largest direction, speed rate and pitch a move keeps (world.md 16.7, 16.15).
 pub const MAX_DIR: u8 = 8;
