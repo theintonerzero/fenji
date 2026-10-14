@@ -4,9 +4,10 @@
 //! (world spec §2.4).
 use bevy_ecs::prelude::*;
 
-use super::ecs::{Actor, Conn, Doomed, Index, Now, Pending, Stage, deliver, name_key};
+use super::ecs::{Account, Actor, Conn, Doomed, Index, Now, Pending, Stage, deliver, name_key};
 use super::interest::Sight;
 use super::types::*;
+use crate::commands::from_chat;
 use crate::text::plain;
 
 /// The most characters in a line, as the client counts them.
@@ -103,20 +104,37 @@ impl Bucket {
     }
 }
 
-/// Routes the tick's lines.
+/// Routes the tick's lines. An admin's `!` line goes to the admin phase as a command.
 pub(super) fn system(
     now: Res<Now>,
     index: Res<Index>,
     mut pending: ResMut<Pending>,
-    mut speakers: Query<(&Actor, &Stage, &mut Bucket, &Conn), Without<Doomed>>,
+    mut speakers: Query<(&Actor, &Account, &Stage, &mut Bucket, &Conn), Without<Doomed>>,
     listeners: Query<(Entity, &Actor, &Sight, &Conn), Without<Doomed>>,
     mut commands: Commands,
 ) {
     for (e, line) in std::mem::take(&mut pending.lines) {
-        let Ok((actor, stage, mut bucket, conn)) = speakers.get_mut(e) else {
+        let Ok((actor, account, stage, mut bucket, conn)) = speakers.get_mut(e) else {
             continue;
         };
         if *stage != Stage::InWorld {
+            continue;
+        }
+        if account.admin
+            && let Some(parsed) = from_chat(&line.text)
+        {
+            match parsed {
+                Ok(order) => pending.orders.push((e, order)),
+                Err(why) => {
+                    let text = why.to_string();
+                    deliver(
+                        conn,
+                        e,
+                        WorldOut::Chat(ChatOut::System { text }),
+                        &mut commands,
+                    );
+                }
+            }
             continue;
         }
         let refused = if !bucket.take(now.0) {
@@ -386,5 +404,15 @@ mod tests {
         assert_eq!(h.take(2), vec![WorldOut::ChatRefused(ChatRefusal::TooFast)]);
         assert!(h.take(1).is_empty());
         assert!(h.take(3).is_empty());
+    }
+
+    #[test]
+    fn a_non_admins_bang_line_is_ordinary_chat() {
+        let mut h = three();
+        h.push(say(1, ChatChannel::Nearby, "!kick Mai"));
+        h.tick(50);
+        let line = said(ChatChannel::Nearby, speaker(1, "Lin"), None, "!kick Mai");
+        assert_eq!(h.take(2), vec![line]);
+        assert_eq!(h.core.players(), 3);
     }
 }

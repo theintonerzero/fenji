@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use common::*;
 use fenji_server::server::GateLimits;
-use fenji_server::world::{KickReason, Location, Look, Player, Pos, WorldIn, WorldOut};
+use fenji_server::world::{
+    ChatChannel, ChatIn, ChatOut, KickReason, Location, Look, Player, Pos, WorldIn, WorldOut,
+};
 use fenji_store::{Character, NewCharacter, Place, Store};
 use tokio::sync::mpsc;
 
@@ -145,5 +147,46 @@ async fn the_world_ticks_and_reports_its_tick_times() {
     let r = s.ticks();
     assert!(r.ticks >= 5, "{r:?}");
     assert!(r.p50 <= r.p99 && r.p99 <= r.max, "{r:?}");
+    s.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_admins_invite_is_stored_and_its_link_comes_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let extra = "public_api = \"https://play.example.net\"\n";
+    let (s, _clock) = server(dir.path(), extra, GateLimits::default()).await;
+    let c = character(&s, "tester").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: Player {
+            admin: true,
+            ..player(1, &c)
+        },
+        out: tx,
+    });
+    next(&mut rx).await;
+    s.world().send(WorldIn::Loaded { conn: 1 });
+    next(&mut rx).await;
+    s.world().send(WorldIn::Chat {
+        conn: 1,
+        line: ChatIn {
+            channel: ChatChannel::Nearby,
+            text: "!invite for Bob".into(),
+            to: None,
+        },
+    });
+    let WorldOut::Chat(ChatOut::System { text }) = next(&mut rx).await else {
+        panic!("a system line")
+    };
+    assert!(
+        text.starts_with("invite link: https://play.example.net/#invite="),
+        "{text}"
+    );
+    let invites = s.accounts().store().list_invites().await.unwrap();
+    assert!(
+        invites
+            .iter()
+            .any(|i| i.label.as_deref() == Some("for Bob"))
+    );
     s.shutdown().await;
 }

@@ -215,4 +215,6 @@ pub enum WorldOut {
 pub enum Service {
     /// Save where a character stands.
     SavePlace { pid: ActorId, at: Location },
+    /// Make an invite for `conn`'s `!invite`, and tell it the link.
+    CreateInvite { conn: ConnId, label: Option<String> },
 }
