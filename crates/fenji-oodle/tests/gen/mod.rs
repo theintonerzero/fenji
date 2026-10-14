@@ -114,4 +114,7 @@ pub const CASES: &[(Kind, usize, u64)] = &[
     (Kind::Random, 4096, 9),
     (Kind::Random, 16_384, 10),
     (Kind::Mixed, 524_288, 11),
+    // A full quantum, then a partial one of about 105 KiB: the size of `_index`'s last block
+    // (docs/re/m1-archives.md 3.4).
+    (Kind::Mixed, 367_689, 12),
 ];

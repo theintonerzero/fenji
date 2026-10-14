@@ -1,4 +1,6 @@
 file	kind	size	seed	compressor	level	input_fnv64	output_fnv64
+mixed-367689-12.c8.l4.oz	mixed	367689	12	8	4	2b6e1b8c031819c1	27027806190bde81
+mixed-367689-12.c8.l8.oz	mixed	367689	12	8	8	2b6e1b8c031819c1	d82526af824defca
 mixed-524288-11.c8.l4.oz	mixed	524288	11	8	4	43064cb16afabe74	f7936482bd844297
 mixed-524288-11.c8.l8.oz	mixed	524288	11	8	8	43064cb16afabe74	cb1340020edf607e
 random-16384-10.c8.l4.oz	random	16384	10	8	4	9718e196c068cb1b	e60151d72fa92ae9
