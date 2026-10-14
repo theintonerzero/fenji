@@ -1,23 +1,23 @@
-file	kind	size	seed	compressor	level
-mixed-524288-11.c8.l4.oz	mixed	524288	11	8	4
-mixed-524288-11.c8.l8.oz	mixed	524288	11	8	8
-random-16384-10.c8.l4.oz	random	16384	10	8	4
-random-16384-10.c8.l8.oz	random	16384	10	8	8
-random-4096-9.c8.l4.oz	random	4096	9	8	4
-random-4096-9.c8.l8.oz	random	4096	9	8	8
-random-64-8.c8.l4.oz	random	64	8	8	4
-random-64-8.c8.l8.oz	random	64	8	8	8
-repeats-262145-7.c8.l4.oz	repeats	262145	7	8	4
-repeats-262145-7.c8.l8.oz	repeats	262145	7	8	8
-repeats-65536-6.c8.l4.oz	repeats	65536	6	8	4
-repeats-65536-6.c8.l8.oz	repeats	65536	6	8	8
-text-262145-2.c8.l4.oz	text	262145	2	8	4
-text-262145-2.c8.l8.oz	text	262145	2	8	8
-text-4096-1.c8.l4.oz	text	4096	1	8	4
-text-4096-1.c8.l8.oz	text	4096	1	8	8
-text-524288-3.c8.l4.oz	text	524288	3	8	4
-text-524288-3.c8.l8.oz	text	524288	3	8	8
-zeros-262144-4.c8.l4.oz	zeros	262144	4	8	4
-zeros-262144-4.c8.l8.oz	zeros	262144	4	8	8
-zeros-524288-5.c8.l4.oz	zeros	524288	5	8	4
-zeros-524288-5.c8.l8.oz	zeros	524288	5	8	8
+file	kind	size	seed	compressor	level	input_fnv64	output_fnv64
+mixed-524288-11.c8.l4.oz	mixed	524288	11	8	4	43064cb16afabe74	f7936482bd844297
+mixed-524288-11.c8.l8.oz	mixed	524288	11	8	8	43064cb16afabe74	cb1340020edf607e
+random-16384-10.c8.l4.oz	random	16384	10	8	4	9718e196c068cb1b	e60151d72fa92ae9
+random-16384-10.c8.l8.oz	random	16384	10	8	8	9718e196c068cb1b	e60151d72fa92ae9
+random-4096-9.c8.l4.oz	random	4096	9	8	4	2b902365b811bd02	b5f8e732d257d1c0
+random-4096-9.c8.l8.oz	random	4096	9	8	8	2b902365b811bd02	b5f8e732d257d1c0
+random-64-8.c8.l4.oz	random	64	8	8	4	58dc1b32c06872f3	89ba0fd33964f525
+random-64-8.c8.l8.oz	random	64	8	8	8	58dc1b32c06872f3	89ba0fd33964f525
+repeats-262145-7.c8.l4.oz	repeats	262145	7	8	4	17c1264def1e6025	875cf7ba418a30a2
+repeats-262145-7.c8.l8.oz	repeats	262145	7	8	8	17c1264def1e6025	5f037105ed0c56c7
+repeats-65536-6.c8.l4.oz	repeats	65536	6	8	4	fa16c885c9731f8a	122e20dc089c5071
+repeats-65536-6.c8.l8.oz	repeats	65536	6	8	8	fa16c885c9731f8a	122e20dc089c5071
+text-262145-2.c8.l4.oz	text	262145	2	8	4	9432385db5fd5c91	0656f60fa17bd931
+text-262145-2.c8.l8.oz	text	262145	2	8	8	9432385db5fd5c91	3a4f4ed32d59fced
+text-4096-1.c8.l4.oz	text	4096	1	8	4	65a78460ff6c4957	aade1bc04c726ab8
+text-4096-1.c8.l8.oz	text	4096	1	8	8	65a78460ff6c4957	143941f022844721
+text-524288-3.c8.l4.oz	text	524288	3	8	4	5fc11228ba9768e2	82571e4298dbff13
+text-524288-3.c8.l8.oz	text	524288	3	8	8	5fc11228ba9768e2	82662d7751c780bb
+zeros-262144-4.c8.l4.oz	zeros	262144	4	8	4	9c735bed0a722325	86c2dc594c4d0ef2
+zeros-262144-4.c8.l8.oz	zeros	262144	4	8	8	9c735bed0a722325	86c2dc594c4d0ef2
+zeros-524288-5.c8.l4.oz	zeros	524288	5	8	4	fc31bff590c22325	106eed3c96727645
+zeros-524288-5.c8.l8.oz	zeros	524288	5	8	8	fc31bff590c22325	106eed3c96727645
