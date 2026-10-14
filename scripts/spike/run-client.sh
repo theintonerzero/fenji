@@ -267,8 +267,9 @@ record_inputs() {
 check_presses() {
   local LC_ALL=C k end2=$((${second_after:-0} + ${tmo2:-${tmo:-0}}))
   for k in "${keys[@]}" "${keys2[@]}"; do
-    [[ "$k" =~ ^[0-9]+:[A-Za-z][A-Za-z0-9_]*(/[1-9][0-9]{0,4})?$ ]] && [ "$(held_ms "$k")" -le 60000 ] ||
+    if ! [[ "$k" =~ ^[0-9]+:[A-Za-z][A-Za-z0-9_]*(/[1-9][0-9]{0,4})?$ ]] || [ "$(held_ms "$k")" -gt 60000 ]; then
       misuse "--key takes T:KEY or T:KEY/MS (whole seconds, an X keysym name, a hold of 1 to 60000 ms), not '$k'"
+    fi
   done
   for k in "${types[@]}" "${types2[@]}"; do
     [[ "$k" =~ ^[0-9]+:[\ -~]+$ ]] || misuse "--type takes T:TEXT (whole seconds, printable ASCII), not '$k'"
