@@ -13,5 +13,6 @@ pub mod packet;
 pub mod pickle;
 pub mod scramble;
 pub mod variant;
+pub mod world;
 
 pub use error::{Error, Result};

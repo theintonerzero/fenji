@@ -283,13 +283,42 @@ fn an_actor_table_has_what_the_select_screen_reads() {
         get(&t, "prop_sys_avatar_feature_face"),
         Some(Value::Str(_))
     ));
+    // The outfit Lin was created in: vocation 0's second (world.md §9), slot → item id.
+    let outfit = [
+        (2, 100_664_357),
+        (3, 100_664_363),
+        (5, 100_664_381),
+        (6, 100_664_369),
+        (11, 83_886_281),
+    ];
     assert_eq!(
         get(&t, "prop_sys_equips"),
+        Some(&Value::Table(Table {
+            array: Vec::new(),
+            hash: outfit
+                .iter()
+                .map(|(slot, id)| (Value::Int(*slot), Value::Int(*id)))
+                .collect(),
+        }))
+    );
+    // Every piece shown but the head, which the creation template hides (world.md 9.2).
+    assert_eq!(lobby::SHOW_FLAGS.len(), 11);
+    for (flag, _) in lobby::SHOW_FLAGS {
+        let shown = flag != "prop_sys_show_equip_head";
+        assert_eq!(get(&t, flag), Some(&Value::Bool(shown)), "{flag}");
+    }
+    // No outfit outside the shipped table: an empty one, as M3 sent.
+    let odd = Actor {
+        appearance: Appearance {
+            equips_id: 3,
+            ..lin().appearance
+        },
+        ..lin()
+    };
+    assert_eq!(
+        get(&odd.to_table(1), "prop_sys_equips"),
         Some(&Value::Table(Table::default()))
     );
-    for flag in lobby::SHOW_FLAGS {
-        assert_eq!(get(&t, flag), Some(&Value::Bool(true)), "{flag}");
-    }
     for never in ["enable", "block_cd", "delete_cd"] {
         assert!(get(&t, never).is_none(), "{never}");
     }

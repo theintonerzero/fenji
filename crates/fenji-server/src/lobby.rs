@@ -1,8 +1,9 @@
 //! The lobby (M3 spec D8–D11; docs/protocol/packets/lobby.md). It lists, creates and deletes
 //! against the store, refuses `SelectActor` until M4, and ignores the rest: 402, 370, 496 and 321
-//! need no answer. The gate closes the connection on 392 (`CLIENT_EXIT`) before it gets here. Every 292 gets a 228, every 304 a 628 or a 270, and every 166 an 84 or a
-//! 270, because the client's screens wait for them (lobby.md §6–§7). Replies are built by
-//! `fenji_proto::lobby`, whose `script_body` refuses `NEVER_SEND`.
+//! need no answer. The gate closes the connection on 392 (`CLIENT_EXIT`) before it gets here.
+//! Every 292 gets a 228, every 304 a 628 or a 270, and every 166 an 84 or a 270, because the
+//! client's screens wait for them (lobby.md §6–§7). Replies are built by `fenji_proto::lobby`,
+//! whose `script_body` refuses `NEVER_SEND`.
 use fenji_proto::lobby::{self, AccountExtras, Actor, Appearance, CreateRequest, code};
 use fenji_proto::pickle::{self, Table, Value};
 use fenji_store::{Account, Character, NewCharacter, Store};
@@ -238,11 +239,27 @@ mod tests {
         want.extend(st("prop_sys_portrait"));
         want.extend([0x05, 0x00, 0x00, 0x18, 0x00]);
         want.extend(kv8("prop_sys_avatar_feature", 2));
+        // Outfit 2 of vocation 0 (world.md §9): each slot (i8) and its item id (i32).
         want.extend(st("prop_sys_equips"));
-        want.extend([0x0B, 0, 0, 0, 0, 0x00]);
+        want.extend([0x0B, 0, 0, 0, 0]);
+        for (slot, id) in [
+            (2, 100_664_357),
+            (3, 100_664_363),
+            (5, 100_664_381),
+            (6, 100_664_369),
+            (11, 83_886_281_i32),
+        ] {
+            want.extend([0x03, slot, 0x05]);
+            want.extend(id.to_le_bytes());
+        }
+        want.push(0x00);
         want.extend(st("prop_sys_avatar_feature_face"));
         want.extend(st("v:5;2:1"));
-        for f in SHOW_FLAGS {
+        // The head hidden, as the creation template hides it (world.md 9.2); the rest shown.
+        assert_eq!(SHOW_FLAGS[0].0, "prop_sys_show_equip_head");
+        want.extend(st("prop_sys_show_equip_head"));
+        want.push(0x02);
+        for (f, _) in &SHOW_FLAGS[1..] {
             want.extend(st(f));
             want.push(0x01);
         }

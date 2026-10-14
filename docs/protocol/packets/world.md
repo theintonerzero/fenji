@@ -149,7 +149,10 @@ What Fenji puts in the player's own blob, in index order. Types and defaults are
 | 214 | `prop_sys_avatar_feature` | `int` | the base face | the model | **Inferred** |
 | 215 | `prop_sys_avatar_feature_face` | `str` | the face string, when there is one | the model | **Inferred** |
 | 222 | `prop_sys_equips` | `table` | the creation outfit (§9), pickled: slot → item id | the model | **Inferred** |
+| 300 | `prop_num_cur_hp_rat` | `num` | 1.0 | `GetHPRat` (5.6) | **Inferred** |
+| 304 | `prop_num_result_hp_max` | `int` | `FULL_HEALTH`, 1000 | `GetHPMax`, `OnHPChanged` (5.6) | **Inferred** |
 | 1325 | `prop_move_speed` | `int` | the speed rate, 100 | walking (§6) | **Inferred** |
+| 1458 | `prop_num_cur_hp` | `int` | `FULL_HEALTH`, 1000 | `GetHP`, and alive: at 0 the client draws the player dead (5.6) | **Observed** (run m4-e1), **Inferred** |
 
 | # | Finding | Tag | Evidence |
 |---|---|---|---|
@@ -158,7 +161,7 @@ What Fenji puts in the player's own blob, in index order. Types and defaults are
 | 5.3 | **The look.** The client's own recipe for a player model is the select screen's preview: properties 4, 5, 6, 214, 215, 222, 166, the result flags 128–140 (from the lobby's show flags), 126, 127, 145 and 148, created with type 1, difficulty 255 and template `vocation × 10000` (S10 `0.0` [20]–[123]). The model's init reads 5, 4, 6, 222 and the result flags, and 177 sets its voice (S11 `0.26`). In the world every result flag but 143 (dress) defaults to `true` (D2), so Fenji sends only the flags it hides. | **Observed** (bytecode, defaults), **Inferred** (enough) | S10 `0.0`; S11 `0.26`; D2 |
 | 5.4 | **The header Fenji sends:** type 1, difficulty 255 and template `vocation × 10000`, as the preview's. For players the scripts read the difficulty and the template only as properties 88 and 1099; the NPC tables use them for type 2 only. | **Inferred** | S3 `0.33`; S10 `0.0` |
 | 5.5 | **Chat's tables needn't be sent.** Unset, 389 (`prop_sys_chatbox_setting`) and 396 (`prop_sys_emoji_infos`) read as `{}` (4.11). The chat settings then fall back to their defaults, which the client saves with 422, and no emoji counts as unlocked. Nothing fails. Fenji may send them as pickled tables later. | **Inferred** | 4.11; L4 (chat survey §4, §10) |
-| 5.6 | **Health is left at its defaults:** 304 `prop_num_result_hp_max` 1, and 300 and 1458 0. Death is property 15, which defaults to 0. Whether the HUD's bar needs them is **Unknown** (§12). | **Observed** (defaults), **Unknown** (the bar) | D2 |
+| 5.6 | **Health must be sent.** Left at their defaults (304 `prop_num_result_hp_max` 1, 300 and 1458 0), run m4-e1's HUD showed "HP 0" and the whole scene grey. The player model's setup registers `OnHPChanged` for 1458 and 304 and calls it once (S17 `0.4` [6]–[24]). It sets the model's health target to 1458 ÷ 304 when 1458 is 0, and to 1 otherwise (`0.20` [9]–[15]). While that target is at most 0.6, the model's update turns on the `PostDead` post-effect with a saturation of target ÷ 0.6 (`0.21` [173]–[266]), so a current health of 0 draws the scene without colour. The scripts read 300, 1458 and 304 through `GetHPRat`, `GetHP` and `GetHPMax` (S18 `0.47`, `0.48`, `0.50`). Death itself is property 15 `prop_base_dead`, which defaults to 0. So Fenji sends full health: 300 = 1.0, and 304 and 1458 = `FULL_HEALTH` (1000; M4 has no combat, and the value is Fenji's choice). | **Observed** (bytecode; run m4-e1), **Inferred** (that 1458 caused the grey) | S17; S18; D2; M4E1 |
 
 ## 6. Type 8, and the speed
 
@@ -236,11 +239,11 @@ The item ids are documented interoperability data, by the owner's decision of 20
 |---|---|---|
 | 10, a pid of the account's | 772 | `(772, pid, {scene_uid = scene, scene_tid = scene, scene_lv = 0, scene_type = 0}, {x, y, z, yaw}, 4706187382722034291)`, the position as floats |
 | type 2 | type 2 | the client's `u32`, and the server's Unix time in ms (§7) |
-| type 3 | type 7, type 23, type 8 | the header `(pid, 1, 255, vocation × 10000)` and §5's blob; then `(pid, 1325, speed)`; then `pid` |
+| type 3 | type 7, type 23, type 8 | the header `(pid, 1, 255, vocation × 10000)` and §5's blob, full health included; then `(pid, 1325, speed)`; then `pid` |
 | the cached type-0 script messages | nothing | none needs an answer in slice 1 |
 | 392 (0xFF) | closes the connection | as in the lobby |
 
-**Golden vector** of a type-7 body, for the character M3's run created (Lin, vocation 7, skeleton 3, level 37, portrait `169 << 16`, voice 3, base face 1, outfit 2), with a short face string `v:5;` in place of its real one, pid 258, the default start (scene 5, `2366, −71735, 64854, 345`), and a speed of 100. It is 123 bytes: the 14-byte header, then the entries of §5's table in index order.
+**Golden vector** of a type-7 body, for the character M3's run created (Lin, vocation 7, skeleton 3, level 37, portrait `169 << 16`, voice 3, base face 1, outfit 2), with a short face string `v:5;` in place of its real one, pid 258, the default start (scene 5, `2366, −71735, 64854, 345`), a speed of 100 and full health. It is 141 bytes: the 14-byte header, then the entries of §5's table in index order.
 
 ```
 02 01 00 00 00 00 00 00 01 ff 70 11 01 00
@@ -253,7 +256,9 @@ b1 30 03   d6 30 01
 d7 90 04 76 3a 35 3b 00
 de c0 2a 01 0b 00 00 00 00 03 02 05 13 0a 00 06 03 03 05 15 0a 00 06
          03 05 05 19 0a 00 06 03 06 05 1b 0a 00 06 03 0b 05 d0 00 00 05 00
+2c 71 00 00 00 00 00 00 f0 3f   30 41 e8 03
 2d 35 64
+b2 45 e8 03
 ```
 
 The other bodies' vectors are in the [world plan](../../superpowers/plans/2026-10-13-m4-world.md)'s Amendment A.
@@ -292,6 +297,8 @@ Only a run of the real client can settle these. Task 11's runs (`scripts/spike/r
 | S14 | `data/core/modules/system/system.luac` | `RequestQuitGame` (`0.5`): 392 through `send_gateway` |
 | S15 | `data/core/share/item_logic/item_category.luac` | The equipment test on `id >> 24` (`0.0`) and the id from type and number, `type << 24` (`0.23`, `0.24`) |
 | S16 | `data/core/modules/net/net.luac` | The close-reason table in the main chunk `0` (decompiled lines 1674–1810), as in [`lobby.md`](lobby.md) S1 |
+| S17 | `data/core/modules/player/player.luac` | The player model's setup (`0.4`), `OnHPChanged` (`0.20`) and the model's update with the `PostDead` effect (`0.21`) |
+| S18 | `data/core/client/actor_interface.luac` | `GetHPRat` (`0.47`), `GetHP` (`0.48`), `GetHPMax` (`0.50`) |
 | D1 | `data/caches/protocol_ver.new_cache` | The protocol table: 772 `PROTOS2C_ACTOR_LOAD_SCENE`, 92, 330, 394, 10, 392 |
 | D2 | `data/caches/prop_tables.new_cache` | 2,439 rows: name, type, sync class and default |
 | D3 | `data/caches/all_tables.new_cache` | `vocation_initequip_templ` (`CteateEquips`, `PreviewEquips`), `vocation_templ` (`CreateShowEquipHead`, `creator_info`), `maps` |
@@ -311,6 +318,7 @@ Only a run of the real client can settle these. Task 11's runs (`scripts/spike/r
 | L2 | `re/m4/entering/builtin_props.tsv` | BUILTIN_PROPS dumped from the exe with a standard-library PE reader |
 | L3 | `re/m4/entering/vocation_sheets.json` | `vocation_initequip_templ` and `vocation_templ`, decoded from D3 with a standard-library reader |
 | L4 | `re/m4/world-survey/` | The design-time survey (entering, sync and movement, chat, the start and outfit): the leads this reading checked |
+| M4E1 | `re/runs/out/m4-e1/`, with screenshots after 295 s in `re/m4/t11/m4-e1/` | Task 11's first world run: `server.log` (trace), `gujianol.log`, `wine.log`, screenshots and the watchdog's log |
 
 ### REA Evidence IDs
 
