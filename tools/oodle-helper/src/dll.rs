@@ -29,7 +29,8 @@ type Decompress = unsafe extern "C" fn(
 ) -> isize;
 
 /// ooz's OodLZ_CompressFunc (kraken.cpp:4288): compressor, input, its length, output, level, then
-/// options, dictionary, unused, scratch and its size, all zero (kraken.cpp:4375).
+/// options, dictionary, unused, scratch and its size, all zero (kraken.cpp:4375). The result, the
+/// compressed length, is pointer-sized like `Decompress`'s; ooz's `int` reads only its low half.
 type Compress = unsafe extern "C" fn(
     compressor: i32,
     src: *const u8,
@@ -41,7 +42,7 @@ type Compress = unsafe extern "C" fn(
     unused: usize,
     scratch: *mut c_void,
     scratch_size: usize,
-) -> i32;
+) -> isize;
 
 pub struct Oodle {
     _lib: Library,
