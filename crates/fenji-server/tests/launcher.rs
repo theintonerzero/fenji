@@ -55,5 +55,5 @@ async fn the_launcher_registers_signs_in_and_gets_a_ticket_the_gate_takes() {
         matches!(gone, ApiError::Server { status: 401, ref code, .. } if code == "bad_session"),
         "{gone:?}"
     );
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }

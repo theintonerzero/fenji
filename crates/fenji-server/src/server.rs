@@ -55,8 +55,9 @@ impl RunningServer {
     /// end, the gate stops accepting and lets go of the lobby, the world lets go of every player
     /// with the shutdown reason and saves them, and their connections get the gate's grace to
     /// write their closes before what is left is ended. Then the world stops once its last saves
-    /// are written, and the store closes.
-    pub async fn shutdown(self) {
+    /// are written, and the store closes. An error is the world's (`RunningWorld::stop`): its
+    /// thread failed, or saves were lost.
+    pub async fn shutdown(self) -> anyhow::Result<()> {
         for t in &self.tasks {
             t.abort();
         }
@@ -73,8 +74,9 @@ impl RunningServer {
         };
         self.world.handle().send(WorldIn::Shutdown);
         gate::finish(conns, self.gate.limits.grace()).await;
-        self.world.stop().await;
+        let stopped = self.world.stop().await;
         self.accounts.store().close().await;
+        stopped
     }
 }
 
@@ -182,8 +184,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let server = start(&cfg, Arc::new(SystemClock), GateLimits::from_config(&cfg)).await?;
     tracing::info!(gate = %server.login_addr, api = %server.api_addr, "Fenji is running");
     shutdown().await;
-    server.shutdown().await;
-    Ok(())
+    server.shutdown().await
 }
 
 /// Ctrl-C, or SIGTERM where there is one.

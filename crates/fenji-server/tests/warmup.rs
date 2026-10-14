@@ -24,5 +24,5 @@ async fn the_dummy_hash_is_made_at_start_not_at_the_first_unknown_username() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }

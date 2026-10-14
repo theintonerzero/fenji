@@ -117,7 +117,7 @@ async fn selecting_a_character_loads_its_scene_and_the_load_brings_it_in() {
     bot.send_native(Cts::TimeSync.to_u8(), &time_sync(0xABCE))
         .await;
     assert_eq!(bot.recv_message().await.ty, Stc::TimeSync.to_u8());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -137,7 +137,7 @@ async fn select_actor_answers_load_scene() {
     let args = select(&mut bot, pid).await;
     assert_eq!(args, load_scene(pid, 12, [-1.5, 2.25, 30.0, -45.0]));
     assert_eq!(args[3], Value::Int(world::PROPS_VERSION));
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -159,7 +159,7 @@ async fn selecting_another_accounts_character_is_refused() {
     // Still in the lobby.
     b.send(lobby::QUERY_ACTORS, &[]).await;
     assert_eq!(b.recv().await.0, lobby::ROLE_LIST);
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -182,7 +182,7 @@ async fn type_2_is_answered_at_once() {
     // A body that isn't 13 bytes is dropped, and the connection stays.
     bot.send_native(Cts::TimeSync.to_u8(), &[1, 2, 3]).await;
     bot.quiet(300).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -231,7 +231,7 @@ async fn client_enter_brings_7_and_8_in_order() {
     bot.send_native(Cts::ClientEnter.to_u8(), &CLIENT_ENTER)
         .await;
     bot.quiet(300).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -246,7 +246,7 @@ async fn a_short_client_enter_closes() {
     let end = tokio::time::timeout(Duration::from_secs(2), bot.next()).await;
     assert!(matches!(end, Ok(None)), "{end:?}");
     saved_at(s.accounts().store(), "tester", pid, START_PLACE).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -281,7 +281,7 @@ async fn exit_and_leave_end_the_session() {
         assert!(matches!(end, Ok(None)), "{name}: {end:?}");
         saved_at(store, name, pid, START_PLACE).await;
     }
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -310,7 +310,7 @@ async fn later_world_messages_are_dropped() {
     a.quiet(300).await;
     a.send_native(Cts::TimeSync.to_u8(), &time_sync(8)).await;
     assert_eq!(a.recv_message().await.ty, Stc::TimeSync.to_u8());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -321,7 +321,7 @@ async fn a_connection_closed_while_loading_leaves_and_its_place_is_saved() {
     select(&mut bot, pid).await;
     drop(bot);
     saved_at(s.accounts().store(), "tester", pid, START_PLACE).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -355,7 +355,7 @@ async fn a_second_login_in_the_world_comes_back_where_it_stood() {
     enter(&mut second, pid).await;
     // Both clients close, so neither keeps the shutdown waiting out its 10 s linger.
     drop((first, second));
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -389,7 +389,7 @@ async fn a_client_that_stops_reading_in_the_world_is_closed() {
         "the server closed the connection"
     );
     saved_at(s.accounts().store(), "tester", pid, START_PLACE).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -419,7 +419,7 @@ async fn a_deleted_account_is_closed_in_the_world() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(store.character(id, pid).await.unwrap(), None);
     assert!(store.list_accounts().await.unwrap().is_empty());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -464,7 +464,8 @@ async fn a_stopping_server_closes_players_in_the_world_with_server_not_running()
     tokio::time::timeout(Duration::from_secs(10), stopping)
         .await
         .expect("the shutdown ends")
-        .unwrap();
+        .unwrap()
+        .expect("everyone was saved");
     let took = began.elapsed();
     assert!(took < Duration::from_millis(2_500), "{took:?}");
     let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
@@ -509,5 +510,5 @@ async fn a_silent_client_in_the_world_is_closed_after_the_idle_time() {
     );
     // The world let the player go, and saved where it stood.
     saved_at(store, "tester", pid, START_PLACE).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }

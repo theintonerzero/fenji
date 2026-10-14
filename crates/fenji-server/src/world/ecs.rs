@@ -379,10 +379,7 @@ fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
     if let Some(reason) = reason {
         let _ = conn.out.try_send(WorldOut::Kicked(reason));
     }
-    let _ = world
-        .resource::<Services>()
-        .0
-        .send(Service::SavePlace { pid, at });
+    save(world.resource::<Services>(), pid, at);
     world.despawn(e);
     let mut index = world.resource_mut::<Index>();
     unindex(&mut index.conns, &conn_id, e);
@@ -417,10 +414,24 @@ fn persist(
         }
     }
     for (actor, here) in &players {
-        let _ = services.0.send(Service::SavePlace {
-            pid: actor.pid,
-            at: here.0,
-        });
+        save(&services, actor.pid, here.0);
+    }
+}
+
+/// Queues a save of where `pid` stands, off the tick. A services task that has stopped loses it,
+/// so that is logged as an error with the place, for the host to see what was lost (#222).
+fn save(services: &Services, pid: ActorId, at: Location) {
+    if services.0.send(Service::SavePlace { pid, at }).is_err() {
+        let p = at.pos;
+        tracing::error!(
+            pid,
+            scene = at.scene,
+            x = p.x,
+            y = p.y,
+            z = p.z,
+            yaw = p.yaw,
+            "a place wasn't saved: the world's services task has stopped"
+        );
     }
 }
 
@@ -480,6 +491,48 @@ pub(crate) mod test_util {
             level: 37,
             appearance: Arc::from(&[1u8, 2, 3][..]),
         }
+    }
+
+    /// What this thread logs at info and above while `f` runs, as the server's log shows it. The
+    /// subscriber is the process's, set once: tracing caches whether a callsite is wanted for
+    /// every thread, so one thread's own subscriber can miss a callsite another thread saw first.
+    pub fn logged<T>(f: impl FnOnce() -> T) -> (T, String) {
+        use std::cell::RefCell;
+        use std::io;
+        use std::sync::Once;
+
+        thread_local! {
+            static CAUGHT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+        }
+        struct ThisThread;
+        impl io::Write for ThisThread {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                CAUGHT.with_borrow_mut(|caught| {
+                    if let Some(caught) = caught {
+                        caught.extend_from_slice(buf);
+                    }
+                });
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        static SET: Once = Once::new();
+        SET.call_once(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(|| ThisThread)
+                .with_ansi(false)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("no other test sets the process's subscriber");
+        });
+        // A callsite first seen between the subscriber's registration and its setting is wanted.
+        tracing::callsite::rebuild_interest_cache();
+        CAUGHT.with_borrow_mut(|caught| *caught = Some(Vec::new()));
+        let out = f();
+        let bytes = CAUGHT.with_borrow_mut(Option::take).unwrap_or_default();
+        (out, String::from_utf8(bytes).unwrap())
     }
 
     /// A player for connection `conn`: account `conn`, pid `conn`, named `name`.
@@ -810,6 +863,30 @@ mod tests {
         }
         assert_eq!(h.saves().len(), N as usize, "everyone is saved");
         assert_eq!(h.core.players(), 0);
+    }
+
+    #[test]
+    fn a_save_the_services_cannot_take_is_logged_as_an_error() {
+        // #222: a services task that has died loses every save from then on, and each one lost
+        // says so, with the place, rather than going without a word.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(10.0, 20.0)));
+        h.enter(player(2, "Mai", at(30.0, 40.0)));
+        h.services.close();
+        let errors = |log: &str, pid: &str| {
+            log.lines()
+                .filter(|l| l.contains("ERROR") && l.contains(&format!("pid={pid} ")))
+                .count()
+        };
+        // The periodic save, then a leave.
+        let ((), log) = logged(|| h.tick(300_000));
+        assert_eq!((errors(&log, "1"), errors(&log, "2")), (1, 1), "{log}");
+        let ((), log) = logged(|| {
+            h.push(WorldIn::Leave { conn: 2 });
+            h.tick(50);
+        });
+        assert_eq!((errors(&log, "1"), errors(&log, "2")), (0, 1), "{log}");
+        assert!(log.contains("x=30.0 y=40.0"), "the place lost: {log}");
     }
 
     #[test]

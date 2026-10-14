@@ -5,12 +5,13 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use anyhow::anyhow;
 use fenji_store::Store;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use super::ecs::{Rules, WorldCore};
-use super::types::{KickReason, WorldIn, WorldOut};
+use super::types::{KickReason, Service, WorldIn, WorldOut};
 use crate::clock::Clock;
 
 /// How long stopping waits for the last saves (Fenji design spec §6.7: 20 characters in 2 s).
@@ -132,6 +133,29 @@ pub fn start(
 ) -> anyhow::Result<RunningWorld> {
     let (tx, rx) = mpsc::unbounded_channel();
     let (services_tx, services_rx) = mpsc::unbounded_channel();
+    let services = tokio::spawn(super::services::run(
+        store,
+        invite_base,
+        clock,
+        services_rx,
+        tx.downgrade(),
+    ));
+    launch(rules, (tx, rx), services_tx, services)
+}
+
+/// The world's channel: the handles' end, and the thread's.
+type Inbox = (
+    mpsc::UnboundedSender<WorldIn>,
+    mpsc::UnboundedReceiver<WorldIn>,
+);
+
+/// Starts the world's thread on `inbox`, with `services` as the task that takes its work.
+fn launch(
+    rules: Rules,
+    (tx, rx): Inbox,
+    services_tx: mpsc::UnboundedSender<Service>,
+    services: tokio::task::JoinHandle<()>,
+) -> anyhow::Result<RunningWorld> {
     let hz = rules.tick_hz.max(1);
     let tick = Duration::from_secs(1) / hz;
     let stats = Arc::new(Mutex::new(Stats::new(hz as usize * 60)));
@@ -142,13 +166,6 @@ pub fn start(
             let stats = Arc::clone(&stats);
             move || run(core, rx, tick, &stats)
         })?;
-    let services = tokio::spawn(super::services::run(
-        store,
-        invite_base,
-        clock,
-        services_rx,
-        tx.downgrade(),
-    ));
     Ok(RunningWorld {
         handle: WorldHandle(tx),
         thread,
@@ -170,22 +187,34 @@ impl RunningWorld {
     }
 
     /// Saves everyone and stops: the thread ends after its shutdown tick, and the services task
-    /// once it has written the last saves (waiting at most [`SAVE_WAIT`]).
-    pub async fn stop(self) {
+    /// once it has written the last saves (waiting at most [`SAVE_WAIT`]). Each failure is logged
+    /// and returned, the first if there are two: the world's thread, or saves lost to a services
+    /// task that failed or didn't finish in time (#222). The server's shutdown passes it on, so
+    /// `fenji-server run` exits non-zero.
+    pub async fn stop(self) -> anyhow::Result<()> {
         self.handle.send(WorldIn::Shutdown);
         let thread = self.thread;
-        if !matches!(
-            tokio::task::spawn_blocking(move || thread.join()).await,
-            Ok(Ok(()))
-        ) {
-            tracing::error!("the world's thread panicked");
-        }
-        if tokio::time::timeout(SAVE_WAIT, self.services)
-            .await
-            .is_err()
-        {
-            tracing::error!("the world's last saves took over {SAVE_WAIT:?}");
-        }
+        let ended = match tokio::task::spawn_blocking(move || thread.join()).await {
+            Ok(Ok(())) => Ok(()),
+            _ => {
+                tracing::error!("the world's thread panicked");
+                Err(anyhow!("the world's thread panicked"))
+            }
+        };
+        let saved = match tokio::time::timeout(SAVE_WAIT, self.services).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "the world's services task failed: saves were lost");
+                Err(anyhow!(
+                    "the world's services task failed, and saves were lost: {e}"
+                ))
+            }
+            Err(_) => {
+                tracing::error!("the world's last saves took over {SAVE_WAIT:?}");
+                Err(anyhow!("the world's last saves took over {SAVE_WAIT:?}"))
+            }
+        };
+        ended.and(saved)
     }
 }
 
@@ -269,6 +298,28 @@ mod tests {
         .unwrap();
         run(core, rx, MS * 50, &Mutex::new(Stats::new(10)));
         assert_eq!(late.try_recv(), Ok(WorldOut::Kicked(KickReason::Shutdown)));
+    }
+
+    #[tokio::test]
+    async fn stop_reports_a_services_task_that_failed() {
+        // #222: a services task that panicked loses every save from then on, here the shutdown's.
+        // `stop` says so, and the server's shutdown passes it on to `fenji-server run`.
+        let (services_tx, jobs) = mpsc::unbounded_channel();
+        let services = tokio::spawn(async move {
+            drop(jobs);
+            panic!("a bug in the services");
+        });
+        let world = launch(rules(), mpsc::unbounded_channel(), services_tx, services).unwrap();
+        let (out, _rx) = mpsc::channel(4);
+        world.handle().send(WorldIn::Join {
+            player: player(1, "Lin", at(0.0, 0.0)),
+            out,
+        });
+        let stopped = tokio::time::timeout(Duration::from_secs(10), world.stop())
+            .await
+            .expect("the world stops");
+        let e = stopped.expect_err("the failed services task is reported");
+        assert!(format!("{e:#}").contains("services task"), "{e:#}");
     }
 
     #[test]
