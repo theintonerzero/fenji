@@ -26,6 +26,10 @@ pub enum Error {
         action: &'static str,
         state: &'static str,
     },
+    #[error("a type-{opcode} body of {len} bytes doesn't fit its layout")]
+    BadBody { opcode: u8, len: usize },
+    #[error("property blob: {0}")]
+    Blob(String),
 }
 
 /// Result alias for this crate.
