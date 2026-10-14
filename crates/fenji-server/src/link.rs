@@ -30,6 +30,8 @@ use crate::world::{
 /// The world's messages a connection may hold unwritten; one more and the world lets go of it
 /// (`KickReason::SlowReader`). One mover can push up to 127 relays a tick, so not fewer.
 pub(crate) const OUTBOUND: usize = 256;
+// Carry-forward 7: two ticks of one mover's 127 relays must fit, so no later slice may shrink it.
+const _: () = assert!(OUTBOUND >= 256);
 
 /// Whether byte `i` of type 3 describes the player's machine (world.md §3): the Windows version
 /// (9–12) or the parent-process flag (17). The trace log masks them.
@@ -846,5 +848,65 @@ mod tests {
         drop(ours);
         let events = rest(&mut theirs, &mut client).await;
         assert!(events.len() >= 2, "the 772s went out: {events:?}");
+    }
+
+    /// What this thread logs while the subscriber is its default, as text.
+    #[derive(Clone, Default)]
+    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+        fn make_writer(&'a self) -> Logs {
+            self.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_store_error_in_the_account_check_keeps_the_player() {
+        // Ruling R5, as in the lobby: a store that fails now may answer at the next check, so the
+        // check logs the error and keeps the connection.
+        let logs = Logs::default();
+        let log = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false);
+        let _logging = tracing::subscriber::set_default(log.finish());
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gate, mut inbox) = gate(dir.path()).await;
+        gate.limits.account_check = Duration::from_millis(50);
+        gate.accounts.store().close().await;
+        let (mut ours, peer, mut server, _theirs, _client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let tester = account("tester");
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        tokio::pin!(played);
+        let open = tokio::time::timeout(Duration::from_millis(400), &mut played).await;
+        assert!(open.is_err(), "the connection stays open: {open:?}");
+        let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(text.matches("account check failed").count() >= 3, "{text}");
+        let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+            panic!("a join first")
+        };
+        drop(out);
+        let ended = tokio::time::timeout(Duration::from_secs(5), played).await;
+        ended.expect("the world letting go ends it").unwrap();
     }
 }
