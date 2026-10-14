@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use fenji_auth::invite::InviteCode;
 use fenji_proto::client::{Client, ClientEvent};
-use fenji_proto::handshake::AuthMessage;
+use fenji_proto::handshake::{AuthMessage, Message};
 use fenji_proto::packet::script_body;
 use fenji_proto::pickle::{self, Table, Value};
 use fenji_server::clock::TestClock;
@@ -245,5 +245,67 @@ impl Bot {
     pub async fn quiet(&mut self, ms: u64) {
         let got = tokio::time::timeout(Duration::from_millis(ms), self.next()).await;
         assert!(got.is_err(), "expected silence, got {got:?}");
+    }
+
+    /// A message of type `ty` exactly as given, as `send_time_sync`, `send_enter`, `send_leave` or
+    /// `send` sends one (world.md §1).
+    pub async fn send_native(&mut self, ty: u8, body: &[u8]) {
+        let out = self.client.send(ty, body).unwrap();
+        self.sock.write_all(&out).await.unwrap();
+    }
+
+    /// The next message, whatever its type.
+    pub async fn recv_message(&mut self) -> Message {
+        match self.next().await {
+            Some(ClientEvent::Message(m)) => m,
+            other => panic!("expected a message, got {other:?}"),
+        }
+    }
+
+    /// `n` copies of one message, written as the client writes its stream: false when the write
+    /// didn't finish within `wait` (the server stopped reading) or failed.
+    pub async fn send_many(&mut self, ty: u8, body: &[u8], n: usize, wait: Duration) -> bool {
+        for _ in 0..n {
+            if self.client.queue(ty, body).is_err() {
+                return false;
+            }
+        }
+        let Ok(out) = self.client.flush() else {
+            return false;
+        };
+        matches!(
+            tokio::time::timeout(wait, self.sock.write_all(&out)).await,
+            Ok(Ok(()))
+        )
+    }
+
+    /// Reads and drops whatever is left until the server closes the connection: true when it
+    /// does within `wait`.
+    pub async fn ends_within(&mut self, wait: Duration) -> bool {
+        let mut buf = vec![0u8; 64 * 1024];
+        let drain = async { while matches!(self.sock.read(&mut buf).await, Ok(n) if n > 0) {} };
+        tokio::time::timeout(wait, drain).await.is_ok()
+    }
+}
+
+/// A time-sync body as the client sends it (world.md 7.2): its clock's low 32 bits, a byte 1, and
+/// two counters, zero here.
+pub fn time_sync(clock: u32) -> Vec<u8> {
+    let mut b = clock.to_le_bytes().to_vec();
+    b.push(1);
+    b.extend([0; 8]);
+    b
+}
+
+/// Type 3's body as the client builds it (Amendment A's V3).
+pub const CLIENT_ENTER: [u8; 21] = [
+    1, 0, 0, 0, 0, 0, 0, 0, 0, 0x65, 0x4a, 0x00, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+/// The pid of the actor in 628's or a list's table.
+pub fn pid_of(actor: &Table) -> i64 {
+    match field(actor, "pid") {
+        Some(Value::Int(pid)) => *pid,
+        other => panic!("no pid: {other:?}"),
     }
 }

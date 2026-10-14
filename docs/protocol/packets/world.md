@@ -1,6 +1,6 @@
 # World: entering
 
-After the select screen's 10, the server answers with the script message 772. The client reloads its game modules, sets the player's actor id and loads the scene's map behind its loading screen, sending a time sync once a second from then on. When the map and the game's add-ons have loaded it reports the native type 3. Only then does the server send the player's own actor (type 7, with a property blob), its move speed (type 23) and type 8, after which the loading screen closes and the client's in-world script messages flow. This document gives the evidence behind the values that `fenji_proto::world` uses for that, the format of the property blob that types 7 and 10 carry, the time syncs, and the creation outfit.
+After the select screen's 10, the server answers with the script message 772. The client reloads its game modules, sets the player's actor id and loads the scene's map behind its loading screen, sending a time sync once a second from then on. When the map and the game's add-ons have loaded it reports the native type 3. Only then does the server send the player's own actor (type 7, with a property blob, which carries its move speed) and type 8, after which the loading screen closes and the client's in-world script messages flow. This document gives the evidence behind the values that `fenji_proto::world` uses for that, the format of the property blob that types 7 and 10 carry, the time syncs, and the creation outfit.
 
 **Method.** This reading comes from the pinned build 10015727 (`bin64/gujianol.exe`, SHA-256 `3fdc6394de85c1224b91312d62bf2e57251625b49e8d0f3960accf8dfe5f0678`). It used three sources, all read locally and read-only:
 - the client's own scripts, disassembled and decompiled by `luatool` ([`../../re/m1-script-format.md`](../../re/m1-script-format.md));
@@ -18,7 +18,7 @@ A design-time survey (L4) gave the leads, and each finding here was checked agai
 | 3 | C→S, S→C | type 2 time sync, and its reply | from 772 on, once a second (§7) | S4 `0.1` |
 | 4 | C→S | type 3 `CTS_PROTOCOL_CLIENT_ENTER`, 21 bytes | sent when the map and the game's add-ons have loaded; the loading screen stays up (§3) | S6 `0.9`; S7 `0.61` |
 | 5 | S→C | type 7 `STC_PROTOCOL_SYNC_ENTER` for the pid | creates the player's actor; 8 frames later the loading screen closes (§4, §5) | S2 `0.9`; S3 `0.33`; S6 `0.30` |
-| 6 | S→C | type 23 `STC_PROTOCOL_SYNC_PROP_FORCE`, property 1325 | sets the move speed (§6) | X8 |
+| 6 | S→C | type 23 `STC_PROTOCOL_SYNC_PROP_FORCE`, property 1325 | sets the move speed (§6); Fenji doesn't send it, since the blob's 1325 suffices (6.5) | X8 |
 | 7 | S→C | type 8 `STC_PROTOCOL_SYNC_ENTER_FINISH` | turns the client's type-0 sends back on and flushes what it cached (§6) | S2 `0.10`; S3 `0.45` |
 | 8 | C→S | the cached script messages, as type 0 | logs and fetches; none needs an answer to stand and walk | S2 `0.31` |
 
@@ -72,8 +72,8 @@ A design-time survey (L4) gave the leads, and each finding here was checked agai
 
 | # | Finding | Tag | Evidence |
 |---|---|---|---|
-| 3.1 | **The layout above,** from FUN_140221BB0's command: type byte 3, length 21, then the five 4-byte words and the byte the table lists. | **Inferred**; constants **Observed** | X2 |
-| 3.2 | **Fenji reads nothing in it.** Type 3 means "loaded". The Windows version and the parent flag are facts about the player's machine, so Fenji neither logs nor keeps them; its decoder checks the length only. | the choices are Fenji's | 3.1 |
+| 3.1 | **The layout above,** from FUN_140221BB0's command: type byte 3, length 21, then the five 4-byte words and the byte the table lists. The runs' bodies were 21 bytes, with 1 and the zeros where the table has them (§13). | **Inferred**; constants **Observed**; the length and the constant bytes **Observed** (runs) | X2; §13 |
+| 3.2 | **Fenji reads nothing in it.** Type 3 means "loaded". The Windows version and the parent flag are facts about the player's machine, so Fenji neither logs nor keeps them; its decoder checks the length only. At trace level the link logs the body with those five bytes masked (`..`), so a run's log shows the rest without them. | the choices are Fenji's | 3.1 |
 
 ## 4. Type 7 `STC_PROTOCOL_SYNC_ENTER` and the property blob
 
@@ -171,14 +171,14 @@ What Fenji puts in the player's own blob, in index order. Types and defaults are
 | 6.2 | **Type 23 `SYNC_PROP_FORCE`** (FUN_14020CE90): a `u64` actor id, a `u16` property index and an `i16` value, 12 bytes. Index 1325 sets `prop_move_speed` and 1330 `prop_move_gravity` (FUN_140211630, FUN_1402114E0, each through the property's own setter, the one the blob uses); other indexes are ignored. When a flag in the actor's move state is set, it also clears a value of the move code (DAT_1431F37A8; both meanings **Unknown**). The actor must exist (FUN_1401AD3A0 finds it by its integer id), so 23 comes after 7. | **Inferred**; 0x52D and 0x532 **Observed** | X8 |
 | 6.3 | **Type 21 `MOVE_BASE_PROP`** (FUN_14020BA70): a `u64` actor id, a `u64`, three `i32`, an `i16`, then the speed and the gravity as `i16`, 34 bytes. It also writes the middle fields into the actor's move object (meaning **Unknown**), and a short body leaves stale values in them. So Fenji uses 23. | **Inferred** | X8 |
 | 6.4 | **The rate.** `move_get_move_speed_by_rat` (0x14020DE10, bound at 0x14020AAC0; Ghidra's analysis made no function there) multiplies the rate by 500.0 and by 0.01 (the `f32` constants at 0x142F04890 and 0x142F046B8): rate 100 is 500 units. The scripts' logic speed is `prop_move_speed` less an offset for backward moves, and a rate below 60 picks walking (L4). That the 500 is per second is **Inferred**. | **Observed** (bytes), **Inferred** (per second) | X9; L4 |
-| 6.5 | **Unset, the speed is 0** (D2 gives no default), and the player can't move. Fenji sets it in the type-7 blob, so it is in place before the move handle exists (4.3), and again with type 23, which is the plan's speed message. Task 11's run shows whether one of them suffices. | **Observed** (default), the choice is Fenji's | D2; 4.3; 6.2 |
+| 6.5 | **Unset, the speed is 0** (D2 gives no default), and the player can't move. Fenji sets it in the type-7 blob, so it is in place before the move handle exists (4.3). The plan also sent type 23 until Task 11's runs: with both, the character ran about 5 m/s (m4-e2), and without type 23 it ran the same stretch as fast (m4-e3), so Fenji sends the blob's 1325 alone and keeps type 23 for later changes of speed. | **Observed** (default; runs m4-e2, m4-e3), the choice is Fenji's | D2; 4.3; 6.2; §13 |
 
 ## 7. Time syncs (type 2)
 
 | # | Finding | Tag | Evidence |
 |---|---|---|---|
 | 7.1 | **When.** The main loop calls `time_manager_update` every frame (S5 `0.9`). It returns while `actor_system_get_local_id()` is 0 or less (S4 `0.1` [4]–[8]); the id starts at 0 (S3 `0` [204]–[216]), and 772 sets it (2.6). Then the first sync goes out at once and one every 1,000 ms (`SERVER_TIME_SYNC_INTERVAL`), through `net_manager_send_time_sync` (`0.28`), which checks only for `WORK`. So the syncs start right after 772, during the loading screen, before the actor exists. In the lobby the id stays 0 and no sync is sent, as the M2 and M3 runs saw. | **Observed** (bytecode) | S4 `0`, `0.1`; S5 `0.9`; S2 `0.28`; S3 `0`, `0.42`, `0.82` |
-| 7.2 | **The client's body,** 13 bytes (FUN_140221AC0): the low 32 bits of its Unix-millisecond clock (FUN_1400B5670), a byte 1, and two `u32` the client fills in itself: one read from its own module's export `ipvtmeg` (FUN_140246E40), and one returned by the function its export `curl_easy_paste` points to (FUN_140246DF0). Both are counters the client keeps about its own machine (FUN_140A9D6A0, FUN_141156C20, FUN_140A9D650). Fenji reads neither. | **Inferred**; the exports **Observed** (the PE export table) | X3; L1 |
+| 7.2 | **The client's body,** 13 bytes (FUN_140221AC0): the low 32 bits of its Unix-millisecond clock (FUN_1400B5670), a byte 1, and two `u32` the client fills in itself: one read from its own module's export `ipvtmeg` (FUN_140246E40), and one returned by the function its export `curl_easy_paste` points to (FUN_140246DF0). Both are counters the client keeps about its own machine (FUN_140A9D6A0, FUN_141156C20, FUN_140A9D650). Fenji reads neither, and its trace log masks them. In the runs the body was 13 bytes with the byte 1, and the `u32` equalled the low 32 bits of the Unix time in ms at the server's receipt (§13). | **Observed** (the length, the clock and the byte 1: runs); **Inferred** (the counters); the exports **Observed** (the PE export table) | X3; L1; §13 |
 | 7.3 | **The reply's body,** 12 bytes (FUN_140222E00's case 2): a `u32`, the client's value echoed back, and a `u64`, the server's time in milliseconds. Natively, when the `u32` is below the client's clock, both as unsigned 32-bit numbers, the client updates a smoothed round trip (7/8 old, 1/8 new) and its server-time estimate: the `u64` plus half the round trip. `net_client_get_server_time` (FUN_140222DE0) returns the local clock plus the estimate's lead over it, which is the client's own clock until a reply comes. | **Inferred** | X1; X10 |
 | 7.4 | **The scripts' handling.** The type-2 handler (`0.7`) calls `time_manager_time_sync_resp(now, u32, u64)` (S4 `0.2`). It returns at once when `now − u32` is negative. Otherwise it sets `net_delay` to `now − u32` and `server_time_now` to `u64 + net_delay // 2`, Lua's floor division of integers. | **Observed** (bytecode) | S2 `0.7`; S4 `0.2` |
 | 7.5 | **So Fenji answers each type 2 at once** with the client's `u32` unchanged and its own time in milliseconds since the Unix epoch: the epoch the client's clock and its no-reply estimate already use (7.3). | **Inferred** | 7.3, 7.4 |
@@ -189,7 +189,7 @@ What Fenji puts in the player's own blob, in index order. Types and defaults are
 |---|---|---|---|
 | 8.1 | **Ids are 64-bit natively.** Types 7 and 8 read `u64` ids and push them as Lua integers (X1); `lua_actor_new` reads its id with Lua's integer check (FUN_1401AF2F0); `move_set_local_actor_id` takes a `u64` (its signature `Q` at 0x141189F00) and stores all 64 bits (0x140210A30); actors are found by integer key (FUN_1401AD3A0). | **Inferred**; widths **Observed** | X1, X8, X9, X10 |
 | 8.2 | **The NPC rule.** `actor_id_enter` treats an id whose `id >> 48` is above 0 as an NPC's (S9 `0.13` [1]–[3]), and 0 means "no actor" (S3 `0.39`; S4 `0.1`). So a player's id is in 1 to 2^48 − 1, as `MAX_PLAYER_ID` in `fenji-server` has it. | **Observed** (operands) | S9 `0.13`; S3 `0.39`; S4 `0.1` |
-| 8.3 | **So a pid above 2^32 survives** the native paths and the scripts' integer paths, and since every player id is below 2^53, it survives a conversion to a float too. A run with such a pid is **Unknown** (§12). | **Inferred** | 8.1, 8.2 |
+| 8.3 | **So a pid above 2^32 survives** the native paths and the scripts' integer paths, and since every player id is below 2^53, it survives a conversion to a float too. Run m4-e4 entered and ran with pid 4294967297 (2^32 + 1; §13). | **Inferred**; the run **Observed** | 8.1, 8.2; §13 |
 
 ## 9. The creation outfit
 
@@ -239,9 +239,11 @@ The item ids are documented interoperability data, by the owner's decision of 20
 |---|---|---|
 | 10, a pid of the account's | 772 | `(772, pid, {scene_uid = scene, scene_tid = scene, scene_lv = 0, scene_type = 0}, {x, y, z, yaw}, 4706187382722034291)`, the position as floats |
 | type 2 | type 2 | the client's `u32`, and the server's Unix time in ms (§7) |
-| type 3 | type 7, type 23, type 8 | the header `(pid, 1, 255, vocation × 10000)` and §5's blob, full health included; then `(pid, 1325, speed)`; then `pid` |
+| type 3 | type 7, type 8 | the header `(pid, 1, 255, vocation × 10000)` and §5's blob, with the speed and full health; then `pid` |
+| type 3 of any length but 21 bytes | closes the connection | without a reason; only the length is checked (3.2) |
 | the cached type-0 script messages | nothing | none needs an answer in slice 1 |
 | 392 (0xFF) | closes the connection | as in the lobby |
+| type 4 | closes the connection | without a reason or 330, so the client doesn't go back to the select screen: that is outside slice 1 (1.5) |
 
 **Golden vector** of a type-7 body, for the character M3's run created (Lin, vocation 7, skeleton 3, level 37, portrait `169 << 16`, voice 3, base face 1, outfit 2), with a short face string `v:5;` in place of its real one, pid 258, the default start (scene 5, `2366, −71735, 64854, 345`), a speed of 100 and full health. It is 141 bytes: the 14-byte header, then the entries of §5's table in index order.
 
@@ -265,7 +267,7 @@ The other bodies' vectors are in the [world plan](../../superpowers/plans/2026-1
 
 ## 12. Open questions for the runs
 
-Only a run of the real client can settle these. Task 11's runs (`scripts/spike/run-client.sh` with `--server`) answer them; each run's prediction is written before it starts.
+Only a run of the real client can settle these. Task 11's runs (`scripts/spike/run-client.sh` with `--server`) answer them; each run's prediction is written before it starts. Those runs answered 1–6 (§13); 7 and 8 are still open.
 1. **The sequence works:** after 10, the loading screen for scene 5 closes and the character stands at 772's position; the server's log shows type-2 syncs from 772 on, then type 3, then the client's flushed script messages after type 8. Task 11's first world run.
 2. **The character walks** with `prop_move_speed` 100, at about 500 units a second, and whether the blob or type 23 alone would do (6.5). The same run, walking for a timed stretch.
 3. **The look:** the face, the voice and the outfit as at creation, with the head hidden (5.3). The run's screenshots.
@@ -274,6 +276,43 @@ Only a run of the real client can settle these. Task 11's runs (`scripts/spike/r
 6. **A pid above 2^32** (8.3). A run with a character whose pid is seeded above 2^32.
 7. **Two clients in one Wine prefix** (world spec open question 7). The exe imports `CreateMutexW`, `OpenMutexW` and `CreateMutexA`, whose uses weren't traced. The two-client run.
 8. **The type-2 reply's effect:** that dates the client shows follow the server's time. The run, with the client's clock set away from the host's.
+
+## 13. Runs
+
+Task 11's runs (2026-10-14) ran the pinned client in `scripts/spike/run-client.sh` with `--server`, `--launch`, `--click`, `--key` and `--type`, against `fenji-server` built from the task's branch, with the AGT driver watchdog armed. Each run:
+- started a new `fenji-server` on one database (`re/runs/server-data`), which held the account `tester`, made on the host through the API before the first run;
+- ran `fenji-launch play --print` inside the sandbox once the server was up, and gave the client only the launcher path's three pairs, with a fresh ticket;
+- gave the client `--fs=data:_index:_index` and no `--gf-sdk` flag, with `[world]` at its defaults.
+
+Clicks and keys went through XTEST on the nested display, and screenshots after the runner's last one (295 s) were taken on the host. The server logged at trace what it received, with type 3's and the time syncs' machine bytes masked (3.2, 7.2), and at debug what the link sent. Predictions were written before each run (M4R).
+
+| Run | What the run did | What happened | Watchdog | Evidence |
+|---|---|---|---|---|
+| m4-e1 | creates `Lin` (Fox Mage, vocation 7) and enters; 900 s | the select screen showed Lin as "Beginner 1" in her creation outfit; 772 41 ms after 10; type 3 41.6 s later; 7, 23 and 8; the client logged "Local actor enter", and Lin stood on Blade Peak at the minimap's (23, −718). But the HUD showed "HP 0" and the scene was grey (5.6) | no sign | M4E1 |
+| m4-e2 | full health; creates `Mai` (Spellsword, vocation 2) through a "+" place and enters; `g` (auto-move) for 22 s; 600 s | Mai stood in colour with a full HP bar. At `g` she ran up the stairs: the minimap went (33, −721) → (57, −726) in about 5 s, about 4.9 m/s, then she stopped against rocks | no sign | M4E2 |
+| m4-e3 | as m4-e2 without type 23 (a build for this run only): Lin enters; `g`; 360 s | Lin stood in colour, and at `g` ran the same stretch, (35, −721) → (55, −724) in about 5 s, to the same rocks | no sign | M4E3 |
+| m4-e4 | the final build; a new database whose next pid was 2^32 + 1; creates Lin and enters; `g`; 420 s | the select screen listed Lin, the client's 10 carried 4294967297 as an `i64`, and 772, 7 and 8 went out with it; Lin stood in colour and ran the same stretch | no sign | M4E4 |
+
+**Observed:**
+- **Entering works** (§12 question 1). 10 led to 772, the loading screen for scene 5 (the client's log: "Start load scene: 5", "Load Scene g10"), type-2 syncs from 1.5 s after 772, type 3 after 40–42 s, then the player's own actor. The client's cached script messages came 1.4 s after type 8 (1.2). A second Enter Game click during the loading screen sent nothing.
+- **The default start works** for vocation 7 (m4-e1) and vocation 2 (m4-e2), so `[world]`'s defaults stay.
+- **The client's bodies.** Type 3 was 21 bytes, with byte 0 = 1 and zeros where §3 reads constants. Type 2 was 13 bytes with byte 4 = 1, and its `u32` equalled the low 32 bits of the Unix time in ms at the server's receipt, in every line checked, so 7.2's clock is **Observed**. They are fixtures now, with the masked bytes zero (`crates/fenji-server/tests/fixtures/m4-e1-*.hex`).
+- **Units** (question 5): the minimap's (23, −718) at the start is 772's (2366, −71735) ÷ 100, so x and y are centimetres and the minimap shows metres.
+- **Health** (question 4): left at its defaults, the HUD showed "HP 0" and the client drew the scene without colour; with full health (5.6) the scene had its colour and the bar was full.
+- **Walking** (question 2): from `g`, each character covered the 35 m from the start to the rocks in about 9–10 s, 3.5–5 m/s on the minimap while climbing stairs, as rate 100's 500 cm/s would (6.4); with the blob's 1325 alone as with type 23 too (6.5).
+- **A pid above 2^32** (question 6): 4294967297 was listed, selected, loaded and run with (m4-e4); the client's 10 carried it as an `i64` (`06 01 00 00 00 01 00 00 00`), so it never passed through a float.
+- **The look** (question 3): each character in its creation outfit and face, Lin with the Fox Mage's ears and no head item, Mai with a sword, on the select screen and in the world.
+- **What the client sends in the world.** About twice a second, 97 `PROTOC2S_PLAYER_EYEPOS`. While running, native type 8 (`CTS_PROTOCOL_MOVE_DIR`, 200 bytes; 53 in 22 s). Messages its scripts call logs, among them 120, 257, 248, 540 and 560. Slice 1 ignores them all.
+- **The network.** One connection, to 127.0.0.1:7800, and the sandbox's host-name lookup. On entering, the client started its own web-view helper, `browserhost.exe`, which made no connection.
+- **The client's own errors.** Three listeners of `SCENE.EVENT_LOCAL_PLAYER_ENTER` failed in every run: `initFeatureMgr` ("'for' limit must be a number"), the skill panel's `GetRemnantPageState` (a nil `study`), and the action bar's `LoadActionBarSetting`. With Mai, a cooldown sweep's `SetRotation` (`interface/templates/BaseCoolDown.lua`, `UpdateProgress`) failed every 10 s on a non-finite rotation. Running into the rocks showed "Not yet learnt". None of them stopped a character standing or running.
+
+**Inferred:**
+- The listener errors, the cooldown sweep and "Not yet learnt" come from what slice 1 doesn't send yet: features, skills and the action bar's settings.
+
+**Unknown:**
+- Whether the start's z (64854) is the ground there or the client put the character on it.
+- §12's questions 7 (two clients in one Wine prefix) and 8 (the reply's effect on the dates the client shows): not run.
+- In m4-e4 alone, `g` also opened the World Map, and the client sent 85 `PROTOC2S_ITEM_COLLECTION_USE`; the same key in m4-e2 and m4-e3 only started the run.
 
 ## Evidence index
 
@@ -318,7 +357,9 @@ Only a run of the real client can settle these. Task 11's runs (`scripts/spike/r
 | L2 | `re/m4/entering/builtin_props.tsv` | BUILTIN_PROPS dumped from the exe with a standard-library PE reader |
 | L3 | `re/m4/entering/vocation_sheets.json` | `vocation_initequip_templ` and `vocation_templ`, decoded from D3 with a standard-library reader |
 | L4 | `re/m4/world-survey/` | The design-time survey (entering, sync and movement, chat, the start and outfit): the leads this reading checked |
-| M4E1 | `re/runs/out/m4-e1/`, with screenshots after 295 s in `re/m4/t11/m4-e1/` | Task 11's first world run: `server.log` (trace), `gujianol.log`, `wine.log`, screenshots and the watchdog's log |
+| M4E1 | `re/runs/out/m4-e1/`, with screenshots after 295 s in `re/m4/t11/m4-e1/` | Task 11's first world run (§13): `server.log` (trace), `gujianol.log`, `wine.log`, screenshots and the watchdog's log |
+| M4E2–M4E4 | `re/runs/out/m4-e2/` to `m4-e4/`, with screenshots in `re/m4/t11/m4-e2/` to `m4-e4/` | The same for runs m4-e2 to m4-e4 |
+| M4R | `re/m4/t11/runs.md` | The runs' predictions, written before each run, and their outcomes |
 
 ### REA Evidence IDs
 

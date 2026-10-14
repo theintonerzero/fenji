@@ -4,12 +4,20 @@
 //! Only the face string's value digits are ours, a running counter with the same sections, item
 //! counts and digit counts, since the real ones may hold the client's built-in presets (plan
 //! Amendment A). Nothing in it is machine data, and the name is ours.
+//!
+//! Beside it, run m4-e1's first time sync (type 2) and its type 3 (M4 world plan Task 11), as the
+//! server's trace log showed them. The log masks the bytes that describe the player's machine
+//! (world.md 3.2, 7.2), so they are zero here: type 2's two counters, and type 3's Windows version
+//! and parent-process flag.
 mod common;
 
 use common::*;
 use fenji_proto::lobby::{self, CreateRequest};
+use fenji_proto::opcode::{Cts, Stc};
 use fenji_proto::packet::Up;
-use fenji_proto::pickle::Value;
+use fenji_proto::pickle::{self, Value};
+use fenji_proto::world;
+use fenji_server::clock::Clock;
 use fenji_server::server::GateLimits;
 
 fn fixture() -> Vec<u8> {
@@ -144,5 +152,83 @@ async fn the_real_create_request_makes_a_character_the_list_shows() {
         field(listed, "prop_sys_avatar_feature_face"),
         Some(&fixture_face())
     );
+    s.shutdown().await;
+}
+
+/// A fixture's bytes, from its hex.
+fn hex_fixture(text: &str) -> Vec<u8> {
+    let hex: String = text.split_whitespace().collect();
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+fn time_sync_fixture() -> Vec<u8> {
+    hex_fixture(include_str!("fixtures/m4-e1-time-sync.hex"))
+}
+
+fn client_enter_fixture() -> Vec<u8> {
+    hex_fixture(include_str!("fixtures/m4-e1-client-enter.hex"))
+}
+
+/// The client's clock in m4-e1's first time sync: the low 32 bits of its Unix time in ms at
+/// 01:13:21.781 UTC, which the server's receipt matched to the millisecond (world.md 7.2).
+const M4E1_CLOCK: u32 = 0x37f8_9a75;
+
+#[test]
+fn the_real_world_bodies_fit_their_layouts() {
+    let sync = time_sync_fixture();
+    assert_eq!(sync.len(), world::TIME_SYNC_LEN);
+    assert_eq!(world::time_sync_request(&sync), Ok(M4E1_CLOCK));
+    assert_eq!(sync[4], 1, "the byte 1 after the clock");
+    let enter = client_enter_fixture();
+    assert_eq!(world::client_enter(&enter), Ok(()));
+    assert_eq!(enter[0], 1, "type 3's constant first byte (world.md §3)");
+    assert!(
+        enter[1..].iter().all(|b| *b == 0),
+        "zeros, and the masked bytes"
+    );
+}
+
+#[tokio::test]
+async fn the_real_bodies_carry_a_character_into_the_world() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, clock) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    let t = ticket(&s, "tester").await;
+    let mut bot = Bot::connect(s.login_addr, payload(&t, "tester", true)).await;
+    bot.expect_work().await;
+    bot.send_raw(&fixture()).await;
+    let (id, args) = bot.recv().await;
+    assert_eq!(id, lobby::ROLE_CREATE);
+    let Value::Table(actor) = &args[0] else {
+        panic!("{args:?}")
+    };
+    let pid = pid_of(actor);
+    bot.send(lobby::SELECT_ACTOR, &[Value::Int(pid)]).await;
+    let m = bot.recv_message().await;
+    assert_eq!(
+        pickle::decode(&m.body).unwrap()[..2],
+        [Value::Int(world::LOAD_SCENE), Value::Int(pid)]
+    );
+    bot.send_native(Cts::TimeSync.to_u8(), &time_sync_fixture())
+        .await;
+    let reply = bot.recv_message().await;
+    let now = u64::try_from(clock.now_ms()).unwrap();
+    assert_eq!(
+        (reply.ty, reply.body),
+        (
+            Stc::TimeSync.to_u8(),
+            world::time_sync_reply(M4E1_CLOCK, now).to_vec()
+        )
+    );
+    bot.send_native(Cts::ClientEnter.to_u8(), &client_enter_fixture())
+        .await;
+    for want in [Stc::SyncEnter, Stc::SyncEnterFinish] {
+        let m = bot.recv_message().await;
+        assert_eq!(m.ty, want.to_u8());
+        assert_eq!(m.body[..8], pid.to_le_bytes());
+    }
     s.shutdown().await;
 }

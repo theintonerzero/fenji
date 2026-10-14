@@ -1,9 +1,9 @@
 //! The lobby (M3 spec D8–D11; docs/protocol/packets/lobby.md). It lists, creates and deletes
-//! against the store, refuses `SelectActor` until M4, and ignores the rest: 402, 370, 496 and 321
-//! need no answer. The gate closes the connection on 392 (`CLIENT_EXIT`) before it gets here.
-//! Every 292 gets a 228, every 304 a 628 or a 270, and every 166 an 84 or a 270, because the
-//! client's screens wait for them (lobby.md §6–§7). Replies are built by `fenji_proto::lobby`,
-//! whose `script_body` refuses `NEVER_SEND`.
+//! against the store, and ignores the rest: 402, 370, 496 and 321 need no answer. The gate takes
+//! 392 (`CLIENT_EXIT`), which closes the connection, and 10 (`SELECT_ACTOR`), which enters the
+//! world, before they get here. Every 292 gets a 228, every 304 a 628 or a 270, and every 166 an
+//! 84 or a 270, because the client's screens wait for them (lobby.md §6–§7). Replies are built by
+//! `fenji_proto::lobby`, whose `script_body` refuses `NEVER_SEND`.
 use fenji_proto::lobby::{self, AccountExtras, Actor, Appearance, CreateRequest, code};
 use fenji_proto::pickle::{self, Table, Value};
 use fenji_store::{Account, Character, NewCharacter, Store};
@@ -20,11 +20,18 @@ impl LobbyLimits {
     }
 }
 
+/// A character's appearance as the store keeps it: the pickle of one table (M3 spec D8). `None`
+/// when it doesn't decode.
+pub(crate) fn stored_appearance(stored: &[u8]) -> Option<Appearance> {
+    match pickle::decode(stored).ok()?.pop() {
+        Some(Value::Table(t)) => Some(Appearance::from_table(&t)),
+        _ => None,
+    }
+}
+
 fn actor(c: &Character) -> Actor {
-    let appearance = match pickle::decode(&c.appearance).ok().and_then(|mut v| v.pop()) {
-        Some(Value::Table(t)) => Appearance::from_table(&t),
-        _ => Appearance::from_table(&Table::default()),
-    };
+    let appearance = stored_appearance(&c.appearance)
+        .unwrap_or_else(|| Appearance::from_table(&Table::default()));
     Actor {
         pid: c.pid,
         name: c.name.clone(),
@@ -36,7 +43,7 @@ fn actor(c: &Character) -> Actor {
 }
 
 /// A pid as the client sends it back: an integer, or a float with no fraction.
-fn pid(v: Option<&Value>) -> Option<i64> {
+pub(crate) fn pid(v: Option<&Value>) -> Option<i64> {
     match v? {
         Value::Int(i) => Some(*i),
         Value::Float(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Some(*f as i64),
@@ -57,7 +64,6 @@ pub async fn handle(
         lobby::QUERY_ACTORS => list(store, limits, account).await,
         lobby::CREATE_ACTOR => create(store, limits, account, now, args).await,
         lobby::DELETE_ACTOR => delete(store, account, args).await,
-        lobby::SELECT_ACTOR => Ok(vec![lobby::error_code(code::SERVER_NOT_RUNNING)]),
         other => {
             tracing::debug!(id = other, "script message ignored");
             Ok(Vec::new())
@@ -358,7 +364,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ignored_ids_get_no_answer_and_select_gets_not_running() {
+    async fn ignored_ids_get_no_answer() {
+        // 392 and 10 are the gate's: it closes on the one and enters the world on the other.
         let (_d, store, account) = setup().await;
         for id in [
             lobby::SERVER_LIST,
@@ -366,25 +373,34 @@ mod tests {
             lobby::GM_SCRIPTS,
             lobby::CHANGE_SLOT,
             lobby::CLIENT_EXIT,
+            lobby::SELECT_ACTOR,
             12_345,
         ] {
             assert!(
-                handle(&store, &NINE, &account, NOW, id, &[])
+                handle(&store, &NINE, &account, NOW, id, &[Value::Int(1)])
                     .await
                     .is_empty(),
                 "{id}"
             );
         }
-        let out = handle(
-            &store,
-            &NINE,
-            &account,
-            NOW,
-            lobby::SELECT_ACTOR,
-            &[Value::Int(1)],
-        )
-        .await;
-        assert_eq!(out, vec![lobby::error_code(code::SERVER_NOT_RUNNING)]);
+    }
+
+    #[test]
+    fn a_stored_appearance_reads_back_or_is_none() {
+        let a = Appearance {
+            voice: Some(3),
+            base_face: 1,
+            face: Some("v:5;".into()),
+            equips_id: 2,
+            portrait: 169 << 16,
+        };
+        let stored = pickle::encode(&[Value::Table(a.to_table())]).unwrap();
+        assert_eq!(stored_appearance(&stored), Some(a));
+        assert_eq!(stored_appearance(&[1, 2, 3]), None);
+        assert_eq!(
+            stored_appearance(&pickle::encode(&[Value::Int(1)]).unwrap()),
+            None
+        );
     }
 
     #[tokio::test]
