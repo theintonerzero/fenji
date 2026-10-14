@@ -213,11 +213,19 @@ impl RunningWorld {
     /// let everyone go (Ruling R9), or the world's saves have nowhere to go (Ruling R13).
     pub async fn ended(&mut self) -> &'static str {
         tokio::select! {
+            biased;
             // Nothing is sent: `changed` fails once the thread has dropped its end.
             _ = self.ended.changed() => "the world's thread",
             done = &mut self.services, if self.services_ended.is_none() => {
+                let failed = done.is_err();
                 self.services_ended = Some(done);
-                "the world's services task"
+                // It returns only once the world has dropped its end of their channel, as the
+                // world's thread ends: that end is the one to report.
+                if failed {
+                    "the world's services task"
+                } else {
+                    "the world's thread"
+                }
             }
         }
     }
@@ -241,14 +249,13 @@ impl RunningWorld {
             }
         };
         let saved = match self.services_ended {
-            // Every save since it ended went nowhere, however it ended.
-            Some(done) => {
-                let how = done
-                    .err()
-                    .map_or_else(|| "it returned".into(), |e| e.to_string());
-                tracing::error!(how, "the world's services task ended before the world");
+            // It wrote what was queued, then returned once the world had dropped its end.
+            Some(Ok(())) => Ok(()),
+            // Every save since it failed went nowhere (Ruling R13).
+            Some(Err(e)) => {
+                tracing::error!(error = %e, "the world's services task failed before the world");
                 Err(anyhow!(
-                    "the world's services task ended before the world, and saves were lost: {how}"
+                    "the world's services task failed before the world, and saves were lost: {e}"
                 ))
             }
             None => Self::saved(self.services).await,
@@ -399,11 +406,14 @@ fn message(panic: &(dyn Any + Send)) -> String {
     }
 }
 
-/// Takes nothing more once the world has stopped. A join that came after the last tick hears the
-/// shutdown, as everyone in the world did (#219); the rest is dropped.
+/// Takes nothing more once the world has stopped: a link's later join fails to send, and it
+/// answers 270. A join that came before, after the last tick, hears the shutdown, as everyone in
+/// the world did (#219); the rest is dropped. Never call it from an async task: it blocks.
 fn turn_away(rx: &mut mpsc::UnboundedReceiver<WorldIn>) {
     rx.close();
-    while let Ok(msg) = rx.try_recv() {
+    // Once closed, this ends when every message sent before has been read, one that a sender was
+    // still writing included, so no join is left without an answer.
+    while let Some(msg) = rx.blocking_recv() {
         if let WorldIn::Join { out, .. } = msg {
             let _ = out.try_send(WorldOut::Kicked(KickReason::Shutdown));
         }
@@ -513,8 +523,21 @@ mod tests {
         tx.send(WorldIn::Panic("a bug in a tick")).unwrap();
         // Joining in the same tick, after the bug: it never got an actor.
         let (out, mut ren) = mpsc::channel(8);
-        let player = player(3, "Ren", at(3.0, 0.0));
-        tx.send(WorldIn::Join { player, out }).unwrap();
+        let ren_joins = player(3, "Ren", at(3.0, 0.0));
+        tx.send(WorldIn::Join {
+            player: ren_joins,
+            out,
+        })
+        .unwrap();
+        // A shutdown ends a tick's inputs, so Kai's join reaches the world after that tick.
+        tx.send(WorldIn::Shutdown).unwrap();
+        let (out, mut kai) = mpsc::channel(8);
+        let kai_joins = player(4, "Kai", at(4.0, 0.0));
+        tx.send(WorldIn::Join {
+            player: kai_joins,
+            out,
+        })
+        .unwrap();
         let (ended, log) = logged(|| run(core, rx, MS * 50, &Mutex::new(Stats::new(10))));
         assert_eq!(ended, Err("a bug in a tick".to_string()));
         assert!(
@@ -527,8 +550,10 @@ mod tests {
             assert_eq!(link.try_recv(), Ok(WorldOut::Kicked(KickReason::Shutdown)));
             assert!(link.try_recv().is_err(), "told once");
         }
-        assert_eq!(ren.try_recv(), Ok(WorldOut::Kicked(KickReason::Shutdown)));
-        assert!(ren.try_recv().is_err(), "told once");
+        for late in [&mut ren, &mut kai] {
+            assert_eq!(late.try_recv(), Ok(WorldOut::Kicked(KickReason::Shutdown)));
+            assert!(late.try_recv().is_err(), "told once");
+        }
         let mut saved = Vec::new();
         while let Ok(s) = saves.try_recv() {
             saved.push(s);
@@ -550,10 +575,34 @@ mod tests {
                 }
             ]
         );
-        assert!(
-            !WorldHandle(tx).send(WorldIn::Shutdown),
-            "the world takes nothing more"
-        );
+    }
+
+    #[tokio::test]
+    async fn a_join_after_a_panicking_tick_is_refused_or_hears_the_shutdown() {
+        // Ruling R9: once a tick has panicked, a link that joins either can't (the world's channel
+        // is closed, and it answers 270) or hears Kicked(Shutdown): never a world that took its
+        // join and let go of it without a word.
+        let mut world = world(rules());
+        let (out, mut lin) = mpsc::channel(8);
+        let lin_joins = player(1, "Lin", at(0.0, 0.0));
+        world.handle().send(WorldIn::Join {
+            player: lin_joins,
+            out,
+        });
+        assert!(matches!(told(&mut lin).await, WorldOut::LoadScene { .. }));
+        world.handle().send(WorldIn::Panic("a bug in a tick"));
+        assert_eq!(told(&mut lin).await, WorldOut::Kicked(KickReason::Shutdown));
+        let (out, mut mai) = mpsc::channel(8);
+        let mai_joins = player(2, "Mai", at(0.0, 0.0));
+        if world.handle().send(WorldIn::Join {
+            player: mai_joins,
+            out,
+        }) {
+            assert_eq!(told(&mut mai).await, WorldOut::Kicked(KickReason::Shutdown));
+        }
+        let ended = tokio::time::timeout(Duration::from_secs(5), world.ended()).await;
+        assert_eq!(ended, Ok("the world's thread"));
+        assert!(world.stop().await.is_err());
     }
 
     #[tokio::test]
