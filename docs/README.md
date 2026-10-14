@@ -9,6 +9,9 @@
 | [`superpowers/specs/2026-10-13-m4-social-sandbox-design.md`](superpowers/specs/2026-10-13-m4-social-sandbox-design.md) | M4 design: its three pieces in order (the world, hosting, the desktop launcher) and what they share. Each piece gets its own spec. |
 | [`superpowers/specs/2026-10-13-m4-world-design.md`](superpowers/specs/2026-10-13-m4-world-design.md) | M4, part 1, the world: entering one shared scene, seeing each other, movement, chat, admin commands, and how the work runs. |
 | [`superpowers/plans/2026-10-13-m4-world.md`](superpowers/plans/2026-10-13-m4-world.md) | The world's implementation plan: the cloud tasks, whose code was compiled and tested before the plan was written; the local readings and runs; and the amendments they add. |
+| [`superpowers/specs/2026-10-14-m4-hosting-design.md`](superpowers/specs/2026-10-14-m4-hosting-design.md) | M4, part 2, hosting: the host console, maintenance mode, server facts, TLS without a domain, backups, release archives and the write-up for hosts. |
+| [`superpowers/specs/2026-10-14-oodle-decoder-design.md`](superpowers/specs/2026-10-14-oodle-decoder-design.md) | The open Oodle decoder: `fenji-oodle`, a safe Rust port of `ooz`'s Kraken decoder (GPL-3.0-or-later), and how Fenji's tools read the game's archives with it. |
+| [`superpowers/plans/2026-10-14-oodle-decoder.md`](superpowers/plans/2026-10-14-oodle-decoder.md) | The Oodle decoder's implementation plan. |
 | `superpowers/plans/` | One implementation plan per milestone (M0–M5), or per piece where a milestone's spec splits it (M4), written before that work starts. |
 | [`development.md`](development.md) | Machine setup (macOS/Linux), branches, Conventional Commits, SemVer, changelog, releases. |
 | [`re/README.md`](re/README.md) | Reverse-engineering workflow: pinned build, analysis setup, sandboxed client runs, what may be committed. |
