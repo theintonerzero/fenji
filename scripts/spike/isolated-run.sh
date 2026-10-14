@@ -133,7 +133,8 @@
 # With --gpu (the owner's choice for client runs, 2026-10-15, #266), each of the host's render
 # nodes goes inside with its device's sysfs directory, read-only, and its /sys/dev/char link:
 # nothing else of /sys, no card node (modesetting and the display stay out) and still no DRI3, so
-# frames reach the nested display through X as before. COMMAND can then submit work to the GPU
+# frames reach the nested display through X as before: a hardware Vulkan driver presents through
+# DRI3, so set MESA_VK_WSI_DEBUG=sw inside, which copies each frame over X (run-client.sh does). COMMAND can then submit work to the GPU
 # through its kernel driver's render interface, which widens what a bug in that driver exposes. It
 # opens no network, no host file and no display. --gpu is refused (exit 2) unless /dev/dri has a
 # render node (DRM major 226, minor 128 and up) whose /sys/dev/char link leads to a device's

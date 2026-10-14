@@ -134,7 +134,7 @@ for g in 1 ""; do
     record_inputs -x 1 > /dev/null 2>&1
     if [ -n "$g" ]; then
       grep -q '^sandbox: isolated-run.sh .* --cpu-topology --gpu ' "$OUT/inputs.txt" &&
-        grep -qx 'rendering: the host GPU, through its render node (DXVK picks it)' "$OUT/inputs.txt"
+        grep -qx 'rendering: the host GPU, through its render node (DXVK picks it), frames copied to the display (MESA_VK_WSI_DEBUG=sw)' "$OUT/inputs.txt"
     else
       ! grep -q -- '--gpu' "$OUT/inputs.txt" &&
         grep -qx 'rendering: lavapipe, in software (--no-gpu)' "$OUT/inputs.txt"

@@ -87,10 +87,16 @@ PROTON="${FENJI_GE_PROTON:-$HOME/.local/share/fenji/tools/$GE_PROTON_VERSION}"
 STUBBIN="$REPO/target/release"
 LAVAPIPE=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 
-# renderer: sets the caller's wgpu and vkenv arrays from its gpu: the sandbox's --gpu, or
-# lavapipe's ICD for Vulkan (#266).
+# renderer: sets the caller's wgpu and vkenv arrays from its gpu (#266): the sandbox's --gpu, with
+# Mesa's CPU-copy presentation (MESA_VK_WSI_DEBUG=sw), since a hardware driver presents through
+# DRI3, which the nested display doesn't offer, and the client loses its X connection at its first
+# frame without it; or lavapipe's ICD for Vulkan.
 renderer() {
-  if [ -n "${gpu-}" ]; then wgpu=(--gpu) vkenv=(); else wgpu=() vkenv=(VK_ICD_FILENAMES="$LAVAPIPE"); fi
+  if [ -n "${gpu-}" ]; then
+    wgpu=(--gpu) vkenv=(MESA_VK_WSI_DEBUG=sw)
+  else
+    wgpu=() vkenv=(VK_ICD_FILENAMES="$LAVAPIPE")
+  fi
 }
 CHANNELS_DEFAULT=+timestamp,+pid,+tid,+threadname,+seh,+debugstr,+loaddll,+winsock,+module,+process,+service,+profile,warn+file
 # What the watchdog's log rules read: line headers, process creation, module loads, resource lookups
@@ -262,7 +268,7 @@ record_inputs() {
   echo "GE-Proton: $PROTON"
   echo "sandbox: isolated-run.sh --no-root --x11 $display${display2:+ --x11 $display2} --cpu-topology${gpu:+ --gpu} (sha256 $(sha256sum "$WRAP" | cut -c1-16)…)"
   if [ -n "${gpu-}" ]; then
-    echo "rendering: the host GPU, through its render node (DXVK picks it)"
+    echo "rendering: the host GPU, through its render node (DXVK picks it), frames copied to the display (MESA_VK_WSI_DEBUG=sw)"
   else
     echo "rendering: lavapipe, in software (--no-gpu)"
   fi
