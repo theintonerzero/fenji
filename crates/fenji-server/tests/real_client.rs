@@ -13,9 +13,15 @@
 //! And run m4-s4's two type-5 bodies (Task 13), from client 1, whose player Lin saw Mai (pid 2):
 //! its pull of Mai and its sync filter's 32 for her, as the trace log showed them, with byte 17,
 //! which describes the player's machine (world.md 14.4), zero.
+//!
+//! And run t16-c1's five 115s (Task 16), from a build for that run alone that logged their bodies
+//! (chat.md §7): Lin's nearby line, Mai's world line, Mai's whisper to Lin typed with `/w Lin `,
+//! Lin's whisper to Mai set by clicking his name, and Mai's team line. Their texts are ours, and
+//! nothing in a 115 describes the player's machine.
 mod common;
 
 use common::*;
+use fenji_proto::chat::{self, Channel, Target, Transmit};
 use fenji_proto::lobby::{self, CreateRequest};
 use fenji_proto::opcode::{Cts, Stc};
 use fenji_proto::packet::Up;
@@ -347,5 +353,149 @@ async fn the_real_pull_brings_the_other_player_and_the_real_32_nothing() {
     lin.send_native(Cts::TimeSync.to_u8(), &time_sync_fixture())
         .await;
     assert_eq!(lin.recv_message().await.ty, Stc::TimeSync.to_u8());
+    s.shutdown().await.unwrap();
+}
+
+/// The five 115s of run t16-c1, in the order they came: each as `net_manager_send` sent it.
+fn t16_lines() -> [Vec<u8>; 5] {
+    [
+        hex_fixture(include_str!("fixtures/t16-c1-nearby.hex")),
+        hex_fixture(include_str!("fixtures/t16-c1-world.hex")),
+        hex_fixture(include_str!("fixtures/t16-c1-whisper-typed.hex")),
+        hex_fixture(include_str!("fixtures/t16-c1-whisper-clicked.hex")),
+        hex_fixture(include_str!("fixtures/t16-c1-team.hex")),
+    ]
+}
+
+/// A 115's arguments, after its id, as the link reads them from a type-0 script message.
+fn transmit_args(body: &[u8]) -> Vec<Value> {
+    match Up::decode(Cts::Script.to_u8(), body).unwrap() {
+        Up::Script {
+            id: Value::Int(chat::CHAT_TRANSMIT),
+            args,
+            ..
+        } => args,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_real_lines_parse_as_the_run_recorded() {
+    let [nearby, world_line, typed, clicked, team] = t16_lines();
+    let line = |channel, text: &str, to| {
+        Ok(Transmit {
+            channel,
+            text: text.into(),
+            to,
+        })
+    };
+    // Four values, the nil `extra` included (chat.md 1.2), on every channel but a whisper's.
+    for body in [&nearby, &world_line, &team] {
+        let args = transmit_args(body);
+        assert_eq!(args.len(), 3, "{args:?}");
+        assert_eq!(args[2], Value::Nil);
+    }
+    assert_eq!(
+        chat::parse_transmit(&transmit_args(&nearby)),
+        line(Channel::Nearby, "hello from Lin", None)
+    );
+    assert_eq!(
+        chat::parse_transmit(&transmit_args(&world_line)),
+        line(Channel::World, "hi world from Mai", None)
+    );
+    // A whisper's `extra` is a table, so its header counts one (payloads.md P.7): typed, a name
+    // with the client's server name; clicked, the pid too (chat.md 1.4).
+    for body in [&typed, &clicked] {
+        assert_eq!(body[..4], [0x84, 0, 0, 1]);
+    }
+    assert_eq!(
+        chat::parse_transmit(&transmit_args(&typed)),
+        line(
+            Channel::Whisper,
+            "psst Lin from Mai",
+            Some(Target::Name("Lin@Unknown".into()))
+        )
+    );
+    assert_eq!(
+        chat::parse_transmit(&transmit_args(&clicked)),
+        line(Channel::Whisper, "psst Mai from Lin", Some(Target::Pid(2)))
+    );
+    assert_eq!(
+        chat::parse_transmit(&transmit_args(&team)),
+        Err(chat::Refusal::Channel)
+    );
+}
+
+/// The next message is a 378: its channel, sender, content and receiver.
+async fn heard(bot: &mut Bot) -> (i64, Value, Value, Value) {
+    let m = bot.recv_message().await;
+    assert_eq!(m.ty, Stc::Script.to_u8());
+    let v = pickle::decode(&m.body).unwrap();
+    assert_eq!(v[0], Value::Int(chat::SYS_CHAT_MESSAGE), "{v:?}");
+    let Value::Int(channel) = v[1] else {
+        panic!("{v:?}")
+    };
+    (channel, v[2].clone(), v[3].clone(), v[4].clone())
+}
+
+fn link(pid: i64, name: &str, vocation: i64) -> Value {
+    let link = chat::player_link(&chat::Player {
+        pid,
+        name,
+        vocation,
+    });
+    Value::Str(link.into_bytes())
+}
+
+fn text(x: &str) -> Value {
+    Value::Str(x.as_bytes().to_vec())
+}
+
+#[tokio::test]
+async fn the_real_lines_reach_whom_they_reached_in_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), "", GateLimits::default()).await;
+    // As in t16-c1: Lin (pid 1, a Fox Mage) and Mai (pid 2, a Spellsword), side by side.
+    let (mut lin, lin_pid) = in_the_world(&s, "tester", "Lin", 7, 3).await;
+    let (mut mai, mai_pid) = in_the_world(&s, "second", "Mai", 2, 1).await;
+    assert_eq!((lin_pid, mai_pid), (1, 2));
+    for (bot, other) in [(&mut lin, mai_pid), (&mut mai, lin_pid)] {
+        let six = bot.recv_message().await;
+        assert_eq!(six.ty, Stc::SyncIdEnter.to_u8());
+        assert_eq!(six.body[..8], other.to_le_bytes());
+    }
+    let [nearby, world_line, typed, clicked, team] = t16_lines();
+    let (lin_link, mai_link) = (link(1, "Lin", 7), link(2, "Mai", 2));
+    let say = Cts::Script.to_u8();
+    lin.send_native(say, &nearby).await;
+    let hi = (0, lin_link.clone(), text("hello from Lin"), text(""));
+    assert_eq!(heard(&mut lin).await, hi);
+    assert_eq!(heard(&mut mai).await, hi);
+    mai.send_native(say, &world_line).await;
+    let all = (5, mai_link.clone(), text("hi world from Mai"), text(""));
+    assert_eq!(heard(&mut lin).await, all);
+    assert_eq!(heard(&mut mai).await, all);
+    mai.send_native(say, &typed).await;
+    let psst = (
+        1,
+        mai_link.clone(),
+        text("psst Lin from Mai"),
+        lin_link.clone(),
+    );
+    assert_eq!(heard(&mut lin).await, psst);
+    assert_eq!(heard(&mut mai).await, psst);
+    lin.send_native(say, &clicked).await;
+    let back = (1, lin_link, text("psst Mai from Lin"), mai_link);
+    assert_eq!(heard(&mut mai).await, back);
+    assert_eq!(heard(&mut lin).await, back);
+    mai.send_native(say, &team).await;
+    assert_eq!(
+        mai.recv().await,
+        (
+            lobby::ERROR_CODE,
+            vec![Value::Int(chat::code::CHAT_INVALID_CHANNEL)]
+        )
+    );
+    lin.quiet(300).await;
     s.shutdown().await.unwrap();
 }
