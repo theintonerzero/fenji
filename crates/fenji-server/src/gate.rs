@@ -20,8 +20,8 @@ use fenji_proto::variant::AES128;
 use fenji_store::{Account, Character};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
-use tokio::task::JoinSet;
+use tokio::sync::{oneshot, watch};
+use tokio::task::{JoinError, JoinSet};
 
 use crate::accounts::Accounts;
 use crate::clock::Clock;
@@ -103,6 +103,14 @@ impl GateLimits {
             ..Self::default()
         }
     }
+
+    /// How long a stopping server gives its connections to end (#219): a player in the world
+    /// writes its close within the write deadline, then lingers for its client to read it, and a
+    /// second more covers the world's last tick (`tick_hz` is at least 1). Connections left after
+    /// it are ended.
+    pub fn grace(&self) -> Duration {
+        self.write_deadline + self.linger + Duration::from_secs(1)
+    }
 }
 
 /// What every connection shares.
@@ -119,6 +127,19 @@ pub(crate) struct Gate {
     pub start: Location,
     /// `[access].admins`, lower-cased: names are compared without regard to ASCII case.
     pub admins: Vec<String>,
+    /// True once the server is stopping: the listener stops accepting, and connections before
+    /// their auth or in the lobby end at once. Players in the world end when the world lets go of
+    /// them (#219).
+    pub stopping: watch::Sender<bool>,
+}
+
+impl Gate {
+    /// Resolves once the server is stopping.
+    pub async fn stopped(&self) {
+        let mut stopping = self.stopping.subscribe();
+        // The sender lives as long as the gate, so this ends only when the value turns true.
+        let _ = stopping.wait_for(|s| *s).await;
+    }
 }
 
 /// The places for connections waiting for their auth (M3 spec D17): at most `total`, and at most
@@ -194,12 +215,14 @@ fn network(addr: IpAddr) -> IpAddr {
     }
 }
 
-/// Accepts connections until aborted. Connections live in a `JoinSet` this task owns, so aborting
-/// it ends them all; finished ones are reaped as they end.
-pub(crate) async fn accept_loop(listener: TcpListener, gate: Arc<Gate>) {
+/// Accepts connections until the server is stopping, then closes the listener and returns the
+/// connections still open, for [`finish`]. Connections live in a `JoinSet`, so dropping it ends
+/// them all; finished ones are reaped as they end.
+pub(crate) async fn accept_loop(listener: TcpListener, gate: Arc<Gate>) -> JoinSet<()> {
     let mut conns = JoinSet::new();
     loop {
         tokio::select! {
+            () = gate.stopped() => return conns,
             accepted = listener.accept() => match accepted {
                 Ok((sock, peer)) => {
                     let _ = sock.set_nodelay(true);
@@ -211,14 +234,33 @@ pub(crate) async fn accept_loop(listener: TcpListener, gate: Arc<Gate>) {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             },
-            Some(done) = conns.join_next(), if !conns.is_empty() => {
-                if let Err(e) = done
-                    && e.is_panic()
-                {
-                    tracing::error!("a connection task panicked");
-                }
-            }
+            Some(done) = conns.join_next(), if !conns.is_empty() => reap(done),
         }
+    }
+}
+
+/// Waits up to `grace` for the connections a stopping server still has to end, then ends the rest
+/// (#219).
+pub(crate) async fn finish(mut conns: JoinSet<()>, grace: Duration) {
+    let all = async {
+        while let Some(done) = conns.join_next().await {
+            reap(done);
+        }
+    };
+    if tokio::time::timeout(grace, all).await.is_err() {
+        tracing::warn!(
+            open = conns.len(),
+            "connections still open after the shutdown's grace: ending them"
+        );
+        conns.shutdown().await;
+    }
+}
+
+fn reap(done: Result<(), JoinError>) {
+    if let Err(e) = done
+        && e.is_panic()
+    {
+        tracing::error!("a connection task panicked");
     }
 }
 
@@ -247,9 +289,12 @@ async fn serve(
     let (mut server, hello) = Server::start(fill, variants)?;
     sock.write_all(&hello).await?;
     let deadline = gate.limits.auth_deadline;
-    let auth = match tokio::time::timeout(deadline, read_auth(sock, &mut server)).await {
-        Ok(auth) => auth?,
-        Err(_) => bail!("no auth within {deadline:?}"),
+    let auth = tokio::select! {
+        auth = tokio::time::timeout(deadline, read_auth(sock, &mut server)) => match auth {
+            Ok(auth) => auth?,
+            Err(_) => bail!("no auth within {deadline:?}"),
+        },
+        () = gate.stopped() => return Ok(()),
     };
     let Some(auth) = auth else {
         return Ok(());
@@ -470,6 +515,12 @@ async fn lobby_loop(
                 close_replaced(sock, &bytes, place, gate.limits.linger).await;
                 return Ok(());
             }
+            // Closed at once and without a reason, as the shutdown always closed the lobby:
+            // lobby.md 9.5 gives none for a stopping server.
+            () = gate.stopped() => {
+                tracing::info!(%peer, account = %account.username, "the server is stopping: closing");
+                return Ok(());
+            }
         }
     }
 }
@@ -643,6 +694,45 @@ mod tests {
             .expect("gave way at once, not at the 30 s deadline")
             .unwrap();
         assert!(!sent);
+    }
+
+    #[tokio::test]
+    async fn a_stopping_server_waits_out_its_grace_then_ends_the_connections_left() {
+        // #219: connections get the grace to write their closes, and no more.
+        let mut conns = JoinSet::new();
+        let (held, never) = oneshot::channel::<()>();
+        conns.spawn(async move {
+            let _ = never.await;
+        });
+        let (quick, done) = oneshot::channel::<()>();
+        conns.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = quick.send(());
+        });
+        let began = std::time::Instant::now();
+        finish(conns, Duration::from_millis(300)).await;
+        let took = began.elapsed();
+        assert!(took >= Duration::from_millis(300), "{took:?}");
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        assert_eq!(done.await, Ok(()), "a connection that ends in time ends");
+        assert!(held.is_closed(), "the one left was ended");
+        // With nothing left open, it doesn't wait for the grace.
+        let mut conns = JoinSet::new();
+        conns.spawn(async {});
+        let began = std::time::Instant::now();
+        finish(conns, Duration::from_secs(30)).await;
+        assert!(began.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn the_shutdowns_grace_is_a_write_deadline_a_linger_and_a_tick() {
+        let limits = GateLimits {
+            write_deadline: Duration::from_secs(3),
+            linger: Duration::from_millis(300),
+            ..GateLimits::default()
+        };
+        assert_eq!(limits.grace(), Duration::from_millis(4_300));
+        assert_eq!(GateLimits::default().grace(), Duration::from_secs(13));
     }
 
     #[tokio::test]

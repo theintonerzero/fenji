@@ -170,6 +170,18 @@ pub enum WorldIn {
     Leave { conn: ConnId },
     /// Save everyone and stop.
     Shutdown,
+    /// A bug: the tick that takes it panics with this message, as a tick with a bug would, for
+    /// the tests of Ruling R9. Built for tests only, so no connection can send it.
+    #[cfg(test)]
+    Panic(&'static str),
+    /// A slow tick: the tick that takes it says so on `begun`, then works for `work`, so that a
+    /// test knows what the tick after it takes (Ruling R10), or holds a tick that hangs. Built for
+    /// tests only, so no connection can send it.
+    #[cfg(test)]
+    Stall {
+        work: std::time::Duration,
+        begun: tokio::sync::oneshot::Sender<()>,
+    },
 }
 
 /// What the world tells a connection task.

@@ -152,7 +152,7 @@ async fn the_real_create_request_makes_a_character_the_list_shows() {
         field(listed, "prop_sys_avatar_feature_face"),
         Some(&fixture_face())
     );
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 /// A fixture's bytes, from its hex.
@@ -230,5 +230,5 @@ async fn the_real_bodies_carry_a_character_into_the_world() {
         assert_eq!(m.ty, want.to_u8());
         assert_eq!(m.body[..8], pid.to_le_bytes());
     }
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }

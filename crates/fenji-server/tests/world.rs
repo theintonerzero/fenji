@@ -104,7 +104,7 @@ async fn a_player_enters_and_its_place_is_saved_when_it_leaves() {
     assert!(matches!(next(&mut rx).await, WorldOut::SelfEnter { pid, .. } if pid == c.pid));
     s.world().send(WorldIn::Leave { conn: 1 });
     assert_eq!(saved(s.accounts().store(), &c).await, SAVED);
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -125,7 +125,7 @@ async fn shutdown_saves_everyone_still_in_the_world() {
     });
     next(&mut rx).await;
     next(&mut rx2).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
     assert_eq!(next(&mut rx).await, WorldOut::Kicked(KickReason::Shutdown));
     let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
     for c in [&a, &b] {
@@ -147,7 +147,7 @@ async fn the_world_ticks_and_reports_its_tick_times() {
     let r = s.ticks();
     assert!(r.ticks >= 5, "{r:?}");
     assert!(r.p50 <= r.p99 && r.p99 <= r.max, "{r:?}");
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -188,7 +188,7 @@ async fn an_admins_invite_is_stored_and_its_link_comes_back() {
             .iter()
             .any(|i| i.label.as_deref() == Some("for Bob"))
     );
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -222,5 +222,5 @@ async fn an_invite_the_store_cant_make_gets_the_plain_answer_and_no_detail() {
             text: "the invite couldn't be made; the server's log says why".into()
         })
     );
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }

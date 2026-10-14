@@ -11,14 +11,25 @@ mod thread;
 pub mod types;
 
 pub use ecs::{Rules, WorldCore};
-pub use thread::{RunningWorld, SAVE_WAIT, TickReport, WorldHandle, start};
+pub use thread::{RunningWorld, SAVE_WAIT, THREAD_WAIT, TickReport, WorldHandle, start};
 pub use types::*;
 
 use crate::config::Config;
 
-/// The most messages a connection may send in one tick before it is kicked: far above what a
-/// client sends (a few moves, a pull for each player coming into view, a line of chat).
+/// The most messages a connection may send in one tick period before it is kicked: far above what
+/// a client sends (a few moves, a pull for each player coming into view, a line of chat).
 pub const MAX_INPUTS_PER_TICK: usize = 128;
+
+/// The longest stall between ticks whose inputs the flood check takes as spread over the periods
+/// it missed: a longer one counts as this long (#222). A stall is a gap the world's monotonic
+/// clock sees: its thread or process paused, or a VM paused while that clock runs on; a suspend of
+/// the host isn't one, since `Instant` doesn't advance through it.
+pub const MAX_STALL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long the world keeps where a character left. Its save is written off the tick, so a login
+/// that reads the store before it lands would come back at an older place (#222); a minute is far
+/// longer than a save takes.
+pub const KEEP_LEFT: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl Rules {
     pub fn from_config(cfg: &Config) -> Self {

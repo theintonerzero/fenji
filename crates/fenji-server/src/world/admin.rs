@@ -436,52 +436,10 @@ mod tests {
         assert_eq!(h.take(3), vec![announced("one"), announced("two")]);
     }
 
-    /// What this thread logs at info and above while `f` runs, as the server's log shows it. The
-    /// subscriber is the process's, set once: tracing caches whether a callsite is wanted for
-    /// every thread, so one thread's own subscriber can miss a callsite another thread saw first.
-    fn logged(f: impl FnOnce()) -> String {
-        use std::cell::RefCell;
-        use std::io;
-        use std::sync::Once;
-
-        thread_local! {
-            static CAUGHT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
-        }
-        struct ThisThread;
-        impl io::Write for ThisThread {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                CAUGHT.with_borrow_mut(|caught| {
-                    if let Some(caught) = caught {
-                        caught.extend_from_slice(buf);
-                    }
-                });
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        static SET: Once = Once::new();
-        SET.call_once(|| {
-            let subscriber = tracing_subscriber::fmt()
-                .with_writer(|| ThisThread)
-                .with_ansi(false)
-                .finish();
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("no other test sets the process's subscriber");
-        });
-        // A callsite first seen between the subscriber's registration and its setting is wanted.
-        tracing::callsite::rebuild_interest_cache();
-        CAUGHT.with_borrow_mut(|caught| *caught = Some(Vec::new()));
-        f();
-        let bytes = CAUGHT.with_borrow_mut(Option::take).unwrap_or_default();
-        String::from_utf8(bytes).unwrap()
-    }
-
     #[test]
     fn each_command_run_is_logged_with_its_account_and_arguments() {
         let mut h = admins_world();
-        let log = logged(|| {
+        let ((), log) = logged(|| {
             h.push(bang(1, "!kick Mai"));
             h.push(bang(1, "!give sword"));
             h.push(bang(1, "!announce Restart at 20:00"));

@@ -34,7 +34,7 @@ async fn login_list_create_restart_list_delete() {
     };
     let pid = field(actor, "pid").cloned().unwrap();
     assert_eq!(field(actor, "slot"), Some(&Value::Int(1)));
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
     let t = ticket(&s, "tester").await;
@@ -60,7 +60,7 @@ async fn login_list_create_restart_list_delete() {
     bot.send(lobby::QUERY_ACTORS, &[]).await;
     let (_, args) = bot.recv().await;
     assert_eq!(args[1], Value::Table(Table::default()));
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -77,7 +77,7 @@ async fn a_ticket_works_once_and_must_match_its_account() {
     let t2 = ticket(&s, "tester").await;
     let mut wrong = Bot::connect(s.login_addr, payload(&t2, "other", false)).await;
     assert_eq!(wrong.expect_rejected().await, AUTH_FAILED.as_bytes());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -97,7 +97,7 @@ async fn expired_mocked_and_garbage_tickets_are_refused() {
     assert_eq!(bot.expect_rejected().await, AUTH_FAILED.as_bytes());
     let mut bot = Bot::connect(s.login_addr, vec![0x01, 0x03, 0x07]).await;
     assert_eq!(bot.expect_rejected().await, AUTH_FAILED.as_bytes());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -131,7 +131,7 @@ async fn refusals_come_back_as_270() {
     bot.quiet(300).await;
     bot.send(lobby::QUERY_ACTORS, &[]).await;
     assert_eq!(bot.recv().await.0, lobby::ROLE_LIST);
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -153,7 +153,7 @@ async fn a_taken_name_is_refused_for_everyone() {
         b.recv().await,
         (lobby::ERROR_CODE, vec![Value::Int(code::ROLE_NAME_EXIST)])
     );
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -172,7 +172,7 @@ async fn oversized_appearance_is_refused_and_server_survives() {
     assert_eq!(bot.recv().await.0, lobby::ERROR_CODE);
     bot.send(lobby::QUERY_ACTORS, &[]).await;
     assert_eq!(bot.recv().await.0, lobby::ROLE_LIST);
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -201,7 +201,7 @@ async fn the_player_cap_and_a_second_login() {
     assert_eq!(b.expect_rejected().await, SERVER_FULL.as_bytes());
     a2.send(lobby::QUERY_ACTORS, &[]).await;
     assert_eq!(a2.recv().await.0, lobby::ROLE_LIST);
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -232,7 +232,7 @@ async fn a_player_who_leaves_frees_the_place() {
         }
     }
     assert!(joined, "the place was never freed");
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -254,7 +254,7 @@ async fn silent_connection_is_closed_after_the_deadline() {
         }
     }
     assert_eq!(got, 64, "only the hello");
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -271,7 +271,7 @@ async fn oversized_pre_auth_input_is_refused() {
         Ok(Ok(n)) => panic!("{n} bytes after the hello"),
         Err(_) => panic!("not closed past the cap"),
     }
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -300,7 +300,7 @@ async fn refused_connections_keep_their_waiting_place_until_they_close() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(freed, "the places never came back");
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -336,7 +336,7 @@ async fn replaced_connections_linger_only_within_the_waiting_places() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(freed, "the places never came back");
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -355,7 +355,7 @@ async fn client_exit_closes_the_connection() {
         matches!(end, Ok(None)),
         "392 didn't close the connection: {end:?}"
     );
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -369,7 +369,7 @@ async fn a_deleted_accounts_session_ends_at_its_next_message() {
     assert!(s.accounts().store().delete_account("tester").await.unwrap());
     bot.send(lobby::QUERY_ACTORS, &[]).await;
     assert_eq!(bot.expect_closed().await, AUTH_FAILED.as_bytes());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -387,7 +387,7 @@ async fn an_idle_client_is_closed() {
     // The bot's own reads give up only after 5 s, so an end within 2 s is the server's close.
     let end = tokio::time::timeout(Duration::from_secs(2), bot.next()).await;
     assert!(matches!(end, Ok(None)), "not closed when idle: {end:?}");
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -435,7 +435,7 @@ async fn a_client_that_stops_reading_is_closed() {
     }
     assert!(joined, "the stuck connection kept its place");
     drop(a);
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -447,7 +447,7 @@ async fn a_store_failure_refuses_with_the_server_error_key() {
     s.accounts().store().close().await;
     let mut bot = Bot::connect(s.login_addr, payload(&t, "tester", false)).await;
     assert_eq!(bot.expect_rejected().await, SERVER_ERROR.as_bytes());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 /// Reads the 64-byte hello, or `None` when the server closes first.
@@ -487,7 +487,7 @@ async fn one_network_cannot_take_every_waiting_place() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(freed, "the address's place never came back");
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -519,7 +519,7 @@ async fn at_most_64_connections_wait_for_their_auth() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(freed, "a place never came back");
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -535,5 +535,5 @@ async fn the_server_info_names_the_bound_gate_port() {
     let body = text.split("\r\n\r\n").nth(1).unwrap();
     let info: serde_json::Value = serde_json::from_str(body).unwrap();
     assert_eq!(info["gate_port"], u64::from(s.login_addr.port()));
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }

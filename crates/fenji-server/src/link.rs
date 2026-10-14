@@ -450,6 +450,7 @@ mod tests {
             world,
             start: START,
             admins: vec!["boss".into()],
+            stopping: tokio::sync::watch::Sender::new(false),
         };
         (gate, inbox)
     }

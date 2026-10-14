@@ -10,9 +10,10 @@ use fenji_proto::opcode::{Cts, Stc};
 use fenji_proto::pickle::{self, Value};
 use fenji_proto::world::{self, BlobValue};
 use fenji_server::clock::Clock;
-use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN};
+use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN, SERVER_STOPPING};
 use fenji_server::server::{GateLimits, RunningServer};
 use fenji_store::{Place, Store};
+use tokio::net::TcpStream;
 
 /// `[world]` for these tests: a start apart from the defaults, so a test can tell them apart.
 const WORLD: &str = "[world]\nstart_scene = 7\nstart_position = [100.0, -200.0, 300.0, 90.0]\n";
@@ -116,7 +117,7 @@ async fn selecting_a_character_loads_its_scene_and_the_load_brings_it_in() {
     bot.send_native(Cts::TimeSync.to_u8(), &time_sync(0xABCE))
         .await;
     assert_eq!(bot.recv_message().await.ty, Stc::TimeSync.to_u8());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -136,7 +137,7 @@ async fn select_actor_answers_load_scene() {
     let args = select(&mut bot, pid).await;
     assert_eq!(args, load_scene(pid, 12, [-1.5, 2.25, 30.0, -45.0]));
     assert_eq!(args[3], Value::Int(world::PROPS_VERSION));
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -158,7 +159,7 @@ async fn selecting_another_accounts_character_is_refused() {
     // Still in the lobby.
     b.send(lobby::QUERY_ACTORS, &[]).await;
     assert_eq!(b.recv().await.0, lobby::ROLE_LIST);
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -181,7 +182,7 @@ async fn type_2_is_answered_at_once() {
     // A body that isn't 13 bytes is dropped, and the connection stays.
     bot.send_native(Cts::TimeSync.to_u8(), &[1, 2, 3]).await;
     bot.quiet(300).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -230,7 +231,7 @@ async fn client_enter_brings_7_and_8_in_order() {
     bot.send_native(Cts::ClientEnter.to_u8(), &CLIENT_ENTER)
         .await;
     bot.quiet(300).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -245,7 +246,7 @@ async fn a_short_client_enter_closes() {
     let end = tokio::time::timeout(Duration::from_secs(2), bot.next()).await;
     assert!(matches!(end, Ok(None)), "{end:?}");
     saved_at(s.accounts().store(), "tester", pid, START_PLACE).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -280,7 +281,7 @@ async fn exit_and_leave_end_the_session() {
         assert!(matches!(end, Ok(None)), "{name}: {end:?}");
         saved_at(store, name, pid, START_PLACE).await;
     }
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -309,7 +310,7 @@ async fn later_world_messages_are_dropped() {
     a.quiet(300).await;
     a.send_native(Cts::TimeSync.to_u8(), &time_sync(8)).await;
     assert_eq!(a.recv_message().await.ty, Stc::TimeSync.to_u8());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -320,7 +321,7 @@ async fn a_connection_closed_while_loading_leaves_and_its_place_is_saved() {
     select(&mut bot, pid).await;
     drop(bot);
     saved_at(s.accounts().store(), "tester", pid, START_PLACE).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -352,7 +353,9 @@ async fn a_second_login_in_the_world_comes_back_where_it_stood() {
         "where it stood, not the store's older copy"
     );
     enter(&mut second, pid).await;
-    s.shutdown().await;
+    // Both clients close, so neither keeps the shutdown waiting out its 10 s linger.
+    drop((first, second));
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -386,7 +389,7 @@ async fn a_client_that_stops_reading_in_the_world_is_closed() {
         "the server closed the connection"
     );
     saved_at(s.accounts().store(), "tester", pid, START_PLACE).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -416,7 +419,60 @@ async fn a_deleted_account_is_closed_in_the_world() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(store.character(id, pid).await.unwrap(), None);
     assert!(store.list_accounts().await.unwrap().is_empty());
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stopping_server_closes_players_in_the_world_with_server_not_running() {
+    // #219: the world lets everyone go with the shutdown reason before the gate ends the
+    // connections, so a player reads why (world.md 10.3), and the shutdown saves where it stood.
+    // A client that stopped reading, one in the lobby and one that never sent its auth don't
+    // hold the shutdown: the grace is a write deadline and a linger, and only a player writing its
+    // close needs it.
+    let dir = tempfile::tempdir().unwrap();
+    let limits = GateLimits {
+        write_deadline: Duration::from_secs(3),
+        linger: Duration::from_millis(300),
+        ..GateLimits::default()
+    };
+    let (s, _clock) = server(dir.path(), WORLD, limits).await;
+    let (mut lin_bot, lin) = in_lobby(&s, "aaa", "Lin").await;
+    select(&mut lin_bot, lin).await;
+    enter(&mut lin_bot, lin).await;
+    // Mai's client reads nothing more once it is in the world, and keeps its socket open.
+    let (mut mai_bot, mai) = in_lobby(&s, "bbb", "Mai").await;
+    select(&mut mai_bot, mai).await;
+    enter(&mut mai_bot, mai).await;
+    let (_kai_bot, _) = in_lobby(&s, "ccc", "Kai").await;
+    let _silent = TcpStream::connect(s.login_addr).await.unwrap();
+    // The store's copies change while they stand at the start: only the world's last saves put
+    // the start back.
+    let accounts = s.accounts();
+    let older = Place {
+        x: 1.0,
+        ..START_PLACE
+    };
+    for pid in [lin, mai] {
+        assert!(accounts.store().save_place(pid, &older).await.unwrap());
+    }
+    let began = std::time::Instant::now();
+    let stopping = tokio::spawn(s.shutdown());
+    assert_eq!(lin_bot.expect_closed().await, SERVER_STOPPING.as_bytes());
+    drop(lin_bot);
+    // Mai's link lingers 300 ms for a close that never comes. Waiting out the 4.3 s grace instead
+    // would mean a connection held the shutdown that should have ended at once.
+    tokio::time::timeout(Duration::from_secs(10), stopping)
+        .await
+        .expect("the shutdown ends")
+        .unwrap()
+        .expect("everyone was saved");
+    let took = began.elapsed();
+    assert!(took < Duration::from_millis(2_500), "{took:?}");
+    let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
+    for (name, pid) in [("aaa", lin), ("bbb", mai)] {
+        saved_at(&store, name, pid, START_PLACE).await;
+    }
+    drop(mai_bot);
 }
 
 #[tokio::test]
@@ -454,5 +510,5 @@ async fn a_silent_client_in_the_world_is_closed_after_the_idle_time() {
     );
     // The world let the player go, and saved where it stood.
     saved_at(store, "tester", pid, START_PLACE).await;
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
 }
