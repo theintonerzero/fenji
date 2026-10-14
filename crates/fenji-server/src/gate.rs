@@ -1,7 +1,8 @@
 //! The gate listener (M3 spec D3, D17; docs/protocol/transport.md): the hello, the auth with its
-//! deadline and size cap, the ticket, the online registry, then the lobby loop. Close reasons use
-//! the client's own keys where it has one (docs/protocol/packets/lobby.md §9). The ticket is never
-//! logged, and the auth payload's machine bytes and fingerprint are dropped here, never stored.
+//! deadline and size cap, the ticket, the online registry, then the lobby loop, which hands the
+//! connection to the link on 10 (world.md §1). Close reasons use the client's own keys where it has
+//! one (docs/protocol/packets/lobby.md §9, world.md §10). The ticket is never logged, and the auth
+//! payload's machine bytes and fingerprint are dropped here, never stored.
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -16,7 +17,7 @@ use fenji_proto::opcode::Stc;
 use fenji_proto::packet::Up;
 use fenji_proto::pickle::{self, Value};
 use fenji_proto::variant::AES128;
-use fenji_store::Account;
+use fenji_store::{Account, Character};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
@@ -25,13 +26,21 @@ use tokio::task::JoinSet;
 use crate::accounts::Accounts;
 use crate::clock::Clock;
 use crate::config::Config;
+use crate::link;
 use crate::lobby::{self, LobbyLimits};
 use crate::online::{Join, Online};
+use crate::world::{Location, MAX_PLAYER_ID, WorldHandle};
 
 /// The client's close-reason key for a refused login (net.luac's close-reason table).
 pub const AUTH_FAILED: &str = "error auth-failed";
 /// The client's key for a session ended by a newer login to the same account.
 pub const DUPLICATE_LOGIN: &str = "error duplicate-login";
+/// The client's key for a server that is stopping: its text says the server is unavailable for now
+/// (lobby.md 9.3; world.md 10.3).
+pub const SERVER_STOPPING: &str = "error server-not-running";
+/// The client's key for an admin's kick: its text says the player is offline and may log in again,
+/// accusing them of nothing, unlike `error kick-by-gm` (world.md 10.2–10.3).
+pub const KICKED: &str = "error kick-by-user";
 /// The client's close-reason table has no key for a full server, so this shows as "Internal
 /// server error: server full" (run m2-r3b showed that form).
 pub const SERVER_FULL: &str = "server full";
@@ -45,6 +54,8 @@ pub const PRE_AUTH_CAP: usize = 26 + 4 + 0x4000 + 512;
 pub const IDLE: Duration = Duration::from_secs(60);
 /// How long a refused or replaced connection stays open, by default, for the client to read why.
 pub const LINGER: Duration = Duration::from_secs(2);
+/// How often, by default, a connection in the world checks that its account still exists.
+pub const ACCOUNT_CHECK: Duration = Duration::from_secs(30);
 
 /// The gate's limits (M3 spec D17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +76,9 @@ pub struct GateLimits {
     pub write_deadline: Duration,
     /// How long a refused or replaced connection stays open for its client to read why.
     pub linger: Duration,
+    /// How often a connection in the world checks that its account still exists (Ruling R5): the
+    /// lobby checks at every script message, but a player who only moves sends none.
+    pub account_check: Duration,
 }
 
 impl Default for GateLimits {
@@ -77,6 +91,7 @@ impl Default for GateLimits {
             idle: IDLE,
             write_deadline: Duration::from_secs(10),
             linger: LINGER,
+            account_check: ACCOUNT_CHECK,
         }
     }
 }
@@ -98,6 +113,12 @@ pub(crate) struct Gate {
     pub limits: GateLimits,
     pub waiting: Places,
     pub clock: Arc<dyn Clock>,
+    /// The world, which the link joins on the gate's behalf.
+    pub world: WorldHandle,
+    /// Where a character that has never entered starts (`[world]` start_scene, start_position).
+    pub start: Location,
+    /// `[access].admins`, lower-cased: names are compared without regard to ASCII case.
+    pub admins: Vec<String>,
 }
 
 /// The places for connections waiting for their auth (M3 spec D17): at most `total`, and at most
@@ -256,7 +277,7 @@ async fn serve(
         account: account.id,
         conn,
     };
-    lobby_loop(sock, peer, gate, &mut server, &account, &mut replaced).await
+    lobby_loop(sock, peer, gate, &mut server, &account, conn, &mut replaced).await
 }
 
 struct Leave<'a> {
@@ -273,7 +294,7 @@ impl Drop for Leave<'_> {
 
 /// Writes `bytes`, or fails once `deadline` passes: a client that stops reading ends its
 /// connection instead of holding it.
-async fn send<W: AsyncWrite + Unpin>(
+pub(crate) async fn send<W: AsyncWrite + Unpin>(
     sock: &mut W,
     bytes: &[u8],
     deadline: Duration,
@@ -287,7 +308,7 @@ async fn send<W: AsyncWrite + Unpin>(
 /// Sends a reply within `deadline`, unless a newer login replaces the connection first: then it
 /// gives up at once and returns false. The newer login holds the account's place, and a client
 /// that stopped reading shouldn't keep this socket until the deadline, outside the caps.
-async fn send_or_replaced<W: AsyncWrite + Unpin>(
+pub(crate) async fn send_or_replaced<W: AsyncWrite + Unpin>(
     sock: &mut W,
     bytes: &[u8],
     deadline: Duration,
@@ -302,7 +323,7 @@ async fn send_or_replaced<W: AsyncWrite + Unpin>(
 /// Half-closes, then reads until the client closes or `time` passes, so what was just sent isn't
 /// lost to a reset. Callers hold a waiting place while they linger, so lingering sockets count
 /// against the caps.
-async fn linger<S: AsyncRead + AsyncWrite + Unpin>(sock: &mut S, time: Duration) {
+pub(crate) async fn linger<S: AsyncRead + AsyncWrite + Unpin>(sock: &mut S, time: Duration) {
     let _ = sock.shutdown().await;
     let mut buf = [0u8; 1024];
     let _ = tokio::time::timeout(time, async {
@@ -384,6 +405,7 @@ async fn lobby_loop(
     gate: &Gate,
     server: &mut Server,
     account: &Account,
+    conn: u64,
     replaced: &mut oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     let deadline = gate.limits.write_deadline;
@@ -418,18 +440,25 @@ async fn lobby_loop(
                                 }
                             }
                         }
+                        Step::Enter(pid) => match character(gate, account, pid).await {
+                            Ok(c) => {
+                                return link::play(sock, peer, gate, server, account, conn, c, replaced).await;
+                            }
+                            Err(code) => {
+                                let bytes = script_out(server, &fenji_proto::lobby::error_code(code))?;
+                                if !send_or_replaced(sock, &bytes, deadline, replaced).await? {
+                                    tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                                    return Ok(());
+                                }
+                            }
+                        },
                         Step::Leave => {
                             tracing::info!(%peer, account = %account.username, "left (the client is quitting)");
                             return Ok(());
                         }
                         Step::AccountGone => {
                             tracing::info!(%peer, account = %account.username, "the account was deleted: closing");
-                            let bytes = server.send(Stc::Close.to_u8(), AUTH_FAILED.as_bytes(), &StoredCodec)?;
-                            send(sock, &bytes, deadline).await?;
-                            if let Some(_place) = gate.waiting.take(peer.ip()) {
-                                linger(sock, gate.limits.linger).await;
-                            }
-                            return Ok(());
+                            return close_with(sock, peer, gate, server, AUTH_FAILED).await;
                         }
                     }
                 }
@@ -445,11 +474,30 @@ async fn lobby_loop(
     }
 }
 
-/// Closes a connection that a newer login replaced. It no longer holds an online place, so it says
-/// why and lingers only within a waiting place, and for `time` at most: a client that stopped
-/// reading can't keep its socket outside the caps (#174). With no waiting place free it closes at
-/// once, without a reason.
-async fn close_replaced<S: AsyncRead + AsyncWrite + Unpin>(
+/// Closes a connection that still holds its online place with `reason`, which its client shows:
+/// sent within the write deadline, then a linger so it isn't lost to a reset, only within a
+/// waiting place. For a deleted account (in the lobby, and in the world by Ruling R5), a stopping
+/// server and an admin's kick.
+pub(crate) async fn close_with<S: AsyncRead + AsyncWrite + Unpin>(
+    sock: &mut S,
+    peer: SocketAddr,
+    gate: &Gate,
+    server: &mut Server,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let bytes = server.send(Stc::Close.to_u8(), reason.as_bytes(), &StoredCodec)?;
+    send(sock, &bytes, gate.limits.write_deadline).await?;
+    if let Some(_place) = gate.waiting.take(peer.ip()) {
+        linger(sock, gate.limits.linger).await;
+    }
+    Ok(())
+}
+
+/// Closes a connection that a newer login replaced, or that the world let go of with a reason. A
+/// replaced one no longer holds an online place, so it says why and lingers only within a waiting
+/// place, and for `time` at most: a client that stopped reading can't keep its socket outside the
+/// caps (#174). With no waiting place free it closes at once, without a reason.
+pub(crate) async fn close_replaced<S: AsyncRead + AsyncWrite + Unpin>(
     sock: &mut S,
     close: &[u8],
     place: Option<Place>,
@@ -467,6 +515,8 @@ async fn close_replaced<S: AsyncRead + AsyncWrite + Unpin>(
 enum Step {
     /// Send these replies, in order, and go on.
     Replies(Vec<Vec<u8>>),
+    /// Enter the world as this pid (10, `SELECT_ACTOR`), if it is the account's.
+    Enter(i64),
     /// The client is quitting (392, `CLIENT_EXIT`): close the connection.
     Leave,
     /// The account was deleted since the login (`fenji-server account delete`): close with the
@@ -493,6 +543,14 @@ async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Step
                 // The handler meets the same store and answers the client's screen.
                 Err(e) => tracing::error!(error = %e, "account check failed"),
             }
+            if id == fenji_proto::lobby::SELECT_ACTOR {
+                return match lobby::pid(args.first()) {
+                    Some(pid) => Step::Enter(pid),
+                    None => Step::Replies(vec![fenji_proto::lobby::error_code(
+                        fenji_proto::lobby::code::ROLE_NOT_FOUND,
+                    )]),
+                };
+            }
             let now = gate.clock.now_ms();
             Step::Replies(
                 lobby::handle(gate.accounts.store(), &gate.lobby, account, now, id, &args).await,
@@ -516,10 +574,29 @@ async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Step
     }
 }
 
+/// The account's character `pid`, if it may enter the world; otherwise the 270 code to refuse it
+/// with: `ROLE_NOT_FOUND` for another account's, an unknown pid or one no player may have (world.md
+/// 8.2), and `SERVER_NOT_RESP` when the store fails.
+async fn character(gate: &Gate, account: &Account, pid: i64) -> Result<Character, i64> {
+    use fenji_proto::lobby::code;
+    match gate.accounts.store().character(account.id, pid).await {
+        Ok(Some(c)) if (1..=MAX_PLAYER_ID).contains(&c.pid) => Ok(c),
+        Ok(Some(c)) => {
+            tracing::warn!(pid = c.pid, "a character whose pid no player may have");
+            Err(code::ROLE_NOT_FOUND)
+        }
+        Ok(None) => Err(code::ROLE_NOT_FOUND),
+        Err(e) => {
+            tracing::error!(error = %e, pid, "reading a character to enter the world");
+            Err(code::SERVER_NOT_RESP)
+        }
+    }
+}
+
 /// Every script message to a client goes out here. Bodies come from `script_body`, which refuses
 /// `NEVER_SEND`; this checks the id again, so no other builder can slip one through (ground
 /// rule 6; lobby.md §2).
-fn script_out(server: &mut Server, body: &[u8]) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn script_out(server: &mut Server, body: &[u8]) -> anyhow::Result<Vec<u8>> {
     sendable(body)?;
     Ok(server.send(Stc::Script.to_u8(), body, &StoredCodec)?)
 }
@@ -677,6 +754,7 @@ mod tests {
             ),
             (20, Duration::from_secs(30), 64, 8)
         );
+        assert_eq!(d.account_check, Duration::from_secs(30), "Ruling R5");
         let cfg = Config::parse(
             "[server]\nname = \"F\"\nmax_players = 5\n",
             std::path::Path::new("/"),

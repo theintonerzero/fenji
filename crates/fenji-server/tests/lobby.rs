@@ -122,8 +122,9 @@ async fn refusals_come_back_as_270() {
     assert_eq!(bot.recv().await, refused(code::ROLE_MAX_NUMBER));
     bot.send(lobby::DELETE_ACTOR, &[Value::Int(999_999)]).await;
     assert_eq!(bot.recv().await, refused(code::ROLE_NOT_FOUND));
-    bot.send(lobby::SELECT_ACTOR, &[Value::Int(1)]).await;
-    assert_eq!(bot.recv().await, refused(code::SERVER_NOT_RUNNING));
+    // 10 enters the world, but only as one of the account's own characters (world_link.rs).
+    bot.send(lobby::SELECT_ACTOR, &[Value::Int(999_999)]).await;
+    assert_eq!(bot.recv().await, refused(code::ROLE_NOT_FOUND));
     bot.send(lobby::CHANGE_SLOT, &[Value::Int(1), Value::Int(1)])
         .await; // ignored
     bot.send(12_345, &[]).await; // unknown ids are ignored, and the connection stays

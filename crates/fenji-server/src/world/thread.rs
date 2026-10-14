@@ -25,6 +25,13 @@ impl WorldHandle {
     pub fn send(&self, msg: WorldIn) -> bool {
         self.0.send(msg).is_ok()
     }
+
+    /// A handle whose other end the caller holds, in a running world's place (tests).
+    #[cfg(test)]
+    pub(crate) fn fake() -> (Self, mpsc::UnboundedReceiver<WorldIn>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self(tx), rx)
+    }
 }
 
 /// Tick work over the last minute.

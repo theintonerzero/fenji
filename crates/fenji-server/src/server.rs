@@ -113,6 +113,14 @@ pub async fn start(
             limits.max_unauthenticated_per_network,
         ),
         clock,
+        world: world.handle(),
+        start: world::start_location(cfg),
+        admins: cfg
+            .access
+            .admins
+            .iter()
+            .map(|a| a.to_ascii_lowercase())
+            .collect(),
     });
     let app = router(AppState {
         accounts: Arc::clone(&accounts),
