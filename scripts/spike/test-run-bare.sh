@@ -89,6 +89,7 @@ says 2 "--server-data is required" "a run needs the server's store folder" -- cm
 says 2 "--username" "a username with a space is refused" -- cmd_bare_run t --server "$TESTROOT/fenji.toml" --server-data "$WORK/data" --username "a b" --password-file "$TESTROOT/password"
 says 2 "--password-file" "an unreadable password file is refused" -- cmd_bare_run t --server "$TESTROOT/fenji.toml" --server-data "$WORK/data" --username tester --password-file "$TESTROOT/none"
 says 2 "--key" "a key press after the timeout is refused" -- cmd_bare_run t "${GOOD[@]}" --timeout 60 --key 90:Return
+says 2 "ends after the --timeout" "a held key that outlasts the timeout is refused" -- cmd_bare_run t "${GOOD[@]}" --timeout 60 --key 59:w/1001
 cfg 0.0.0.0:7800 "$WORK/data/fenji.db"
 says 2 "must be 127.0.0.1" "a server that listens beyond loopback is refused" -- cmd_bare_run t "${GOOD[@]}"
 cfg 127.0.0.1:7800 "$TESTROOT/fenji.db"
@@ -910,7 +911,7 @@ print(*(x.getsockname()[1] for x in s))')
   rm -f -- "$F/work/compat/fenji-gate-event"
   TWOARGS=(--clients 2 --username2 second --password-file2 "$F/password2" --display2 77 --second-after 2)
   flow run-two "$F/work" with_env FAKE_LAUNCH_SECS=1 with_env FAKE_CLIENT=1 cmd_bare_run two1 "${RUNARGS[@]}" \
-    --display 78 "${TWOARGS[@]}" --timeout 25 --timeout2 3 --key 1:space --key 2@3:Return
+    --display 78 "${TWOARGS[@]}" --timeout 25 --timeout2 3 --key 1:space --key 2:w/500 --key 2@3:Return
   BIO=$F/work/io/two1 BOUT=$F/work/out/two1 BRUN=$F/work/runs/two1
   if [ "$rc" = 0 ] && [[ $out == *"run two1 done:"* ]] && [ -f "$BRUN/client/bin64/gujianol.exe" ] &&
     [ -f "$BRUN/client2/bin64/gujianol.exe" ]; then
@@ -942,8 +943,9 @@ print(*(x.getsockname()[1] for x in s))')
   else
     bad "client 2's end: '$(cat "$BOUT/io/2/ended-by-pid" 2> /dev/null)' vs $client2; wineserver $(cat "$F/log/run-two/wineserver" 2> /dev/null)"
   fi
-  if grep -qx "xkey --display :78 --key=space" "$F/log/run-two/inputs" && grep -qx "xkey --display :77 --key=Return" "$F/log/run-two/inputs"; then
-    ok "each client's key presses go to its own display"
+  if grep -qx "xkey --display :78 --key=space" "$F/log/run-two/inputs" && grep -qx "xkey --display :77 --key=Return" "$F/log/run-two/inputs" &&
+    grep -qx "xkey --display :78 --key=w --hold=500" "$F/log/run-two/inputs"; then
+    ok "each client's key presses, held ones too, go to its own display"
   else
     bad "two clients' inputs: $(cat "$F/log/run-two/inputs" 2> /dev/null)"
   fi

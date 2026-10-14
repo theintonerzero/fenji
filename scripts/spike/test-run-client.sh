@@ -208,9 +208,14 @@ usage_error "--type needs a time" "takes T:TEXT" -- --type x
 usage_error "--type takes printable ASCII" "takes T:TEXT" -- --type "5:$(printf 'a\tb')"
 usage_error "a key press can't come after the timeout" "after the --timeout" -- --timeout 100 --key 101:Return
 usage_error "a click can't come after the timeout" "after the --timeout" -- --timeout 100 --click 101:1,1
+usage_error "a held key needs a hold of at least 1 ms" "takes T:KEY" -- --key 5:w/0
+usage_error "a held key holds a minute at most" "takes T:KEY" -- --key 5:w/60001
+usage_error "a held key needs its hold in ms" "takes T:KEY" -- --key 5:w/
+usage_error "a held key can't outlast the timeout" "after the --timeout" -- --timeout 100 --key 99:w/1001
+refuses "a held key may end at the timeout" "no workspace" -- --timeout 100 --key 99:w/1000
 refuses "valid server-mode options pass their checks" "no workspace" -- \
   --server "$M3/data.toml" --server-data "$WORK/data" "${L[@]}" --launch-password "$M3/password" \
-  --key 40:Return --key 41:space --type "45:Lin Two" --click 30:640,360
+  --key 40:Return --key 41:space --type "45:Lin Two" --click 30:640,360 --key 50:w/1500 --key 99:a/1000
 refuses "a relative store path passes without --server-data" "no workspace" -- --server "$M3/relative.toml"
 
 if [ "$(printf 'gj_uinfo=1:90:F:0:t:1\ngj_ticket=fenji1-abc def\n' | redact_gj_ticket)" = "$(printf 'gj_uinfo=1:90:F:0:t:1\ngj_ticket=<redacted>')" ]; then
@@ -261,6 +266,18 @@ done
 python3 -I "$XK" --display :9999 --type=-x > /dev/null 2>&1
 rc=$?
 if [ "$rc" = 1 ]; then ok "xkey.py takes text that starts with a dash"; else bad "xkey.py takes text that starts with a dash: exit $rc"; fi
+# A hold is a key's alone, from 1 ms to a minute; a good one gets as far as opening the display.
+for a in "--hold=0" "--hold=60001" "--hold=x" "--hold=-5"; do
+  python3 -I "$XK" --display :9999 --key=w "$a" > /dev/null 2>&1
+  rc=$?
+  if [ "$rc" = 2 ]; then ok "xkey.py refuses $a"; else bad "xkey.py refuses $a: exit $rc"; fi
+done
+python3 -I "$XK" --display :9999 --type=hi --hold=100 > /dev/null 2>&1
+rc=$?
+if [ "$rc" = 2 ]; then ok "xkey.py holds keys, not typing"; else bad "xkey.py holds keys, not typing: exit $rc"; fi
+python3 -I "$XK" --display :9999 --key=w --hold=60000 > /dev/null 2>&1
+rc=$?
+if [ "$rc" = 1 ]; then ok "xkey.py takes a hold of a minute"; else bad "xkey.py takes a hold of a minute: exit $rc"; fi
 
 # The password reaches the sandbox as one line through a pipe, and nothing without --launch.
 if [ "$(launch_password=$M3/password password_line)" = "secret-for-tests" ] && [ -z "$(launch_password='' password_line)" ]; then
@@ -341,6 +358,8 @@ usage_error "a 2@ press can't come after client 2's timeout" "after client 2's" 
   "${TWO[@]}" --timeout 100 --second-after 30 --timeout2 20 --key 2@51:Return
 usage_error "a 2@ click can't come after client 2's timeout" "after client 2's" -- \
   "${TWO[@]}" --timeout 100 --second-after 30 --timeout2 20 --click 2@51:1,1
+usage_error "client 2's held key can't outlast its timeout" "after client 2's" -- \
+  "${TWO[@]}" --timeout 100 --second-after 30 --timeout2 20 --key 2@49:w/1001
 refuses "a 2@ click takes T:X,Y in whole numbers" "--click" -- "${TWO[@]}" --click 2@5:abc
 refuses "valid two-client options pass their checks" "no workspace" -- \
   --server "$M3/data.toml" --server-data "$WORK/data" "${L[@]}" --launch-password "$M3/password" \
@@ -434,6 +453,10 @@ cat > "$F/here/xkey.py" <<'EOF'
 import os, sys, time
 with open(os.path.join(os.environ["FAKE_LOG"], "inputs"), "a") as f:
     f.write(f"{time.time():.2f} press {' '.join(sys.argv[1:])}\n")
+# A held key takes as long as its hold, as the real one does.
+for a in sys.argv[1:]:
+    if a.startswith("--hold="):
+        time.sleep(int(a.split("=", 1)[1]) / 1000)
 EOF
 cat > "$F/wrap" <<'EOF'
 #!/usr/bin/env bash
@@ -609,7 +632,7 @@ workspace "$W2"
 flow two "$W2" --server "$F/fenji.toml" --launch "--server http://127.0.0.1:$ap --username tester" \
   --launch-password "$F/pw1" --clients 2 --display2 98 --launch2 "--server http://127.0.0.1:$ap --username second" \
   --launch-password2 "$F/pw2" --second-after 2 --timeout 20 --timeout2 3 \
-  --click 1:10,10 --key 2@3:Return --type 2@4:hi --click 2@4:20,20 -- --fs=data:_index:_index
+  --click 1:10,10 --key 1:w/3000 --key 2@3:Return --type 2@4:hi --click 2@4:20,20 -- --fs=data:_index:_index
 IO2=$W2/io/two OUT2=$W2/out/two
 if [ "$rc" = 0 ] && [[ $out == *"run two done:"* ]]; then ok "a two-client run goes end to end"; else bad "two clients: rc $rc: $out"; fi
 case " $(cat "$F/log/two/wrap") " in
@@ -675,12 +698,22 @@ else
   bad "screenshots: $(cat "$F/log/two/import")"
 fi
 got=$(cut -d' ' -f2- "$F/log/two/inputs")
-want=$(printf '%s\n' "click --display :99 10 10" "press --display :98 --key=Return" "press --display :98 --type=hi" "click --display :98 20 20")
+want=$(printf '%s\n' "click --display :99 10 10" "press --display :99 --key=w --hold=3000" "press --display :98 --key=Return" \
+  "press --display :98 --type=hi" "click --display :98 20 20")
 got_sorted=$(sort -k1,1n "$F/log/two/inputs" | cut -d' ' -f2-)
 if [ "$(sort <<< "$got")" = "$(sort <<< "$want")" ] && [ "$(sed -n 1p <<< "$got_sorted")" = "click --display :99 10 10" ]; then
   ok "client 2's inputs go to its display, in time with client 1's"
 else
   bad "inputs: $got"
+fi
+# Client 1 holds w for 3 s from 1 s; client 2's Return at 3 s goes when it is due, not after the hold.
+hold_at=$(awk '/ press --display :99 --key=w --hold=3000$/ { print $1 }' "$F/log/two/inputs")
+return_at=$(awk '/ press --display :98 --key=Return$/ { print $1 }' "$F/log/two/inputs")
+if [ -n "$hold_at" ] && [ -n "$return_at" ] &&
+  python3 -I -c 'import sys; sys.exit(0 if 1.5 < float(sys.argv[2]) - float(sys.argv[1]) < 2.6 else 1)' "$hold_at" "$return_at"; then
+  ok "a held key holds up no press after it"
+else
+  bad "a held key and the press after it: hold at '$hold_at', Return at '$return_at'"
 fi
 mkdir "$W2/client2/settings"
 flow left "$W2" --clients 2 --display2 98 -- --fs=data:_index:_index
