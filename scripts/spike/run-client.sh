@@ -300,14 +300,14 @@ click_plan() {
   } | sort -s -n -k1,1
 }
 
-# end_client EXE: SIGKILL to every gujianol.exe whose program is EXE, as Wine shows it (Z: and
+# end_client EXE: SIGKILL to every process whose program is EXE, as Wine shows it in argv[0] (Z: and
 # backslashes) or as given, and to nothing else; prints each pid it ended. A two-client run's client
 # 2: its timeout ends its `proton run`, not the client, and wineserver -k would end client 1 too.
+# argv[0], not the process name: the client's main thread renames itself (run m4-s0: to
+# "vx_initialize"), and Wine passes thread names on to Linux.
 end_client() {
-  local want=$1 d comm a0
+  local want=$1 d a0
   for d in /proc/[0-9]*; do
-    { read -r comm < "$d/comm"; } 2> /dev/null || continue
-    [ "$comm" = gujianol.exe ] || continue
     a0=$(head -z -n 1 -- "$d/cmdline" 2> /dev/null | tr -d '\0') || continue
     a0=${a0//\\//}
     case "$a0" in [Zz]:/*) a0=${a0#??} ;; esac

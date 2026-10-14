@@ -384,18 +384,25 @@ two=$!
 winpath="Z:${EC//\//\\}\\client2\\bin64\\gujianol.exe"
 (exec -a "$winpath" "$EC/client2/bin64/gujianol.exe" -c 'import time; time.sleep(30)') &
 three=$!
+# The client's main thread renames itself (run m4-s0: "vx_initialize"), and Wine passes the name to
+# Linux: its comm is no longer gujianol.exe, but its argv[0] still names the program.
+cp -- "$(command -v sleep)" "$EC/vx_initialize"
+(exec -a "$winpath" "$EC/vx_initialize" 30) &
+four=$!
 for _ in $(seq 50); do
-  [ "$(cat "/proc/$three/comm" 2> /dev/null)" = gujianol.exe ] && [ "$(cat "/proc/$two/comm" 2> /dev/null)" = gujianol.exe ] && break
+  [ "$(cat "/proc/$three/comm" 2> /dev/null)" = gujianol.exe ] && [ "$(cat "/proc/$two/comm" 2> /dev/null)" = gujianol.exe ] &&
+    [ "$(cat "/proc/$four/comm" 2> /dev/null)" = vx_initialize ] && break
   sleep 0.1
 done
 ended=$(end_client "$EC/client2/bin64/gujianol.exe" | sort -n | tr '\n' ' ')
 { wait "$two"; } 2> /dev/null
 { wait "$three"; } 2> /dev/null
-if [ "$ended" = "$(printf '%s\n' "$two" "$three" | sort -n | tr '\n' ' ')" ] && kill -0 "$one" 2> /dev/null &&
-  ! kill -0 "$two" 2> /dev/null && ! kill -0 "$three" 2> /dev/null; then
-  ok "end_client ends client 2's gujianol.exe by its pid, in either form of its path, and not client 1's"
+{ wait "$four"; } 2> /dev/null
+if [ "$ended" = "$(printf '%s\n' "$two" "$three" "$four" | sort -n | tr '\n' ' ')" ] && kill -0 "$one" 2> /dev/null &&
+  ! kill -0 "$two" 2> /dev/null && ! kill -0 "$three" 2> /dev/null && ! kill -0 "$four" 2> /dev/null; then
+  ok "end_client ends client 2's gujianol.exe by its pid, in either form of its path, renamed or not, and not client 1's"
 else
-  bad "end_client: ended '$ended' of $one $two $three"
+  bad "end_client: ended '$ended' of $one $two $three $four"
 fi
 kill "$one" 2> /dev/null
 wait "$one" 2> /dev/null
