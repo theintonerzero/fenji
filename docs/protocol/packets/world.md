@@ -240,8 +240,10 @@ The item ids are documented interoperability data, by the owner's decision of 20
 | 10, a pid of the account's | 772 | `(772, pid, {scene_uid = scene, scene_tid = scene, scene_lv = 0, scene_type = 0}, {x, y, z, yaw}, 4706187382722034291)`, the position as floats |
 | type 2 | type 2 | the client's `u32`, and the server's Unix time in ms (§7) |
 | type 3 | type 7, type 8 | the header `(pid, 1, 255, vocation × 10000)` and §5's blob, with the speed and full health; then `pid` |
+| type 3 of any length but 21 bytes | closes the connection | without a reason; only the length is checked (3.2) |
 | the cached type-0 script messages | nothing | none needs an answer in slice 1 |
 | 392 (0xFF) | closes the connection | as in the lobby |
+| type 4 | closes the connection | without a reason or 330, so the client doesn't go back to the select screen: that is outside slice 1 (1.5) |
 
 **Golden vector** of a type-7 body, for the character M3's run created (Lin, vocation 7, skeleton 3, level 37, portrait `169 << 16`, voice 3, base face 1, outfit 2), with a short face string `v:5;` in place of its real one, pid 258, the default start (scene 5, `2366, −71735, 64854, 345`), a speed of 100 and full health. It is 141 bytes: the 14-byte header, then the entries of §5's table in index order.
 
