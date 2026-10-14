@@ -54,7 +54,7 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 
 ## Commits: Conventional Commits 1.0.0
 
-`<type>(<scope>)<!>: <description>`. The `commit-msg` hook enforces this; CI checks PR titles the same way.
+`<type>(<scope>)<!>: <description>`. The `commit-msg` hook enforces this; CI checks PR titles the same way. A subject is at most 100 characters. A PR title becomes its squash commit's subject with GitHub's ` (#N)` after it, so CI holds it to 100 minus that suffix: 93 characters for a three-digit PR.
 
 - Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
 - Scopes: `proto`, `data`, `lua`, `auth`, `store`, `server`, `launcher`, `tools`, `content`, `deploy`, `docs`, `re`, `deps`, `release`.
