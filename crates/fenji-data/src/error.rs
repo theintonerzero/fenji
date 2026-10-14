@@ -15,6 +15,8 @@ pub enum Error {
     OodleBadOutput { path: String, problem: String },
     #[error("LZ4 block {index}: {reason}")]
     Lz4 { index: usize, reason: String },
+    #[error("Oodle block {index}: {reason}")]
+    Oodle { index: usize, reason: String },
     #[error("decoded {got} bytes where the header says {want}")]
     SizeMismatch { got: u64, want: u64 },
     #[error("{len} bytes at {va:#x} are not all in one section's file data")]

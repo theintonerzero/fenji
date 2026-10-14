@@ -827,6 +827,7 @@ dependencies = [
  "anyhow",
  "clap",
  "fenji-data",
+ "fenji-oodle",
  "sha1",
  "tempfile",
 ]

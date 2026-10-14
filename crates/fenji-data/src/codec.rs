@@ -57,3 +57,44 @@ impl Decompressor for BuiltinCodecs {
         Ok(out)
     }
 }
+
+/// An Oodle block's stream, once its leading raw length (`m1-archives.md` 3.4) matches the
+/// blob header's `raw_len` for that block.
+pub fn oodle_payload(input: &[u8], raw_len: usize, index: usize) -> Result<&[u8]> {
+    let Some((prefix, stream)) = input.split_first_chunk::<4>() else {
+        return Err(Error::Oodle {
+            index,
+            reason: "shorter than its 4-byte raw length".into(),
+        });
+    };
+    let said = u32::from_le_bytes(*prefix) as usize;
+    if said != raw_len {
+        return Err(Error::Oodle {
+            index,
+            reason: format!("it says {said} raw bytes where the blob header says {raw_len}"),
+        });
+    }
+    Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_prefix_that_disagrees_with_the_blob_is_refused() {
+        // Review Focus 1: m1-archives 3.4's u32 raw length must match the blob header's.
+        let mut block = 100u32.to_le_bytes().to_vec();
+        block.extend_from_slice(&[0x4C, 0x06]);
+        assert_eq!(crate::oodle_payload(&block, 100, 0).unwrap(), &[0x4C, 0x06]);
+        let e = crate::oodle_payload(&block, 99, 3).unwrap_err();
+        assert!(
+            matches!(&e, Error::Oodle { index: 3, reason } if reason.contains("100") && reason.contains("99")),
+            "{e}"
+        );
+        assert!(matches!(
+            crate::oodle_payload(&[1, 2, 3], 1, 0),
+            Err(Error::Oodle { .. })
+        ));
+    }
+}

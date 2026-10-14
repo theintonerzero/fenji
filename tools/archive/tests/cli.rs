@@ -2,7 +2,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use fenji_data::test_util::{lz4_blob, stored_blob, zfs_part};
+use fenji_data::test_util::{lz4_blob, lz4_blob_blocks, stored_blob, zfs_part};
 use sha1::{Digest, Sha1};
 
 const VIDEO: &[u8] = b"KB2j fake video bytes";
@@ -670,4 +670,152 @@ fn dump_items_from_the_client() {
         .lines()
         .count();
     assert_eq!(lines, 47_112, "docs/re/m2-tables.md 3.1");
+}
+
+/// One Oodle block as the archives hold it (m1-archives.md 3.4): its `u32` raw length, then the
+/// stream's pieces.
+fn oodle_block(raw_len: u32, stream: &[&[u8]]) -> Vec<u8> {
+    [&raw_len.to_le_bytes()[..], &stream.concat()].concat()
+}
+
+/// An Oodle blob (codec 4) of `blocks`, `block_size` raw bytes each but the last.
+fn oodle_stream_blob(blocks: &[Vec<u8>], raw_size: u64, block_size: u32) -> Vec<u8> {
+    let mut b = lz4_blob_blocks(blocks, raw_size, block_size);
+    b[28] = 4;
+    b
+}
+
+/// A synthetic client for `census-oodle`, one part of five live Oodle files: Kraken uncompressed in
+/// two blocks; a Kraken memset quantum, then a stored one with checksums; Leviathan compressed with
+/// checksums; a block whose `u32` raw length disagrees with its blob header; and a stream cut
+/// short. A deleted Oodle record and a stored file are left out of the census.
+fn census_repo() -> tempfile::TempDir {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    std::fs::create_dir(repo.path().join("re")).unwrap();
+    let data = repo.path().join("client/data");
+    std::fs::create_dir_all(&data).unwrap();
+    // Stream headers: 0x8C, plus 0x40 when uncompressed; then the decoder, plus 0x80 with
+    // checksums. A quantum header for n bytes of data holds n - 1 in 18 bits; a checksum follows
+    // it in 3 bytes when the stream header says so. A memset quantum is 0x07FFFF, then its byte.
+    let uncompressed = oodle_stream_blob(
+        &[
+            oodle_block(64, &[&[0xCC, 6], &[7; 64]]),
+            oodle_block(36, &[&[0xCC, 6], &[7; 36]]),
+        ],
+        100,
+        64,
+    );
+    let quantum = 0x4_0000;
+    let memset_then_stored = oodle_stream_blob(
+        &[oodle_block(
+            quantum + 10,
+            &[
+                &[0x8C, 6],
+                &[0x07, 0xFF, 0xFF, 0x5A],
+                &[0x8C, 0x86],
+                &[0, 0, 9],
+                &[1, 2, 3],
+                &[0x11; 10],
+            ],
+        )],
+        u64::from(quantum) + 10,
+        0x8_0000,
+    );
+    let leviathan = || {
+        oodle_stream_blob(
+            &[oodle_block(
+                10,
+                &[&[0x8C, 0x8C], &[0, 0, 4], &[1, 2, 3], &[0x22; 5]],
+            )],
+            10,
+            10,
+        )
+    };
+    let bad_prefix = oodle_stream_blob(&[oodle_block(99, &[&[0xCC, 6], &[7; 100]])], 100, 100);
+    let cut_short = oodle_stream_blob(
+        &[oodle_block(10, &[&[0x8C, 6], &[0, 0, 4], &[0x33; 2]])],
+        10,
+        10,
+    );
+    let part = zfs_part(&[vec![
+        (1, [0xA; 20], uncompressed),
+        (1, [0xB; 20], memset_then_stored),
+        (1, [0xC; 20], leviathan()),
+        (0xff, [0xD; 20], leviathan()),
+        (1, [0xE; 20], bad_prefix),
+        (1, [0xF; 20], cut_short),
+        (1, sha1(VIDEO), stored_blob(VIDEO)),
+    ]]);
+    std::fs::write(data.join("data000"), part).unwrap();
+    repo
+}
+
+const CENSUS: &str = "decoder\tmode\tchecksums\tchunks\n\
+                      6\tmemset\tfalse\t1\n\
+                      6\tstored\ttrue\t1\n\
+                      6\tuncompressed\tfalse\t2\n\
+                      12\tcompressed\ttrue\t1\n\
+                      # files\t5\n\
+                      # blocks\t6\n\
+                      # bad_prefix\t1\n\
+                      # walk_error\tTruncated\t1\n";
+
+#[test]
+fn census_oodle_counts_chunks_by_decoder_mode_and_checksums() {
+    let repo = census_repo();
+    let out = archive(repo.path()).arg("census-oodle").output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), CENSUS);
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("re/oodle-census/summary.tsv")).unwrap(),
+        CENSUS
+    );
+}
+
+#[test]
+fn census_oodle_refuses_outside_re() {
+    let repo = census_repo();
+    let out = archive(repo.path())
+        .args(["census-oodle", "--out", "elsewhere"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("elsewhere is not inside"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!repo.path().join("elsewhere").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn census_oodle_replaces_a_link_instead_of_writing_through_it() {
+    let repo = census_repo();
+    std::fs::create_dir(repo.path().join("docs")).unwrap();
+    std::fs::write(repo.path().join("docs/tracked.md"), "keep").unwrap();
+    std::fs::create_dir_all(repo.path().join("re/c")).unwrap();
+    let tsv = repo.path().join("re/c/summary.tsv");
+    std::os::unix::fs::symlink(repo.path().join("docs/tracked.md"), &tsv).unwrap();
+    let ok = archive(repo.path())
+        .args(["census-oodle", "--out", "re/c"])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("docs/tracked.md")).unwrap(),
+        "keep"
+    );
+    assert!(
+        !std::fs::symlink_metadata(&tsv)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_to_string(&tsv).unwrap(), CENSUS);
 }
