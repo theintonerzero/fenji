@@ -264,6 +264,11 @@ fn inbound(world: &mut World) {
             }
             #[cfg(test)]
             WorldIn::Panic(message) => panic!("{message}"),
+            #[cfg(test)]
+            WorldIn::Stall { work, begun } => {
+                let _ = begun.send(());
+                std::thread::sleep(work);
+            }
         }
     }
 }

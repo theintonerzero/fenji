@@ -376,10 +376,58 @@ fn turn_away(rx: &mut mpsc::UnboundedReceiver<WorldIn>) {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::oneshot;
+
     use super::super::ecs::test_util::*;
     use super::*;
 
     const MS: Duration = Duration::from_millis(1);
+
+    /// A world on its own thread, whose services task takes its work and drops it.
+    fn world(rules: Rules) -> RunningWorld {
+        let (services_tx, mut jobs) = mpsc::unbounded_channel();
+        let services = tokio::spawn(async move { while jobs.recv().await.is_some() {} });
+        launch(rules, mpsc::unbounded_channel(), services_tx, services).unwrap()
+    }
+
+    /// The next thing the world tells `link` (5 s at most).
+    async fn told(link: &mut mpsc::Receiver<WorldOut>) -> WorldOut {
+        tokio::time::timeout(Duration::from_secs(5), link.recv())
+            .await
+            .expect("within 5 s")
+            .expect("the channel is open")
+    }
+
+    #[tokio::test]
+    async fn a_tick_slowed_by_its_own_work_earns_the_next_no_allowance() {
+        // Ruling R10, through the world's own loop: the gap that scales the flood check runs from
+        // the end of a tick's work, so a slow tick leaves none. At 5 Hz a period is 200 ms, with
+        // 8 inputs.
+        let world = world(Rules {
+            tick_hz: 5,
+            ..rules()
+        });
+        let (out, mut link) = mpsc::channel(64);
+        let player = player(1, "Lin", at(0.0, 0.0));
+        world.handle().send(WorldIn::Join { player, out });
+        world.handle().send(WorldIn::Loaded { conn: 1 });
+        assert!(matches!(told(&mut link).await, WorldOut::LoadScene { .. }));
+        assert!(matches!(told(&mut link).await, WorldOut::SelfEnter { .. }));
+        // A tick whose work takes a second: five periods, which as a gap would allow 40.
+        let (begun, working) = oneshot::channel();
+        let work = MS * 1_000;
+        world.handle().send(WorldIn::Stall { work, begun });
+        tokio::time::timeout(Duration::from_secs(5), working)
+            .await
+            .expect("the slow tick begins")
+            .unwrap();
+        // Just over a period's worth, sent during that work: the tick after it takes them.
+        for _ in 0..9 {
+            world.handle().send(WorldIn::Pull { conn: 1, pid: 99 });
+        }
+        assert_eq!(told(&mut link).await, WorldOut::Kicked(KickReason::Flood));
+        world.stop().await.unwrap();
+    }
 
     #[test]
     fn the_gap_runs_from_the_end_of_the_last_ticks_work() {
