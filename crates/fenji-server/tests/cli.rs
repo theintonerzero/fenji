@@ -1,7 +1,7 @@
-//! The admin subcommands (M3 spec D13, §4 `cli`).
+//! The admin subcommands (M3 spec D13, §4 `cli`), `init` and the first run (M4 hosting spec §3.6).
 use std::path::Path;
-use std::process::Output;
-use std::time::Duration;
+use std::process::{ExitStatus, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use fenji_server::cli::{AccountCmd, Command, InviteCmd, admin};
 use fenji_server::clock::TestClock;
@@ -49,6 +49,145 @@ fn fenji_server(dir: &Path, args: &[&str]) -> Output {
         .env("RUST_LOG", "warn")
         .output()
         .unwrap()
+}
+
+/// `fenji-server` itself, run in `dir` with `args` and no config of the test's.
+fn fenji_server_in(dir: &Path, args: &[&str]) -> Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        .current_dir(dir)
+        .args(args)
+        .env("RUST_LOG", "warn")
+        .output()
+        .unwrap()
+}
+
+/// A running `fenji-server`, killed if the test ends before it stops, so that none outlives a
+/// failed test holding its ports.
+struct Running(std::process::Child);
+
+impl Running {
+    /// Stops it as systemd would, with SIGTERM, on Unix; kills it elsewhere. Its exit status.
+    fn stop(&mut self) -> ExitStatus {
+        #[cfg(unix)]
+        {
+            let pid = self.0.id().to_string();
+            let sent = std::process::Command::new("kill")
+                .args(["-s", "TERM", &pid])
+                .status()
+                .unwrap();
+            assert!(sent.success(), "kill -s TERM {pid}: {sent}");
+        }
+        #[cfg(not(unix))]
+        self.0.kill().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.0.try_wait().unwrap() {
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "still running 30 s after the stop"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn first_run_writes_the_config_and_data_then_starts() {
+    // H9: with no config at the default path, fenji.toml in the working directory, the server
+    // writes it and data/, starts on the template's loopback addresses (127.0.0.1:7800 and 7801,
+    // which must be free) and says so. A child process, as the default path is the working
+    // directory's.
+    let dir = tempfile::tempdir().unwrap();
+    let log = tempfile::NamedTempFile::new().unwrap();
+    let mut server = Running(
+        std::process::Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+            .current_dir(dir.path())
+            .env("RUST_LOG", "info")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(log.reopen().unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let said = || String::from_utf8_lossy(&std::fs::read(log.path()).unwrap()).into_owned();
+    let db = dir.path().join("data/fenji.db");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !(db.is_file() && said().contains("First run: wrote fenji.toml")) {
+        if let Some(status) = server.0.try_wait().unwrap() {
+            panic!(
+                "the server stopped ({status}) before its first run:\n{}",
+                said()
+            );
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no first run within 60 s:\n{}",
+            said()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let status = server.stop();
+    assert!(cfg!(not(unix)) || status.success(), "{status}:\n{}", said());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("fenji.toml")).unwrap(),
+        fenji_server::config::template()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let data = std::fs::metadata(dir.path().join("data")).unwrap();
+        assert_eq!(
+            data.permissions().mode() & 0o777,
+            0o700,
+            "data/ is owner-only"
+        );
+    }
+}
+
+#[test]
+fn init_writes_the_template_here_or_at_the_config_path_and_never_over_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let template = fenji_server::config::template();
+    let out = fenji_server_in(dir.path(), &["init"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let here = std::fs::read_to_string(dir.path().join("fenji.toml")).unwrap();
+    assert_eq!(here, template);
+    // For a VPS: a path whose folders don't exist yet, given after the command or before it.
+    let path = dir.path().join("etc/fenji/fenji.toml");
+    let p = path.to_str().unwrap();
+    let out = fenji_server_in(dir.path(), &["init", "--config", p]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains(p));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), template);
+    std::fs::write(&path, "[server]\nname = \"Mine\"\n").unwrap();
+    let out = fenji_server_in(dir.path(), &["--config", p, "init"]);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && said.contains("already exists"),
+        "{said}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[server]\nname = \"Mine\"\n",
+        "the host's file stays as it was"
+    );
 }
 
 #[tokio::test]

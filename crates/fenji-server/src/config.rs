@@ -1,5 +1,7 @@
 //! `fenji.toml` (M3 spec D16; M4 world spec §3): read whole, checked, then used. Unknown keys and
-//! impossible values are refused with the place they were found. Changes need a restart.
+//! impossible values are refused with the place they were found. Changes need a restart. A first
+//! run without one writes it, and `init` writes one to edit (M4 hosting spec §3.6).
+use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -345,13 +347,114 @@ fn api_origin(api: &str) -> Option<String> {
     Some(api.to_string())
 }
 
+/// The example configuration, built into the binary: the one place every key is described.
+pub const EXAMPLE: &str = include_str!("../fenji.example.toml");
+
+/// Where the configuration is without `--config`: in the working directory.
+pub const DEFAULT_PATH: &str = "fenji.toml";
+
+/// What `run` logs at `info` once a first run has started, `<folder>` being the working directory.
+pub const FIRST_RUN: [&str; 3] = [
+    "First run: wrote fenji.toml and data/ in <folder>.",
+    "Type `invite` to make your first invite link.",
+    "Only this computer can join until you set public_host: see docs/hosting.md.",
+];
+
+// `[store] path` in the example, and in the template: as wide as each other, so that the comment
+// after it stays in line.
+const EXAMPLE_STORE_PATH: &str = "\npath = \"fenji.db\"     ";
+const TEMPLATE_STORE_PATH: &str = "\npath = \"data/fenji.db\"";
+
+/// What a first run and `init` write: the example, with the database in `data/`, the data folder.
+pub fn template() -> String {
+    EXAMPLE.replacen(EXAMPLE_STORE_PATH, TEMPLATE_STORE_PATH, 1)
+}
+
+/// Writes the [`template`] at `path` for a host to edit (`fenji-server init`), making any folders
+/// above it that are missing. Never over a file that's there.
+pub fn init(path: &Path) -> anyhow::Result<()> {
+    if let Some(folder) = path.parent().filter(|f| !f.as_os_str().is_empty()) {
+        std::fs::create_dir_all(folder)
+            .with_context(|| format!("can't make the folder {}", folder.display()))?;
+    }
+    write_new(path, template().as_bytes()).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::anyhow!(
+                "{} already exists; init doesn't replace a config",
+                path.display()
+            )
+        } else {
+            anyhow::Error::new(e).context(format!("can't write {}", path.display()))
+        }
+    })
+}
+
+/// Writes `bytes` to `path` as a new file, failing if anything is there. A file left part-written
+/// is deleted, so that no later run reads it as a whole one.
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    if written.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+    written
+}
+
+/// Makes `dir` and any folders above it that are missing, owner-only (0700) on Unix: the data
+/// folder and the folders in it hold the database, its backups and the server's key.
+pub(crate) fn private_folder(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// A configuration for `run`, and whether this run wrote it.
+#[derive(Debug)]
+pub enum Loaded {
+    /// A file that was there.
+    Existing(Config),
+    /// The [`template`], which this run wrote with its data folder, as there was no config.
+    FirstRun(Config),
+}
+
+/// The configuration `run` serves with (M4 hosting spec §3.6, H9):
+/// - `path`, which must exist, so that a mistyped path under systemd never starts a server with a
+///   fresh, empty database;
+/// - without one, [`DEFAULT_PATH`]; if there's no file there, a first run writes the [`template`]
+///   and makes the data folder, owner-only on Unix.
+pub fn load_or_first_run(path: Option<&Path>) -> anyhow::Result<Loaded> {
+    let given = path.is_some();
+    let path = path.unwrap_or(Path::new(DEFAULT_PATH));
+    // Unless it's known to be missing: when that can't be told, `load` says why.
+    if !matches!(path.try_exists(), Ok(false)) {
+        return Config::load(path).map(Loaded::Existing);
+    }
+    if given {
+        bail!(
+            "there's no config at {0}; write one with `fenji-server --config {0} init`",
+            path.display()
+        );
+    }
+    init(path)?;
+    let cfg = Config::load(path)?;
+    if let Some(data) = cfg.store.path.parent() {
+        private_folder(data)
+            .with_context(|| format!("can't make the data folder {}", data.display()))?;
+    }
+    Ok(Loaded::FirstRun(cfg))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
     use super::*;
-
-    const EXAMPLE: &str = include_str!("../fenji.example.toml");
 
     #[test]
     fn the_example_parses_and_resolves_the_store_path() {
@@ -366,6 +469,38 @@ mod tests {
         assert_eq!(c.world.start_position, [2366.0, -71735.0, 64854.0, 345.0]);
         assert_eq!(c.world.move_tolerance, 1.5);
         assert_eq!(c.world.save_every_secs, 300);
+    }
+
+    #[test]
+    fn the_template_parses_binds_loopback_and_keeps_the_database_in_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::parse(&template(), dir.path()).unwrap();
+        assert_eq!(cfg.store.path, dir.path().join("data/fenji.db"));
+        assert!(cfg.server.login_bind.ip().is_loopback());
+        assert!(cfg.server.api_bind.ip().is_loopback());
+    }
+
+    #[test]
+    fn init_writes_the_template_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("etc/fenji/fenji.toml");
+        init(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), template());
+        let e = init(&path).unwrap_err();
+        assert!(format!("{e:#}").contains("already exists"), "{e:#}");
+    }
+
+    #[test]
+    fn an_explicit_config_that_is_missing_is_an_error_with_the_init_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.toml");
+        let e = load_or_first_run(Some(&path)).unwrap_err();
+        let text = format!("{e:#}");
+        assert!(
+            text.contains("missing.toml") && text.contains("init"),
+            "{text}"
+        );
+        assert!(!path.exists(), "nothing is written for an explicit path");
     }
 
     #[test]

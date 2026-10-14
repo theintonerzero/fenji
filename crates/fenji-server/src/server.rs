@@ -13,7 +13,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::accounts::Accounts;
 use crate::api::{AppState, ServerInfo, router};
 use crate::clock::{Clock, SystemClock};
-use crate::config::Config;
+use crate::config::{Config, FIRST_RUN, Loaded};
 pub use crate::gate::GateLimits;
 use crate::gate::{self, Gate, Places, accept_loop};
 use crate::lobby::LobbyLimits;
@@ -198,34 +198,53 @@ pub async fn start(
     })
 }
 
-/// `fenji-server run`: serves until Ctrl-C or SIGTERM.
-pub async fn run(cfg: Config) -> anyhow::Result<()> {
+/// `fenji-server run`: serves until Ctrl-C or SIGTERM. Once it has started, a first run (M4 hosting
+/// spec §3.6) says what it wrote and what's next.
+pub async fn run(loaded: Loaded) -> anyhow::Result<()> {
+    let (cfg, first_run) = match loaded {
+        Loaded::Existing(cfg) => (cfg, false),
+        Loaded::FirstRun(cfg) => (cfg, true),
+    };
     let server = start(&cfg, Arc::new(SystemClock), GateLimits::from_config(&cfg)).await?;
+    let stop = signalled();
     tracing::info!(gate = %server.login_addr, api = %server.api_addr, "Fenji is running");
-    server.serve_until(signalled()).await
-}
-
-/// Ctrl-C, or SIGTERM where there is one.
-async fn signalled() {
-    #[cfg(unix)]
-    {
-        let mut term =
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                Ok(t) => t,
-                Err(_) => {
-                    let _ = tokio::signal::ctrl_c().await;
-                    return;
-                }
-            };
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
+    if first_run {
+        let folder = std::env::current_dir().map_or_else(
+            |_| "the working directory".to_string(),
+            |d| d.display().to_string(),
+        );
+        for line in FIRST_RUN {
+            tracing::info!("{}", line.replace("<folder>", &folder));
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+    server.serve_until(stop).await
+}
+
+/// Ctrl-C or SIGTERM. SIGTERM is caught from this call on, not from the future's first poll, so
+/// that one sent as soon as the server says it runs stops it cleanly.
+#[cfg(unix)]
+fn signalled() -> impl Future<Output = ()> {
+    let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+    async move {
+        match term {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+        tracing::info!("shutting down");
     }
+}
+
+/// Ctrl-C.
+#[cfg(not(unix))]
+async fn signalled() {
+    let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutting down");
 }
 
