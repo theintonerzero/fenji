@@ -1,6 +1,6 @@
 [package]
 name = "fenji-oodle"
-description = "A Rust port of ooz's Oodle decoders (Kraken, Mermaid and Selkie, Leviathan), for the SoLO client's archives"
+description = "A Rust port of ooz's Oodle Kraken decoder, for the SoLO client's archives"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

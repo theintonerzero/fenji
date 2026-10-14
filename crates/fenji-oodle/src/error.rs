@@ -46,3 +46,11 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl Error {
+    /// Malformed quantum data. The Kraken decoder sets `at` to where its failing chunk starts, and
+    /// the stream driver counts that from the start of the stream.
+    pub(crate) const fn corrupt(what: &'static str) -> Self {
+        Self::Corrupt { at: 0, what }
+    }
+}
