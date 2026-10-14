@@ -513,12 +513,7 @@ fn encode(
         // A line, on the channel chat.md §3 gives it; the log never holds what it says, or whom.
         WorldOut::Chat(out) => {
             let line = wire_line(&out);
-            let channel = match line {
-                chat::Line::Said { channel, .. } => channel.number(),
-                chat::Line::Announce { .. } => chat::channel::MARQUEE,
-                chat::Line::System { .. } => chat::channel::SYSTEM,
-            };
-            tracing::debug!(channel, "378: a line");
+            tracing::debug!(channel = line.channel(), "378: a line");
             Ok(Some(gate::script_out(server, &chat::say(&line))?))
         }
         WorldOut::ChatRefused(why) => {
