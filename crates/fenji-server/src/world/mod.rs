@@ -20,8 +20,10 @@ use crate::config::Config;
 /// a client sends (a few moves, a pull for each player coming into view, a line of chat).
 pub const MAX_INPUTS_PER_TICK: usize = 128;
 
-/// The longest stall of the world's thread (a suspend, a VM pause) whose inputs the flood check
-/// takes as spread over the periods it missed: a longer one counts as this long (#222).
+/// The longest stall between ticks whose inputs the flood check takes as spread over the periods
+/// it missed: a longer one counts as this long (#222). A stall is a gap the world's monotonic
+/// clock sees: its thread or process paused, or a VM paused while that clock runs on; a suspend of
+/// the host isn't one, since `Instant` doesn't advance through it.
 pub const MAX_STALL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long the world keeps where a character left. Its save is written off the tick, so a login

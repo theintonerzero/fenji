@@ -69,8 +69,11 @@ pub(super) struct Doomed(pub Option<KickReason>);
 #[derive(Resource, Default)]
 pub(super) struct Now(pub u64);
 
-/// Milliseconds between the end of the last tick's work and the start of this tick: 0 for the
-/// first, and for one that starts late because the last one's work ran long (Ruling R10).
+/// The gap the flood check allows for: the larger of this tick's and the last one's, each in
+/// milliseconds from the end of the tick before's work to the start of the tick. A gap is 0 for
+/// the first tick, and for one that starts late because the last one's work ran long (Ruling
+/// R10). The last one's counts too because the links read a stall's backlog from their sockets
+/// only after the resume, so much of it reaches the tick after the one that saw the gap.
 #[derive(Resource, Default)]
 struct Gap(u64);
 
@@ -114,6 +117,8 @@ struct Left(HashMap<ActorId, (Location, u64)>);
 pub struct WorldCore {
     world: World,
     phases: Vec<(&'static str, Schedule)>,
+    /// The last tick's gap.
+    last_gap: u64,
 }
 
 fn phase<M>(systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Schedule {
@@ -143,7 +148,11 @@ impl WorldCore {
             ("persist", phase(persist)),
             ("cleanup", phase(cleanup)),
         ];
-        Self { world, phases }
+        Self {
+            world,
+            phases,
+            last_gap: 0,
+        }
     }
 
     /// Runs one tick at `now_ms`, `gap_ms` after the last one's work ended, with what arrived since
@@ -154,8 +163,9 @@ impl WorldCore {
         gap_ms: u64,
         inputs: Vec<WorldIn>,
     ) -> Vec<(&'static str, Duration)> {
+        let last_gap = std::mem::replace(&mut self.last_gap, gap_ms);
         self.world.resource_mut::<Now>().0 = now_ms;
-        self.world.resource_mut::<Gap>().0 = gap_ms;
+        self.world.resource_mut::<Gap>().0 = gap_ms.max(last_gap);
         self.world.resource_mut::<Inbox>().0 = inputs;
         self.phases
             .iter_mut()
@@ -201,12 +211,16 @@ pub(super) fn name_key(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
-/// The most messages a connection may send in a tick that starts `gap_ms` after the last one's
-/// work ended: `max_inputs_per_tick` for each tick period in the gap, at least one period's and
-/// at most [`MAX_STALL`]'s. After a stall of the world's thread between ticks (a suspend, a VM
-/// pause), what every connection sent in the periods it missed arrives in one tick, and isn't a
-/// flood (#222). A tick slowed by its own work leaves no gap, so it earns the next one nothing: a
-/// flood can't buy itself more allowance by making ticks slow (Ruling R10).
+/// The most messages a connection may send in a tick whose [`Gap`] is `gap_ms`:
+/// `max_inputs_per_tick` for each tick period in the gap, at least one period's and at most
+/// [`MAX_STALL`]'s (#222).
+///
+/// It covers a stall between ticks that the world's monotonic clock sees: its thread or its
+/// whole process paused, descheduled or stopped, or a VM paused while that clock runs on. What
+/// every connection sent in the periods missed arrives over that tick and the next, and isn't a
+/// flood. A suspend of the host isn't seen, since `Instant` doesn't advance through it. A tick
+/// slowed by its own work leaves no gap, so it earns the next one nothing: a flood can't buy
+/// itself more allowance by making ticks slow (Ruling R10).
 ///
 /// [`MAX_STALL`]: super::MAX_STALL
 fn allowance(rules: &Rules, gap_ms: u64) -> usize {
@@ -892,9 +906,9 @@ mod tests {
 
     #[test]
     fn a_stall_is_not_a_flood_but_a_flood_within_one_period_still_is() {
-        // #222: after a stall of the world's thread (a suspend, a VM pause), what each connection
-        // sent in the periods it missed arrives in one tick. The harness allows 8 a period of
-        // 50 ms: ten periods' worth, 500 ms after the last tick, is normal input.
+        // #222: after a stall of the world's thread or its process, what each connection sent in
+        // the periods it missed arrives together. The harness allows 8 a period of 50 ms: ten
+        // periods' worth, 500 ms after the last tick, is normal input.
         let mut h = Harness::new();
         h.enter(player(1, "Lin", at(0.0, 0.0)));
         for _ in 0..80 {
@@ -903,7 +917,28 @@ mod tests {
         h.tick(500);
         assert_eq!(h.take(1), Vec::new(), "not kicked");
         assert_eq!(h.core.players(), 1);
-        // The next tick comes on time: nine in it is a flood.
+        // Two ticks on time later, nine in one is a flood again.
+        h.tick(50);
+        for _ in 0..9 {
+            h.push(WorldIn::Pull { conn: 1, pid: 99 });
+        }
+        h.tick(50);
+        assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
+    }
+
+    #[test]
+    fn a_stalls_backlog_a_tick_late_is_no_flood() {
+        // The links read a stall's backlog from their sockets only after the resume, so much of
+        // it reaches the tick after the one that saw the gap: that tick keeps the gap's allowance.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        h.tick(500);
+        for _ in 0..80 {
+            h.push(WorldIn::Pull { conn: 1, pid: 99 });
+        }
+        h.tick(50);
+        assert_eq!(h.take(1), Vec::new(), "not kicked");
+        // The next tick has only its own period's: nine is a flood.
         for _ in 0..9 {
             h.push(WorldIn::Pull { conn: 1, pid: 99 });
         }
