@@ -12,7 +12,7 @@ pub(crate) const SCRATCH: usize = 0x6C000;
 /// Port of `Kraken_Decompress` (kraken.cpp:4130): `src`, one whole Oodle stream, decoded into
 /// exactly `raw_len` bytes.
 pub fn decompress(src: &[u8], raw_len: usize) -> Result<Vec<u8>, Error> {
-    let mut out = vec![0u8; raw_len];
+    let mut out = Vec::new();
     let mut scratch = Vec::new();
     let mut at = 0;
     let mut done = 0;
@@ -26,6 +26,9 @@ pub fn decompress(src: &[u8], raw_len: usize) -> Result<Vec<u8>, Error> {
             (h, at) = stream_header(src, at)?;
         }
         let n = (raw_len - done).min(QUANTUM);
+        // The output grows a quantum at a time, never to raw_len up front: a raw_len the stream
+        // can't back ends in an error, not in a huge allocation.
+        out.resize(done + n, 0);
         if h.uncompressed {
             let bytes = src.get(at..at + n).ok_or(Error::Truncated { at })?;
             out[done..done + n].copy_from_slice(bytes);
@@ -348,6 +351,25 @@ mod tests {
                 size: 11,
                 room: 10
             })
+        );
+    }
+
+    #[test]
+    fn a_hostile_raw_len_is_an_error() {
+        // A raw_len no stream backs is an error, never a capacity-overflow panic or an aborted
+        // allocation: the output grows one quantum at a time, as the stream supplies it.
+        assert_eq!(decompress(&[], 1 << 40), Err(Error::Truncated { at: 0 }));
+        assert_eq!(decompress(&[], usize::MAX), Err(Error::Truncated { at: 0 }));
+    }
+
+    #[test]
+    fn the_output_grows_a_quantum_at_a_time() {
+        // One memset quantum, then the stream ends where the next header should start: an error
+        // after one quantum of output, not an allocation of the whole raw_len.
+        let src = [&hdr(false, 6, false)[..], &memset_q(7)].concat();
+        assert_eq!(
+            decompress(&src, usize::MAX),
+            Err(Error::Truncated { at: 6 })
         );
     }
 
