@@ -190,3 +190,37 @@ async fn an_admins_invite_is_stored_and_its_link_comes_back() {
     );
     s.shutdown().await;
 }
+
+#[tokio::test]
+async fn an_invite_the_store_cant_make_gets_the_plain_answer_and_no_detail() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), "", GateLimits::default()).await;
+    let c = character(&s, "tester").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: Player {
+            admin: true,
+            ..player(1, &c)
+        },
+        out: tx,
+    });
+    next(&mut rx).await;
+    s.world().send(WorldIn::Loaded { conn: 1 });
+    next(&mut rx).await;
+    s.accounts().store().close().await;
+    s.world().send(WorldIn::Chat {
+        conn: 1,
+        line: ChatIn {
+            channel: ChatChannel::Nearby,
+            text: "!invite for Bob".into(),
+            to: None,
+        },
+    });
+    assert_eq!(
+        next(&mut rx).await,
+        WorldOut::Chat(ChatOut::System {
+            text: "the invite couldn't be made; the server's log says why".into()
+        })
+    );
+    s.shutdown().await;
+}

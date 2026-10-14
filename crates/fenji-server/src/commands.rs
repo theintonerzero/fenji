@@ -49,6 +49,20 @@ impl fmt::Display for CommandError {
     }
 }
 
+impl std::error::Error for CommandError {}
+
+/// Checks that `label` can be an invite's: plain text of at most [`LABEL_MAX`] characters.
+/// `!invite` checks it here, and [`crate::invite::create`] again for every caller.
+pub fn check_label(label: &str) -> Result<(), CommandError> {
+    if !crate::text::plain(label) {
+        return Err(CommandError::NotPlain);
+    }
+    if label.chars().count() > LABEL_MAX {
+        return Err(CommandError::Usage(INVITE));
+    }
+    Ok(())
+}
+
 /// Parses a command, without its `!`.
 pub fn parse(line: &str) -> Result<Command, CommandError> {
     if !crate::text::plain(line) {
@@ -80,10 +94,12 @@ pub fn parse(line: &str) -> Result<Command, CommandError> {
         },
         "announce" if !rest.is_empty() => Ok(Command::Announce { text: rest.into() }),
         "announce" => Err(CommandError::Usage(ANNOUNCE)),
-        "invite" if rest.chars().count() > LABEL_MAX => Err(CommandError::Usage(INVITE)),
-        "invite" => Ok(Command::Invite {
-            label: (!rest.is_empty()).then(|| rest.into()),
-        }),
+        "invite" => {
+            check_label(rest)?;
+            Ok(Command::Invite {
+                label: (!rest.is_empty()).then(|| rest.into()),
+            })
+        }
         _ => Err(CommandError::Unknown(word.into())),
     }
 }
@@ -166,6 +182,22 @@ mod tests {
         assert_eq!(
             CommandError::Unknown("give".into()).to_string(),
             "no command give; the commands are tp, kick, announce and invite"
+        );
+    }
+
+    #[test]
+    fn an_invite_label_may_have_64_characters_and_no_more() {
+        // Characters, not bytes: each é is two.
+        let longest = "é".repeat(64);
+        assert_eq!(
+            parse(&format!("invite {longest}")),
+            Ok(Command::Invite {
+                label: Some(longest)
+            })
+        );
+        assert_eq!(
+            parse(&format!("invite {}", "é".repeat(65))),
+            Err(CommandError::Usage(INVITE))
         );
     }
 

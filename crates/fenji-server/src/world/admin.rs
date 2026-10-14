@@ -1,11 +1,13 @@
 //! Admin commands in the game (world spec §3.6): what `!tp`, `!kick`, `!announce` and `!invite`
-//! do. The chat phase parses an admin's `!` line with [`crate::commands`] and queues it here; the
-//! answer is a line only the admin sees.
+//! do. The chat phase spends a chat token on an admin's `!` line, parses it with
+//! [`crate::commands`] and queues it here; the answer is a line only the admin sees. Each command
+//! run is logged, so a host can see what its admins did.
 use bevy_ecs::prelude::*;
 
 use super::chat;
 use super::ecs::{
-    Actor, Conn, Doomed, Here, Index, Now, Pending, Services, Stage, doom, hide, name_key, send,
+    Account, Actor, Conn, Doomed, Here, Index, Now, Pending, Services, Stage, doom, hide, name_key,
+    send,
 };
 use super::interest::Sight;
 use super::movement::Gait;
@@ -18,6 +20,10 @@ pub(super) fn system(world: &mut World) {
         if world.get::<Doomed>(admin).is_some() {
             continue;
         }
+        // Commands are plain text (`commands::parse`), so they log as they are.
+        let account = world.get::<Account>(admin).map_or(0, |a| a.id);
+        let character = name_of(world, admin);
+        tracing::info!(account, character, command = ?order, "an admin's command");
         if let Some(text) = run(world, admin, order) {
             send(world, admin, WorldOut::Chat(ChatOut::System { text }));
         }
@@ -40,6 +46,11 @@ fn run(world: &mut World, admin: Entity, order: Command) -> Option<String> {
             };
             if mover == target {
                 return Some(format!("{} is already there", name_of(world, mover)));
+            }
+            // Its client is loading a scene, and its one report would finish both that scene and
+            // another sent now.
+            if world.get::<Stage>(mover) != Some(&Stage::InWorld) {
+                return Some(format!("{} is still loading", name_of(world, mover)));
             }
             let at = world.get::<Here>(target)?.0;
             teleport(world, mover, at);
@@ -98,20 +109,15 @@ fn absent(name: &str) -> String {
     format!("no one called {name} is in the game")
 }
 
-/// Moves `e` to `at`. Its viewers forget it, and see it again where it lands at their next
-/// interest pass. Within its scene it is moved (`Teleport`); another scene is loaded as on
-/// entering.
+/// Moves `e`, which stands in the world, to `at`. Its viewers forget it, and see it again where it
+/// lands at their next interest pass. Within its scene it is moved (`Teleport`); another scene is
+/// loaded as on entering.
 fn teleport(world: &mut World, e: Entity, at: Location) {
     let now = world.resource::<Now>().0;
-    let (Some(actor), Some(here), Some(stage)) = (
-        world.get::<Actor>(e),
-        world.get::<Here>(e),
-        world.get::<Stage>(e),
-    ) else {
+    let (Some(actor), Some(here)) = (world.get::<Actor>(e), world.get::<Here>(e)) else {
         return;
     };
     let (pid, same_scene) = (actor.pid, here.0.scene == at.scene);
-    let in_world = *stage == Stage::InWorld;
     hide(world, pid);
     if let Some(mut here) = world.get_mut::<Here>(e) {
         here.0 = at;
@@ -119,7 +125,7 @@ fn teleport(world: &mut World, e: Entity, at: Location) {
     if let Some(mut gait) = world.get_mut::<Gait>(e) {
         *gait = Gait::new(now);
     }
-    if same_scene && in_world {
+    if same_scene {
         send(world, e, WorldOut::Teleport { pos: at.pos });
         return;
     }
@@ -150,6 +156,20 @@ mod tests {
 
     fn system(text: &str) -> WorldOut {
         WorldOut::Chat(ChatOut::System { text: text.into() })
+    }
+
+    /// The admin's line of nearby chat.
+    fn lin_says(text: &str) -> WorldOut {
+        WorldOut::Chat(ChatOut::Said {
+            channel: ChatChannel::Nearby,
+            from: Speaker {
+                pid: 1,
+                name: "Lin".into(),
+                vocation: 0,
+            },
+            to: None,
+            text: text.into(),
+        })
     }
 
     /// An admin (1) and two players: 2 near the admin, 3 far away.
@@ -234,6 +254,11 @@ mod tests {
                 system("Lin is with Kai")
             ]
         );
+        assert_eq!(
+            h.take(2),
+            vec![WorldOut::Leave { pids: vec![1] }],
+            "the old scene's viewer hears Lin left, that tick"
+        );
         h.push(WorldIn::Loaded { conn: 1 });
         h.tick(50);
         assert!(matches!(
@@ -242,6 +267,67 @@ mod tests {
                 WorldOut::SelfEnter { .. },
                 WorldOut::Announce { pid: 4, .. }
             ]
+        ));
+    }
+
+    #[test]
+    fn tp_of_a_player_still_loading_answers_so_and_changes_nothing() {
+        let mut h = admins_world();
+        let elsewhere = Location {
+            scene: SCENE + 1,
+            ..at(0.0, 0.0)
+        };
+        h.join(player(4, "Kai", elsewhere));
+        h.tick(50);
+        h.take(4);
+        h.push(bang(1, "!tp Kai Ren"));
+        h.tick(50);
+        assert_eq!(h.take(1), vec![system("Kai is still loading")]);
+        assert!(h.take(4).is_empty(), "no second scene to load");
+        h.push(WorldIn::Loaded { conn: 4 });
+        h.tick(50);
+        assert_eq!(
+            h.take(4),
+            vec![WorldOut::SelfEnter {
+                pid: 4,
+                look: look("Kai"),
+                pos: elsewhere.pos,
+                speed: SPEED_RATE
+            }],
+            "where it was going"
+        );
+    }
+
+    #[test]
+    fn an_admin_moved_twice_in_a_tick_is_still_loading_for_the_second() {
+        let mut h = admins_world();
+        let elsewhere = Location {
+            scene: SCENE + 1,
+            ..at(0.0, 0.0)
+        };
+        h.enter(player(4, "Kai", elsewhere));
+        h.push(bang(1, "!tp Kai"));
+        h.push(bang(1, "!tp Ren"));
+        h.tick(50);
+        assert_eq!(
+            h.take(1),
+            vec![
+                WorldOut::LoadScene {
+                    pid: 1,
+                    at: elsewhere
+                },
+                system("Lin is with Kai"),
+                system("Lin is still loading")
+            ]
+        );
+        h.push(WorldIn::Loaded { conn: 1 });
+        h.tick(50);
+        assert!(matches!(
+            h.take(1).as_slice(),
+            [
+                WorldOut::SelfEnter { pos, .. },
+                WorldOut::Announce { pid: 4, .. }
+            ] if *pos == elsewhere.pos
         ));
     }
 
@@ -280,6 +366,22 @@ mod tests {
     }
 
     #[test]
+    fn an_announcement_may_have_140_characters_and_no_more() {
+        let mut h = admins_world();
+        let longest = "a".repeat(140);
+        h.push(bang(1, &format!("!announce {longest}")));
+        h.push(bang(1, &format!("!announce {}", "a".repeat(141))));
+        h.tick(50);
+        let note = WorldOut::Chat(ChatOut::Announce { text: longest });
+        assert_eq!(
+            h.take(1),
+            vec![note.clone(), system("not announced: over 140 characters")]
+        );
+        assert_eq!(h.take(2), vec![note.clone()]);
+        assert_eq!(h.take(3), vec![note]);
+    }
+
+    #[test]
     fn invite_goes_to_the_services_and_the_answer_comes_back_as_a_told_line() {
         let mut h = admins_world();
         h.saves();
@@ -301,6 +403,106 @@ mod tests {
             h.take(1),
             vec![system("invite link: http://127.0.0.1:7801/#invite=X")]
         );
+    }
+
+    #[test]
+    fn commands_spend_the_admins_chat_tokens_and_one_too_fast_does_not_run() {
+        let mut h = admins_world();
+        for _ in 0..4 {
+            h.push(bang(1, "hi"));
+        }
+        h.push(bang(1, "!announce one"));
+        h.push(bang(1, "!kick Mai"));
+        h.tick(50);
+        let announced = |text: &str| WorldOut::Chat(ChatOut::Announce { text: text.into() });
+        let mut lin = vec![lin_says("hi"); 4];
+        lin.extend([
+            WorldOut::ChatRefused(ChatRefusal::TooFast),
+            announced("one"),
+        ]);
+        assert_eq!(h.take(1), lin, "the sixth line, a command, is too fast");
+        assert_eq!(h.core.players(), 3, "and didn't run: Mai stays");
+        // A second later, one more.
+        h.push(bang(1, "!announce two"));
+        h.push(bang(1, "!announce three"));
+        h.tick(1_000);
+        assert_eq!(
+            h.take(1),
+            vec![
+                WorldOut::ChatRefused(ChatRefusal::TooFast),
+                announced("two")
+            ]
+        );
+        assert_eq!(h.take(3), vec![announced("one"), announced("two")]);
+    }
+
+    /// What this thread logs at info and above while `f` runs, as the server's log shows it. The
+    /// subscriber is the process's, set once: tracing caches whether a callsite is wanted for
+    /// every thread, so one thread's own subscriber can miss a callsite another thread saw first.
+    fn logged(f: impl FnOnce()) -> String {
+        use std::cell::RefCell;
+        use std::io;
+        use std::sync::Once;
+
+        thread_local! {
+            static CAUGHT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+        }
+        struct ThisThread;
+        impl io::Write for ThisThread {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                CAUGHT.with_borrow_mut(|caught| {
+                    if let Some(caught) = caught {
+                        caught.extend_from_slice(buf);
+                    }
+                });
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        static SET: Once = Once::new();
+        SET.call_once(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(|| ThisThread)
+                .with_ansi(false)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("no other test sets the process's subscriber");
+        });
+        // A callsite first seen between the subscriber's registration and its setting is wanted.
+        tracing::callsite::rebuild_interest_cache();
+        CAUGHT.with_borrow_mut(|caught| *caught = Some(Vec::new()));
+        f();
+        let bytes = CAUGHT.with_borrow_mut(Option::take).unwrap_or_default();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn each_command_run_is_logged_with_its_account_and_arguments() {
+        let mut h = admins_world();
+        let log = logged(|| {
+            h.push(bang(1, "!kick Mai"));
+            h.push(bang(1, "!give sword"));
+            h.push(bang(1, "!announce Restart at 20:00"));
+            h.tick(50);
+        });
+        let runs: Vec<&str> = log.lines().filter(|l| l.contains("account=1")).collect();
+        assert_eq!(runs.len(), 2, "one line for each command run: {log}");
+        assert!(runs[0].contains(r#"Kick { name: "Mai" }"#), "{log}");
+        assert!(
+            runs[1].contains(r#"Announce { text: "Restart at 20:00" }"#),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn an_admins_bang_and_a_digit_is_plain_chat() {
+        let mut h = admins_world();
+        h.push(bang(1, "!1"));
+        h.tick(50);
+        assert_eq!(h.take(1), vec![lin_says("!1")], "echoed, with no answer");
+        assert_eq!(h.take(2), vec![lin_says("!1")]);
     }
 
     #[test]

@@ -104,7 +104,9 @@ impl Bucket {
     }
 }
 
-/// Routes the tick's lines. An admin's `!` line goes to the admin phase as a command.
+/// Routes the tick's lines. Each spends a token of its speaker's [`Bucket`], an admin's command
+/// too, so commands keep the rate as chat does. An admin's `!` line then goes to the admin phase
+/// as a command.
 pub(super) fn system(
     now: Res<Now>,
     index: Res<Index>,
@@ -118,6 +120,11 @@ pub(super) fn system(
             continue;
         };
         if *stage != Stage::InWorld {
+            continue;
+        }
+        if !bucket.take(now.0) {
+            let refused = WorldOut::ChatRefused(ChatRefusal::TooFast);
+            deliver(conn, e, refused, &mut commands);
             continue;
         }
         if account.admin
@@ -137,12 +144,7 @@ pub(super) fn system(
             }
             continue;
         }
-        let refused = if !bucket.take(now.0) {
-            Some(ChatRefusal::TooFast)
-        } else {
-            check(&line.text).err()
-        };
-        if let Some(why) = refused {
+        if let Err(why) = check(&line.text) {
             deliver(conn, e, WorldOut::ChatRefused(why), &mut commands);
             continue;
         }

@@ -46,6 +46,20 @@ pub fn plain(text: &str) -> bool {
     !text.chars().any(hidden)
 }
 
+/// `text` with each [`hidden`] character written as its escape, such as `\u{1b}`, for a host's
+/// terminal: text stored before the server checked it may hold them.
+pub fn escape_hidden(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if hidden(c) {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

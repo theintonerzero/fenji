@@ -797,4 +797,32 @@ mod tests {
         );
         assert!(h.take(2).is_empty());
     }
+
+    #[test]
+    fn a_told_line_for_a_connection_that_has_left_reaches_no_one() {
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        h.enter(player(2, "Mai", at(0.0, 0.0)));
+        h.take(1);
+        h.take(2);
+        // The services answer late: in the tick the connection leaves, and in a later one.
+        h.push(WorldIn::Leave { conn: 1 });
+        h.push(WorldIn::Tell {
+            conn: 1,
+            text: "invite link: A".into(),
+        });
+        h.tick(50);
+        h.push(WorldIn::Tell {
+            conn: 1,
+            text: "invite link: B".into(),
+        });
+        h.tick(50);
+        assert!(h.take(1).is_empty());
+        assert!(h.closed(1));
+        assert_eq!(
+            h.take(2),
+            vec![WorldOut::Leave { pids: vec![1] }],
+            "Mai hears only that Lin left"
+        );
+    }
 }

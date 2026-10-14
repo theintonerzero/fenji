@@ -10,6 +10,7 @@ use fenji_store::Store;
 
 use crate::clock::Clock;
 use crate::config::Config;
+use crate::text::escape_hidden;
 
 /// Fenji's server: the game gate, the account API and the admin commands.
 #[derive(Debug, Parser)]
@@ -152,11 +153,12 @@ pub async fn admin(
                     (None, None, Some(at)) if at <= now => "expired".into(),
                     _ => "open".into(),
                 };
+                // Labels from M3 were never checked, so one may hold hidden characters.
                 writeln!(
                     out,
                     "{}\t{}\t{}\t{status}",
                     i.id,
-                    i.label.as_deref().unwrap_or("-"),
+                    i.label.as_deref().map_or_else(|| "-".into(), escape_hidden),
                     time(i.created_at)
                 )?;
             }
