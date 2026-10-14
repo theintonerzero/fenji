@@ -1,8 +1,9 @@
 //! archive: the SoLO data archives' structure (M1 spec §5, docs/re/m1-archives.md). Oodle (codec 4)
-//! is read only through the spool that scripts/spike/run-oodle-helper.sh decodes (M2 plan Task 11):
-//! `paths` decodes `_index` that way, `dump` the design tables' cache (docs/re/m2-tables.md), and
-//! `extract --key` any one file; `extract --part` writes a part's stored files. Writes only under
-//! re/.
+//! content is read only through the spool that scripts/spike/run-oodle-helper.sh decodes (M2 plan
+//! Task 11): `paths` decodes `_index` that way, `dump` the design tables' cache
+//! (docs/re/m2-tables.md), and `extract --key` any one file; `extract --part` writes a part's
+//! stored files. `census-oodle` reads only the Oodle streams' chunk headers, and decodes nothing.
+//! Writes only under re/.
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -87,6 +88,12 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Count the Oodle chunk headers of every live Oodle record, decoding nothing. Writes
+    /// OUT/summary.tsv
+    CensusOodle {
+        #[arg(long, default_value = "re/oodle-census")]
+        out: PathBuf,
+    },
 }
 
 fn part_path(client: &Path, n: u32) -> PathBuf {
@@ -131,6 +138,7 @@ fn main() -> Result<ExitCode> {
         Command::List { part } => list(&client, part),
         Command::Paths { spool, out } => return paths(&client, &spool, &out),
         Command::Dump { table, spool, out } => return dump(&client, &table, &spool, &out),
+        Command::CensusOodle { out } => return census_oodle(&client, &out),
         Command::Extract {
             key: Some(key),
             spool,
@@ -455,6 +463,61 @@ fn dump(client: &Path, table: &str, spool: &Path, out: &Path) -> Result<ExitCode
         rows.len(),
         file.display()
     );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Walks the chunk headers of every live Oodle record's blocks, decoding nothing, and writes
+/// OUT/summary.tsv: the chunks by decoder, mode and checksums; then the files and blocks walked,
+/// the blocks whose `u32` raw length disagrees with the blob header, and the walk's errors by kind.
+fn census_oodle(client: &Path, out: &Path) -> Result<ExitCode> {
+    let repo = fenji_data::re_dir::find_repo_root(&std::env::current_dir()?)?;
+    let out = fenji_data::re_dir::resolve_out_dir(&repo, out)?;
+    let places = live_places(client)?;
+    let (mut files, mut blocks_seen, mut bad_prefix) = (0u64, 0u64, 0u64);
+    let mut chunks: BTreeMap<(u8, &'static str, bool), u64> = BTreeMap::new();
+    let mut errors: BTreeMap<String, u64> = BTreeMap::new();
+    for p in places.by_key.values().filter(|p| p.codec == "oodle") {
+        let blob = read_record(client, p)?;
+        let (_, blocks) = fenji_data::blocks(&blob, u64::from(p.offset))?;
+        files += 1;
+        for b in blocks {
+            blocks_seen += 1;
+            let Ok(stream) = fenji_data::oodle_payload(b.input, b.raw_len, b.index) else {
+                bad_prefix += 1;
+                continue;
+            };
+            for c in fenji_oodle::chunks(stream, b.raw_len) {
+                match c {
+                    Ok(c) => {
+                        let mode = match c.mode {
+                            fenji_oodle::ChunkMode::Uncompressed => "uncompressed",
+                            fenji_oodle::ChunkMode::Memset => "memset",
+                            fenji_oodle::ChunkMode::Stored => "stored",
+                            fenji_oodle::ChunkMode::Compressed => "compressed",
+                        };
+                        *chunks.entry((c.decoder, mode, c.checksums)).or_default() += 1;
+                    }
+                    Err(e) => {
+                        let kind = format!("{e:?}");
+                        let kind = kind.split([' ', '{']).next().unwrap_or("?").to_string();
+                        *errors.entry(kind).or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+    let mut tsv = String::from("decoder\tmode\tchecksums\tchunks\n");
+    for ((d, m, c), n) in &chunks {
+        tsv.push_str(&format!("{d}\t{m}\t{c}\t{n}\n"));
+    }
+    tsv.push_str(&format!(
+        "# files\t{files}\n# blocks\t{blocks_seen}\n# bad_prefix\t{bad_prefix}\n"
+    ));
+    for (e, n) in &errors {
+        tsv.push_str(&format!("# walk_error\t{e}\t{n}\n"));
+    }
+    create_replacing(&out.join("summary.tsv"))?.write_all(tsv.as_bytes())?;
+    print!("{tsv}");
     Ok(ExitCode::SUCCESS)
 }
 

@@ -60,6 +60,26 @@ In short:
 | 3.3 | So outside the two containers, `_index` is the only place the archives' paths are named, and reading it needs codec 4. | **Inferred** | G3, AI |
 | 3.4 | **M2 update: the blocks and their decoder.** Each of `_index`'s 49 blocks starts with its raw length as a little-endian `u32` (0x80000; the last block 0x59C49), then the Oodle stream. The engine's four Oodle codecs, Kraken, Mermaid, Selkie and Leviathan, share one decompressor, FUN_14024E060, which passes `OodleLZ_Decompress` the block after those 4 bytes, with the `u32` as the raw length. `tools/oodle-helper` does the same with the client's own `oo2core_6_win64.dll`, inside the sandbox (M2 plan Task 11). All 49 blocks decode to their raw lengths. The joined 25,533,513 bytes are 272,741 lines of `<40 hex digits>\t<path>` and a final newline. 2 of the paths end in `$$` (containers), no line starts with `-`, and 7 paths aren't valid UTF-8. | **Observed** (the prefixes, the decode, the lines); the shared decompressor **Inferred** | AN, AO; G5 |
 | 3.5 | **M2 update: the paths.** `archive paths` (M2 plan Task 12) decodes `_index` through the spool and looks each path's key up among the parts' live records. `_index` leaves 272,734 distinct paths, 2 of them containers, with no bad line and no removal; the 7 lines that aren't UTF-8 aren't mapped (3.4). 272,638 paths, with 224,032 distinct keys, name a live record, and every live record is named at least once: `_index` names every file in the parts, many under more than one path. Of those paths, 31,760 lead to stored files and 240,878 to Oodle files. The other 96 paths, with 82 keys, lead to no record: no live one, no deleted one, and no file in the two containers. They are the client's loose files, 42 under `bin64/` and 54 under `tools/`: each is on disk with the SHA-1 its key names. Of the copy's 109 loose files, `_index` names those 96 at their path and not the other 13 (2 `.exe`, 7 `.dll`, 4 `.ini`). | **Observed** | AQ |
+| 3.6 | **M5 update: the Oodle census.** On 2026-10-14, `archive census-oodle` (the Oodle decoder plan's Task 2) walked the stream and quantum headers of every block of the 209,595 live Oodle files, and decoded nothing. Every one of the 447,245 blocks starts with the raw length its blob header gives (3.4), and its chunks cover that length exactly, with no walk error. All 723,871 chunks name decoder 6, Kraken, and none carries checksums. 694,227 (95.9%) are compressed. 25,145 (3.5%) are uncompressed: the stream header says the bytes follow as they are. 4,499 (0.6%) are memset, one byte repeated. None is stored (quantum data as long as its output). Decoders 10 (Mermaid and Selkie), 12 (Leviathan), 5 (LZNA) and 11 (Bitknit) don't appear. The tables below give the counts. | **Observed** | AR |
+| 3.7 | **M5 update: the Oodle blobs outside the census.** The census walks the parts' live records, which leaves out two sets of Oodle blobs. The 16,162 files inside the two containers (4.3) are blobs within those stored records, and only 35 of their 14,920 distinct keys (50 of the records) are also live records. `_index` is a file of its own (3.1). A probe walks both the way the census walks the parts. Every container record checks (its CRC, status 1, its key in the listing). Their 16,176 blocks hold 12,710 compressed and 3,491 uncompressed chunks, and `_index`'s 49 blocks hold 98 compressed chunks. All of them name decoder 6, without checksums, with no raw length that disagrees and no walk error. So Kraken is the only Oodle codec in the pinned client's data: a Kraken decoder reads every Oodle block in the parts, the containers and `_index`. | **Observed**; the last sentence **Inferred** | AS |
+
+The Oodle chunks by decoder, mode and checksums (3.6, 3.7):
+
+| Decoder | Mode | Checksums | Parts' live records (census) | Containers' files (probe) | `_index` (probe) |
+|---|---|---|---|---|---|
+| 6, Kraken | compressed | no | 694,227 | 12,710 | 98 |
+| 6, Kraken | uncompressed | no | 25,145 | 3,491 | 0 |
+| 6, Kraken | memset | no | 4,499 | 0 | 0 |
+| All | | | 723,871 | 16,201 | 98 |
+
+What the census and the probe walked:
+
+| | Parts' live records (census) | Containers' files (probe) | `_index` (probe) |
+|---|---|---|---|
+| Files | 209,595 | 16,162 | 1 |
+| Blocks | 447,245 | 16,176 | 49 |
+| Blocks whose raw length disagrees with the blob header | 0 | 0 | 0 |
+| Walk errors | 0 | 0 | 0 |
 
 ## 4. Stored files
 
@@ -114,6 +134,8 @@ Paths are relative to the repo root. `re/` is git-ignored, so these files exist 
 | AC | `re/m1/archive-notes.md` (probes `re/m1/probes/sp_probe.py`, `sp_probe2.py`) | The two containers | 4.3, 4.4 |
 | AO | `re/m2/oodle-helper-run2.log` (`scripts/spike/run-oodle-helper.sh`), `re/m2/index-check.txt` (from `re/m2/probes/check_index.rs`, run as a `fenji-data` example), `re/oodle-spool/` | The first decode with the client's DLL, and the shape of the joined `_index` | 3.4 |
 | AQ | `re/m2/archive-paths.txt` (the summary of `archive paths --out re/m2/archive`), `re/m2/archive/paths.tsv`; `re/m2/archive-paths-stats.txt`, `re/m2/missing-keys.txt`, `re/m2/deleted-keys.txt` and `re/m2/container-keys.txt` (probe `re/m2/probes/paths_stats.sh`); `re/m2/unfound-on-disk.txt` (probe `re/m2/probes/unfound_on_disk.py`); `re/m2/loose-files.txt` (probe `re/m2/probes/loose_files.py`) | The paths mapped to records, the 96 that are loose files, and the loose files `_index` doesn't name | 3.5 |
+| AR | `re/oodle-census/summary.tsv` (`archive census-oodle`) | Every live Oodle record's chunk headers, counted by decoder, mode and checksums; the files and blocks walked, the blocks whose `u32` raw length disagrees with the blob header, and the walk's errors | 3.6 |
+| AS | `re/oodle-census/beyond-parts.tsv` (probe `re/oodle-census/probes/beyond_parts/`, a Cargo project on `fenji-data` and `fenji-oodle`: `cargo run --release --manifest-path re/oodle-census/probes/beyond_parts/Cargo.toml` with `FENJI_CLIENT_PATH` set) | The two containers' records and `_index`, their chunk headers walked as the census walks the parts | 3.7 |
 | G1 | FUN_1400BF780, magic at 0x142EFC778; FUN_1400C0A90 (`%s/data%03u` at 0x142EFC7E8) | Opens part N and checks or writes `ZFS\0`; builds the part paths | 1.1 |
 | G2 | FUN_1400C0FE0, FUN_1400BFF10; `[IX]` at 0x142EFC77C; CRC table 0x142EF7EC0; messages at 0x142EFC788, 0x142EFC7A8, 0x142EFC7C8 | Loads every part's index chain: record fields, CRC, status, the key table | 1.2, 1.4–1.6 |
 | G3 | FUN_1400BE960, FUN_1400BE4A0 | Loads `_index` through the blob stream and parses its lines | 1.7, 3.2, 3.3 |

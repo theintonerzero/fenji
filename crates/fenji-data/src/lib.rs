@@ -13,8 +13,8 @@ pub mod re_dir;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
-pub use blob::{BlobHeader, Codec, FIXED_LEN, decode as decode_blob};
-pub use codec::{BuiltinCodecs, Decompressor};
+pub use blob::{BlobHeader, Block, Codec, FIXED_LEN, blocks, decode as decode_blob};
+pub use codec::{BuiltinCodecs, Decompressor, oodle_payload};
 pub use error::{Error, Result};
 pub use exe_fs::{ExeEntry, ExeFs, PIECE_LEN};
 pub use pe::{PeImage, Section};
