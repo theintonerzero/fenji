@@ -1,8 +1,10 @@
-# World: entering and seeing each other
+# World: entering, seeing each other and moving
 
 After the select screen's 10, the server answers with the script message 772. The client reloads its game modules, sets the player's actor id and loads the scene's map behind its loading screen, sending a time sync once a second from then on. When the map and the game's add-ons have loaded it reports the native type 3. Only then does the server send the player's own actor (type 7, with a property blob, which carries its move speed) and type 8, after which the loading screen closes and the client's in-world script messages flow. This document gives the evidence behind the values that `fenji_proto::world` uses for that, the format of the property blob that types 7 and 10 carry, the time syncs, and the creation outfit.
 
 Other players then reach a client in three steps (§14): the server announces each one in view (type 6), the client pulls them one at a time, nearest first (type 5), and the server sends each one whole (types 7 and 8); type 9 takes them away. §15 reads what lets two clients run on one machine, for the two-client runs.
+
+Players move as §16 reads: the client sends a direction command, type 8, when its player starts, stops or changes course; the server relays each one, as type 13, to the clients that show the player, and puts a player back where it has it with type 20.
 
 **Method.** This reading comes from the pinned build 10015727 (`bin64/gujianol.exe`, SHA-256 `3fdc6394de85c1224b91312d62bf2e57251625b49e8d0f3960accf8dfe5f0678`). It used three sources, all read locally and read-only:
 - the client's own scripts, disassembled and decompiled by `luatool` ([`../../re/m1-script-format.md`](../../re/m1-script-format.md));
@@ -10,6 +12,8 @@ Other players then reach a client in three steps (§14): the server announces ea
 - the exe, in the shared Ghidra project and then through REA in one session (2026-10-14), after the evidence norm ([`../../re/README.md`](../../re/README.md#the-norm)); the Evidence IDs are in [REA Evidence IDs](#rea-evidence-ids). Where Ghidra's analysis made no function (0x14020DE10, 0x140210A30), the bytes were read through REA and disassembled with `objdump`. The exe's export table and its built-in property table were read with a standard-library PE reader.
 
 §14 and §15 come from a second reading (Task 12, 2026-10-14; its notes are L5) by the same method: the scripts, the exe in the shared Ghidra project and then through REA in one session, and in another for 15.1's and X18's references (their IDs are in the same table), the exe's import table read with a standard-library PE reader, and Task 11's server logs (§13), read for what a lone client sent.
+
+§16 comes from a third reading (Task 14, 2026-10-14; its notes are L6) by the same method: the scripts, the exe in the shared Ghidra project and then through REA in two sessions (their IDs are in the same table), with `objdump` for the bytes at 0x140170C90 and 0x140174400, where Ghidra's analysis made no function, and Task 11's server logs (§13), which give each message's type and length only.
 
 A design-time survey (L4) gave the leads, and each finding here was checked against the bytecode or the exe. Nothing was run: no client, no debugger, no script in Ghidra, and nothing in the shared project was renamed or changed. Written by a session that has not read any source rejected in [`../../re/sources.md`](../../re/sources.md). Tags follow [`../../re/spike-0.md`](../../re/spike-0.md): **Observed** (literally in a file: a constant, a bytecode operand, a table value, bytes of the exe), **Inferred** (our reading of the code), **Unknown**. Script evidence cites the engine path and the function path in its disassembly (such as `0.56`), with bytecode positions in brackets; where the decompiled text and the bytecode differ, the bytecode wins. Native evidence cites functions and addresses in the pinned exe. Evidence keys resolve in the [Evidence index](#evidence-index).
 
@@ -172,9 +176,9 @@ What Fenji puts in the player's own blob, in index order. Types and defaults are
 | # | Finding | Tag | Evidence |
 |---|---|---|---|
 | 6.1 | **Type 8's body is the actor id,** a `u64` LE (FUN_140222E00's case 8, which case 10 falls into after pushing its blob). The handler calls `actor_system_enter_finish(id)` (1.2). | **Inferred**; offset **Observed** | X1; S2 `0.10`; S3 `0.45` |
-| 6.2 | **Type 23 `SYNC_PROP_FORCE`** (FUN_14020CE90): a `u64` actor id, a `u16` property index and an `i16` value, 12 bytes. Index 1325 sets `prop_move_speed` and 1330 `prop_move_gravity` (FUN_140211630, FUN_1402114E0, each through the property's own setter, the one the blob uses); other indexes are ignored. When a flag in the actor's move state is set, it also clears a value of the move code (DAT_1431F37A8; both meanings **Unknown**). The actor must exist (FUN_1401AD3A0 finds it by its integer id), so 23 comes after 7. | **Inferred**; 0x52D and 0x532 **Observed** | X8 |
+| 6.2 | **Type 23 `SYNC_PROP_FORCE`** (FUN_14020CE90): a `u64` actor id, a `u16` property index and an `i16` value, 12 bytes. Index 1325 sets `prop_move_speed` and 1330 `prop_move_gravity` (FUN_140211630, FUN_1402114E0, each through the property's own setter, the one the blob uses); other indexes are ignored. When the actor is the player's own (the move state's flag at +0x112, which 16.3's sender also requires), it also clears DAT_1431F37A8, the time of the last direction command, so the next one goes out at once (16.6). The actor must exist (FUN_1401AD3A0 finds it by its integer id), so 23 comes after 7. | **Inferred**; 0x52D and 0x532 **Observed** | X8; X22 |
 | 6.3 | **Type 21 `MOVE_BASE_PROP`** (FUN_14020BA70): a `u64` actor id, a `u64`, three `i32`, an `i16`, then the speed and the gravity as `i16`, 34 bytes. It also writes the middle fields into the actor's move object (meaning **Unknown**), and a short body leaves stale values in them. So Fenji uses 23. | **Inferred** | X8 |
-| 6.4 | **The rate.** `move_get_move_speed_by_rat` (0x14020DE10, bound at 0x14020AAC0; Ghidra's analysis made no function there) multiplies the rate by 500.0 and by 0.01 (the `f32` constants at 0x142F04890 and 0x142F046B8): rate 100 is 500 units. The scripts' logic speed is `prop_move_speed` less an offset for backward moves, and a rate below 60 picks walking (L4). That the 500 is per second is **Inferred**. | **Observed** (bytes), **Inferred** (per second) | X9; L4 |
+| 6.4 | **The rate.** `move_get_move_speed_by_rat` (0x14020DE10, bound at 0x14020AAC0; Ghidra's analysis made no function there) multiplies the rate by 500.0 and by 0.01 (the `f32` constants at 0x142F04890 and 0x142F046B8): rate 100 is 500 units, and the step code makes that a second (16.9). The scripts' logic speed is `prop_move_speed` less an offset for backward moves, and a rate below 60 picks walking (L4; 16.7, 16.14). | **Observed** (bytes; the step's constants, 16.9) | X9; X24; L4 |
 | 6.5 | **Unset, the speed is 0** (D2 gives no default), and the player can't move. Fenji sets it in the type-7 blob, so it is in place before the move handle exists (4.3). The plan also sent type 23 until Task 11's runs: with both, the character ran about 5 m/s (m4-e2), and without type 23 it ran the same stretch as fast (m4-e3), so Fenji sends the blob's 1325 alone and keeps type 23 for later changes of speed. | **Observed** (default; runs m4-e2, m4-e3), the choice is Fenji's | D2; 4.3; 6.2; §13 |
 
 ## 7. Time syncs (type 2)
@@ -401,15 +405,124 @@ What Fenji sends for seeing (the M4 world plan's Amendment B):
 | 15.4 | **The log is in the exe's folder**: `%s/gujianol.log`, opened with `"w"`, in the folder `GetModuleFileNameA` gives (FUN_140245560, FUN_1400B6490). Two clients from one copy would truncate and interleave one log, so each needs its own copy. | **Inferred**; the format string **Observed** | X16 |
 | 15.5 | **So two clients share one prefix, each from its own reflink copy of the client**, the second started some seconds after the first. One wineserver hosts Wine's own drivers from before the first client starts, so the watchdog's rule on a `winedevice.exe` started after the client keeps its meaning, and its rules on new `.sys` files and on the registry watch one prefix. Each client also needs its own nested display, since rootful Xwayland has no window manager: two client windows on one display stack, and XTEST input and screenshots reach only the top one. And each needs its own account, since a second login of one account replaces the first. **Unknown** until Task 13's rehearsal and first run: whether GE-Proton's `proton run` serves two clients in one prefix, whether a second `proton run` brings a new `winedevice.exe` (the rehearsal starts Wine's own `cmd.exe` that way before any client does), and whether the second web view starts. The runners' design is the M4 world plan's Amendment B. | the choices are Fenji's; **Unknown** | §12 question 7 |
 
+## 16. Moving
+
+The client moves its own player and tells the server what it did; the other clients replay it. Movement is native code written for both ends, which one flag tells apart (16.2), and every move is a command with a time. Each client runs every actor's commands in 16 ms steps on one clock, the server's time as the type-2 replies set it (16.5).
+
+| Step | Direction | Message | What happens | Evidence |
+|---|---|---|---|---|
+| 1 | — | the scripts call `actor_move_dir` every frame | a new direction command only when something changed, at most one per 50 ms (16.6) | S25 `0.24`; X22 |
+| 2 | C→S | type 8 `CTS_PROTOCOL_MOVE_DIR`, 200 bytes | when the command starts: its time, the player's state then (where it stands) and the direction (16.3, 16.4) | X21; §13 |
+| 3 | S→C | type 13 `STC_PROTOCOL_MOVE_DIR`, to each client that shows the player | queued at the command's time; when it starts, the player is put where its header says, then moved in its direction at its speed (16.8, 16.9) | X19, X20, X24 |
+| 4 | S→C | type 20 `STC_PROTOCOL_MOVE_SYNC_SVR`, to the mover | "at time T you stood here": the client takes the position into its state of T and replays its own commands since (16.12) | X26 |
+
+Type 8's body, 200 bytes:
+
+| Offset | Bytes | Content | Fenji | Tag |
+|---|---|---|---|---|
+| 0 | 8 | the command's time, `u64` LE: the server's Unix time in ms as the client estimates it, a multiple of 16 (16.5) | the relay's time, bounded (16.15) | **Inferred**; offsets **Observed** |
+| 8 | 12 | x, y and z, three `i32` LE: where the player stands when the command starts | the position | the same |
+| 20 | 4 | a state word | not read | the same |
+| 24 | 1 | a state byte | not read | the same |
+| 25 | 2 | the yaw, `i16` LE, degrees within (−180, 180] | the position's yaw | the same |
+| 27 | 4 | a state word that picks the last block's form: 0 in every run, whose bodies were all 200 bytes | checked: 0 with 200 bytes, not 0 with 185 (16.4) | the same |
+| 31 | 134 | four state blocks of 22, 44, 20 and 48 bytes (33 for the last when the word at 27 isn't 0) | not read | the same |
+| 165 | 1 | the direction: 0 stops; 1 to 8 name the yaw offset by eighths of a turn (16.7) | bounded to 0–8 | the same |
+| 166 | 2 | the yaw again, `i16` | not read: a relay takes the position's yaw | the same |
+| 168 | 2 | the yaw offset, `i16`, degrees | folded into (−180, 180] | the same |
+| 170 | 2 | the speed rate, `u16`: 100 is 500 units a second | bounded to 0–340 | the same |
+| 172 | 4 | two pitches, `i16` each, degrees | each bounded to −90–90 | the same |
+| 176 | 1 | the mode: 3 walks | not read | the same |
+| 177 | 4 | the part of x below one unit, `f32` | not read | the same |
+| 181 | 1 | a fact about the client's own process | neither read nor logged | the same |
+| 182 | 4 | the part of y below one unit, `f32` | not read | the same |
+| 186 | 8 | the gravity, property 1330 | not read | the same |
+| 194 | 2 | a value the client clears at each send | neither read nor logged | **Unknown** (meaning) |
+| 196 | 3 | two facts about the client's own process, a byte and a `u16` | neither read nor logged | **Inferred** |
+| 199 | 1 | 1 when the client's own probe found the way blocked | not read | **Inferred** |
+
+Type 13's body as Fenji sends it, 42 bytes; every type from 13 to 19 starts with its id and header:
+
+| Offset | Bytes | Field | Fenji sends | Tag |
+|---|---|---|---|---|
+| 0 | 8 | actor id, `u64` LE | the mover's pid | **Inferred**; offsets **Observed** |
+| 8 | 1 | the header's form, `i8`: above 0 absolute (as below); otherwise a `u16` time and four `i16` deltas from the last absolute header for that actor | 1 | the same |
+| 9 | 8 | the command's time, `u64` LE | the move's bounded time | the same |
+| 17 | 12 | x, y and z, `i32` LE | the checked position, rounded and clamped to `i32` | the same |
+| 29 | 2 | the yaw, `i16` LE | the checked yaw, rounded and folded into (−180, 180] | the same |
+| 31 | 1 | the direction | the bounded direction | the same |
+| 32 | 2 | the yaw, `i16` | the yaw at 29 again | the same |
+| 34 | 2 | the yaw offset, `i16` | the bounded yaw offset | the same |
+| 36 | 2 | the speed rate, `u16` | the bounded rate | the same |
+| 38 | 4 | two pitches, `i16` each | the bounded pitches | the same |
+
+Type 20's body as Fenji sends it, 32 bytes:
+
+| Offset | Bytes | Field | Fenji sends | Tag |
+|---|---|---|---|---|
+| 0 | 8 | actor id, `u64` LE | the player's own pid | **Inferred**; offsets **Observed** |
+| 8 | 8 | the time T, `u64` LE | the server's time in ms, floored to a multiple of 16, less 160 (16.12) | the same |
+| 16 | 2 | the mask, `u16` LE: which state fields follow | 0x00C0: the position (0x40) and the yaw (0x80) | the same |
+| 18 | 12 | x, y and z, `i32` LE (mask 0x40) | the position, rounded and clamped to `i32` | the same |
+| 30 | 2 | the yaw, `i16` LE (mask 0x80) | the yaw, rounded and folded into (−180, 180] | the same |
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 16.1 | **Types 12 to 29 go to native code.** FUN_140222E00 hands 12 to FUN_14008E470, which returns at once, so the client ignores type 12. It hands 13 to 19 and 27 to 29 to FUN_14020FAA0 with a kind each: 13 a direction (3), 14 a move to a point (4), 15 a skill cast (7), 16 a jump to a point (1), 17 a stop (5), 18 a turn (6), 19 the end of a charge (8), 27 to 29 kinds 10 to 12. 20 goes to FUN_14020D100 and 26 to FUN_14020CCE0. | **Observed** (the switch, the empty function) | X1; X19; X27 |
+| 16.2 | **One move code for both ends.** The move module's settings (FUN_14020E090, copied to DAT_143C47CC0 by FUN_14016A6C0) start with a flag that the client sets to 0. The commands' writers add fields when the flag is 0, and their readers read those fields only when it isn't: in the client, a type 8 carries 24 bytes that a type 13 doesn't (16.4). That the flag marks the server's build is **Inferred**. | **Observed** (the flag, the branches), **Inferred** (its meaning) | X20; X23 |
+| 16.3 | **Type 8 is the player's direction command.** `actor_move_dir` (FUN_1401FFB80, bound at 0x14020A413) makes a command (FUN_1401FC450) with the direction, the mode, the yaw, the yaw offset, the speed rate and two pitches. When the command becomes the player's current one, the step hook (FUN_140202930) calls FUN_1401FEE60, which writes the command's time, the player's state at that moment (copied by FUN_14016F280, written by FUN_14016D390 with every mask bit) and the kind's part (FUN_140170870), and sends it with FUN_140223380: kind 3 as type 8, kind 7 (a skill cast, jumps included) as 9, kind 8 as 10. It sends only for the player's own actor, the move state's flag at +0x112. Nothing else is sent as a move: a stop is a type 8 with direction 0. | **Inferred**; the types **Observed** | X21; X22; X24 |
+| 16.4 | **The layout above** follows FUN_14016D390's order (x, y and z are the low 32 bits of the state's 64-bit position; the yaw its low 16 bits) and the direction writer's, with the 24 bytes of 16.2: 8 + 109 + 48 + 35 = 200 bytes, the length of every type 8 in Task 11's runs (§13). When the word at 27 isn't 0, the last state block is 33 bytes and the body 185. The fractions at 177 and 182 are the parts of x and y below one unit, which the physics keeps (16.9). | **Inferred**; the length **Observed** (runs) | X20; X21; §13 |
+| 16.5 | **The clock.** Command times come from FUN_140202910: the client's estimate of the server's time (FUN_140222DE0, which the type-2 replies set, §7) plus DAT_1431F3790, which is 0 in the image and is only read in Ghidra's analysis. The handler of 701 `PROTOS2C_MOVE_TIME_OFFSET` calls `set_move_time_offset`, which no script defines and the exe doesn't name. FUN_1401771A0 rounds a time up to the next multiple of 16, and the queue (FUN_140177240) drops a command whose time isn't one. So command times are the server's Unix time in ms, multiples of 16. | **Observed** (instructions), **Inferred** (the offset stays 0) | X22; X23; X24; S22 `0.114` |
+| 16.6 | **How often the client sends.** The scripts call `actor_move_dir` every frame (S25 `0.24` [18], [314], [357]), and it makes a command only when the player starts or stops (at once), or, at most once per 50 ms (`0x32`), when the yaw, the direction or the pitch changed or the current command's expiry (16.9) is less than 500 ms away. So a player standing still sends nothing, a player moving straight sends at least one a second, and no client sends more than one per 50 ms besides starting and stopping. In Task 11's runs one type 8 came about 1.6 s after the player's own 8, which fits the first frame's stop (the time of the last command, DAT_1431F37A8, starts at 0), none while the character stood, and 2 to 3 a second, 350 to 450 ms apart, while it ran. m4-e1, which drew the player dead, sent none; why is **Unknown**. | **Observed** (instructions; runs), **Inferred** | X22; S25; §13 |
+| 16.7 | **The fields' ranges.** `actor_move_dir` truncates the yaw and the yaw offset to integers and folds them into (−180, 180] (`fmodf` by 360), caps the speed rate at the player's own speed (the move handle's FUN_140208790: property 1325, through FUN_140207D80) and passes the direction as a byte. The scripts' directions are 0 to 8: `yaw_offset_to_dir` (S25 `0.11`) gives the yaw offset by eighths of a turn, 1 at 0°, 5 at 45°, 3 at 90°, 7 at 135°, 2 at 180°, 8 at 225°, 4 at 270° and 6 at 315°. The speed rate is `GetLogicSpeed` (property 1325, less an offset when moving back, capped by 1327; S26 `0.25`), and the pitch is the camera's, in degrees, within the scope's limits (S25 `0.5`). The yaw is in degrees: `cos` and `sin` take yaw × 0.017453292. | **Observed** (instructions, bytecode), **Inferred** | X22; X25; S25; S26 |
+| 16.8 | **A relay puts the mover where its header says.** FUN_14020FAA0 reads a type 13 for an actor the client has into a command with its network flag set (+0x115); FUN_140176FA0 queues it unless the actor already has 100 queued; FUN_140177240 takes it however late. When its step comes, the step hook copies the header's x, y, z and yaw into the actor's state and applies them (FUN_140202930). A command more than 16 s old is dropped (FUN_140177E30). A late one is applied by taking the actor back to the command's time and stepping it forward again (FUN_1401781A0), through the 16 s of history (1,000 steps of 16 ms) that every player's move handle keeps (FUN_14015CD10). A relay for an actor the client doesn't have is dropped. | **Inferred**; constants **Observed** | X19; X24 |
+| 16.9 | **Then its direction moves it.** The direction command's run (FUN_140170300) sets the actor's yaw, its direction, its heading (yaw + yaw offset) and its speed: the rate × 500 / 100 units a second, the rate capped at the actor's own 1325. The command expires 1,500 ms after its time. Each 16 ms step (FUN_140177BF0) moves the actor speed × 16 × 0.001 units along the heading, keeping the fractions (FUN_140161060), and stops it once the expiry has passed. So others animate from the relays alone (world spec open question 4): each relay puts the mover back where it stood and moves it until the next, and a mover whose relays stop stops within 1.5 s. Direction 0 sets the speed to 0. | **Observed** (constants), **Inferred** | X20; X24; X25 |
+| 16.10 | **Units.** The move code's positions are integers: the truncated `f32` of property 16 (FUN_1401FF980), so they are in property 16's units, which §13's minimap showed are centimetres. The yaw is in degrees (16.7). Rate 100 is 500 units, and the step code makes that per second (16.9), so 6.4's "per second" is **Observed** now. `movement::RUN`, `YAW_LIMIT` and `COORDINATE_LIMIT` stand. | **Observed** (instructions; §13's runs) | X14; X24; §13 |
+| 16.11 | **Stopping, turning and jumping.** A stop is a type 8 with direction 0, and its relay a type 13 with direction 0 (16.9). 17 `MOVE_STOP` (one byte after the header; FUN_140174350 clears the direction and the speeds) and 18 `MOVE_YAW` (four `u32`: a target yaw as an `f32`, a step count, a turn direction and one more; FUN_140174910) are the server's own commands. Jumps, dashes and glides are skill casts (`CastJumpSkill` and `CastDashSkill`, S26 `0.32` and `0.31`; L4): the client sends them as type 9 (kind 7: a skill id, a target, optional points, a name; FUN_140175140), and others receive them as 15 (FUN_140175590). In Task 11's runs, where the run hit rocks, the client said a skill wasn't learnt (§13): M4 sends no skills. 14 and 16 carry target points for the server's scripted moves (FUN_14016FF20 reads 16's). | **Inferred**; the run **Observed** | X28; S26; L4; §13 |
+| 16.12 | **20 `MOVE_SYNC_SVR`.** FUN_14020D100 reads an actor id, a time T, a `u16` mask and the masked state (FUN_14016E880: x, y and z as `i32` with 0x40, the yaw as `i16` with 0x80), and acts unless the actor's property 242 `prop_move_cli_moving` is set (FUN_140207900). If the actor's history holds T (FUN_140161E90: no more than 1,000 steps after the history's start, which stays 8 to 16 s behind the actor's clock) and the actor ran that step, it takes the masked fields into the state of T (FUN_14016CCF0) and steps forward again to now. A T the actor hasn't reached yet is recorded (FUN_140177880) and applied when its step comes (16.8's hook); a T before the history's start is ignored. For the player's own actor it also lets the next direction command go out at once (16.6), as type 23 does (6.2). So T is best a little in the client's past: Fenji uses its clock floored to 16 ms, less 160 ms. Only two buffs' scripts set 242 (S27), and Fenji gives no buffs and doesn't send 242, so in M4 it stays unset. Whether a far 20 makes the client run its own scene teleport, which the scripts' actor update runs when the player's position changes by 200 m or more within one update (S3 `0.43` [66]–[80]; S1 `0.36`), is **Unknown**. | **Inferred**; constants **Observed**; **Unknown** | X24; X26; S1; S3; S27 |
+| 16.13 | **26 `MOVE_ENTER_SYNC_STATE`** (FUN_14020CCE0): an actor id, a mask and the masked state, set at once on another player's actor, never the player's own. Fenji doesn't need it: 7 places an entering player (14.8), and its next relay places it again. | **Inferred** | X27 |
+| 16.14 | **419 `PROTOC2S_SET_RUN_STATE`.** The walk toggle (S25 `0.23`) calls `SetRunState` (S18 `0.250`), which sends 419 with a boolean and changes nothing itself. Walking is a 1325 below 60, which makes the mode 3 (S25 `0.24` [352]–[354]), and only the server sets 1325. Fenji ignores 419 in M4: players always run. | **Observed** (bytecode), the choice is Fenji's | S18; S25 |
+| 16.15 | **What Fenji takes from a type 8.** The position: x, y, z and the yaw, unbounded, since the world checks them (speed, limits, finiteness). The rest, each bounded: the time clamped to the server's clock less 2,000 ms to plus 1,000 ms and floored to a multiple of 16; the direction to 0–8; the yaw offset folded into (−180, 180]; the speed rate to 0–340 (`MAX_RATE`); each pitch to −90–90. Nothing else: the bytes at 181, 194, 196 and 197 describe the player's machine (FUN_140201180 fills them, one from a byte of the client's export `curl_easy_exit` through FUN_140247D00), like 7.2's counters and 14.4's byte, so Fenji neither reads nor logs them, and its trace log shows the decoded move, never the body. A relay is built from these fields and the checked position only. | the choices are Fenji's | 16.4; X29 |
+| 16.16 | **Queries 6 and 7.** The client sends type 6 (a `u32` 0 or 1, a `u32` count, then actor ids as `u64`) and type 7 (a `u32` count, then actor ids) about actors its scripts list for checking, at most every 1,600 and 3,000 ms (FUN_140201180, with FUN_14020F6A0, FUN_14020FE90 and FUN_14020B5C0). Fenji ignores them in M4. Whether a client sends them with another player in view is **Unknown**. | **Inferred**; the intervals **Observed** | X29 |
+
+What Fenji sends for moving (the M4 world plan's Amendment C):
+
+| The client sends, or the world says | Fenji sends | Values |
+|---|---|---|
+| type 8 | `WorldIn::Move`: the position, and the rest bounded (16.15) | a body that isn't 200 bytes with 0 at 27, or 185 with another word there, goes nowhere |
+| types 6, 7, 9, 10 and 11; script message 419 | nothing | 16.11, 16.14, 16.16 |
+| `Moved { pid, step }` | type 13, to each client that shows the mover | the header from the checked position and the move's bounded time, the direction part from the bounded fields; at most one a tick for each mover |
+| `Correct { pos }` | type 20, to the mover | T = the server's time floored to 16 ms, less 160 ms; mask 0x00C0, the position and the yaw |
+| `Teleport { pos }` | type 20, to the player | the same |
+| a 13 naming the connection's own pid | nothing | 16.8: it would place the player's own actor |
+
+**Golden vectors**, bodies in hex, with T = 1,791,936,000,000 ms (`00 70 b5 37 a1 01 00 00`):
+- Type 8, the player at the default start (2366, −71735, 64854) with yaw −15, direction 1, yaw offset 0, rate 100, pitches −10 and 10, made from the layout above for Fenji's tests; 200 bytes, by segment:
+  - 0–19: `00 70 b5 37 a1 01 00 00 3e 09 00 00 c9 e7 fe ff 56 fd 00 00`
+  - 20–30: `00 00 00 00 00 f1 ff 00 00 00 00`
+  - 31–164: 134 bytes of `00`
+  - 165–175: `01 f1 ff 00 00 64 00 f6 ff 0a 00`
+  - 176–199: `00 00 00 80 3e 5a 00 00 00 3f 14 00 00 00 00 00 00 00 5a 5a 5a 5a 5a 00`
+- Type 13, that move relayed for pid 258, 42 bytes: `02 01 00 00 00 00 00 00 01 00 70 b5 37 a1 01 00 00 3e 09 00 00 c9 e7 fe ff 56 fd 00 00 f1 ff 01 f1 ff 00 00 64 00 f6 ff 0a 00`.
+- Type 20, pid 258 put at the same point with the server's clock at T, 32 bytes: `02 01 00 00 00 00 00 00 60 6f b5 37 a1 01 00 00 c0 00 3e 09 00 00 c9 e7 fe ff 56 fd 00 00 f1 ff`.
+
+The plan's Amendment C has the bounded and the hostile vectors.
+
+Open questions for Task 15's runs, each run's prediction written before it starts:
+1. **Seeing each other move** (16.8, 16.9): two clients walk, run, turn and stop near each other; each shows the other moving and stopping where its own client shows it.
+2. **Corrections and teleports** (16.12): a refused move puts the player back where the server has it (with a build for that run only whose check refuses moves, as m4-e3 had its own); and, once Task 16 puts chat on the wire, an admin's `!tp` within the scene, near and beyond 200 m, puts the player at the target and shows whether a far one runs the client's scene teleport.
+3. **Jumping and walking** (16.11, 16.14): a jump shows that the skill isn't learnt and sends no type 9; the walk toggle sends 419 and changes nothing.
+4. **Queries** (16.16): whether either client sends type 6 or 7 about the other, and whether ignoring them changes what it shows.
+
 ## Evidence index
 
 `re/` is git-ignored, so the script listings, caches and notes exist only on the owner's machines. `luatool` regenerates the listings from the pinned build. A script key names the disassembly `re/m1/disasm/data/<path>.luac.dis` and the decompiled `re/m1/decompiled-all/data/<path>.lua`, with the function paths cited. `PG/` stands for `data/locale/common/core/modules/pregame/`, and `AS/` for `data/locale/common/interface/addons/ActorSelect/`.
 
 | Key | Path or address | What it holds |
 |---|---|---|
-| S1 | `data/core/client/scene_manager.luac` | The main chunk `0`: 772's closure into register 62 [105] and the stubs for 772, 92, 330, 394, 490 and 733 [112]–[135]. The 772 handler (`0.56`), the `maps` lookup (`0.51`), `cli_loadmap` (`0.54`), `scene_load_scene` (`0.37`), the load update that calls `scene_start_load` (`0.47`), the local player's entry hook (`0.49`), `scene_is_in_world` (`0.19`), `scene_get_type` (`0.5`), the current tid (`0.8`) and map (`0.13`), the open-world test (`0.18`) |
+| S1 | `data/core/client/scene_manager.luac` | The main chunk `0`: 772's closure into register 62 [105] and the stubs for 772, 92, 330, 394, 490 and 733 [112]–[135]. The 772 handler (`0.56`), the `maps` lookup (`0.51`), `cli_loadmap` (`0.54`), `scene_load_scene` (`0.37`), the load update that calls `scene_start_load` (`0.47`), the local player's entry hook (`0.49`), `scene_is_in_world` (`0.19`), `scene_get_type` (`0.5`), the current tid (`0.8`) and map (`0.13`), the open-world test (`0.18`), `scene_require_teleport` (`0.36`: `allow_tele` [1], the scene teleport's event [45]) |
 | S2 | `data/core/client/net_manager.luac` | The type handlers for 2 (`0.7`), 6 (`0.8`), 7 (`0.9`), 8 (`0.10`), 9 (`0.11`) and 10 (`0.12`), put in the handler table in the main chunk `0` [75]–[88]; `send_gateway` (`0.22`), `send` (`0.25`), `send_enter` (`0.26`), `send_leave` (`0.27`), `send_time_sync` (`0.28`), `net_manager_send_sync_filter` (`0.29`); `net_manager_enable_send` (`0.31`) and `net_manager_disable_send` (`0.32`) |
-| S3 | `data/core/client/actor_manager.luac` | Which actors get a move handle (`0.20`), its creation (`0.21`), the handles (`0.24`), creating an actor (`0.33`), destroying one (`0.34`, from `actor_system_destroy_actor`, `0.46`), the actor by id (`0.39`), `actor_system_set_local_id` (`0.42`), `actor_system_enter_finish` (`0.45`), `actor_system_unpack_props` (`0.49`), `actor_system_reset_props` (`0.51`), `actor_system_create_actor` (`0.52`), `actor_system_local_player_enter` (`0.53`), `actor_system_get_local_id` (`0.82`) |
+| S3 | `data/core/client/actor_manager.luac` | Which actors get a move handle (`0.20`), its creation (`0.21`), the handles (`0.24`), creating an actor (`0.33`), destroying one (`0.34`, from `actor_system_destroy_actor`, `0.46`), the actor by id (`0.39`), `actor_system_set_local_id` (`0.42`), `actor_system_enter_finish` (`0.45`), `actor_system_unpack_props` (`0.49`), `actor_system_reset_props` (`0.51`), `actor_system_create_actor` (`0.52`), `actor_system_local_player_enter` (`0.53`), `actor_system_get_local_id` (`0.82`), `actor_system_update` (`0.43`: the local player's position, read at [36]–[41] and again at [66]–[68], the squared distance against 400,000,000.0 [77], `scene_require_teleport` [79]) |
 | S4 | `data/core/client/time_manager.luac` | `SERVER_TIME_SYNC_INTERVAL` (`0`), `time_manager_update` (`0.1`), `time_manager_time_sync_resp` (`0.2`) |
 | S5 | `data/core/client/main.luac` | The per-frame function (`0.9`), which calls `time_manager_update` |
 | S6 | `data/interface/system/UIMain/UIMain.luac` | The `STATE_*` constants (`0`), the net-status timer `OnTimer_CheckNetStatus` (`0.3`), `UpdateLoadScene` (`0.9`), `OnRequestLoadScene` (`0.24`), `OnLocalActorEnter` (`0.30`) |
@@ -424,18 +537,21 @@ What Fenji sends for seeing (the M4 world plan's Amendment B):
 | S15 | `data/core/share/item_logic/item_category.luac` | The equipment test on `id >> 24` (`0.0`) and the id from type and number, `type << 24` (`0.23`, `0.24`) |
 | S16 | `data/core/modules/net/net.luac` | The close-reason table in the main chunk `0` (decompiled lines 1674–1810), as in [`lobby.md`](lobby.md) S1 |
 | S17 | `data/core/modules/player/player.luac` | `OnActorEnter`, for other players (`0.2`); the local player's setup, `OnLocalActorEnter` (`0.4`); `OnHPChanged` (`0.20`) and the model's update with the `PostDead` effect (`0.21`) |
-| S18 | `data/core/client/actor_interface.luac` | `GetHPRat` (`0.47`), `GetHP` (`0.48`), `GetHPMax` (`0.50`) |
+| S18 | `data/core/client/actor_interface.luac` | `GetHPRat` (`0.47`), `GetHP` (`0.48`), `GetHPMax` (`0.50`); `SetRunState` (`0.250`), which sends 419 [8] |
 | S19 | `data/core/client/actor_id_sync.luac` | The three queues and their timers (main chunk `0`, [69]–[89]), the enqueue (`0.8`), the dequeue (`0.9`), the pick (`0.10`), the timer's pull (`0.11`), `actor_id_enter` (`0.13`), `actor_id_leave` (`0.14`); the debug history (`0.0`–`0.3`), which `actor_id_on_actor_sync` (`0.15`) only adds to |
 | S20 | `data/core/client/actor_filter.luac` | The main chunk `0`: 3000 ms [1], 32 [12], the level rows, the threat rank 10 [39]; the check that sends type 5 (`0.3`), the values for players (`0.4`) and NPCs (`0.5`), the 3-second pass (`0.6`), `actor_filter_update` (`0.7`), `actor_filter_set_lv` (`0.8`) |
 | S21 | `data/core/share/timer_service.luac` | `timer_service_insert` (`0.0`) and the update that sets a timer with an interval again (`0.6`) |
-| S22 | `data/core/combat/client/combat_system.luac` | `on_actor_enter_finish` (`0.143`), exported as `combat_on_actor_enter_finish` in the main chunk `0` [480]–[496] |
+| S22 | `data/core/combat/client/combat_system.luac` | `on_actor_enter_finish` (`0.143`), exported as `combat_on_actor_enter_finish` in the main chunk `0` [480]–[496]; the handler of 701 `PROTOS2C_MOVE_TIME_OFFSET` (`0.114`), set in `0` [370], which calls `set_move_time_offset` [6] |
 | S23 | `data/interface/addons/BillBoard/BillBoard.luac`, `BillBoardActor.luac` | `OnLoad` (`BillBoard.luac` `0.17`): name boards on `SCENE.EVENT_ACTOR_ENTER` [33] and `SCENE.EVENT_ACTOR_LEAVE` [38]; the properties a board watches (`BillBoardActor.luac` main chunk `0` [89]–[109]) |
 | S24 | `data/core/modules/transmit/transmit_with_effect.luac` | `RegisterEvents` (`0.16`): the one listener of `SCENE.EVENT_ACTOR_ENTER_FINISH` [11], `OnActorEnterScene` (`0.14`) |
+| S25 | `data/core/modules/control/control_move.luac` | `move.runwalk` (`0.23`): `SetRunState` [2]–[3] with the opposite of property 475 [7]; `move.after` (`0.24`): its three calls of `actor_move_dir` ([18], when the player can't move; [314], the gamepad's; [357], the keyboard's), `GetLogicSpeed` [346], 1325 [352] and the walk test against 60 [354]; the pitch (`0.5`): the scope's `control_pitch_min` [4] and the camera's angle [20]; `yaw_offset_to_dir` (`0.11`) and its table (`0` [50]–[62]); both `move` functions set in `0` [113], [115] |
+| S26 | `data/core/modules/control/logic_move.luac` | `GetLogicSpeed` (`0.25`): 1327 [17]; `CastDashSkill` (`0.31`) and `CastJumpSkill` (`0.32`); set in the main chunk `0` [63], [75], [77] |
+| S27 | `data/scripts/combat/buff/1667.luac`, `data/scripts/combat/buff/4259.luac` | The only setters of property 242 in the scripts: each sets it to `true` (`0.0` [34]) and back to `false` (`0.2` [25]). A search of every listing for the constant 242 finds no other setter; the rest read it or use 242 for something else |
 | D1 | `data/caches/protocol_ver.new_cache` | The protocol table: 772 `PROTOS2C_ACTOR_LOAD_SCENE`, 92, 330, 394, 10, 392 |
 | D2 | `data/caches/prop_tables.new_cache` | 2,439 rows: name, type, sync class and default |
 | D3 | `data/caches/all_tables.new_cache` | `vocation_initequip_templ` (`CteateEquips`, `PreviewEquips`), `vocation_templ` (`CreateShowEquipHead`, `creator_info`), `maps` |
 | D4 | `data/caches/locale_en.new_cache` | The English texts of the close reasons and of UIMain's fallbacks |
-| X1 | FUN_140222E00 | Inbound messages by type: case 2 (0x140222E59), case 6 (0x140222F3E), case 7 (0x140222FAE), case 8 (0x14022306B), case 9 (0x140223006), case 10 (0x14022304F), and cases 21 and 23 |
+| X1 | FUN_140222E00 | Inbound messages by type: case 2 (0x140222E59), case 6 (0x140222F3E), case 7 (0x140222FAE), case 8 (0x14022306B), case 9 (0x140223006), case 10 (0x14022304F), and cases 21 and 23; the move types 12 to 20 and 26 to 29 (16.1) |
 | X2 | FUN_140221BB0, FUN_140246E90, FUN_1402481D0, FUN_141156EA0, FUN_141156CC0 | `send_enter` and the parts of type 3's body |
 | X3 | FUN_140221AC0, FUN_140246E40, FUN_140246DF0, FUN_140A9D6A0, FUN_141156C20, FUN_140A9D650; the exports `ipvtmeg` (0x143D27000) and `curl_easy_paste` (0x143D26000) | `send_time_sync` and the two values it reads |
 | X4 | FUN_1401AF730 (bound at 0x1401AFCDC), FUN_1400E2D60, FUN_1401ACD10, FUN_14017BA60 and its jump table at 0x14017BD64, FUN_1401ACE70 | `lua_actor_props_unpack` and the blob's decoder |
@@ -453,22 +569,34 @@ What Fenji sends for seeing (the M4 world plan's Amendment B):
 | X16 | FUN_140245560, FUN_1400B6490 | `gujianol.log` in the exe's folder |
 | X17 | FUN_140188970, FUN_140183DD0; the string at 0x141161898 | The web view's named queues and its helper's `--queueid` |
 | X18 | The exe's import table, read with a standard-library PE reader: the slots of `CreateMutexW` (0x141159518), `OpenMutexW` (0x141159510), `CreateMutexA` (0x1411596E0), `CreateSemaphoreA` (0x1411596D8), `CreateSemaphoreW` (0x1411595F0), `CreateEventA` (0x141159790), `CreateEventW` (0x1411592A8) and `FindWindowA` (0x14115A648). Their references, in the shared project and through REA, lie in the callers: of `CreateMutexW`, FUN_14024E790 (twice), FUN_140183BE0 and FUN_140183DD0; of `OpenMutexW`, FUN_140183BE0 and FUN_140183DD0; of `CreateMutexA` and `CreateSemaphoreA`, FUN_140A96340; of `CreateSemaphoreW`, FUN_140B0EAE0; of `FindWindowA`, FUN_140A92AE0. `CreateEventA`'s slot has 14 references and `CreateEventW`'s one; each call's name argument, 0, was read in the shared project | The exe's named objects |
+| X19 | FUN_14020FAA0, FUN_1401FF030, FUN_140176FA0; the kinds' vtables from 0x1411894A8 (the base, the jump to a point, the direction, the move to a point, the stop, the cast and the end of a charge) | Types 13 to 19 and 27 to 29: the id, the header (absolute or delta), the kind's part, and the queue's cap of 100 |
+| X20 | FUN_140170870 (the direction part's writer), 0x140170C90 (its reader, which Ghidra's analysis made no function of; read with `objdump`), FUN_140171040 (its log), FUN_140170300 (its run) | The direction part, and what running it does |
+| X21 | FUN_1401FEE60, FUN_140223380, FUN_14016F280, FUN_14016D390 | The client's moves, types 8, 9 and 10, and the state they carry |
+| X22 | FUN_1401FFB80 (`actor_move_dir`, bound at 0x14020A413), FUN_1401FC450, FUN_1401771A0 | When a direction command is made, its fields' ranges, and its time |
+| X23 | FUN_14020E090, FUN_14016A6C0, FUN_140202910; DAT_1431F3790 and its references | The move module's settings and their flag, and its clock |
+| X24 | FUN_140177240, FUN_140177E30, FUN_1401781A0, FUN_140177BF0, FUN_140161060, FUN_140202930, FUN_140177880, FUN_14015CD10 | The command queue, the 16 ms step, the history and the rollback, and the step hook, which places a relayed actor and sends the player's own commands |
+| X25 | FUN_140208790, FUN_140207D80, FUN_140207160, FUN_140207B80; the move handle's vtable at 0x1411898E0 | The speed (1325) and the gravity (1330) the move code reads |
+| X26 | FUN_14020D100, FUN_14016E880, FUN_14016CCF0, FUN_140161E90, FUN_140207900 | Type 20 |
+| X27 | FUN_14020CCE0, FUN_14008E470 | Types 26 and 12 |
+| X28 | 0x140174400 (the stop's reader, which Ghidra's analysis made no function of; read with `objdump`), FUN_140174350; the turn's vtable at 0x14118C528 and FUN_140174910; FUN_140175140, FUN_140175590, FUN_14016FF20 | The stop, the turn, the cast and the jump to a point |
+| X29 | FUN_140201180, FUN_140247D00; the intervals at 0x143114670; FUN_14020F6A0, FUN_14020FE90, FUN_14020B5C0 | The facts about the client's process in type 8, and the queries, types 6 and 7 |
 | L1 | `re/m4/entering/notes.md`, with its REA bundle in `re/m4/entering/rea/` | This reading's notes: every REA call and its ID, the unknowns recorded in REA, and what the local probes printed |
 | L2 | `re/m4/entering/builtin_props.tsv` | BUILTIN_PROPS dumped from the exe with a standard-library PE reader |
 | L3 | `re/m4/entering/vocation_sheets.json` | `vocation_initequip_templ` and `vocation_templ`, decoded from D3 with a standard-library reader |
 | L4 | `re/m4/world-survey/` | The design-time survey (entering, sync and movement, chat, the start and outfit): the leads this reading checked |
 | L5 | `re/m4/seeing/notes.md`, with its REA bundles in `re/m4/seeing/rea/` | §14 and §15's notes: every REA call and its ID, the unknowns recorded in REA, the bytecode positions and the import table |
+| L6 | `re/m4/movement/notes.md`, with its REA bundles in `re/m4/movement/rea/` | §16's notes: every REA call and its ID, the unknowns recorded in REA, the bytecode positions, the bytes read with `objdump`, and the runs' type-8 counts |
 | M4E1 | `re/runs/out/m4-e1/`, with screenshots after 295 s in `re/m4/t11/m4-e1/` | Task 11's first world run (§13): `server.log` (trace), `gujianol.log`, `wine.log`, screenshots and the watchdog's log |
 | M4E2–M4E4 | `re/runs/out/m4-e2/` to `m4-e4/`, with screenshots in `re/m4/t11/m4-e2/` to `m4-e4/` | The same for runs m4-e2 to m4-e4 |
 | M4R | `re/m4/t11/runs.md` | The runs' predictions, written before each run, and their outcomes |
 
 ### REA Evidence IDs
 
-Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in four sessions on 2026-10-14: the second for eleven IDs the first had missed, the third for §14 and §15, the fourth for the references behind 15.1 and X18; each reading shows the function in the role the finding gives it. The first and the third session's first call, on FUN_140222E00, returned the ID [`../opcodes.md`](../opcodes.md) gives for it, and the third's FUN_140221D30 did too. The fourth's `xrefs` on 0x141161898 and its FUN_14024E790 returned the third's IDs below. An ID covers its call exactly as sent, so anyone can check it by repeating the call ([`../../re/README.md`](../../re/README.md#how-to-cite)). The IDs for FUN_140221AC0, FUN_140246E40, FUN_140246DF0 and FUN_1400B5670 are in [`../transport.md`](../transport.md), and FUN_1400D5850's in [`../payloads.md`](../payloads.md).
+Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in six sessions on 2026-10-14: the second for eleven IDs the first had missed, the third for §14 and §15, the fourth for the references behind 15.1 and X18, the fifth and the sixth for §16; each reading shows the function in the role the finding gives it. The first, the third and the fifth session's first call, on FUN_140222E00, returned the ID [`../opcodes.md`](../opcodes.md) gives for it, and the third's FUN_140221D30 did too. The fourth's `xrefs` on 0x141161898 and its FUN_14024E790 returned the third's IDs below, and the fifth's FUN_1401FF980 returned X14's. An ID covers its call exactly as sent, so anyone can check it by repeating the call ([`../../re/README.md`](../../re/README.md#how-to-cite)). The IDs for FUN_140221AC0, FUN_140246E40, FUN_140246DF0 and FUN_1400B5670 are in [`../transport.md`](../transport.md), and FUN_1400D5850's in [`../payloads.md`](../payloads.md).
 
 | Function or address | Cited in | Call | Evidence ID |
 |---|---|---|---|
-| FUN_140222E00 | X1; 4.1, 6.1, 7.3, 14.1, 14.11 | `procedure_pseudo_code {procedure: "0x140222e00"}` | `ev_4656519e08dab96fa5ad38e228a578375ef1b30907fb075530e4d9e15b4d3d20` |
+| FUN_140222E00 | X1; 4.1, 6.1, 7.3, 14.1, 14.11, 16.1 | `procedure_pseudo_code {procedure: "0x140222e00"}` | `ev_4656519e08dab96fa5ad38e228a578375ef1b30907fb075530e4d9e15b4d3d20` |
 | FUN_140221BB0 | X2; 3.1 | `procedure_pseudo_code {procedure: "0x140221bb0"}` | `ev_cecccd177df87001878f48ca00d2f3afac79247d8791f6627bb9c732374b329c` |
 | FUN_140246E90 | X2; §3 | `procedure_pseudo_code {procedure: "0x140246e90"}` | `ev_6f141088ac237738a4cefbc084410bb1ba6f7406d0c8a7fcc00c6f3150cf5690` |
 | FUN_1402481D0 | X2; §3 | `procedure_pseudo_code {procedure: "0x1402481d0"}` | `ev_b0eea52e8b77836220a2b4db4f0aae98cad374e132cd2626522739d4ce8bf7a5` |
@@ -521,7 +649,7 @@ Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in four sessions on
 | 0x140210A30 | X9; 8.1 | `read_bytes {address: "0x140210a30", length: 8}` | `ev_c9e0adb31ba1e1f163702debd370f47525902185d7eb6c123b1c51d5f3023c57` |
 | 0x141189F00 | X9; 8.1 | `read_bytes {address: "0x141189f00", length: 2}` | `ev_62981121f736dbc4781d3b252b8c88f9b1cd5888eba8b697c44ff3537ea885c7` |
 | FUN_1401AF2F0 | X10; 4.2, 8.1 | `procedure_pseudo_code {procedure: "0x1401af2f0"}` | `ev_b71792ca61faa1b2784aaab20d06b1a9db9898b6f45fd6a32a9c6f1de580a6cf` |
-| FUN_140222DE0 | X10; 7.3 | `procedure_pseudo_code {procedure: "0x140222de0"}` | `ev_3942b189e3a5091a06c50210797945a849c3e9f63fd186cc7299caffeb724c9d` |
+| FUN_140222DE0 | X10; 7.3, 16.5 | `procedure_pseudo_code {procedure: "0x140222de0"}` | `ev_3942b189e3a5091a06c50210797945a849c3e9f63fd186cc7299caffeb724c9d` |
 | the exe's strings | X11; 9.1 | `search_strings {pattern: "equips_id", mode: "literal"}` | `ev_b83f8a725bb3c9d6fe73c0a77111a20a8521532dd4e2a43e2d1d1133f8a3631e` |
 | FUN_140116840 | X12; 14.1 | `procedure_pseudo_code {procedure: "0x140116840"}` | `ev_a9f123899e37112c336e28be5645c51ea7696fa8411df0a0080e2055a8c3a7ff` |
 | FUN_140116AA0 | X12; 14.1 | `procedure_pseudo_code {procedure: "0x140116aa0"}` | `ev_13cae7695fc7d0f898562b8d388082829a79fa661f064ef3fd7d95d7f36c27f7` |
@@ -532,7 +660,7 @@ Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in four sessions on
 | FUN_140246EA0 | X13; 14.4 | `procedure_pseudo_code {procedure: "0x140246ea0"}` | `ev_595f9b951e97473ff677478c466f84c2ae089995dfcc46669c006dceb7072964` |
 | FUN_141157040 | X13; 14.4 | `procedure_pseudo_code {procedure: "0x141157040"}` | `ev_c1a01ca2fa792404ee4c5d5a81bf96bb73be068e209c9295e16747b0014c3aaa` |
 | 0x14029990C | X13; 14.4 | `read_bytes {address: "0x14029990c", length: 44}` | `ev_19c0f12e05e26567ca6461aaaed42b169e21f250661329a6b6736a2dca551206` |
-| FUN_1401FF980 | X14; 14.8 | `procedure_pseudo_code {procedure: "0x1401ff980"}` | `ev_b78db3f77126a938d48184527c8b92ddafeaa9b641926142a8eac9a037c181df` |
+| FUN_1401FF980 | X14; 14.8, 16.10 | `procedure_pseudo_code {procedure: "0x1401ff980"}` | `ev_b78db3f77126a938d48184527c8b92ddafeaa9b641926142a8eac9a037c181df` |
 | 0x14020A3BC | X14; 14.8 | `inspect_native_instruction {address: "0x14020a3bc"}` | `ev_3112a012a31d69195a8d3602799b83c3d69918fc0b039a1d9707bcd8400f8094` |
 | FUN_14018D230 | X14; 14.8 | `procedure_pseudo_code {procedure: "0x14018d230"}` | `ev_c6ff080c51f73928c20a74fb16b3b4a0a7094ac03539fe11c3f63900e57390cf` |
 | FUN_14018D2E0 | X14; 14.8 | `procedure_pseudo_code {procedure: "0x14018d2e0"}` | `ev_51b82cee7c67af4b06ee01c95aa0b1e8bdd88e94a63e583db2db6d7b8489eec2` |
@@ -563,3 +691,56 @@ Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in four sessions on
 | 0x140A963DE, in FUN_140A96340 | X18; 15.2 | `resolve_containing_procedure {address: "0x140a963de"}` | `ev_22a5a766024f2f6ede2d67ef43873fceaf610e77b361784d745a78cd8fb96582` |
 | 0x140B0EAEE, in FUN_140B0EAE0 | X18; 15.2 | `resolve_containing_procedure {address: "0x140b0eaee"}` | `ev_9c055d38f93e399c3258485c82490ee3724bd592cb413f54d222c217798833ee` |
 | 0x140A92B56, in FUN_140A92AE0 | X18; 15.2 | `resolve_containing_procedure {address: "0x140a92b56"}` | `ev_bea2377d1a9932fd9a0cd3db96fa80ca1db61d8889ff83a5d5c3d3efdf5b913c` |
+| FUN_14020FAA0 | X19; 16.1, 16.8 | `procedure_pseudo_code {procedure: "0x14020faa0"}` | `ev_99e89bdb404a053e255ebf19d4ed3f2e3ca02445c696c2075c2cda368ac84fe4` |
+| FUN_1401FF030 | X19; type 13's table, 16.8 | `procedure_pseudo_code {procedure: "0x1401ff030"}` | `ev_e173f3a01ceb98903e2b333d38a514e7449310da0b850eeb6d2c1fada7cd4938` |
+| FUN_140176FA0 | X19; 16.8 | `procedure_pseudo_code {procedure: "0x140176fa0"}` | `ev_cde2345a4f162abedeb3d3d4634fbedbc8d7d981aaa7652ddcf92cd778b6188f` |
+| 0x1411894A8 | X19; 16.1 | `read_bytes {address: "0x1411894a8", length: 768}` | `ev_86df7508df4dce1146ebef413ecb8b4a764fb74820edaface9a291525814a907` |
+| FUN_140170870 | X20; 16.2, 16.3, 16.4 | `procedure_pseudo_code {procedure: "0x140170870"}` | `ev_6e26ada75f630180d47c389006931d5038143e20efc5cc38842b2dd1fd95e7d8` |
+| 0x140170C90 | X20; 16.2, 16.4 | `read_bytes {address: "0x140170c90", length: 932}` | `ev_e4b6627fad1e14bc7edc428971406d297ea34e97dd67184d1ea22a5ed7007678` |
+| FUN_140171040 | X20; type 8's table | `procedure_pseudo_code {procedure: "0x140171040"}` | `ev_f85fc137a9607e4f893e9dc7ccd5528b63b69ac3ba3ca3f2b8334b425f41e6ee` |
+| 0x140171040 | X20; type 8's table | `read_bytes {address: "0x140171040", length: 86}` | `ev_906e13a896f9e990a9bf58c706247451590f554a903256b85d19869fb0ffbe12` |
+| FUN_140170300 | X20; 16.9 | `procedure_pseudo_code {procedure: "0x140170300"}` | `ev_ea5fcb7451c34eac334dbbf5dc5a58c8e232006541218788210feef6ccae8ec6` |
+| FUN_1401FEE60 | X21; 16.3 | `procedure_pseudo_code {procedure: "0x1401fee60"}` | `ev_5c61cdb14fe5e0860d3fc9d5bf68c98d3112090c747a6d4d3e4ef495465ca0ba` |
+| FUN_140223380 | X21; 16.3 | `procedure_pseudo_code {procedure: "0x140223380"}` | `ev_9142b701da3b012c27ceef58777fd79daa830bf55a5989ca4a817f838173cf3c` |
+| FUN_14016D390 | X21; 16.3, 16.4 | `procedure_pseudo_code {procedure: "0x14016d390"}` | `ev_736f67207c4769e6f4d843223f4f75eeaa0850f57fa57e6ac867f13b990f8059` |
+| FUN_14016F280 | X21; 16.3 | `procedure_pseudo_code {procedure: "0x14016f280"}` | `ev_50c8c82b32efd94311c9cd6f9d6dfa6fbd8087d20467cc48d71dbb094dee2d9b` |
+| FUN_1401FFB80 | X22; 16.3, 16.6, 16.7 | `procedure_pseudo_code {procedure: "0x1401ffb80"}` | `ev_368adcb76b068796489bcd423b1e3674dbe2e686a9d531f56ceabd462a8aaa4f` |
+| 0x14020A413 | X22; 16.3 | `inspect_native_instruction {address: "0x14020a413"}` | `ev_f9e9739d07676f1359c21aa3736b5be74550d3167cf353c4dd03412401394109` |
+| FUN_1401FC450 | X22; 16.3 | `procedure_pseudo_code {procedure: "0x1401fc450"}` | `ev_e8ddd10e2fa96801f39e7706d1cecfabccbfe474d8591715a34c05c3f17dc1bd` |
+| FUN_1401771A0 | X22; 16.5 | `procedure_pseudo_code {procedure: "0x1401771a0"}` | `ev_e1f42f10f9e519a28eb2729daa523b40e7dc8e8b5904ac523cf5a37b6345e557` |
+| FUN_14020E090 | X23; 16.2 | `procedure_pseudo_code {procedure: "0x14020e090"}` | `ev_1a8d51ad986b80d02b45425afdc3176ca58ec08c92471d65d9049254385ed531` |
+| FUN_14016A6C0 | X23; 16.2 | `procedure_pseudo_code {procedure: "0x14016a6c0"}` | `ev_24b1e2d4bfc389ca1f682d87dadc6319979fcce6144c4396f971db153bef4cde` |
+| FUN_140202910 | X23; 16.5 | `procedure_pseudo_code {procedure: "0x140202910"}` | `ev_213e3ae86691054461eba46c6fb203c2a5237a50e4d19821aa2ed4f4791f3ccd` |
+| 0x1431F3790 | X23; 16.5 | `xrefs {address: "0x1431f3790"}` | `ev_88c8b56726e01b0d35c69f8098f6321ec83e75f25d2429cc1ad6bb7652e7270a` |
+| FUN_140177240 | X24; 16.5, 16.8 | `procedure_pseudo_code {procedure: "0x140177240"}` | `ev_ded2877931bde160d72f72cb9e12e88054264e872cf9b5cd6c6c317fa4d28c42` |
+| FUN_140177E30 | X24; 16.8 | `procedure_pseudo_code {procedure: "0x140177e30"}` | `ev_afb7f46c59a4fdea85e80273e237cba50a80115ba43e37246d2804a960a06b15` |
+| FUN_1401781A0 | X24; 16.8 | `procedure_pseudo_code {procedure: "0x1401781a0"}` | `ev_66f6e116bf5ffcf99291f3fbd04dccd158a27ba7f383e48c4e58fabeeebb6fcc` |
+| FUN_140177BF0 | X24; 16.9 | `procedure_pseudo_code {procedure: "0x140177bf0"}` | `ev_4d511f79fad8989458ccf2a371e55716c5024d00852695c3f6768d74c585e571` |
+| FUN_140161060 | X24; 16.9 | `procedure_pseudo_code {procedure: "0x140161060"}` | `ev_b879b34156eec817af065dc5455b6c8da851ced7ff825340e26ba273631c042e` |
+| FUN_140202930 | X24; 16.3, 16.8, 16.12 | `procedure_pseudo_code {procedure: "0x140202930"}` | `ev_1607850ce17e77ce533b8408479ba460d3995ff2369e6c850cbb92ed1c34db98` |
+| FUN_140177880 | X24; 16.12 | `procedure_pseudo_code {procedure: "0x140177880"}` | `ev_9748093220b333e473ffe23a10b91d7ff9c9d813ad4122d51779c1d24366e049` |
+| FUN_14015CD10 | X24; 16.8 | `procedure_pseudo_code {procedure: "0x14015cd10"}` | `ev_4d2164ae34fd08b24cb8939fed0d13d128e09d151eb52571ef98815bc4e81c3a` |
+| FUN_140208790 | X25; 16.7 | `procedure_pseudo_code {procedure: "0x140208790"}` | `ev_9288deb200789d08df553d5b17c0f86db43c6dfc2628b69b2d231aa351a1ae3a` |
+| FUN_140207D80 | X25; 16.7 | `procedure_pseudo_code {procedure: "0x140207d80"}` | `ev_885e49e024575bf1f78c6aab17b4ffa9ec88798ccff15698096e5195047076c7` |
+| FUN_140207160 | X25; type 8's table | `procedure_pseudo_code {procedure: "0x140207160"}` | `ev_7f687702bae1dc26c6180a752d463c1963288bf104fbb3a3b0a848c68ec2d654` |
+| FUN_140207B80 | X25; type 8's table | `procedure_pseudo_code {procedure: "0x140207b80"}` | `ev_fd83df95c4af2ff5bbfb89d8a08de8d284052dbb6b0fd49e7d523ce7db537725` |
+| 0x1411898E0 | X25; 16.7 | `read_bytes {address: "0x1411898e0", length: 56}` | `ev_5d655be0e5c4ad030ca9af640d8dba254deb21b922ce65cd619be32662836b01` |
+| FUN_14020D100 | X26; 16.1, 16.12 | `procedure_pseudo_code {procedure: "0x14020d100"}` | `ev_c77b3e4a688b193b47505c781b1326d6a5c7958eb4adac75eea7666673be60a6` |
+| FUN_14016E880 | X26; 16.12 | `procedure_pseudo_code {procedure: "0x14016e880"}` | `ev_9c2b89f6842ab7418c8911bd5d969d61f43a0191c8d5005b196b0dfdbd7b2e7b` |
+| FUN_14016CCF0 | X26; 16.12 | `procedure_pseudo_code {procedure: "0x14016ccf0"}` | `ev_a695f77f375f8660872697802442930704f74c5f60bd9f2cc8c035ba24ecc13a` |
+| FUN_140161E90 | X26; 16.12 | `procedure_pseudo_code {procedure: "0x140161e90"}` | `ev_05bfcf284652370e10e949b5ad988499e591dd2fae0bab6754fe68d2bd5561cb` |
+| FUN_140207900 | X26; 16.12 | `procedure_pseudo_code {procedure: "0x140207900"}` | `ev_ab73c2938a4a5e03853f407033026a7ece14024b3308e301031447f2044c8581` |
+| FUN_14020CCE0 | X27; 16.1, 16.13 | `procedure_pseudo_code {procedure: "0x14020cce0"}` | `ev_b0a26738c1208ef35214e639ba5344b840b6a49f245dd0c4c7a4a1e65c80bf4a` |
+| FUN_14008E470 | X27; 16.1 | `procedure_pseudo_code {procedure: "0x14008e470"}` | `ev_fdb9082d2b3e751d0f71d2498577e3f3c1c7ab5fbd8455d1b4a27e344dfddd39` |
+| 0x140174400 | X28; 16.11 | `read_bytes {address: "0x140174400", length: 72}` | `ev_f3d09cc3390e80216ee352a04face64d537643c7c7538de8930fb0b3aa32317e` |
+| FUN_140174350 | X28; 16.11 | `procedure_pseudo_code {procedure: "0x140174350"}` | `ev_15de1121cd35e809cff88c0222f6d9bc431ec8054265c1e566c93672369c35e5` |
+| 0x14118C528 | X28; 16.11 | `read_bytes {address: "0x14118c528", length: 48}` | `ev_6ada2fd7a7399d20327c5e93266ed28cb5e9dff6f77823055a7ee7f7487cac2d` |
+| FUN_140174910 | X28; 16.11 | `procedure_pseudo_code {procedure: "0x140174910"}` | `ev_d2131080f257aac0e5ee9605cdca76c14d276a9769f5b02e9a2a471133e0c4bc` |
+| FUN_140175140 | X28; 16.11 | `procedure_pseudo_code {procedure: "0x140175140"}` | `ev_e5d6d2fd2aca8ea9e381da161e53bcb6c94c61d63189f6dc7e5ccff53e5ccc7f` |
+| FUN_140175590 | X28; 16.11 | `procedure_pseudo_code {procedure: "0x140175590"}` | `ev_19f8947a518afec75fa396cec79ad0bb303e63eac2141bb413ee20632bb6db58` |
+| FUN_14016FF20 | X28; 16.11 | `procedure_pseudo_code {procedure: "0x14016ff20"}` | `ev_63027d335638665f552c6605c18eee00fc16c797d3c9bd08efa0562e3cfbdb33` |
+| FUN_140201180 | X29; 16.15, 16.16 | `procedure_pseudo_code {procedure: "0x140201180"}` | `ev_0633ddf606e96f59d52e5d05131d71673004523b04f9ddf57e1562306ad54b5d` |
+| FUN_140247D00 | X29; 16.15 | `procedure_pseudo_code {procedure: "0x140247d00"}` | `ev_fbf02c313b5b2b467b3330a8fb631acf260226aed779314c3bc7c203cd76018b` |
+| FUN_14020F6A0 | X29; 16.16 | `procedure_pseudo_code {procedure: "0x14020f6a0"}` | `ev_036175611b41eb57c77b35d727798475a1b8747c45ffdc4e1a1918a709f2442c` |
+| FUN_14020B5C0 | X29; 16.16 | `procedure_pseudo_code {procedure: "0x14020b5c0"}` | `ev_4878f25434f019c125d1e98720ffc0ae27f1ff5e3079e39bd583309e190779ee` |
+| 0x143114670 | X29; 16.16 | `read_bytes {address: "0x143114670", length: 16}` | `ev_d9dd4ba63c38ae4029734feabebad585835c47f821f4290676603a8e7bdac3ce` |

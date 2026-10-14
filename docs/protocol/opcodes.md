@@ -28,15 +28,16 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 | `9` | S→C | `STC_PROTOCOL_SYNC_LEAVE` | case 9: actor ids, each a `u64`, as many as the body holds, with no count ([`packets/world.md`](packets/world.md) 14.11) | `schema` | O.1, [`packets/world.md`](packets/world.md) 14.11 |
 | `10` | S→C | `STC_PROTOCOL_SYNC_UPDATE` | case 10: a `u64` actor id, then a property blob in type 7's format ([`packets/world.md`](packets/world.md) §4) | `schema` | O.1, [`packets/world.md`](packets/world.md) §4 |
 | `11` | S→C | `STC_PROTOCOL_SYNC_UPDATE_FILTER` | case 11: FUN_1401AE640 | `named` | O.1 |
-| `12` | S→C | `STC_PROTOCOL_MOVE` | case 12: FUN_14008E470 | `named` | O.1 |
-| `13`–`19` | S→C | `STC_PROTOCOL_MOVE_DIR`, `_MOVE_POS`, `_MOVE_COMBAT`, `_MOVE_JUMP_POS`, `_MOVE_STOP`, `_MOVE_YAW`, `_MOVE_FINISH_CHARGING` | cases 13–19: FUN_14020FAA0 with a sub-kind each | `named` | O.1 |
-| `20` | S→C | `STC_PROTOCOL_MOVE_SYNC_SVR` | case 20: FUN_14020D100 | `named` | O.1 |
+| `12` | S→C | `STC_PROTOCOL_MOVE` | case 12: FUN_14008E470, which returns at once, so the client ignores type 12 ([`packets/world.md`](packets/world.md) 16.1) | `schema` | O.1, [`packets/world.md`](packets/world.md) 16.1 |
+| `13` | S→C | `STC_PROTOCOL_MOVE_DIR` | case 13: FUN_14020FAA0 with kind 3: a `u64` actor id, the move header (absolute: a flag above 0, a `u64` time, x, y and z as `i32`, an `i16` yaw) and the direction part, 42 bytes as Fenji sends it; the client places the actor at the header and moves it in the direction ([`packets/world.md`](packets/world.md) §16, 16.8, 16.9) | `schema` | O.1, [`packets/world.md`](packets/world.md) 16.1, 16.8 |
+| `14`–`19` | S→C | `STC_PROTOCOL_MOVE_POS`, `_MOVE_COMBAT`, `_MOVE_JUMP_POS`, `_MOVE_STOP`, `_MOVE_YAW`, `_MOVE_FINISH_CHARGING` | cases 14–19: FUN_14020FAA0 with a kind each, after the id and header that 13 has; 17's part is one byte, 18's four `u32`, 19 has none, and 15 is another actor's skill cast ([`packets/world.md`](packets/world.md) 16.1, 16.11) | `named` | O.1, [`packets/world.md`](packets/world.md) 16.11 |
+| `20` | S→C | `STC_PROTOCOL_MOVE_SYNC_SVR` | case 20: FUN_14020D100: a `u64` actor id, a `u64` time, a `u16` mask and the masked state, 32 bytes with the position and the yaw (mask 0x00C0); the client takes them into its state at that time and replays its commands since ([`packets/world.md`](packets/world.md) 16.12) | `schema` | O.1, [`packets/world.md`](packets/world.md) 16.12 |
 | `21` | S→C | `STC_PROTOCOL_MOVE_BASE_PROP` | case 21: FUN_14020BA70, 34 bytes ending in the move speed and gravity ([`packets/world.md`](packets/world.md) 6.3) | `schema` | O.1, [`packets/world.md`](packets/world.md) 6.3 |
 | `22` | S→C | `STC_PROTOCOL_MOVE_SYNC_PATH_FIND_TASK` | case 22: FUN_14020EA60 | `named` | O.1 |
 | `23` | S→C | `STC_PROTOCOL_SYNC_PROP_FORCE` | case 23: FUN_14020CE90, a `u64` actor id, a `u16` property (1325 the move speed or 1330 the gravity) and an `i16` value ([`packets/world.md`](packets/world.md) 6.2) | `schema` | O.1, [`packets/world.md`](packets/world.md) 6.2 |
 | `24` | S→C | `STC_PROTOCOL_ACTOR_HMAP_MASK_REFRESH` | case 24: FUN_14020E680 | `named` | O.1 |
 | `25` | S→C | `STC_PROTOCOL_OVERALL_HMAP_MASK_REFRESH` | case 25: FUN_14020E880 | `named` | O.1 |
-| `26` | S→C | `STC_PROTOCOL_MOVE_ENTER_SYNC_STATE` | case 26: FUN_14020CCE0 | `named` | O.1 |
+| `26` | S→C | `STC_PROTOCOL_MOVE_ENTER_SYNC_STATE` | case 26: FUN_14020CCE0: a `u64` actor id, a `u16` mask and the masked state, as 20's, set on another player's actor ([`packets/world.md`](packets/world.md) 16.13) | `schema` | O.1, [`packets/world.md`](packets/world.md) 16.13 |
 | `27`–`29` | S→C | `STC_PROTOCOL_MOVE_PASSIVE`, `_MOVE_SURROUND`, `_MOVE_FORMULAR` | cases 27–29: FUN_14020FAA0 | `named` | O.1 |
 
 ## Client to server (`CTS_PROTOCOL_*`)
@@ -50,7 +51,12 @@ The inner message header's type byte ([`transport.md`](transport.md) §7) is the
 | `3` | C→S | `CTS_PROTOCOL_CLIENT_ENTER` | `send_enter` (FUN_140221BB0): a 21-byte body, sent once the scene has loaded ([`packets/world.md`](packets/world.md) §3) | `verified` | O.2, [`packets/world.md`](packets/world.md) §3, §13 (M4E1); `crates/fenji-server/tests/real_client.rs` (`the_real_world_bodies_fit_their_layouts`) |
 | `4` | C→S | `CTS_PROTOCOL_CLIENT_LEAVE` | `send_leave` (FUN_140221CB0): an empty body | `schema` | O.2 |
 | `5` | C→S | `CTS_PROTOCOL_SYNC_FILTER_SET` | `send_sync_filter` (FUN_140221D30): 18 bytes, the actor id as a `u64` and a 32-bit value (0 pulls an announced actor), then a byte 1, a zero `u32` and a byte about the client's own process ([`packets/world.md`](packets/world.md) 14.4) | `schema` | O.2, [`packets/world.md`](packets/world.md) 14.4, 14.12 |
-| `6`–`11` | C→S | `CTS_PROTOCOL_QUERY_ACTOR_POS`, `_QUERY_ACTOR_MOVE_CMD`, `_MOVE_DIR`, `_MOVE_COMBAT`, `_MOVE_FINISH_CHARGE`, `_MOVE_DEBUG` | by table order; their senders weren't read | `named` | O.2 |
+| `6` | C→S | `CTS_PROTOCOL_QUERY_ACTOR_POS` | FUN_14020F6A0 and FUN_14020FE90: a `u32` 0 or 1, a `u32` count, then actor ids as `u64`; at most every 1,600 ms ([`packets/world.md`](packets/world.md) 16.16) | `schema` | O.2, [`packets/world.md`](packets/world.md) 16.16 |
+| `7` | C→S | `CTS_PROTOCOL_QUERY_ACTOR_MOVE_CMD` | FUN_14020B5C0: a `u32` count, then actor ids as `u64`; at most every 3,000 ms ([`packets/world.md`](packets/world.md) 16.16) | `schema` | O.2, [`packets/world.md`](packets/world.md) 16.16 |
+| `8` | C→S | `CTS_PROTOCOL_MOVE_DIR` | FUN_1401FEE60 for a direction command: 200 bytes, the command's time, the player's state (its position at 8) and the direction part ([`packets/world.md`](packets/world.md) §16, 16.3, 16.4) | `schema` | O.2, [`packets/world.md`](packets/world.md) 16.3, 16.4, §13 (M4E2–M4E4: every body 200 bytes) |
+| `9` | C→S | `CTS_PROTOCOL_MOVE_COMBAT` | FUN_1401FEE60 for a skill cast, jumps included: the time, the state and the cast's part ([`packets/world.md`](packets/world.md) 16.3, 16.11) | `schema` | O.2, [`packets/world.md`](packets/world.md) 16.11 |
+| `10` | C→S | `CTS_PROTOCOL_MOVE_FINISH_CHARGE` | FUN_1401FEE60 for the end of a charge: the time and the state; the kind has no part ([`packets/world.md`](packets/world.md) 16.3) | `schema` | O.2, [`packets/world.md`](packets/world.md) 16.3 |
+| `11` | C→S | `CTS_PROTOCOL_MOVE_DEBUG` | by table order; its sender wasn't read | `named` | O.2 |
 
 The type-0 message the client sends during auth ([`transport.md`](transport.md) §6) isn't a script message: the client builds it directly in the hello handler, before state `WORK`.
 
