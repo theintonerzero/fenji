@@ -3,9 +3,27 @@
 //! Changes Copyright (C) 2026 the Fenji contributors.
 //! GPL-3.0-or-later: see COPYING and NOTICE.
 //!
-//! Each fixture matches its manifest and walks now; Task 4 turns on decoding.
+//! Each fixture matches its manifest, walks, and decodes byte for byte when its codec is ported.
 mod common;
 use common::*;
+
+/// The decoders ported so far: Kraken (6), the only codec the pinned client uses.
+const PORTED: &[u8] = &[6];
+
+#[test]
+fn every_fixture_of_a_ported_codec_decodes_to_its_input() {
+    let mut decoded = 0;
+    for f in fixtures()
+        .iter()
+        .filter(|f| PORTED.contains(&decoder_of(f.compressor)))
+    {
+        let got = fenji_oodle::decompress(&f.stream, f.input.len())
+            .unwrap_or_else(|e| panic!("{}: {e}", f.file));
+        assert!(got == f.input, "{}: decoded bytes differ", f.file);
+        decoded += 1;
+    }
+    assert!(decoded > 0, "no fixture for the ported codecs");
+}
 
 #[test]
 fn every_fixture_walks_and_names_its_decoder() {

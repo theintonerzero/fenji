@@ -60,7 +60,8 @@ pub fn decompress(src: &[u8], raw_len: usize) -> Result<Vec<u8>, Error> {
                         scratch.resize(SCRATCH, 0);
                     }
                     let used =
-                        decode_quantum(h.decoder, &mut out[..done + n], done, data, &mut scratch)?;
+                        decode_quantum(h.decoder, &mut out[..done + n], done, data, &mut scratch)
+                            .map_err(|e| counted_from_the_stream(e, at))?;
                     if used != size {
                         return Err(Error::Corrupt {
                             at,
@@ -81,18 +82,33 @@ pub fn decompress(src: &[u8], raw_len: usize) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+/// A codec's error for the quantum whose data starts at `at`: the codec counts a corrupt chunk's
+/// place from the quantum's data, and the stream's error counts it from the start of the stream.
+fn counted_from_the_stream(e: Error, at: usize) -> Error {
+    match e {
+        Error::Corrupt { at: chunk, what } => Error::Corrupt {
+            at: at + chunk,
+            what,
+        },
+        e => e,
+    }
+}
+
 /// The quantum decoders, by stream decoder number. Each fills `dst[start..]` from `src`, reading
 /// earlier output in `dst[..start]` for matches, and returns how many bytes of `src` it read.
-/// Tasks 4–6 add one arm each, for the codecs Task 2's census finds.
+/// Kraken is the only codec Task 2's census found; Mermaid and Selkie (10) and Leviathan (12)
+/// aren't ported.
 pub(crate) fn decode_quantum(
     decoder: u8,
     dst: &mut [u8],
     start: usize,
     src: &[u8],
-    scratch: &mut Vec<u8>,
+    scratch: &mut [u8],
 ) -> Result<usize, Error> {
-    let _ = (dst, start, src, scratch);
-    Err(Error::Unsupported { decoder })
+    match decoder {
+        6 => crate::kraken::decode_quantum(dst, start, src, scratch),
+        _ => Err(Error::Unsupported { decoder }),
+    }
 }
 
 /// How a chunk's output is stored.
@@ -391,8 +407,9 @@ mod tests {
 
     #[test]
     fn a_compressed_quantum_needs_its_decoder() {
-        // Tasks 4–6 each remove the decoder they port from this list and add its fixtures.
-        for d in [6u8, 10, 12] {
+        // Kraken (6) decodes, with its fixtures in tests/fixtures.rs; the pinned client uses no
+        // other codec, so these stay unported.
+        for d in [10u8, 12] {
             let src = [&hdr(false, d, false)[..], &data_q(5), &bytes(5)].concat();
             assert_eq!(
                 decompress(&src, 10),
