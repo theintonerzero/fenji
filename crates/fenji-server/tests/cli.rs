@@ -321,6 +321,29 @@ async fn account_delete_leaves_no_copy_in_the_write_ahead_log() {
     drop(server);
 }
 
+#[tokio::test]
+async fn backup_prints_the_new_copy_which_opens_as_a_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path());
+    // The server holds the database open meanwhile.
+    let server = fenji_store::Store::open(&cfg.store.path).await.unwrap();
+    server
+        .create_invite(&[1; 32], Some("for bob"), 1, None)
+        .await
+        .unwrap();
+    let text = run(&cfg, Command::Backup { keep: 14 }).await;
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "{text}");
+    let made = Path::new(lines[0]);
+    assert_eq!(made.parent(), Some(dir.path().join("backups").as_path()));
+    assert!(made.is_file(), "{text}");
+    let copy = fenji_store::Store::open(made).await.unwrap();
+    assert_eq!(copy.integrity_check().await.unwrap(), "ok");
+    let invites = copy.list_invites().await.unwrap();
+    assert_eq!(invites.len(), 1, "the copy holds what the database did");
+    assert_eq!(invites[0].label.as_deref(), Some("for bob"));
+}
+
 #[test]
 fn durations_parse() {
     use fenji_server::cli::parse_duration;

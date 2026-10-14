@@ -5,7 +5,8 @@ pub enum Error {
     Db(#[from] sqlx::Error),
     #[error("migration: {0}")]
     Migrate(String),
-    /// Creating the database file, or taking group and other access away from it.
+    /// Creating the database file, or taking group and other access away from it; or creating a
+    /// backup's file, which the message names.
     #[error("the database file: {0}")]
     File(#[from] std::io::Error),
     #[error("the invite is unknown, used, revoked or expired")]

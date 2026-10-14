@@ -2,6 +2,7 @@
 //! account API and the admin commands, in one process.
 pub mod accounts;
 pub mod api;
+pub mod backup;
 pub mod cli;
 pub mod clock;
 pub mod commands;
