@@ -9,6 +9,7 @@ pub mod gate;
 pub mod lobby;
 pub mod online;
 pub mod server;
+pub mod text;
 pub mod world;
 
 /// The most characters `[lobby] max_characters` may allow.

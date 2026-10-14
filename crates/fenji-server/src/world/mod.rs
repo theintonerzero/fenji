@@ -1,6 +1,7 @@
 //! The world (M4 world spec §3.9; Fenji design spec §6.4): a headless bevy_ecs world on its own
 //! thread at `[server] tick_hz`, fed over channels by the connection tasks. It speaks only the
 //! protocol-neutral events of [`types`]; the connection side maps them to and from the wire.
+mod chat;
 mod ecs;
 mod interest;
 mod movement;
