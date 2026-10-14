@@ -1,6 +1,6 @@
 [package]
 name = "fenji-oodle-helper"
-description = "Decodes spooled Oodle LZ blocks with the client's own oo2core_6_win64.dll, under Wine inside the sandbox only (M2 spec §6, gate #39 route c)"
+description = "Decodes spooled Oodle LZ blocks with the client's own oo2core_6_win64.dll, and compresses Fenji's synthetic test fixtures with it, under Wine inside the sandbox only (M2 spec §6, gate #39 route c)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
