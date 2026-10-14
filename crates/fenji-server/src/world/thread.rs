@@ -14,8 +14,8 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinError;
 
-use super::ecs::{Rules, WorldCore};
-use super::types::{KickReason, Service, WorldIn, WorldOut};
+use super::ecs::{Abandoned, Rules, WorldCore};
+use super::types::{ConnId, KickReason, Service, WorldIn, WorldOut};
 use crate::clock::Clock;
 
 /// How long stopping waits for the last saves (Fenji design spec §6.7: 20 characters in 2 s).
@@ -308,14 +308,15 @@ fn run(
                 Err(TryRecvError::Empty) => break,
             }
         }
-        let joining = joining(&inputs);
+        let sent = Sent::of(&inputs);
         let began = Instant::now();
         let now_ms = millis(began.duration_since(start));
         let gap_ms = gap(ended, began);
         let phases = match catch_unwind(AssertUnwindSafe(|| core.step(now_ms, gap_ms, inputs))) {
             Ok(phases) => phases,
-            Err(panic) => return Err(abandon(core, &mut rx, &joining, panic)),
+            Err(panic) => return Err(abandon(core, &mut rx, &sent, panic)),
         };
+        drop(sent);
         let work = began.elapsed();
         ended = Some(began + work);
         stats
@@ -349,48 +350,79 @@ fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The channels of the links joining in a tick: a tick that panics may drop them before their
-/// players have actors, and they hear why all the same.
-fn joining(inputs: &[WorldIn]) -> Vec<mpsc::Sender<WorldOut>> {
-    inputs
-        .iter()
-        .filter_map(|input| match input {
-            WorldIn::Join { out, .. } => Some(out.clone()),
-            _ => None,
-        })
-        .collect()
+/// What a tick that panics still needs of its inputs, which the panic drops: the channels of the
+/// links joining in it, which hear why all the same, and who sent the inputs, for the log.
+#[derive(Default)]
+struct Sent {
+    joining: Vec<mpsc::Sender<WorldOut>>,
+    /// The connections whose clients sent inputs, as the world knows them.
+    conns: Vec<ConnId>,
+    /// The accounts joining, which may have no connection in the world yet.
+    accounts: Vec<i64>,
 }
 
-/// Ends the world after a tick that panicked (Ruling R9). The panic's message is logged as an
-/// error; the world saves everyone it can and lets every link go with the shutdown's reason, those
-/// joining in that tick too, and takes nothing more. Returns the message, which the server stops
-/// with.
+impl Sent {
+    fn of(inputs: &[WorldIn]) -> Self {
+        let mut sent = Self::default();
+        for input in inputs {
+            match input {
+                WorldIn::Join { player, out } => {
+                    sent.joining.push(out.clone());
+                    sent.accounts.push(player.account);
+                }
+                WorldIn::Loaded { conn }
+                | WorldIn::Pull { conn, .. }
+                | WorldIn::Move { conn, .. }
+                | WorldIn::Chat { conn, .. }
+                | WorldIn::Leave { conn } => sent.conns.push(*conn),
+                // Not from a client.
+                WorldIn::Tell { .. } | WorldIn::Shutdown => {}
+                #[cfg(test)]
+                WorldIn::Panic(_) | WorldIn::Stall { .. } => {}
+            }
+        }
+        sent
+    }
+}
+
+/// Ends the world after a tick that panicked (Ruling R9). The world saves everyone it can and
+/// lets every link go with the shutdown's reason, those joining in that tick too, and takes
+/// nothing more. Then it logs the panic's message as an error, with the phase the tick was in
+/// and the accounts that sent its inputs, for a host to trace a crash loop. Returns the message,
+/// which the server stops with.
 fn abandon(
     mut core: WorldCore,
     rx: &mut mpsc::UnboundedReceiver<WorldIn>,
-    joining: &[mpsc::Sender<WorldOut>],
+    sent: &Sent,
     panic: Box<dyn Any + Send>,
 ) -> String {
     let message = message(panic.as_ref());
-    tracing::error!(
-        panic = %message,
-        "a tick of the world panicked: saving everyone, letting them go and stopping the server"
-    );
-    let told = match catch_unwind(AssertUnwindSafe(|| core.abandon())) {
-        Ok(told) => told,
+    let phase = core.running().unwrap_or("none");
+    let done = match catch_unwind(AssertUnwindSafe(|| core.abandon(&sent.conns))) {
+        Ok(done) => done,
         Err(_) => {
             tracing::error!(
                 "saving everyone after the tick's panic panicked too: places since the last \
                  save are lost"
             );
-            Vec::new()
+            Abandoned::default()
         }
     };
-    for out in joining {
-        if !told.iter().any(|t| t.same_channel(out)) {
+    for out in &sent.joining {
+        if !done.told.iter().any(|t| t.same_channel(out)) {
             let _ = out.try_send(WorldOut::Kicked(KickReason::Shutdown));
         }
     }
+    let mut accounts = done.accounts;
+    accounts.extend(&sent.accounts);
+    accounts.sort_unstable();
+    accounts.dedup();
+    tracing::error!(
+        panic = %message,
+        phase = %phase,
+        ?accounts,
+        "a tick of the world panicked: everyone was saved and let go, and the server is stopping"
+    );
     turn_away(rx);
     message
 }
@@ -575,6 +607,45 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn a_panicking_tick_names_its_phase_and_the_accounts_that_sent_its_inputs() {
+        // For a host tracing a crash loop: where the tick was, and whose inputs it held. Ren
+        // (account 3) and Kai (4) entered in an earlier tick; in the one that panics, only Kai
+        // sends anything, and Lin (1) joins.
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (services, _saves) = mpsc::unbounded_channel();
+        let mut core = WorldCore::new(rules(), services);
+        let (ren, _ren) = mpsc::channel(8);
+        let (kai, _kai) = mpsc::channel(8);
+        let earlier = vec![
+            WorldIn::Join {
+                player: player(3, "Ren", at(0.0, 0.0)),
+                out: ren,
+            },
+            WorldIn::Join {
+                player: player(4, "Kai", at(0.0, 0.0)),
+                out: kai,
+            },
+        ];
+        core.step(0, 0, earlier);
+        let (lin, _lin) = mpsc::channel(8);
+        let lin_joins = player(1, "Lin", at(0.0, 0.0));
+        tx.send(WorldIn::Join {
+            player: lin_joins,
+            out: lin,
+        })
+        .unwrap();
+        tx.send(WorldIn::Loaded { conn: 4 }).unwrap();
+        tx.send(WorldIn::Panic("a bug in a tick")).unwrap();
+        let (_, log) = logged(|| run(core, rx, MS * 50, &Mutex::new(Stats::new(10))));
+        let line = log
+            .lines()
+            .find(|l| l.contains("ERROR") && l.contains("a bug in a tick"))
+            .unwrap_or_else(|| panic!("no error line: {log}"));
+        assert!(line.contains("phase=inbound"), "{line}");
+        assert!(line.contains("accounts=[1, 4]"), "{line}");
     }
 
     #[tokio::test]

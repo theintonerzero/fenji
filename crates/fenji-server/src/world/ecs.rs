@@ -119,6 +119,17 @@ pub struct WorldCore {
     phases: Vec<(&'static str, Schedule)>,
     /// The last tick's gap.
     last_gap: u64,
+    /// The phase running, while a tick runs: after a panic, the one it was in.
+    running: Option<&'static str>,
+}
+
+/// What [`WorldCore::abandon`] did.
+#[derive(Debug, Default)]
+pub(crate) struct Abandoned {
+    /// The connections it told why they were let go.
+    pub told: Vec<mpsc::Sender<WorldOut>>,
+    /// The accounts of those it was asked about that were in the world.
+    pub accounts: Vec<i64>,
 }
 
 fn phase<M>(systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Schedule {
@@ -152,6 +163,7 @@ impl WorldCore {
             world,
             phases,
             last_gap: 0,
+            running: None,
         }
     }
 
@@ -167,14 +179,23 @@ impl WorldCore {
         self.world.resource_mut::<Now>().0 = now_ms;
         self.world.resource_mut::<Gap>().0 = gap_ms.max(last_gap);
         self.world.resource_mut::<Inbox>().0 = inputs;
-        self.phases
+        let phases = self
+            .phases
             .iter_mut()
             .map(|(name, schedule)| {
+                self.running = Some(*name);
                 let began = Instant::now();
                 schedule.run(&mut self.world);
                 (*name, began.elapsed())
             })
-            .collect()
+            .collect();
+        self.running = None;
+        phases
+    }
+
+    /// The phase a tick was in when it panicked, if it was in one.
+    pub(crate) fn running(&self) -> Option<&'static str> {
+        self.running
     }
 
     /// The players in the world, loading or not.
@@ -185,23 +206,32 @@ impl WorldCore {
     /// After a tick that panicked (Ruling R9): saves where each player stands and lets each
     /// connection go with the shutdown's reason. It reads the players' components alone, since
     /// the panic may have left the index and the tick's other state half-done, and the world is
-    /// never ticked again. Returns the connections it told.
-    pub fn abandon(&mut self) -> Vec<mpsc::Sender<WorldOut>> {
-        let mut players = self
-            .world
-            .query::<(Option<&Actor>, Option<&Here>, Option<&Conn>)>();
+    /// never ticked again. It also names the accounts of `senders`, the connections whose clients
+    /// sent that tick's inputs, for the log.
+    pub(crate) fn abandon(&mut self, senders: &[ConnId]) -> Abandoned {
+        let mut players = self.world.query::<(
+            Option<&Actor>,
+            Option<&Here>,
+            Option<&Conn>,
+            Option<&Account>,
+        )>();
         let services = self.world.resource::<Services>();
-        let mut told = Vec::new();
-        for (actor, here, conn) in players.iter(&self.world) {
+        let mut done = Abandoned::default();
+        for (actor, here, conn, account) in players.iter(&self.world) {
             if let (Some(actor), Some(here)) = (actor, here) {
                 save(services, actor.pid, here.0);
             }
             if let Some(conn) = conn {
                 let _ = conn.out.try_send(WorldOut::Kicked(KickReason::Shutdown));
-                told.push(conn.out.clone());
+                done.told.push(conn.out.clone());
+                if let Some(account) = account
+                    && senders.contains(&conn.id)
+                {
+                    done.accounts.push(account.id);
+                }
             }
         }
-        told
+        done
     }
 }
 
