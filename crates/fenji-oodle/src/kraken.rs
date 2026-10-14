@@ -334,7 +334,8 @@ fn distance(offset: i32) -> Result<usize, Error> {
 }
 
 /// A run of literals at `pos`: copied (mode 1), or each added to the byte `last_offset` back
-/// (mode 0), as ooz's `COPY_64_ADD` (kraken.cpp:449) does 8 at a time.
+/// (mode 0), as ooz's `COPY_64_ADD` (kraken.cpp:449) does 8 at a time. For a last offset under 8,
+/// which only the new offset coding can give, the two differ as [`copy_match`]'s note says.
 fn copy_literals(
     dst: &mut [u8],
     pos: usize,

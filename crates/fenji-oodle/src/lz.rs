@@ -11,8 +11,15 @@ use crate::Error;
 /// Copies `len` bytes from `offset` back, to `pos`. Overlapping copies repeat bytes as LZ needs.
 ///
 /// An offset of 0, or one reaching before the start of `dst`, is corrupt (Review Focus 4), and so
-/// is a match running past the end of `dst`. For the offsets Kraken writes, 8 or more, the result
-/// is the one ooz's 8-byte copies give.
+/// is a match running past the end of `dst`.
+///
+/// For an offset of 8 or more, the bytes are the ones ooz's 8-byte copies give. Kraken's
+/// traditional offsets are always 8 or more: `BitReader_ReadDistance` gives at least 8
+/// (kraken.cpp:346), and the recent offsets start at −8 (kraken.cpp:2457–2459). Its new coding,
+/// with a `multi_dist_scale` of 1 or more, can name offsets of 1 to 7 (kraken.cpp:2271–2272).
+/// There ooz's 8-byte copy reads bytes it hasn't written yet, while this one repeats the last
+/// `offset` bytes, as LZ does. Task 8's full check against the client's DLL decides which is right
+/// (Ruling O13), and counts such matches (Ruling O14).
 pub(crate) fn copy_match(
     dst: &mut [u8],
     pos: usize,
