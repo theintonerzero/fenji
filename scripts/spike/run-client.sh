@@ -11,7 +11,7 @@
 #       client2/ only.
 #   scripts/spike/run-client.sh run NAME [--hosts FILE] [--ports "P1 P2"] [--timeout S]
 #       [--display N] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
-#       [--click T:X,Y]... [--key T:KEY]... [--type T:TEXT]... [--stub-arg ARG]...
+#       [--click T:X,Y]... [--key T:KEY[/MS]]... [--type T:TEXT]... [--stub-arg ARG]...
 #       [--server CONFIG [--server-data DIR] [--launch "ARGS" [--launch-password FILE]]]
 #       [--clients 2 --display2 M [--second-after S] [--timeout2 S]
 #        [--launch2 "ARGS" --launch-password2 FILE]] -- [client args...]
@@ -27,6 +27,8 @@
 #       --stub-arg passes one word to fenji-stub, e.g. --stub-arg --speak (M2).
 #       --key and --type play a player's key press (an X keysym name such as Return, space, Tab,
 #       BackSpace or a letter) or typed printable ASCII, T seconds into the run (xkey.py, XTEST).
+#       --key T:KEY/MS holds the key down MS milliseconds (1 to 60000), as a player holds a movement
+#       key; the presses after it go when they are due, and the hold must end by the timeout.
 #       --server runs target/release/fenji-server with a copy of CONFIG (a fenji.toml) in place of
 #       the stub, RUST_LOG=fenji_server=trace, its output in the evidence as server.log; the run
 #       waits for its login_bind and api_bind ports, which must be on 127.0.0.1. Its [store] path is
@@ -258,19 +260,23 @@ record_inputs() {
   } > "$OUT/inputs.txt"
 }
 
-# --key and --type: whole seconds, then a keysym name or printable ASCII; client 1's no later than
-# --timeout, client 2's (2@) no later than its own end, --second-after plus --timeout2. Uses cmd_run's
-# keys, types, clicks, their client-2 twins and presses, whose entries are C:KIND:T:WHAT for client C.
+# --key and --type: whole seconds, then a keysym name, with a hold of 1 to 60000 ms or none, or
+# printable ASCII; client 1's no later than --timeout, client 2's (2@) no later than its own end,
+# --second-after plus --timeout2, and a held key's hold over by then too. Uses cmd_run's keys, types,
+# clicks, their client-2 twins and presses, whose entries are C:KIND:T:WHAT for client C.
 check_presses() {
   local LC_ALL=C k end2=$((${second_after:-0} + ${tmo2:-${tmo:-0}}))
   for k in "${keys[@]}" "${keys2[@]}"; do
-    [[ "$k" =~ ^[0-9]+:[A-Za-z][A-Za-z0-9_]*$ ]] || misuse "--key takes T:KEY (whole seconds, an X keysym name), not '$k'"
+    if ! [[ "$k" =~ ^[0-9]+:[A-Za-z][A-Za-z0-9_]*(/[1-9][0-9]{0,4})?$ ]] || [ "$(held_ms "$k")" -gt 60000 ]; then
+      misuse "--key takes T:KEY or T:KEY/MS (whole seconds, an X keysym name, a hold of 1 to 60000 ms), not '$k'"
+    fi
   done
   for k in "${types[@]}" "${types2[@]}"; do
     [[ "$k" =~ ^[0-9]+:[\ -~]+$ ]] || misuse "--type takes T:TEXT (whole seconds, printable ASCII), not '$k'"
   done
   for k in "${keys[@]}"; do
-    [ "${k%%:*}" -le "$tmo" ] || misuse "--key $k comes after the --timeout of $tmo s"
+    [ "$((${k%%:*} * 1000 + $(held_ms "$k")))" -le "$((tmo * 1000))" ] ||
+      misuse "--key $k comes or ends after the --timeout of $tmo s"
   done
   for k in "${types[@]}"; do
     [ "${k%%:*}" -le "$tmo" ] || misuse "--type at ${k%%:*} s comes after the --timeout of $tmo s"
@@ -279,7 +285,8 @@ check_presses() {
     [ "${k%%:*}" -le "$tmo" ] || misuse "--click $k comes after the --timeout of $tmo s"
   done
   for k in "${keys2[@]}"; do
-    [ "${k%%:*}" -le "$end2" ] || misuse "--key 2@$k comes after client 2's --timeout2 (at $end2 s)"
+    [ "$((${k%%:*} * 1000 + $(held_ms "$k")))" -le "$((end2 * 1000))" ] ||
+      misuse "--key 2@$k comes or ends after client 2's --timeout2 (at $end2 s)"
   done
   for k in "${types2[@]}"; do
     [ "${k%%:*}" -le "$end2" ] || misuse "--type 2@ at ${k%%:*} s comes after client 2's --timeout2 (at $end2 s)"
@@ -291,6 +298,11 @@ check_presses() {
   if [ "${#presses[@]}" -gt 0 ]; then
     mapfile -t presses < <(printf '%s\n' "${presses[@]}" | sort -s -t: -k3,3n)
   fi
+}
+
+# held_ms T:KEY[/MS]: how long the press holds its key, in ms; 0 for a plain press.
+held_ms() {
+  case "$1" in */*) echo "$((10#${1##*/}))" ;; *) echo 0 ;; esac
 }
 
 # Both clients' clicks as one schedule in time order (at one time, client 1's first, each in the
@@ -793,6 +805,16 @@ start_inputs() {
       sl=$((start + t - now))
       [ "$sl" -le 0 ] || sleep "$sl"
       [ -e "$out/.running" ] || break
+      if [ "$kind" = key ] && [[ $what == */* ]]; then
+        # A held key goes on by itself, so the presses after it go when they are due. Its hold ends
+        # by the timeout (check_presses); xkey.py lets go of the key if it is stopped first.
+        (
+          at=$(date -Is)
+          python3 -I "$HERE/xkey.py" --display ":$d" "--key=${what%/*}" "--hold=${what##*/}" 2>>"$out/keys.err" &&
+            echo "$at key $label$t:$what" >> "$out/keys.log"
+        ) &
+        continue
+      fi
       python3 -I "$HERE/xkey.py" --display ":$d" "--$kind=$what" 2>>"$out/keys.err" &&
         echo "$(date -Is) $kind $label$t:$what" >> "$out/keys.log"
     done
