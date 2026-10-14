@@ -1,9 +1,11 @@
-//! Entering the world (docs/protocol/packets/world.md; M4 world plan Amendment A): 772, which loads
-//! the scene; the client's type 3 once it has; time syncs both ways; then the player's own actor
-//! (type 7 and its property blob), its speed (type 23) and type 8. Native bodies go out with
-//! `header::write_message` under their type; 772 is a script message, built by `script_body`,
-//! which refuses `NEVER_SEND`. This module builds and parses; the server decides. Functions are
-//! the pinned exe's; their REA Evidence IDs are in world.md's REA Evidence IDs table.
+//! Entering the world and seeing each other (docs/protocol/packets/world.md; M4 world plan
+//! Amendments A and B): 772, which loads the scene; the client's type 3 once it has; time syncs
+//! both ways; then the player's own actor (type 7 and its property blob), its speed (type 23) and
+//! type 8. Other players come as type 6, which the client pulls with type 5, then 7 and 8 for each,
+//! and type 9 takes them away. Native bodies go out with `header::write_message` under their type;
+//! 772 is a script message, built by `script_body`, which refuses `NEVER_SEND`. This module builds
+//! and parses; the server decides. Functions are the pinned exe's; their REA Evidence IDs are in
+//! world.md's REA Evidence IDs table.
 use crate::lobby::Appearance;
 use crate::opcode::Cts;
 use crate::packet::script_body;
@@ -17,6 +19,13 @@ pub const LOAD_SCENE: i64 = 772;
 pub const PROPS_VERSION: i64 = 4_706_187_382_722_034_291;
 /// Type 3's body: `send_enter` (FUN_140221BB0) posts 21 bytes (world.md 3.1).
 pub const CLIENT_ENTER_LEN: usize = 21;
+/// Type 6's body: FUN_140222E00's case 6 reads 22 bytes (world.md 14.1).
+pub const SYNC_ID_ENTER_LEN: usize = 22;
+/// Type 5's body: `send_sync_filter` (FUN_140221D30) posts 18 bytes (world.md 14.4).
+pub const SYNC_FILTER_LEN: usize = 18;
+/// Type 5's value that pulls an actor the client was told of (`player_id_enters`, world.md 14.3).
+/// Any other value is the sync filter's (14.12), which M4 leaves alone (14.13).
+pub const PULL: u32 = 0;
 /// A client time sync's body: `send_time_sync` (FUN_140221AC0) posts 13 bytes (world.md 7.2).
 pub const TIME_SYNC_LEN: usize = 13;
 /// `prop_move_speed`, the index type 23 takes for the speed (FUN_14020CE90; world.md 6.2).
@@ -370,8 +379,9 @@ pub fn outfit_table(outfit: &[(i64, i64)]) -> Table {
     }
 }
 
-/// The player's own actor, as its type 7 carries it (docs/protocol/packets/world.md §5).
-pub struct SelfActor<'a> {
+/// A player's actor, as its type 7 carries it (docs/protocol/packets/world.md §5): the player's
+/// own, and every other player's, which is the same 7 for that character (14.9).
+pub struct PlayerActor<'a> {
     pub pid: i64,
     pub name: &'a str,
     pub vocation: i64,
@@ -383,13 +393,16 @@ pub struct SelfActor<'a> {
     pub speed: i64,
 }
 
-/// Type 7, `STC_PROTOCOL_SYNC_ENTER`, for the player's own actor (FUN_140222E00's case 7;
-/// world.md §4, §5): the pid as a `u64`, the actor type 1, the difficulty 255 and the template
+/// Type 7, `STC_PROTOCOL_SYNC_ENTER`, for a player's actor (FUN_140222E00's case 7; world.md §4,
+/// §5): the pid as a `u64`, the actor type 1, the difficulty 255 and the template
 /// `vocation × 10000` as a `u32` (0 if that doesn't fit), then the blob, in index order. The head
 /// is hidden, as the creation template hides it (properties 109 and 128 `false`; world.md 9.2);
 /// the voice, the face and the outfit are left out when unset. The player stands at
-/// [`FULL_HEALTH`] (300, 304 and 1458; world.md 5.6).
-pub fn sync_enter_self(actor: &SelfActor) -> Vec<u8> {
+/// [`FULL_HEALTH`] (300, 304 and 1458; world.md 5.6). It serves the player's own actor and every
+/// other player alike: each property in the blob is of sync class `all` or `""`, the model and
+/// the name board read them for any player, and health greys the scene only for the local player
+/// (world.md 14.9).
+pub fn sync_enter_player(actor: &PlayerActor) -> Vec<u8> {
     let a = actor.appearance;
     let mut entries = vec![
         (prop::NAME, BlobValue::Str(actor.name.as_bytes().to_vec())),
@@ -452,7 +465,56 @@ pub fn sync_prop_force_speed(pid: i64, rate: i16) -> [u8; 12] {
 }
 
 /// Type 8, `STC_PROTOCOL_SYNC_ENTER_FINISH` (FUN_140222E00's case 8; world.md 6.1): the pid as a
-/// `u64`. For the local actor it turns the client's type-0 sends back on (1.2).
+/// `u64`. For the local actor it turns the client's type-0 sends back on (1.2); for another player
+/// it runs combat's enter hook (14.10).
 pub fn sync_enter_finish(pid: i64) -> [u8; 8] {
     pid.to_le_bytes()
+}
+
+/// Type 6, `STC_PROTOCOL_SYNC_ID_ENTER` (FUN_140222E00's case 6; world.md 14.1): another player
+/// came into view, and the client queues its id to pull it (14.2, 14.3). The pid as a `u64`, then
+/// x, y and z as `i32`, each rounded to the nearest integer (half away from zero) and clamped,
+/// with NaN as 0 (Rust's `as` casts saturate), then the fast flag and the priority, both 0: the
+/// flag matters for NPC ids only, and with equal priorities the client pulls the nearest first.
+/// x, y and z only order the queue; property 16 in the pulled 7 places the actor (14.8).
+pub fn sync_id_enter(pid: i64, at: [f64; 3]) -> [u8; SYNC_ID_ENTER_LEN] {
+    let mut out = [0u8; SYNC_ID_ENTER_LEN];
+    out[..8].copy_from_slice(&pid.to_le_bytes());
+    for (i, c) in at.iter().enumerate() {
+        let start = 8 + 4 * i;
+        out[start..start + 4].copy_from_slice(&(c.round() as i32).to_le_bytes());
+    }
+    // Bytes 20 and 21, the fast flag and the priority, stay 0.
+    out
+}
+
+/// A client's type 5, `CTS_PROTOCOL_SYNC_FILTER_SET`: an actor and a value, where [`PULL`] asks
+/// for an actor it was told of (docs/protocol/packets/world.md 14.3, 14.4, 14.12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncFilter {
+    pub pid: i64,
+    pub value: u32,
+}
+
+/// Type 5, `CTS_PROTOCOL_SYNC_FILTER_SET` (`send_sync_filter`, FUN_140221D30; world.md 14.4): the
+/// actor id, the `u64` at offset 0 read as an `i64`, and the value, the `u32` at offset 8, of 18
+/// bytes. Bytes 12 to 17 aren't read: byte 17 describes the player's machine.
+pub fn sync_filter_set(body: &[u8]) -> Result<SyncFilter> {
+    if body.len() != SYNC_FILTER_LEN {
+        return Err(Error::BadBody {
+            opcode: Cts::SyncFilterSet.to_u8(),
+            len: body.len(),
+        });
+    }
+    let pid = i64::from_le_bytes(body[..8].try_into().expect("8 bytes"));
+    let value = u32::from_le_bytes(body[8..12].try_into().expect("4 bytes"));
+    Ok(SyncFilter { pid, value })
+}
+
+/// Type 9, `STC_PROTOCOL_SYNC_LEAVE` (FUN_140222E00's case 9; world.md 14.11): each pid as a
+/// `u64`, in the order given, with no count; no pids give an empty body. The client drops a
+/// queued id, or destroys the actor; a 9 naming the player's own pid would make it leave the
+/// world, so callers never put it here.
+pub fn sync_leave(pids: &[i64]) -> Vec<u8> {
+    pids.iter().flat_map(|pid| pid.to_le_bytes()).collect()
 }
