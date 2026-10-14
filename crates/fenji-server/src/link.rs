@@ -2,8 +2,10 @@
 //! The gate hands its connection here when the client's 10 names one of the account's characters.
 //! The link joins the world as that character, maps the client's messages to [`WorldIn`] and each
 //! [`WorldOut`] back to messages, and leaves the world however it ends. Slice 1 (Amendment A) maps
-//! entering: 772, the time syncs, type 3, then the player's own 7 and 8; later slices add the
-//! rest. Script messages go out through the gate's `script_out`, which refuses `NEVER_SEND`.
+//! entering: 772, the time syncs, type 3, then the player's own 7 and 8. Slice 2 (Amendment B)
+//! maps seeing: another player announced (6), pulled (5), sent whole (7 and 8) and taken away
+//! (9). Later slices add the moves and chat. Script messages go out through the gate's
+//! `script_out`, which refuses `NEVER_SEND`.
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +16,7 @@ use fenji_proto::lobby::{self, Appearance, code};
 use fenji_proto::opcode::{Cts, Stc};
 use fenji_proto::packet::Up;
 use fenji_proto::pickle::{Table, Value};
-use fenji_proto::world::{self, SelfActor};
+use fenji_proto::world::{self, PlayerActor};
 use fenji_store::{Account, Character};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
@@ -24,7 +26,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use crate::gate::{self, Gate};
 use crate::lobby::stored_appearance;
 use crate::world::{
-    ConnId, KickReason, Location, Look, Player, Pos, WorldHandle, WorldIn, WorldOut,
+    ActorId, ConnId, KickReason, Location, Look, Player, Pos, WorldHandle, WorldIn, WorldOut,
 };
 
 /// The world's messages a connection may hold unwritten; one more and the world lets go of it
@@ -43,6 +45,12 @@ fn enter_machine(i: usize) -> bool {
 /// counters after the clock and its byte 1.
 fn sync_machine(i: usize) -> bool {
     i >= 5
+}
+
+/// Whether byte `i` of type 5 describes the player's machine (world.md 14.4): the last byte, from
+/// a query about the client's own process. The trace log masks it.
+fn filter_machine(i: usize) -> bool {
+    i == 17
 }
 
 /// Plays `character` in the world on the gate's connection, until the client leaves, the world
@@ -121,7 +129,7 @@ pub(crate) async fn play(
                     return kicked(sock, peer, gate, server, account, reason).await;
                 }
                 Some(msg) => {
-                    let Some(bytes) = encode(server, msg)? else { continue };
+                    let Some(bytes) = encode(server, pid, msg)? else { continue };
                     if !gate::send_or_replaced(sock, &bytes, deadline, replaced).await? {
                         tracing::info!(%peer, account = %account.username, "replaced by a newer login while a write was blocked: closing");
                         return Ok(());
@@ -242,6 +250,28 @@ fn on_message(gate: &Gate, conn: ConnId, ty: u8, body: &[u8]) -> Step {
         },
         // "Back to character select" waits for 330, which slice 1 doesn't send (world.md 1.5).
         Cts::ClientLeave => Step::End("back to character select (type 4)"),
+        // A pull of an announced player, or the sync filter's value for an actor (world.md
+        // 14.3, 14.12). Only a pull goes to the world, which answers it only for a pid it
+        // announced and hasn't sent (14.13); M4 has no combat or threat for the filter's values.
+        Cts::SyncFilterSet => match world::sync_filter_set(body) {
+            Ok(f) => {
+                tracing::trace!(body = %masked(body, filter_machine), "sync filter (type 5)");
+                if f.value == world::PULL {
+                    gate.world.send(WorldIn::Pull { conn, pid: f.pid });
+                } else {
+                    tracing::debug!(
+                        pid = f.pid,
+                        value = f.value,
+                        "a sync filter value: not for the world"
+                    );
+                }
+                Step::Go
+            }
+            Err(e) => {
+                tracing::debug!(len = body.len(), error = %e, "type 5 dropped");
+                Step::Go
+            }
+        },
         Cts::GateScript | Cts::Script => match Up::decode(ty, body) {
             Ok(Up::Script {
                 id: Value::Int(lobby::CLIENT_EXIT),
@@ -280,8 +310,11 @@ fn masked(body: &[u8], machine: fn(usize) -> bool) -> String {
         .collect()
 }
 
-/// The bytes for one message from the world, or `None` for what slice 1 doesn't send.
-fn encode(server: &mut Server, msg: WorldOut) -> anyhow::Result<Option<Vec<u8>>> {
+/// The bytes for one message from the world to the player `own`, or `None` for what isn't sent:
+/// what names `own` itself (world.md 14.11: a 9 naming it would make the client's own player
+/// leave, and a 6 would queue its own id; interest leaves a viewer out of its own view, so this
+/// guards against a bug in the world), and what the later slices map.
+fn encode(server: &mut Server, own: ActorId, msg: WorldOut) -> anyhow::Result<Option<Vec<u8>>> {
     match msg {
         WorldOut::LoadScene { pid, at } => {
             let p = at.pos;
@@ -303,45 +336,108 @@ fn encode(server: &mut Server, msg: WorldOut) -> anyhow::Result<Option<Vec<u8>>>
             pos,
             speed,
         } => {
-            let appearance = stored_appearance(&look.appearance).unwrap_or_else(|| {
-                tracing::warn!(
-                    pid,
-                    "a stored appearance that doesn't decode: the defaults go out"
-                );
-                Appearance::from_table(&Table::default())
-            });
-            let actor = SelfActor {
-                pid,
-                name: &look.name,
-                vocation: look.vocation,
-                skeleton: look.skeleton,
-                level: look.level,
-                appearance: &appearance,
-                pos: [pos.x, pos.y, pos.z, pos.yaw],
-                speed,
-            };
             // The speed is the blob's 1325 alone: without type 23, run m4-e3 ran as m4-e2 did
             // with it (world.md 6.5).
             tracing::debug!(pid, speed, "the player's own actor: 7 and 8");
-            let mut out = server.send(
-                Stc::SyncEnter.to_u8(),
-                &world::sync_enter_self(&actor),
-                &StoredCodec,
-            )?;
-            out.extend(server.send(
-                Stc::SyncEnterFinish.to_u8(),
-                &world::sync_enter_finish(pid),
-                &StoredCodec,
-            )?);
-            Ok(Some(out))
+            Ok(Some(enter_and_finish(server, pid, &look, pos, speed)?))
         }
-        // Types 6 and 9, the moves and chat aren't read yet: encoding them would send unverified
-        // bytes, and closing on them would end the two-client run (Amendment A).
+        WorldOut::Announce { pid, pos } => {
+            if pid == own {
+                tracing::warn!(pid, "an announce of the player's own actor: not sent");
+                return Ok(None);
+            }
+            tracing::debug!(
+                pid,
+                x = pos.x,
+                y = pos.y,
+                z = pos.z,
+                "6: another player in view"
+            );
+            let body = world::sync_id_enter(pid, [pos.x, pos.y, pos.z]);
+            Ok(Some(server.send(
+                Stc::SyncIdEnter.to_u8(),
+                &body,
+                &StoredCodec,
+            )?))
+        }
+        WorldOut::Enter {
+            pid,
+            look,
+            pos,
+            speed,
+        } => {
+            if pid == own {
+                tracing::warn!(
+                    pid,
+                    "another player's 7 for the player's own actor: not sent"
+                );
+                return Ok(None);
+            }
+            // The player's own 7 for that character, then 8 (world.md 14.9, 14.10).
+            tracing::debug!(pid, name = %look.name, speed, "another player: 7 and 8");
+            Ok(Some(enter_and_finish(server, pid, &look, pos, speed)?))
+        }
+        WorldOut::Leave { pids } => {
+            let gone: Vec<ActorId> = pids.iter().copied().filter(|p| *p != own).collect();
+            if gone.len() != pids.len() {
+                tracing::warn!(pid = own, "a 9 naming the player's own actor: left out");
+            }
+            if gone.is_empty() {
+                return Ok(None);
+            }
+            tracing::debug!(pids = ?gone, "9: players out of view");
+            Ok(Some(server.send(
+                Stc::SyncLeave.to_u8(),
+                &world::sync_leave(&gone),
+                &StoredCodec,
+            )?))
+        }
+        // The moves and chat aren't read yet (Tasks 14 to 16): encoding them would send
+        // unverified bytes, and closing on them would end Task 13's two-client runs.
         other => {
-            tracing::debug!(variant = variant(&other), "not sent in slice 1");
+            tracing::debug!(variant = variant(&other), "not sent yet");
             Ok(None)
         }
     }
+}
+
+/// Type 7 for player `pid`, then type 8 (world.md 4.1, 6.1, 14.9): one write, so both go out
+/// within the write deadline. The appearance is the stored one, or the defaults with a warning.
+fn enter_and_finish(
+    server: &mut Server,
+    pid: ActorId,
+    look: &Look,
+    pos: Pos,
+    speed: i64,
+) -> anyhow::Result<Vec<u8>> {
+    let appearance = stored_appearance(&look.appearance).unwrap_or_else(|| {
+        tracing::warn!(
+            pid,
+            "a stored appearance that doesn't decode: the defaults go out"
+        );
+        Appearance::from_table(&Table::default())
+    });
+    let actor = PlayerActor {
+        pid,
+        name: &look.name,
+        vocation: look.vocation,
+        skeleton: look.skeleton,
+        level: look.level,
+        appearance: &appearance,
+        pos: [pos.x, pos.y, pos.z, pos.yaw],
+        speed,
+    };
+    let mut out = server.send(
+        Stc::SyncEnter.to_u8(),
+        &world::sync_enter_player(&actor),
+        &StoredCodec,
+    )?;
+    out.extend(server.send(
+        Stc::SyncEnterFinish.to_u8(),
+        &world::sync_enter_finish(pid),
+        &StoredCodec,
+    )?);
+    Ok(out)
 }
 
 /// A `WorldOut`'s name, for the log.
@@ -399,13 +495,14 @@ mod tests {
 
     use fenji_proto::client::{Client, ClientEvent};
     use fenji_proto::codec::StoredCodec;
-    use fenji_proto::handshake::{AuthMessage, Event};
+    use fenji_proto::handshake::{AuthMessage, Event, Message};
     use fenji_proto::hello::{HELLO_LEN, Variants};
     use fenji_proto::lobby::{self, code};
     use fenji_proto::pickle::{self, Value};
     use fenji_proto::variant::AES128;
+    use fenji_proto::world::BlobValue;
     use fenji_store::{Place, Store};
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 
@@ -596,6 +693,13 @@ mod tests {
         // A time sync: its clock and byte 1 show, its two counters don't (7.2).
         let sync = [0x78, 0x56, 0x34, 0x12, 1, 9, 9, 9, 9, 8, 8, 8, 8];
         assert_eq!(masked(&sync, sync_machine), "7856341201................");
+        // Type 5 with its last byte set: that byte is masked, the rest shows (14.4).
+        let mut pull = filter(300, 32);
+        pull[17] = 1;
+        assert_eq!(
+            masked(&pull, filter_machine),
+            "2c01000000000000200000000100000000.."
+        );
     }
 
     #[test]
@@ -909,5 +1013,285 @@ mod tests {
         drop(out);
         let ended = tokio::time::timeout(Duration::from_secs(5), played).await;
         ended.expect("the world letting go ends it").unwrap();
+    }
+
+    // --- Slice 2 (Amendment B): seeing each other.
+
+    /// A type-5 body as the client builds it (world.md 14.4): the actor, the value, a byte 1, a
+    /// zero `u32` and the machine byte, 0 here.
+    fn filter(pid: i64, value: u32) -> Vec<u8> {
+        let mut b = pid.to_le_bytes().to_vec();
+        b.extend(value.to_le_bytes());
+        b.push(1);
+        b.extend([0; 5]);
+        b
+    }
+
+    /// Another player as the world sends it: Mai, a Spellsword, with a look the lobby stored.
+    fn mai() -> (Look, Appearance) {
+        let appearance = Appearance {
+            voice: Some(2),
+            base_face: 2,
+            face: Some("v:5;".into()),
+            equips_id: 1,
+            portrait: 3 << 16,
+        };
+        let stored = pickle::encode(&[Value::Table(appearance.to_table())]).unwrap();
+        let look = Look {
+            name: "Mai".into(),
+            vocation: 2,
+            skeleton: 1,
+            level: 37,
+            appearance: Arc::from(stored),
+        };
+        (look, appearance)
+    }
+
+    /// The test's end of a connection in the world: the world's sender for it, and the client.
+    struct Linked {
+        out: mpsc::Sender<WorldOut>,
+        theirs: TcpStream,
+        client: Client,
+        inbox: mpsc::UnboundedReceiver<WorldIn>,
+    }
+
+    impl Linked {
+        /// One message from the client, as its transport writes it.
+        async fn send(&mut self, ty: u8, body: &[u8]) {
+            let bytes = self.client.send(ty, body).unwrap();
+            self.theirs.write_all(&bytes).await.unwrap();
+        }
+
+        /// What the client reads until `n` messages have come (5 s at most); a read that brings
+        /// more brings them all.
+        async fn messages(&mut self, n: usize) -> Vec<Message> {
+            let mut got = Vec::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            while got.len() < n {
+                let read = tokio::time::timeout(Duration::from_secs(5), self.theirs.read(&mut buf))
+                    .await
+                    .expect("a message within 5 s")
+                    .unwrap();
+                assert!(read > 0, "the connection closed after {got:?}");
+                let (events, _) = self.client.receive(&buf[..read]).unwrap();
+                for e in events {
+                    match e {
+                        ClientEvent::Message(m) => got.push(m),
+                        other => panic!("{other:?}"),
+                    }
+                }
+            }
+            got
+        }
+    }
+
+    /// Lin (pid 258) in a world that is `test`'s: it gets the link's channel, the client and the
+    /// link's messages to the world. When `test` ends, its channel goes, and the link with it.
+    async fn linked<F, Fut>(test: F)
+    where
+        F: FnOnce(Linked) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (gate, mut inbox) = gate(dir.path()).await;
+        let (mut ours, peer, mut server, theirs, client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let tester = account("tester");
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        let world = async move {
+            let WorldIn::Join { player, out } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            assert_eq!((player.conn, player.pid), (1, 258));
+            test(Linked {
+                out,
+                theirs,
+                client,
+                inbox,
+            })
+            .await;
+        };
+        let (ended, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(played, world)
+        })
+        .await
+        .expect("within 10 s");
+        ended.unwrap();
+    }
+
+    const AT: Pos = Pos {
+        x: 2431.0,
+        y: -71493.5,
+        z: 64854.4,
+        yaw: 345.0,
+    };
+
+    #[tokio::test]
+    async fn announce_sends_type_6() {
+        linked(|mut l| async move {
+            l.out
+                .send(WorldOut::Announce { pid: 300, pos: AT })
+                .await
+                .unwrap();
+            let got = l.messages(1).await;
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert_eq!(got[0].ty, Stc::SyncIdEnter.to_u8());
+            // The pid, x, y and z rounded half away from zero, then the flag and the priority 0.
+            let mut want = 300i64.to_le_bytes().to_vec();
+            for c in [2431i32, -71494, 64854] {
+                want.extend(c.to_le_bytes());
+            }
+            want.extend([0, 0]);
+            assert_eq!(got[0].body, want);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_pull_reaches_the_world() {
+        linked(|mut l| async move {
+            l.send(Cts::SyncFilterSet.to_u8(), &filter(300, world::PULL))
+                .await;
+            assert!(matches!(
+                told(&mut l.inbox).await,
+                WorldIn::Pull { conn: 1, pid: 300 }
+            ));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn filter_values_stay_out_of_the_world() {
+        linked(|mut l| async move {
+            // The sync filter's 32, and a body a byte short: nothing for the world.
+            l.send(Cts::SyncFilterSet.to_u8(), &filter(300, 32)).await;
+            l.send(Cts::SyncFilterSet.to_u8(), &filter(300, 0)[..17])
+                .await;
+            // The connection stays open: a time sync after them is answered.
+            let mut sync = 7u32.to_le_bytes().to_vec();
+            sync.push(1);
+            sync.extend([0; 8]);
+            l.send(Cts::TimeSync.to_u8(), &sync).await;
+            let got = l.messages(1).await;
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert_eq!(got[0].ty, Stc::TimeSync.to_u8());
+            // The link handles a read's messages in order, so anything for the world is there.
+            assert!(l.inbox.try_recv().is_err(), "the world got something");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn enter_sends_7_then_8() {
+        linked(|mut l| async move {
+            let (look, appearance) = mai();
+            l.out
+                .send(WorldOut::Enter {
+                    pid: 300,
+                    look: look.clone(),
+                    pos: AT,
+                    speed: 100,
+                })
+                .await
+                .unwrap();
+            let got = l.messages(2).await;
+            assert_eq!(got.len(), 2, "{got:?}");
+            assert_eq!(got[0].ty, Stc::SyncEnter.to_u8());
+            // A player (1), difficulty 255, template vocation 2 × 10000 (world.md 5.4).
+            assert_eq!(got[0].body[..8], 300i64.to_le_bytes());
+            assert_eq!(got[0].body[8..14], [1, 255, 0x20, 0x4e, 0, 0]);
+            let blob = world::decode_blob(&got[0].body[14..]).unwrap();
+            let get = |i: u16| blob.iter().find(|(x, _)| *x == i).map(|(_, v)| v.clone());
+            assert_eq!(get(1), Some(BlobValue::Str(b"Mai".to_vec())));
+            assert_eq!(get(5), Some(BlobValue::Int(2)));
+            assert_eq!(get(6), Some(BlobValue::Int(1)));
+            assert_eq!(get(9), Some(BlobValue::Int(37)));
+            assert_eq!(
+                get(16),
+                Some(BlobValue::Vec([2431.0, -71493.5, 64854.4, 345.0]))
+            );
+            assert_eq!(get(1325), Some(BlobValue::Int(100)));
+            // The player's own 7 for that character (world.md 14.9).
+            let own = world::sync_enter_player(&PlayerActor {
+                pid: 300,
+                name: "Mai",
+                vocation: 2,
+                skeleton: 1,
+                level: 37,
+                appearance: &appearance,
+                pos: [AT.x, AT.y, AT.z, AT.yaw],
+                speed: 100,
+            });
+            assert_eq!(got[0].body, own);
+            assert_eq!(
+                (got[1].ty, &got[1].body[..]),
+                (
+                    Stc::SyncEnterFinish.to_u8(),
+                    &world::sync_enter_finish(300)[..]
+                )
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn leave_sends_type_9() {
+        linked(|mut l| async move {
+            let far = (1 << 32) + 1;
+            l.out
+                .send(WorldOut::Leave {
+                    pids: vec![300, far],
+                })
+                .await
+                .unwrap();
+            let got = l.messages(1).await;
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert_eq!(got[0].ty, Stc::SyncLeave.to_u8());
+            let mut want = 300i64.to_le_bytes().to_vec();
+            want.extend(far.to_le_bytes());
+            assert_eq!(got[0].body, want);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn the_players_own_pid_is_never_sent_to_it() {
+        // world.md 14.11: a 9 naming it makes the client's own player leave, and a 6 would queue
+        // its own id. Lin is pid 258. The 9 for 300 comes last, so whatever went out before it
+        // would be read first.
+        linked(|mut l| async move {
+            let (look, _) = mai();
+            for msg in [
+                WorldOut::Announce { pid: 258, pos: AT },
+                WorldOut::Enter {
+                    pid: 258,
+                    look,
+                    pos: AT,
+                    speed: 100,
+                },
+                WorldOut::Leave { pids: vec![258] },
+                WorldOut::Leave {
+                    pids: vec![258, 300],
+                },
+            ] {
+                l.out.send(msg).await.unwrap();
+            }
+            let got = l.messages(1).await;
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert_eq!(
+                (got[0].ty, got[0].body.clone()),
+                (Stc::SyncLeave.to_u8(), 300i64.to_le_bytes().to_vec())
+            );
+        })
+        .await;
     }
 }

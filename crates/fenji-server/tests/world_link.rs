@@ -1,7 +1,9 @@
-//! Entering the world through the gate (M4 world plan Task 11; Amendment A): the lobby's 10 hands
-//! the connection to the link, which speaks for it to the world, with the bot as the client.
+//! Entering the world through the gate (M4 world plan Task 11; Amendment A), and seeing each other
+//! (Task 13; Amendment B): the lobby's 10 hands the connection to the link, which speaks for it to
+//! the world, with the bot as the client.
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
@@ -12,6 +14,7 @@ use fenji_proto::world::{self, BlobValue};
 use fenji_server::clock::Clock;
 use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN, SERVER_STOPPING};
 use fenji_server::server::{GateLimits, RunningServer};
+use fenji_server::world::{MoveStep, Pos, WorldIn};
 use fenji_store::{Place, Store};
 use tokio::net::TcpStream;
 
@@ -77,6 +80,55 @@ async fn enter(bot: &mut Bot, pid: i64) -> Vec<u8> {
         )
     );
     seven.body
+}
+
+/// The client's pull of `pid` (type 5 with 0; world.md 14.3, 14.4): the actor, the value, a byte 1,
+/// a zero `u32` and the machine byte, 0 here.
+fn pull(pid: i64) -> Vec<u8> {
+    let mut b = pid.to_le_bytes().to_vec();
+    b.extend(world::PULL.to_le_bytes());
+    b.push(1);
+    b.extend([0; 5]);
+    b
+}
+
+/// The next message is a 6 announcing `pid` at `[world]`'s start (world.md 14.1).
+async fn announced(bot: &mut Bot, pid: i64) {
+    let six = bot.recv_message().await;
+    assert_eq!(
+        (six.ty, six.body),
+        (
+            Stc::SyncIdEnter.to_u8(),
+            world::sync_id_enter(pid, [START[0], START[1], START[2]]).to_vec()
+        )
+    );
+}
+
+/// Pulls `pid` (5 with 0): its 7, then its 8. The body of 7.
+async fn pulled(bot: &mut Bot, pid: i64) -> Vec<u8> {
+    bot.send_native(Cts::SyncFilterSet.to_u8(), &pull(pid))
+        .await;
+    let seven = bot.recv_message().await;
+    assert_eq!(seven.ty, Stc::SyncEnter.to_u8());
+    assert_eq!(seven.body[..8], pid.to_le_bytes());
+    let eight = bot.recv_message().await;
+    assert_eq!(
+        (eight.ty, eight.body),
+        (
+            Stc::SyncEnterFinish.to_u8(),
+            world::sync_enter_finish(pid).to_vec()
+        )
+    );
+    seven.body
+}
+
+/// The next message is a 9 taking `pids` away (world.md 14.11).
+async fn left(bot: &mut Bot, pids: &[i64]) {
+    let nine = bot.recv_message().await;
+    assert_eq!(
+        (nine.ty, nine.body),
+        (Stc::SyncLeave.to_u8(), world::sync_leave(pids))
+    );
 }
 
 /// Waits (5 s at most) until the store holds `want` as the character's place: the world's save,
@@ -288,28 +340,105 @@ async fn exit_and_leave_end_the_session() {
 async fn later_world_messages_are_dropped() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    // Signed in first and second: online ids 1 and 2.
     let (mut a, lin) = in_lobby(&s, "aaa", "Lin").await;
     select(&mut a, lin).await;
     enter(&mut a, lin).await;
     let (mut b, mai) = in_lobby(&s, "bbb", "Mai").await;
     select(&mut b, mai).await;
     enter(&mut b, mai).await;
-    // Both stand at the start: the world announces each to the other (6) in the tick Mai entered.
-    // Slice 1 encodes none of that, so neither client gets a byte for it.
+    // Both stand at the start: the world announces each to the other (6) in the tick Mai entered,
+    // and Lin pulls Mai, so Mai's moves would reach her.
+    announced(&mut a, mai).await;
+    announced(&mut b, lin).await;
+    pulled(&mut a, mai).await;
+    // The world's moves and chat wait for their slices: Mai's move relayed to Lin, and a line for
+    // Lin, give Lin's client no bytes.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    for bot in [&mut a, &mut b] {
-        bot.send_native(Cts::TimeSync.to_u8(), &time_sync(7)).await;
-        let next = bot.recv_message().await;
-        assert_eq!(next.ty, Stc::TimeSync.to_u8(), "{next:?}");
-        assert_eq!(next.body[..4], 7u32.to_le_bytes());
-    }
-    // The client's other messages get nothing in slice 1, and the connection stays.
-    a.send_native(5, &[0; 18]).await;
+    let world = s.world();
+    let step = MoveStep {
+        pos: Pos {
+            x: START[0] + 50.0,
+            y: START[1],
+            z: START[2],
+            yaw: START[3],
+        },
+        detail: Arc::from(&[][..]),
+    };
+    assert!(world.send(WorldIn::Move { conn: 2, step }));
+    assert!(world.send(WorldIn::Tell {
+        conn: 1,
+        text: "a line".into()
+    }));
+    a.quiet(300).await;
+    // The client's other messages get nothing, and the connection stays.
     a.send_native(6, &[1, 2, 3]).await;
     a.send(12_345, &[]).await;
     a.quiet(300).await;
     a.send_native(Cts::TimeSync.to_u8(), &time_sync(8)).await;
     assert_eq!(a.recv_message().await.ty, Stc::TimeSync.to_u8());
+    // And online id 2 was Mai's: letting it go ends her connection, and Lin hears she left.
+    assert!(world.send(WorldIn::Leave { conn: 2 }));
+    assert!(b.next_is_end().await);
+    left(&mut a, &[mai]).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn two_players_see_each_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut a, lin) = in_lobby(&s, "aaa", "Lin").await;
+    select(&mut a, lin).await;
+    let lins_own = enter(&mut a, lin).await;
+    let (mut b, mai) = in_lobby(&s, "bbb", "Mai").await;
+    select(&mut b, mai).await;
+    let mais_own = enter(&mut b, mai).await;
+    // Each is announced to the other where it stands, pulls it, and gets the other's own 7 for
+    // that character, the same bytes as that player's client got (world.md 14.9), and its 8.
+    announced(&mut a, mai).await;
+    announced(&mut b, lin).await;
+    let mai_seen = pulled(&mut a, mai).await;
+    let lin_seen = pulled(&mut b, lin).await;
+    assert_eq!(mai_seen, mais_own, "Lin sees Mai as Mai's client has her");
+    assert_eq!(lin_seen, lins_own, "Mai sees Lin as Lin's client has her");
+    let blob = world::decode_blob(&mai_seen[14..]).unwrap();
+    assert_eq!(blob[0], (1, BlobValue::Str(b"Mai".to_vec())), "the name");
+    // A second pull of a player already sent gets nothing, and nothing else comes.
+    a.send_native(Cts::SyncFilterSet.to_u8(), &pull(mai)).await;
+    a.quiet(300).await;
+    b.quiet(300).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_player_leaving_is_a_9_for_whoever_saw_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut a, lin) = in_lobby(&s, "aaa", "Lin").await;
+    select(&mut a, lin).await;
+    enter(&mut a, lin).await;
+    let (mut b, mai) = in_lobby(&s, "bbb", "Mai").await;
+    select(&mut b, mai).await;
+    enter(&mut b, mai).await;
+    announced(&mut a, mai).await;
+    announced(&mut b, lin).await;
+    // Lin pulls Mai; Kai, who enters next, is only told of her.
+    pulled(&mut a, mai).await;
+    let (mut c, kai) = in_lobby(&s, "ccc", "Kai").await;
+    select(&mut c, kai).await;
+    enter(&mut c, kai).await;
+    announced(&mut a, kai).await;
+    announced(&mut b, kai).await;
+    // Kai is told of the others in pid order.
+    announced(&mut c, lin).await;
+    announced(&mut c, mai).await;
+    // Mai's client goes: both who knew of her hear she left, whether they had pulled her or not.
+    drop(b);
+    left(&mut a, &[mai]).await;
+    left(&mut c, &[mai]).await;
+    a.quiet(300).await;
+    c.quiet(300).await;
     s.shutdown().await.unwrap();
 }
 
@@ -443,6 +572,8 @@ async fn a_stopping_server_closes_players_in_the_world_with_server_not_running()
     let (mut mai_bot, mai) = in_lobby(&s, "bbb", "Mai").await;
     select(&mut mai_bot, mai).await;
     enter(&mut mai_bot, mai).await;
+    // Mai's arrival is announced to Lin (6, slice 2), before anything else reaches her.
+    announced(&mut lin_bot, mai).await;
     let (_kai_bot, _) = in_lobby(&s, "ccc", "Kai").await;
     let _silent = TcpStream::connect(s.login_addr).await.unwrap();
     // The store's copies change while they stand at the start: only the world's last saves put

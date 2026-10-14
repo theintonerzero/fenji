@@ -1,9 +1,9 @@
-//! The world's entering messages (docs/protocol/packets/world.md; M4 world plan Amendment A): each
-//! encoder makes its golden vector, and each decoder reads it back.
+//! The world's entering and seeing messages (docs/protocol/packets/world.md; M4 world plan
+//! Amendments A and B): each encoder makes its golden vector, and each decoder reads it back.
 use fenji_proto::Error;
 use fenji_proto::lobby::Appearance;
 use fenji_proto::pickle::{self, Table, Value};
-use fenji_proto::world::{self, BlobValue, SelfActor};
+use fenji_proto::world::{self, BlobValue, PlayerActor, SyncFilter};
 
 fn unhex(h: &str) -> Vec<u8> {
     let h: String = h.split_whitespace().collect();
@@ -222,8 +222,8 @@ fn lin_look() -> Appearance {
     }
 }
 
-fn lin(appearance: &Appearance) -> SelfActor<'_> {
-    SelfActor {
+fn lin(appearance: &Appearance) -> PlayerActor<'_> {
+    PlayerActor {
         pid: 258,
         name: "Lin",
         vocation: 7,
@@ -236,9 +236,9 @@ fn lin(appearance: &Appearance) -> SelfActor<'_> {
 }
 
 #[test]
-fn sync_enter_self_is_byte_for_byte() {
+fn sync_enter_player_is_byte_for_byte() {
     let look = lin_look();
-    let got = world::sync_enter_self(&lin(&look));
+    let got = world::sync_enter_player(&lin(&look));
     assert_eq!(got, unhex(V7));
     assert_eq!(got.len(), 141);
 }
@@ -252,7 +252,7 @@ fn indexes(body: &[u8]) -> Vec<u16> {
 }
 
 #[test]
-fn sync_enter_self_leaves_out_what_is_unset() {
+fn sync_enter_player_leaves_out_what_is_unset() {
     let full = indexes(&unhex(V7));
     assert_eq!(
         full,
@@ -265,20 +265,20 @@ fn sync_enter_self_leaves_out_what_is_unset() {
         face: None,
         ..lin_look()
     };
-    let got = indexes(&world::sync_enter_self(&lin(&bare)));
+    let got = indexes(&world::sync_enter_player(&lin(&bare)));
     assert!(!got.contains(&177), "no voice, no 177: {got:?}");
     assert!(!got.contains(&215), "no face, no 215: {got:?}");
     let third = Appearance {
         equips_id: 3,
         ..lin_look()
     };
-    assert!(!indexes(&world::sync_enter_self(&lin(&third))).contains(&222));
+    assert!(!indexes(&world::sync_enter_player(&lin(&third))).contains(&222));
     let look = lin_look();
-    let ten = SelfActor {
+    let ten = PlayerActor {
         vocation: 10,
         ..lin(&look)
     };
-    assert!(!indexes(&world::sync_enter_self(&ten)).contains(&222));
+    assert!(!indexes(&world::sync_enter_player(&ten)).contains(&222));
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn the_header_carries_the_template_when_it_fits() {
     // world.md 5.4: type 1, difficulty 255, template vocation × 10000 as a u32, or 0.
     let look = lin_look();
     for (vocation, template) in [(0, 0u32), (7, 70_000), (9, 90_000), (-1, 0), (500_000, 0)] {
-        let body = world::sync_enter_self(&SelfActor {
+        let body = world::sync_enter_player(&PlayerActor {
             vocation,
             ..lin(&look)
         });
@@ -294,7 +294,7 @@ fn the_header_carries_the_template_when_it_fits() {
         assert_eq!(body[8..10], [1, 255], "{vocation}");
         assert_eq!(body[10..14], template.to_le_bytes(), "{vocation}");
     }
-    let far = world::sync_enter_self(&SelfActor {
+    let far = world::sync_enter_player(&PlayerActor {
         pid: (1 << 40) + 1,
         ..lin(&look)
     });
@@ -494,4 +494,78 @@ fn sync_enter_finish_is_byte_for_byte() {
         world::sync_enter_finish((1 << 40) + 1),
         unhex("01 00 00 00 00 01 00 00")[..]
     );
+}
+
+/// V8: type 6 for pid 258 at the default start (world.md 14.1).
+const V8: &str = "02 01 00 00 00 00 00 00 3e 09 00 00 c9 e7 fe ff 56 fd 00 00 00 00";
+/// V8b: pid 2^32 + 1 at (2.5, -2.5, 3 x 10^9), rounded half away from zero and clamped to i32.
+const V8B: &str = "01 00 00 00 01 00 00 00 03 00 00 00 fd ff ff ff ff ff ff 7f 00 00";
+/// V9a: the client's pull of pid 258 (world.md 14.3, 14.4).
+const V9A: &str = "02 01 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00";
+/// V9b: the sync filter's value 32 for pid 2^32 + 1, with byte 17 set (world.md 14.12).
+const V9B: &str = "01 00 00 00 01 00 00 00 20 00 00 00 01 00 00 00 00 01";
+/// V10: type 9 for pids 258 and 2^32 + 1 (world.md 14.11).
+const V10: &str = "02 01 00 00 00 00 00 00 01 00 00 00 01 00 00 00";
+
+#[test]
+fn sync_id_enter_is_byte_for_byte() {
+    assert_eq!(world::SYNC_ID_ENTER_LEN, 22);
+    assert_eq!(
+        world::sync_id_enter(258, [2366.0, -71735.0, 64854.0]),
+        unhex(V8)[..]
+    );
+    assert_eq!(
+        world::sync_id_enter((1 << 32) + 1, [2.5, -2.5, 3.0e9]),
+        unhex(V8B)[..]
+    );
+    // NaN gives 0, and what rounds to nothing is 0 (Rust's `as` casts saturate).
+    let zeros = world::sync_id_enter(258, [f64::NAN, -0.4, 0.4]);
+    assert_eq!(zeros[8..20], [0; 12]);
+    let low = world::sync_id_enter(258, [-3.0e9, f64::NEG_INFINITY, f64::INFINITY]);
+    assert_eq!(low[8..12], i32::MIN.to_le_bytes());
+    assert_eq!(low[12..16], i32::MIN.to_le_bytes());
+    assert_eq!(low[16..20], i32::MAX.to_le_bytes());
+    // The fast flag and the priority are 0 (world.md 14.2, 14.3).
+    assert_eq!(low[20..], [0, 0]);
+}
+
+#[test]
+fn sync_filter_set_reads_the_pid_and_the_value() {
+    assert_eq!(world::SYNC_FILTER_LEN, 18);
+    assert_eq!(world::PULL, 0);
+    let v9a = unhex(V9A);
+    let pull = SyncFilter {
+        pid: 258,
+        value: world::PULL,
+    };
+    assert_eq!(world::sync_filter_set(&v9a), Ok(pull));
+    assert_eq!(
+        world::sync_filter_set(&unhex(V9B)),
+        Ok(SyncFilter {
+            pid: 4_294_967_297,
+            value: 32
+        })
+    );
+    // Byte 17 describes the player's machine and is never read (world.md 14.4).
+    let mut machine = v9a.clone();
+    machine[17] = 1;
+    assert_eq!(world::sync_filter_set(&machine), Ok(pull));
+    let mut long = v9a.clone();
+    long.push(0);
+    for body in [&v9a[..17], &long[..]] {
+        assert_eq!(
+            world::sync_filter_set(body),
+            Err(Error::BadBody {
+                opcode: 5,
+                len: body.len()
+            })
+        );
+    }
+    assert!(world::sync_filter_set(&[]).is_err());
+}
+
+#[test]
+fn sync_leave_is_byte_for_byte() {
+    assert_eq!(world::sync_leave(&[258, (1 << 32) + 1]), unhex(V10));
+    assert_eq!(world::sync_leave(&[]), Vec::<u8>::new());
 }
