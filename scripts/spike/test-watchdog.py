@@ -84,12 +84,39 @@ WINEDEVICE = (r'1.500:0030:0034:trace:process:NtCreateUserProcess L"\\??\\C:\\wi
               "pid 003c tid 0040 handles 0xf8/0xfc")
 DISCORD = r"c:\\windows\\system32\\discord\\bridge.exe --service"
 
+# +service's lines for ChangeServiceConfigW (Wine 11.0, GE-Proton11-7; issue #202). sechost's, in the
+# calling process, is "%p %ld %ld %ld %s %s %p %p %s %s %s": the service's handle; the new type, start
+# type and error control, -1 for SERVICE_NO_CHANGE; the image, group, tag and dependencies pointers,
+# account, password and display name. services.exe's svcctl_ChangeServiceConfigW logs its name only.
+# Neither names the service: the caller's OpenServiceW, before them, does.
+SVCCTL_CHANGE = "2.000:0030:0048:trace:service:svcctl_ChangeServiceConfigW "
+UNSEEN_CHANGE = "S3 services.exe changed a service's configuration, with no ChangeServiceConfigW before it"
+USER_MODE_NOTE = "ChangeServiceConfig changes the type or image of user-mode baseline service discord-bridge"
+
+
+def open_service(name, pid="0134"):
+    return f'2.000:{pid}:0138:trace:service:OpenServiceW 0000000000A1F3D0 L"{name}" 0xf01ff'
+
+
+def change_config(stype=-1, image=None, start=-1, pid="0134", shown=None, fn="ChangeServiceConfigW"):
+    """sechost's line; `image` is the new image as the log escapes it, `shown` the field verbatim."""
+    if shown is None:
+        shown = "(null)" if image is None else f'L"{image}"'
+    return (f"2.000:{pid}:0138:trace:service:{fn} 0000000000A1F420 {stype} {start} -1 {shown} (null) "
+            "0000000000000000 0000000000000000 (null) (null) (null)")
+
+
+def changes(names):
+    return f"S3 ChangeServiceConfig changes the type or image of {names}"
+
 
 class S3(unittest.TestCase):
+    def rules(self):
+        return wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
+                           {"discord-bridge": wd.norm_image(DISCORD)}, drivers=["winebth", "mountmgr"])
+
     def scan(self, *lines):
-        rules = wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
-                            {"discord-bridge": wd.norm_image(DISCORD)}, drivers=["winebth", "mountmgr"])
-        trig, notes = rules.scan(("\n".join(lines) + "\n").encode())
+        trig, notes = self.rules().scan(("\n".join(lines) + "\n").encode())
         return [t[0] for t in trig], [n[0] for n in notes]
 
     def test_split_winebth_line_after_the_client_is_a_note(self):  # run 7
@@ -220,6 +247,69 @@ class S3(unittest.TestCase):
         self.assertEqual(trig, ["S3 LoadDriver for user-mode baseline service discord-bridge"])
         self.assertEqual(notes, [])
 
+    def test_changeserviceconfig_of_a_baseline_driver_service_triggers(self):  # issue #202
+        for change in (change_config(image=r"C:\\agt\\agt.bin"), change_config(stype=16)):
+            trig, _ = self.scan(open_service("winebth"), change, SVCCTL_CHANGE)
+            self.assertEqual(trig, [changes("baseline driver service winebth")], change)
+
+    def test_changeserviceconfig_of_a_user_mode_baseline_service_is_a_note(self):  # issue #202
+        change = change_config(stype=32, image=DISCORD.replace("--service", "--other"))
+        trig, notes = self.scan(open_service("discord-bridge"), change, SVCCTL_CHANGE)
+        self.assertEqual(trig, [])
+        self.assertEqual(notes, [USER_MODE_NOTE])
+
+    def test_changeserviceconfig_that_makes_a_service_a_driver_triggers(self):  # issue #202
+        trig, _ = self.scan(open_service("discord-bridge"), change_config(stype=1), SVCCTL_CHANGE)
+        self.assertEqual(trig, ["S3 ChangeServiceConfig sets service type 0x1, not a user-mode one"])
+        trig, _ = self.scan(open_service("discord-bridge"), change_config(image=r"C:\\agt\\AGT.SYS"),
+                            SVCCTL_CHANGE)
+        self.assertEqual(trig, ["S3 ChangeServiceConfig sets a driver image"])
+
+    def test_changeserviceconfig_stands_for_every_service_its_process_opened(self):  # issue #202
+        # The line has the service's handle, not its name: any service the process opened may be it.
+        trig, _ = self.scan(open_service("winebth"), open_service("discord-bridge"), change_config(stype=16),
+                            SVCCTL_CHANGE)
+        self.assertEqual(trig, [changes("baseline driver service winebth")])
+
+    def test_changeserviceconfig_for_a_service_the_log_doesnt_name_triggers(self):  # issue #202
+        # A service handle is its own process's: an open in another process names nothing.
+        trig, _ = self.scan(open_service("discord-bridge", pid="0020"), change_config(stype=16),
+                            SVCCTL_CHANGE)
+        self.assertEqual(trig, [changes("a service the log doesn't name")])
+
+    def test_changeserviceconfig_for_a_service_outside_the_baseline_triggers(self):  # issue #202
+        trig, _ = self.scan(open_service("AGT"), change_config(stype=16), SVCCTL_CHANGE)
+        self.assertEqual(trig, [changes("agt, not a user-mode baseline service")])
+        unreadable = open_service("x").replace('L"x"', "(invalid)")
+        trig, _ = self.scan(unreadable, open_service("discord-bridge"), change_config(stype=16), SVCCTL_CHANGE)
+        self.assertEqual(trig, [changes("(an unreadable name), not a user-mode baseline service")])
+
+    def test_changeserviceconfig_that_keeps_the_type_and_image_is_a_note(self):  # issue #202
+        trig, notes = self.scan(open_service("winebth"), change_config(start=2), SVCCTL_CHANGE)
+        self.assertEqual(trig, [])
+        self.assertEqual(notes, ["ChangeServiceConfig that keeps the type and image"])
+
+    def test_changeserviceconfig_with_an_image_it_cant_read_triggers(self):  # issue #202
+        # debugstr_w's forms for a bad pointer, and for a string it cut short.
+        for shown in ("(invalid)", 'L"C:\\\\agt\\\\' + "a" * 280 + '"...'):
+            trig, _ = self.scan(open_service("discord-bridge"), change_config(shown=shown), SVCCTL_CHANGE)
+            self.assertEqual(trig, ["S3 ChangeServiceConfig with no readable type or image"], shown)
+
+    def test_a_services_exe_change_with_no_call_before_it_triggers(self):  # issue #202
+        # A caller whose sechost logs nothing (another environment, or the RPC called directly) leaves
+        # only services.exe's line. ChangeServiceConfigA's line is followed by W's, which is the one.
+        self.assertEqual(self.scan(SVCCTL_CHANGE)[0], [UNSEEN_CHANGE])
+        a_then_w = (change_config(stype=16, fn="ChangeServiceConfigA"), change_config(stype=16))
+        trig, notes = self.scan(open_service("discord-bridge"), *a_then_w, SVCCTL_CHANGE, SVCCTL_CHANGE)
+        self.assertEqual(trig, [UNSEEN_CHANGE])
+        self.assertEqual(notes, [USER_MODE_NOTE])
+
+    def test_the_open_and_the_change_can_come_in_separate_reads(self):  # issue #202: the watch reads chunks
+        rules, found = self.rules(), []
+        for line in (open_service("winebth"), change_config(stype=16), SVCCTL_CHANGE):
+            found += [t[0] for t in rules.scan((line + "\n").encode())[0]]
+        self.assertEqual(found, [changes("baseline driver service winebth")])
+
 
 SYSTEM_REG = r"""WINE REGISTRY Version 2
 [System\\ControlSet001\\Services\\discord-bridge] 1791759044
@@ -293,6 +383,19 @@ class S4Registry(unittest.TestCase):
         trig, notes = rules.scan(("\n".join(lines) + "\n").encode())
         self.assertEqual([t[0] for t in trig], ["S3 LoadDriver for user-mode baseline service discord-bridge"])
         self.assertEqual([n[0] for n in notes], ["LoadDriver for baseline service winebth"])
+
+    def test_a_baselines_log_rules_know_its_user_mode_services(self):  # issue #202
+        rules = wd.baseline_rules({"services": sorted(self.base), "service_info": self.base})
+        lines = [open_service("discord-bridge", pid="0020"), change_config(stype=16, pid="0020"),
+                 open_service("winebth"), change_config(stype=16)]
+        trig, notes = rules.scan(("\n".join(lines) + "\n").encode())
+        self.assertEqual([t[0] for t in trig], [changes("baseline driver service winebth")])
+        self.assertEqual([n[0] for n in notes], [USER_MODE_NOTE])
+
+    def test_a_baseline_without_service_info_knows_no_user_mode_service(self):  # issue #202
+        rules = wd.baseline_rules({"services": ["discord-bridge"]})  # M0's baselines (r5-r9, look-1, look-2)
+        trig, _ = rules.scan(f"{open_service('discord-bridge')}\n{change_config(stype=16)}\n".encode())
+        self.assertEqual([t[0] for t in trig], [changes("discord-bridge, not a user-mode baseline service")])
 
 
 class ClientRename(unittest.TestCase):  # issue #142
