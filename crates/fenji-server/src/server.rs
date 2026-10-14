@@ -7,17 +7,18 @@ use std::time::Duration;
 use anyhow::Context;
 use fenji_store::Store;
 use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
+use tokio::sync::watch;
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::accounts::Accounts;
 use crate::api::{AppState, ServerInfo, router};
 use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 pub use crate::gate::GateLimits;
-use crate::gate::{Gate, Places, accept_loop};
+use crate::gate::{self, Gate, Places, accept_loop};
 use crate::lobby::LobbyLimits;
 use crate::online::Online;
-use crate::world::{self, Rules, RunningWorld, TickReport, WorldHandle};
+use crate::world::{self, Rules, RunningWorld, TickReport, WorldHandle, WorldIn};
 
 /// The pinned client build this server speaks to (docs/re/pinned-build.md).
 pub const PINNED_BUILD: &str = "10015727";
@@ -28,6 +29,10 @@ pub struct RunningServer {
     pub api_addr: SocketAddr,
     accounts: Arc<Accounts>,
     world: RunningWorld,
+    gate: Arc<Gate>,
+    /// The gate's listener, which hands back the connections still open when it stops.
+    listener: JoinHandle<JoinSet<()>>,
+    /// The account API and the purge.
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -46,8 +51,11 @@ impl RunningServer {
         self.world.report()
     }
 
-    /// Ends the gate (and every connection), the API and the purge, then saves everyone in the
-    /// world and stops it, then closes the store.
+    /// Stops in an order that lets players in the world read why (#219): the API and the purge
+    /// end, the gate stops accepting and lets go of the lobby, the world lets go of every player
+    /// with the shutdown reason and saves them, and their connections get the gate's grace to
+    /// write their closes before what is left is ended. Then the world stops once its last saves
+    /// are written, and the store closes.
     pub async fn shutdown(self) {
         for t in &self.tasks {
             t.abort();
@@ -55,6 +63,16 @@ impl RunningServer {
         for t in self.tasks {
             let _ = t.await;
         }
+        self.gate.stopping.send_replace(true);
+        let conns = match self.listener.await {
+            Ok(conns) => conns,
+            Err(e) => {
+                tracing::error!(error = %e, "the gate's listener failed");
+                JoinSet::new()
+            }
+        };
+        self.world.handle().send(WorldIn::Shutdown);
+        gate::finish(conns, self.gate.limits.grace()).await;
         self.world.stop().await;
         self.accounts.store().close().await;
     }
@@ -121,6 +139,7 @@ pub async fn start(
             .iter()
             .map(|a| a.to_ascii_lowercase())
             .collect(),
+        stopping: watch::Sender::new(false),
     });
     let app = router(AppState {
         accounts: Arc::clone(&accounts),
@@ -128,8 +147,8 @@ pub async fn start(
         trusted_proxies: cfg.server.trusted_proxies.clone(),
     });
     let purger = Arc::clone(&accounts);
+    let listener = tokio::spawn(accept_loop(login, Arc::clone(&gate)));
     let tasks = vec![
-        tokio::spawn(accept_loop(login, gate)),
         tokio::spawn(async move {
             let service = app.into_make_service_with_connect_info::<SocketAddr>();
             if let Err(e) = axum::serve(api, service).await {
@@ -152,6 +171,8 @@ pub async fn start(
         api_addr,
         accounts,
         world,
+        gate,
+        listener,
         tasks,
     })
 }

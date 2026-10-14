@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use super::ecs::{Rules, WorldCore};
-use super::types::WorldIn;
+use super::types::{KickReason, WorldIn, WorldOut};
 use crate::clock::Clock;
 
 /// How long stopping waits for the last saves (Fenji design spec §6.7: 20 characters in 2 s).
@@ -221,6 +221,7 @@ fn run(
             .unwrap_or_else(|e| e.into_inner())
             .record(began.elapsed(), &phases, tick);
         if stopping {
+            turn_away(&mut rx);
             return;
         }
         next += tick;
@@ -234,11 +235,41 @@ fn run(
     }
 }
 
+/// Takes nothing more once the world has stopped. A join that came after the last tick hears the
+/// shutdown, as everyone in the world did (#219); the rest is dropped.
+fn turn_away(rx: &mut mpsc::UnboundedReceiver<WorldIn>) {
+    rx.close();
+    while let Ok(msg) = rx.try_recv() {
+        if let WorldIn::Join { out, .. } = msg {
+            let _ = out.try_send(WorldOut::Kicked(KickReason::Shutdown));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::ecs::test_util::*;
     use super::*;
 
     const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn a_join_after_the_shutdown_hears_the_shutdown() {
+        // #219: a link whose join reaches the world after its shutdown tick closes with the
+        // shutdown's reason too, not as a world that let go without one.
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (services, _saves) = mpsc::unbounded_channel();
+        let core = WorldCore::new(rules(), services);
+        let (out, mut late) = mpsc::channel(4);
+        tx.send(WorldIn::Shutdown).unwrap();
+        tx.send(WorldIn::Join {
+            player: player(1, "Lin", at(0.0, 0.0)),
+            out,
+        })
+        .unwrap();
+        run(core, rx, MS * 50, &Mutex::new(Stats::new(10)));
+        assert_eq!(late.try_recv(), Ok(WorldOut::Kicked(KickReason::Shutdown)));
+    }
 
     #[test]
     fn the_report_takes_the_last_minute_and_counts_ticks_over_budget() {
