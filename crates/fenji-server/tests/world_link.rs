@@ -418,3 +418,41 @@ async fn a_deleted_account_is_closed_in_the_world() {
     assert!(store.list_accounts().await.unwrap().is_empty());
     s.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_silent_client_in_the_world_is_closed_after_the_idle_time() {
+    // Ruling R6: only the client's reads move the idle deadline. The account check (Ruling R5),
+    // shorter here, must not restart it, or a client gone silent without a FIN (a crash, a lost
+    // network) would keep its online place and stand in the world for good.
+    let dir = tempfile::tempdir().unwrap();
+    let idle = Duration::from_millis(500);
+    let limits = GateLimits {
+        idle,
+        account_check: Duration::from_millis(100),
+        ..GateLimits::default()
+    };
+    let (s, _clock) = server(dir.path(), WORLD, limits).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    select(&mut bot, pid).await;
+    // Type 3 is the client's last message: the bot sends nothing after it.
+    let last = std::time::Instant::now();
+    enter(&mut bot, pid).await;
+    let accounts = s.accounts();
+    let store = accounts.store();
+    let older = Place {
+        x: 1.0,
+        ..START_PLACE
+    };
+    assert!(store.save_place(pid, &older).await.unwrap());
+    // The bot's reads give up after 5 s, so an end within 2 s is the server closing.
+    let end = tokio::time::timeout(Duration::from_secs(2), bot.next()).await;
+    assert!(matches!(end, Ok(None)), "still open: {end:?}");
+    let after = last.elapsed();
+    assert!(
+        after >= idle,
+        "closed {after:?} after type 3, before the idle time"
+    );
+    // The world let the player go, and saved where it stood.
+    saved_at(store, "tester", pid, START_PLACE).await;
+    s.shutdown().await;
+}

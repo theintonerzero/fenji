@@ -19,7 +19,7 @@ use fenji_store::{Account, Character};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::MissedTickBehavior;
+use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::gate::{self, Gate};
 use crate::lobby::stored_appearance;
@@ -75,12 +75,15 @@ pub(crate) async fn play(
     tracing::info!(%peer, account = %account.username, pid, "entering the world");
     // A player who only moves sends no script message for the lobby's account check (Ruling R5).
     let every = gate.limits.account_check.max(Duration::from_millis(10));
-    let mut check = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    let mut check = tokio::time::interval_at(Instant::now() + every, every);
     check.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // One idle deadline, which only the client's reads move (Ruling R6): the other arms complete
+    // without restarting it, so a client gone silent without a FIN still ends.
+    let mut idle_at = Instant::now() + gate.limits.idle;
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         tokio::select! {
-            read = tokio::time::timeout(gate.limits.idle, sock.read(&mut buf)) => {
+            read = tokio::time::timeout_at(idle_at, sock.read(&mut buf)) => {
                 let n = match read {
                     Ok(n) => n?,
                     Err(_) => {
@@ -92,6 +95,7 @@ pub(crate) async fn play(
                     tracing::info!(%peer, account = %account.username, "left the world");
                     return Ok(());
                 }
+                idle_at = Instant::now() + gate.limits.idle;
                 for event in server.receive(&buf[..n])? {
                     let Event::Message(m) = event else { continue };
                     match on_message(gate, conn, m.ty, &m.body) {
@@ -797,5 +801,50 @@ mod tests {
         assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
         drop(ours);
         assert_eq!(rest(&mut theirs, &mut client).await, []);
+    }
+
+    #[tokio::test]
+    async fn the_worlds_writes_dont_keep_a_silent_client() {
+        // Ruling R6: only the client's reads move the idle deadline, not what the link writes.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gate, mut inbox) = gate(dir.path()).await;
+        let idle = Duration::from_millis(300);
+        gate.limits.idle = idle;
+        let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let tester = account("tester");
+        let began = std::time::Instant::now();
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        let world = async {
+            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            // A 772 every 100 ms, which the link writes, until it lets go of its end.
+            let mut every = tokio::time::interval(Duration::from_millis(100));
+            let at = START;
+            while out.send(WorldOut::LoadScene { pid: 258, at }).await.is_ok() {
+                every.tick().await;
+            }
+        };
+        let (ended, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(played, world)
+        })
+        .await
+        .expect("closed within 2 s");
+        ended.unwrap();
+        assert!(began.elapsed() >= idle, "{:?}", began.elapsed());
+        assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
+        drop(ours);
+        let events = rest(&mut theirs, &mut client).await;
+        assert!(events.len() >= 2, "the 772s went out: {events:?}");
     }
 }
