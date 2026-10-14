@@ -111,7 +111,19 @@ pub(crate) async fn play(
                 }
                 idle_at = Instant::now() + gate.limits.idle;
                 for event in server.receive(&buf[..n])? {
-                    let Event::Message(m) = event else { continue };
+                    let m = match event {
+                        Event::Message(m) => m,
+                        // The client's ping display reads only what a server time sync sets: its
+                        // clock less the one echoed (transport.md 4.4, #269).
+                        Event::TimeSync(ms) => {
+                            if !gate::send_or_replaced(sock, &server.time_sync(ms), deadline, replaced).await? {
+                                tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                        _ => continue,
+                    };
                     match on_message(gate, conn, m.ty, &m.body) {
                         Step::Go => {}
                         Step::Reply(ty, body) => {
@@ -1277,6 +1289,25 @@ mod tests {
                 told(&mut l.inbox).await,
                 WorldIn::Pull { conn: 1, pid: 300 }
             ));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_transport_time_sync_is_echoed_with_the_clients_own_clock() {
+        // #269: the client's ping display reads only what a transport-level time sync from the
+        // server sets, the client's clock less the echoed one (transport.md 4.4). Unanswered, it
+        // stays at its first value, 50 ms.
+        linked(|mut l| async move {
+            let bytes = l.client.time_sync(1_791_950_400_123);
+            l.theirs.write_all(&bytes).await.unwrap();
+            let mut buf = vec![0u8; 1024];
+            let read = tokio::time::timeout(Duration::from_secs(5), l.theirs.read(&mut buf))
+                .await
+                .expect("an answer within 5 s")
+                .unwrap();
+            let (events, _) = l.client.receive(&buf[..read]).unwrap();
+            assert_eq!(events, [ClientEvent::TimeSync(1_791_950_400_123)]);
         })
         .await;
     }

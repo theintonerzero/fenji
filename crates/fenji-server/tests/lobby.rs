@@ -537,3 +537,17 @@ async fn the_server_info_names_the_bound_gate_port() {
     assert_eq!(info["gate_port"], u64::from(s.login_addr.port()));
     s.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_transport_time_sync_is_echoed_in_the_lobby() {
+    // #269: the client's ping display reads only what a transport-level time sync from the server
+    // sets (transport.md 4.4), so the gate echoes each one with the client's own clock.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    let t = ticket(&s, "tester").await;
+    let mut bot = Bot::connect(s.login_addr, payload(&t, "tester", false)).await;
+    bot.expect_work().await;
+    bot.send_time_sync(1_791_950_400_123).await;
+    assert_eq!(bot.next_time_sync().await, Some(1_791_950_400_123));
+}
