@@ -4,7 +4,7 @@
 # the game's official services, look up their names, or ask a host process to do it (CLAUDE.md
 # ground rule 4). Linux x86_64 only; needs bwrap, python3 and unprivileged user namespaces.
 #
-#   scripts/spike/isolated-run.sh [--hosts FILE] [--bind DIR]... [--ro-bind DIR]... [--x11 N]
+#   scripts/spike/isolated-run.sh [--hosts FILE] [--bind DIR]... [--ro-bind DIR]... [--x11 N [--x11 M]]
 #                                 [--no-root] [--cpu-topology] -- COMMAND [ARGS...]
 #
 #   --hosts FILE    FILE's content becomes /etc/hosts inside (after localhost entries), e.g. to
@@ -13,6 +13,8 @@
 #   --ro-bind DIR   the same, read-only.
 #   --x11 N         give COMMAND X display :N, a nested X server you started for the run (see
 #                   "Display" below): its socket is the only X11 thing inside, with DISPLAY=:N.
+#                   Given twice, a second display :M joins it, checked the same way, its socket
+#                   bound beside :N's (a two-client run's second client; DISPLAY stays :N).
 #   --no-root       run COMMAND as your own uid and gid with no capabilities, not as uid 0 (see
 #                   "Inside" below), for tools that refuse to run as root, such as umu-run.
 #   --cpu-topology  bind the host's /sys/devices/system/cpu (CPU topology, caches, frequencies...)
@@ -97,8 +99,9 @@
 # paths the client names, including font files it writes into a bound dir) is a way out. That
 # is inherent to X: keep the server dedicated to the run and short-lived.
 #
-# --x11 N is refused (exit 2) unless, at start:
-#   - N is 0-999 without leading zeros, and --x11 is given once;
+# --x11 N is refused (exit 2) unless, at start, for each display given (at most two, not the same
+# one twice):
+#   - N is 0-999 without leading zeros;
 #   - DISPLAY doesn't name display N (:N, :N.S, host:N, unix:N; a DISPLAY that can't be parsed
 #     refuses any N);
 #   - /tmp/.X11-unix is a directory (not a symlink), root's or yours, with the sticky bit, as X
@@ -115,9 +118,9 @@
 #     started means: restart the server), without the names getaddrinfo, gethostbyname, socket or
 #     connect in it: the host-name lookups and sockets of font-server code.
 # Inside, the socket is bound read-only (connect() works; nothing inside can chmod or touch the
-# host's socket), alone, at /tmp/.X11-unix/XN: no Xauthority, no other host X socket, and the
-# server's abstract socket stays out of reach in the host's network namespace. Like the bind
-# checks, these run once.
+# host's socket), alone, at /tmp/.X11-unix/XN (with a second display, the two of them): no
+# Xauthority, no other host X socket, and the server's abstract socket stays out of reach in the
+# host's network namespace. Like the bind checks, these run once.
 #
 # No GPU: /dev inside has no dri nodes (and -shm keeps DRI3 from passing one in), so render in
 # software. For Vulkan (DXVK, VKD3D-Proton), pick Mesa's lavapipe inside the command:
@@ -134,10 +137,10 @@
 # non-x86_64 host, or missing bwrap, pgrep or python3. Otherwise the exit status is COMMAND's.
 set -euo pipefail
 
-usage() { sed -n '2,23p' "$0" >&2; exit 2; }
+usage() { sed -n '2,25p' "$0" >&2; exit 2; }
 die2() { echo "isolated-run: $*" >&2; exit 2; }
 
-hosts="" binds=() x11="" noroot="" cputopo=""
+hosts="" binds=() x11s=() noroot="" cputopo=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --hosts)
@@ -154,12 +157,14 @@ while [ $# -gt 0 ]; do
       ;;
     --x11)
       [ $# -ge 2 ] || usage
-      [ -z "$x11" ] || die2 "--x11 may be given only once"
+      [ "${#x11s[@]}" -lt 2 ] || die2 "--x11 may be given at most twice"
       # Digits spelled out: a range like [0-9] can match other characters in some locales.
       case "$2" in
-        0|[123456789]|[123456789][0123456789]|[123456789][0123456789][0123456789]) x11=$2 ;;
+        0|[123456789]|[123456789][0123456789]|[123456789][0123456789][0123456789]) ;;
         *) die2 "--x11 takes an X display number, 0 to 999 without leading zeros, not '$2'" ;;
       esac
+      [ "${x11s[0]-}" != "$2" ] || die2 "--x11 $2 is given twice: a second display must be another one"
+      x11s+=("$2")
       shift 2
       ;;
     --no-root) noroot=1; shift ;;
@@ -404,7 +409,7 @@ x11_server_problem() {
     esac
   done
 }
-if [ -n "$x11" ]; then
+for x11 in "${x11s[@]}"; do
   if [ -n "${DISPLAY:-}" ]; then
     d=${DISPLAY##*:}                    # [protocol/][host]:D[.S] -> D
     d=${d%%.*}
@@ -436,7 +441,7 @@ if [ -n "$x11" ]; then
   fi
   why=$(x11_server_problem "$xlock")
   [ -z "$why" ] || die2 "--x11 $x11: $why"
-fi
+done
 
 args=(
   --unshare-all --unshare-user --unshare-net    # user ns and net ns are mandatory, not "-try"
@@ -478,10 +483,15 @@ for ((i = 0; i < ${#binds[@]}; i += 2)); do
   args+=("${binds[$i]}" "${binds[$((i + 1))]}" "${binds[$((i + 1))]}")
 done
 
-# --x11 N: that one socket, alone in a fresh /tmp/.X11-unix, and DISPLAY (set after --clearenv).
-# Read-only: connect() works on it, but nothing inside can chmod or touch the host's socket.
-if [ -n "$x11" ]; then
-  args+=(--dir /tmp/.X11-unix --ro-bind "$xsock" "$xsock" --setenv DISPLAY ":$x11")
+# --x11 N: that one socket, alone in a fresh /tmp/.X11-unix, and DISPLAY (set after --clearenv);
+# a second --x11 M binds its socket beside it. Read-only: connect() works on them, but nothing
+# inside can chmod or touch the host's sockets.
+if [ "${#x11s[@]}" -gt 0 ]; then
+  args+=(--dir /tmp/.X11-unix)
+  for x11 in "${x11s[@]}"; do
+    args+=(--ro-bind "/tmp/.X11-unix/X$x11" "/tmp/.X11-unix/X$x11")
+  done
+  args+=(--setenv DISPLAY ":${x11s[0]}")
 fi
 
 # --cpu-topology: the host's /sys/devices/system/cpu (checked above: on sysfs, nothing mounted

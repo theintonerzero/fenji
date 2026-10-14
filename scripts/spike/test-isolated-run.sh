@@ -348,7 +348,8 @@ t_x11_bad() {
   m=$(x11_free) || { echo "  no free display number" >&2; return 1; }
   for spec in "display number|--x11 abc" "display number|--x11 1000" "display number|--x11 042" \
               "display number|--x11 -1" "display number|--x11 --" "display number|--x11 4x2" \
-              "only once|--x11 $m --x11 $m" "no X server socket|--x11 $m"; do
+              "given twice|--x11 $m --x11 $m" "at most twice|--x11 $m --x11 $((m + 1)) --x11 $((m + 2))" \
+              "no X server socket|--x11 $m"; do
     want=${spec%%|*} argv=${spec#*|}
     set +e
     # shellcheck disable=SC2086 # word splitting intended
@@ -361,7 +362,7 @@ t_x11_bad() {
     fi
   done
 }
-check "--x11 is refused for a bad display number, a second --x11 and a missing socket" t_x11_bad
+check "--x11 is refused for a bad display number, one display given twice, a third --x11 and a missing socket" t_x11_bad
 
 # A fake nested X server on the host, on an unused display number: python listening on
 # /tmp/.X11-unix/X<n> and on its abstract twin (as real servers do), accepting and closing, with
@@ -653,6 +654,49 @@ t_x11_refused() {
     "$run" --x11 21 -- true || { echo "  control: a nested Xwayland with -glamor off was refused" >&2; exit 1; }' _ "$(dirname "$run")"
 }
 
+# Two displays (M4 world plan, Amendment B, R12: a two-client run gives client 2 its own nested
+# display). Each is checked as one is; the first is DISPLAY, and the second's socket is bound beside
+# it, alone with it in /tmp/.X11-unix. A second display that fails a check refuses the run, and so
+# does DISPLAY naming either.
+t_x11_two() {
+  local out
+  out=$(unshare -rm bash -c "$private_tmp"'
+    server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 5; xlock 5 "$pid"
+    server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 6; xlock 6 "$pid"
+    xsock 7; : > /tmp/.X11-unix/X8
+    "$run" --x11 5 --x11 6 -- bash -c "echo DISPLAY=\$DISPLAY; find /tmp/.X11-unix -mindepth 1 | sort"' \
+    _ "$(dirname "$run")" 2>&1) || true
+  [ "$out" = "$(printf '%s\n' DISPLAY=:5 /tmp/.X11-unix/X5 /tmp/.X11-unix/X6)" ] ||
+    { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+}
+
+t_x11_two_refused() {
+  unshare -rm bash -c "$private_tmp"'
+    refused2() {
+      local err rc
+      err=$("$run" --x11 "$1" --x11 "$2" -- true 2>&1 >/dev/null)
+      rc=$?
+      if ! { [ "$rc" -eq 2 ] && [[ $err == *"$3"* ]]; }; then echo "  --x11 $1 --x11 $2 exited $rc: $err" >&2; return 1; fi
+    }
+    server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 5; xlock 5 "$pid"
+    server Xwayland -extension MIT-SHM || exit 1
+    xsock 17; xlock 17 "$pid"
+    server Xwayland -rootless -extension MIT-SHM -shm || exit 1
+    xsock 14; xlock 14 "$pid"
+    refused2 5 17 "glamor" || exit 1
+    refused2 17 5 "glamor" || exit 1
+    refused2 5 14 "-rootless" || exit 1
+    refused2 5 9 "no X server socket" || exit 1
+    server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 6; xlock 6 "$pid"
+    DISPLAY=:6 refused2 5 6 "is your session" || exit 1
+    "$run" --x11 5 --x11 6 -- true || { echo "  control: two nested displays were refused" >&2; exit 1; }' \
+    _ "$(dirname "$run")"
+}
+
 # Other sockets, and a non-socket, in /tmp/.X11-unix must not come along.
 t_x11_alone() {
   local out
@@ -766,6 +810,8 @@ if unshare -rm true 2>/dev/null; then
   check "--x11 N is refused unless XN is a socket (not a symlink) and /tmp/.XN-lock names a running rootful Xwayland, Xephyr or Xvfb with MIT-SHM and glamor off and no -enable-ei-portal" \
     t_x11_refused
   check "--x11 N: only XN appears inside, whatever else /tmp/.X11-unix holds" t_x11_alone
+  check "--x11 N --x11 M: DISPLAY=:N, and only XN and XM appear inside" t_x11_two
+  check "--x11 N --x11 M is refused when either display fails a check, or DISPLAY names either" t_x11_two_refused
   if [ -n "$rootsock" ]; then
     check "--x11 N is refused when XN is another user's socket" t_x11_foreign
   else
