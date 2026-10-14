@@ -992,11 +992,14 @@ class TwoClientsWholeLoop(WholeLoop):  # Amendment B: two clients, one log each
         self.assertRegex(trig, r"client 3 pid \d+ .*no log of its own")
 
     def test_a_sign_in_the_poll_that_finds_a_client_beyond_the_logs_is_exit_3(self):  # review, Important 2
-        # One log, so a second gujianol.exe is a client beyond the logs. The log gets a LoadDriver
-        # after the client's creation the moment that client starts: whichever the watch sees
-        # first, the sign wins over the fail safe, and the record names the client.
+        # One log, so a second gujianol.exe is a client beyond the logs. Once it has started, the
+        # log gets a LoadDriver after the client's creation, then a line still being written: the
+        # log grows every 10 ms, so its Tail keeps the sign back, and only reading every log to
+        # its end before exit 4 finds it. The sign wins over the fail safe, and the record names
+        # the client beyond the logs.
         plan = [[0.0, "gujianol.exe", "-", 0, 4.0], [1.0, "gujianol.exe", "-", 0, 4.0],
-                [1.0, "@log", 1, CLIENT + "\n" + AGT_LOADDRIVER + "\n", 0]]
+                [1.0, "@log", 1, CLIENT + "\n" + AGT_LOADDRIVER + "\n2.001:0020:0024:trace:still being written", 0]]
+        plan += [[1.0 + i / 100, "@log", 1, ".", 0] for i in range(1, 101)]
         rc, trig = self.watch(plan, logs=[""])
         self.assertEqual(rc, 3)
         self.assertIn("S3 LoadDriver for non-baseline service agt: " + AGT_LOADDRIVER, trig)
