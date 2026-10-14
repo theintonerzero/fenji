@@ -3,14 +3,14 @@
 # fenji-stub listening and the AGT driver watchdog (watchdog.py) armed (design spec §4 B; M1 spec
 # §4, W4).
 #
-#   scripts/spike/run-client.sh setup [--display N] [--clients 2]
+#   scripts/spike/run-client.sh setup [--display N] [--clients 2] [--no-gpu]
 #       Makes the git-ignored run workspace re/runs/: client/, a reflink copy of
 #       $FENJI_CLIENT_PATH (a full copy is refused); a Wine prefix in compat/, created with Wine's
 #       own cmd.exe; and empty home/, steamclient/ and hosts-empty. With --clients 2, also client2/,
 #       a second reflink copy for a two-client run's second client; on an existing workspace,
 #       client2/ only.
 #   scripts/spike/run-client.sh run NAME [--hosts FILE] [--ports "P1 P2"] [--timeout S]
-#       [--display N] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
+#       [--display N] [--no-gpu] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
 #       [--click T:X,Y]... [--key T:KEY[/MS]]... [--type T:TEXT]... [--stub-arg ARG]...
 #       [--server CONFIG [--server-data DIR] [--launch "ARGS" [--launch-password FILE]]]
 #       [--clients 2 --display2 M [--second-after S] [--timeout2 S]
@@ -25,6 +25,8 @@
 #       --click plays a player's left click at X,Y on the nested display, T seconds into the run
 #       (xclick.py, through XTEST): input to the client's own UI, never a change to the client.
 #       --stub-arg passes one word to fenji-stub, e.g. --stub-arg --speak (M2).
+#       --no-gpu renders in software (lavapipe), as every run did before #266; by default the
+#       sandbox gets the host GPU's render node (isolated-run.sh --gpu), so DXVK draws on the GPU.
 #       --key and --type play a player's key press (an X keysym name such as Return, space, Tab,
 #       BackSpace or a letter) or typed printable ASCII, T seconds into the run (xkey.py, XTEST).
 #       --key T:KEY/MS holds the key down MS milliseconds (1 to 60000), as a player holds a movement
@@ -58,8 +60,9 @@
 #       gujianol.log, Log_gujianol.htm and install-root files), OUT/wine-2.log,
 #       OUT/screen-2-<T>s.png and io/exit-code-2.
 #
-# Every run uses isolated-run.sh --no-root --x11 N [--x11 M] --cpu-topology (CLAUDE.md "Client runs"), the
-# pinned GE-Proton's own `proton run` (umu's runtime container fails in the sandbox), lavapipe, and
+# Every run uses isolated-run.sh --no-root --x11 N [--x11 M] --cpu-topology --gpu (CLAUDE.md "Client
+# runs"; without --gpu with --no-gpu), the pinned GE-Proton's own `proton run` (umu's runtime
+# container fails in the sandbox), the host's GPU (lavapipe with --no-gpu), and
 # Wine channels that record lookups, sockets, modules and driver activity. The dev-only
 # --gf-sdk=mocked (gate #11) and --fs=data:_index:_index are the caller's to pass.
 #
@@ -83,6 +86,18 @@ WATCHDOG="$HERE/watchdog.py"
 PROTON="${FENJI_GE_PROTON:-$HOME/.local/share/fenji/tools/$GE_PROTON_VERSION}"
 STUBBIN="$REPO/target/release"
 LAVAPIPE=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+
+# renderer: sets the caller's wgpu and vkenv arrays from its gpu (#266): the sandbox's --gpu, with
+# Mesa's CPU-copy presentation (MESA_VK_WSI_DEBUG=sw), since a hardware driver presents through
+# DRI3, which the nested display doesn't offer, and the client loses its X connection at its first
+# frame without it; or lavapipe's ICD for Vulkan.
+renderer() {
+  if [ -n "${gpu-}" ]; then
+    wgpu=(--gpu) vkenv=(MESA_VK_WSI_DEBUG=sw)
+  else
+    wgpu=() vkenv=(VK_ICD_FILENAMES="$LAVAPIPE")
+  fi
+}
 CHANNELS_DEFAULT=+timestamp,+pid,+tid,+threadname,+seh,+debugstr,+loaddll,+winsock,+module,+process,+service,+profile,warn+file
 # What the watchdog's log rules read: line headers, process creation, module loads, resource lookups
 # (the driver's resource type), services, debug strings, and errors (LoadDriver).
@@ -171,11 +186,12 @@ copy_client() {
 }
 
 cmd_setup() {
-  local display=99 clients=1
+  local display=99 clients=1 gpu=1
   while [ $# -gt 0 ]; do
     case "$1" in
       --display) [ $# -ge 2 ] || usage; display=$2; shift 2 ;;
       --clients) [ $# -ge 2 ] || usage; clients=$2; shift 2 ;;
+      --no-gpu) gpu=""; shift ;;
       *) usage ;;
     esac
   done
@@ -200,12 +216,14 @@ cmd_setup() {
   # registers Proton's Discord bridge service), and wineserver is left to exit cleanly so the
   # registry reaches disk: everything Proton sets up belongs to the watchdog's baseline. A prefix, or
   # a service, appearing during a client run would look like driver activity to the watchdog.
+  local wgpu vkenv
+  renderer
   # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
-  "$WRAP" --no-root --x11 "$display" --cpu-topology --bind "$WORK/compat" --bind "$WORK/home" \
+  "$WRAP" --no-root --x11 "$display" --cpu-topology "${wgpu[@]}" --bind "$WORK/compat" --bind "$WORK/home" \
     --bind "$WORK/steamclient" --ro-bind "$PROTON" -- \
     env HOME="$WORK/home" STEAM_COMPAT_DATA_PATH="$WORK/compat" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$WORK/steamclient" SteamGameId=1418100 SteamAppId=1418100 \
-    PROTON_USE_XALIA=0 VK_ICD_FILENAMES="$LAVAPIPE" \
+    PROTON_USE_XALIA=0 "${vkenv[@]}" \
     timeout -k 10 300 bash -c 'python3 "$1/proton" run cmd.exe /c exit; WINEPREFIX="$2/pfx" "$1/files/bin/wineserver" -w' \
     _ "$PROTON" "$WORK/compat" > "$WORK/prefix-init.log" 2>&1 || true
   [ -f "$WORK/compat/pfx/system.reg" ] || die "the Wine prefix wasn't created; see $WORK/prefix-init.log"
@@ -248,7 +266,12 @@ record_inputs() {
   fi
   echo "wine channels (WINEDEBUG, with PROTON_LOG=1): $channels"
   echo "GE-Proton: $PROTON"
-  echo "sandbox: isolated-run.sh --no-root --x11 $display${display2:+ --x11 $display2} --cpu-topology (sha256 $(sha256sum "$WRAP" | cut -c1-16)…)"
+  echo "sandbox: isolated-run.sh --no-root --x11 $display${display2:+ --x11 $display2} --cpu-topology${gpu:+ --gpu} (sha256 $(sha256sum "$WRAP" | cut -c1-16)…)"
+  if [ -n "${gpu-}" ]; then
+    echo "rendering: the host GPU, through its render node (DXVK picks it), frames copied to the display (MESA_VK_WSI_DEBUG=sw)"
+  else
+    echo "rendering: lavapipe, in software (--no-gpu)"
+  fi
   echo "driver watchdog: watchdog.py sha256 $(sha256sum "$WATCHDOG" | cut -c1-16)…"
   echo "hosts file: $hosts"
   echo "--- hosts content"
@@ -439,7 +462,7 @@ cmd_run() {
   local hosts="$WORK/hosts-empty" ports=7804 tmo=300 display=99 channels=$CHANNELS_DEFAULT
   local envs=() client_files=() clicks=() stub_args=() keys=() types=() presses=()
   local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 launch_words=()
-  local clients=1 display2="" second_after=30 second_after_given=0 tmo2="" tmo2_given=0
+  local clients=1 display2="" second_after=30 second_after_given=0 tmo2="" tmo2_given=0 gpu=1
   local launch2="" launch_password2="" clicks2=() keys2=() types2=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -474,6 +497,7 @@ cmd_run() {
         shift 2 ;;
       --stub-arg) [ $# -ge 2 ] || usage; stub_args+=("$2"); shift 2 ;;
       --clients) [ $# -ge 2 ] || usage; clients=$2; shift 2 ;;
+      --no-gpu) gpu=""; shift ;;
       --display2) [ $# -ge 2 ] || usage; display2=$2; shift 2 ;;
       --second-after) [ $# -ge 2 ] || usage; second_after=$2; second_after_given=1; shift 2 ;;
       --timeout2) [ $# -ge 2 ] || usage; tmo2=$2; tmo2_given=1; shift 2 ;;
@@ -610,12 +634,14 @@ cmd_run() {
   local x11s=(--x11 "$display") wlogs=(--log "$IO/steam-1418100.log")
   if [ "$clients" = 2 ]; then x11s+=(--x11 "$display2") wlogs+=(--log "$IO/2/steam-1418100.log"); fi
   set +e
+  local wgpu vkenv
+  renderer
   # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
-  "$WRAP" --no-root "${x11s[@]}" --cpu-topology --hosts "$hosts" "${binds[@]}" -- \
+  "$WRAP" --no-root "${x11s[@]}" --cpu-topology "${wgpu[@]}" --hosts "$hosts" "${binds[@]}" -- \
     env HOME="$WORK/home" STEAM_COMPAT_DATA_PATH="$WORK/compat" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$WORK/steamclient" SteamGameId=1418100 SteamAppId=1418100 \
     PROTON_LOG_DIR="$IO" PROTON_USE_XALIA=0 PROTON_LOG=1 WINEDEBUG="$channels" DXVK_LOG_PATH="$IO" \
-    VK_ICD_FILENAMES="$LAVAPIPE" "${envs[@]}" \
+    "${vkenv[@]}" "${envs[@]}" \
     bash -c "$(declare -f parse_launch_output redact_gj_ticket launch_pairs end_client)"'
       W=$1 IO=$2 STUB=$3 STUBBIN=$4 PORTS=$5 TMO=$6 PROTON=$7 SARGS=$8 SERVER=$9 LAUNCH=${10}
       LPORT=${11} APORT=${12} CLIENTS=${13} D2=${14} AFTER=${15} TMO2=${16} LAUNCH2=${17}
