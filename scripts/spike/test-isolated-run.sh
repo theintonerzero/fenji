@@ -309,38 +309,131 @@ check "every mount inside is on the allowlist" "$run" --bind "$tmp/bound" -- bas
     esac
   done < /proc/self/mountinfo' _ "$tmp/bound"
 
-# --gpu (#266): the host's render nodes, their devices' sysfs directories read-only and their
-# /sys/dev/char links, and nothing more; without it, no GPU and no /sys. The --gpu half needs a
-# render node on the host (CI's runners have none).
-gpu_host=""
-for n in /dev/dri/renderD*; do [ -c "$n" ] && gpu_host=1; done
-t_no_gpu() { "$run" -- bash -c '[ ! -e /dev/dri ] && [ ! -e /sys ]'; }
-check "without --gpu there is no /dev/dri and no /sys inside" t_no_gpu
-t_gpu() {
+# --gpu (#266): the host's render nodes that belong to a device, their devices' sysfs directories
+# read-only with each drm/cardN masked, and their /sys/dev/char links, and nothing more; without
+# it, no GPU and no /sys. The checks that need a render node skip on hosts without one (CI's
+# runners); the refusals run everywhere unshare -rm is allowed.
+gpu_nodes=() gpu_dirs=() gpu_cards=()
+for n in /dev/dri/renderD*; do
+  [ -c "$n" ] || continue
+  st=$(stat -c '%t %T' "$n") || continue
+  d=$(realpath -e "/sys/dev/char/$((16#${st% *})):$((16#${st#* }))/device" 2>/dev/null) || continue
+  gpu_nodes+=("$n")
+  case " ${gpu_dirs[*]} " in *" $d "*) ;; *) gpu_dirs+=("$d"); for c in "$d"/drm/card*; do [ ! -d "$c" ] || gpu_cards+=("$c"); done ;; esac
+done
+gpu_host=${gpu_nodes[0]-}
+t_no_gpu() { "$run" "$@" -- bash -c '[ ! -e /dev/dri ] && [ ! -e /sys ]'; }
+# Inside: /dev/dri holds the nodes alone; /sys holds dev/char and devices; each link leads to a
+# render node's directory in a bound device directory; each card directory is empty.
+t_gpu() {  # [OPTION...]
   local out want n
-  want=$(for n in /dev/dri/renderD*; do [ -c "$n" ] && echo "${n##*/}"; done)
+  want=$(for n in "${gpu_nodes[@]}"; do echo "${n##*/}"; done)
   want+=$'\n''sys: dev devices / char'
-  out=$("$run" --gpu --no-root -- bash -c '
+  out=$("$run" "$@" --gpu -- bash -c '
     ls /dev/dri
     echo "sys: $(ls /sys | tr "\n" " ")/ $(ls /sys/dev | tr "\n" " " | sed "s/ $//")"
     for l in /sys/dev/char/*; do
       t=$(readlink "$l") d=${t%/drm/*}
       { [ -d "$d" ] && [ -c "/dev/dri/${t##*/}" ]; } || echo "bad link: $l -> $t"
-      { echo auto > "$d/power/control"; } 2>/dev/null && echo "writable: $d"
-    done
-    while read -r _ _ _ _ mp _; do
-      case "$mp" in
-        /|/usr|/proc|/proc/*|/dev|/dev/*|/tmp|/run|/var|/etc/*|"$HOME"|/sys/devices/?*) ;;
-        *) echo "unexpected mount: $mp" ;;
-      esac
-    done < /proc/self/mountinfo' 2>&1) || { echo "  exit: $out" >&2; return 1; }
+      for c in "$d"/drm/card*; do [ -z "$(ls -A "$c")" ] || echo "card not masked: $c"; done
+    done' < /dev/null 2>&1) || { echo "  exit: $out" >&2; return 1; }
   [ "$out" = "$want" ] || { echo "  got: $(tr '\n' '|' <<<"$out"), want: $(tr '\n' '|' <<<"$want")" >&2; return 1; }
 }
-if [ -n "$gpu_host" ]; then
-  check "--gpu: /dev/dri holds only the host's render nodes; /sys only their devices' directories, read-only, and their /sys/dev/char links" \
-    t_gpu
+# Every mount in /sys inside is ro by its own mount options (mountinfo field 6): a write would
+# prove nothing, since root owns the attributes; a udev rule can make one group-writable.
+t_gpu_ro() {  # [OPTION...]
+  local out bad
+  out=$("$run" "$@" --gpu -- cut -d' ' -f5,6 /proc/self/mountinfo < /dev/null 2>&1 | LC_ALL=C grep -E '^/sys(/| )') || true
+  bad=$(awk '{ if ((","$2",") !~ /,ro,/) print }' <<<"$out")
+  if [ -z "$out" ] || [ -n "$bad" ]; then echo "  mounts in /sys: $(tr '\n' '|' <<<"$out")" >&2; return 1; fi
+}
+# --gpu adds exactly the nodes, the device directories and the card masks, computed on the host,
+# and removes no mount.
+t_gpu_mounts() {  # [OPTION...]
+  local without with added removed want
+  without=$("$run" "$@" -- cut -d' ' -f5 /proc/self/mountinfo < /dev/null | LC_ALL=C sort) || return 1
+  with=$("$run" "$@" --gpu -- cut -d' ' -f5 /proc/self/mountinfo < /dev/null | LC_ALL=C sort) || return 1
+  added=$(LC_ALL=C comm -13 <(printf '%s\n' "$without") <(printf '%s\n' "$with"))
+  removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$without") <(printf '%s\n' "$with"))
+  want=$(printf '%s\n' "${gpu_nodes[@]}" "${gpu_dirs[@]}" "${gpu_cards[@]}" | LC_ALL=C sort)
+  if [ "$added" != "$want" ] || [ -n "$removed" ]; then
+    echo "  added: $(tr '\n' ' ' <<<"$added")want: $(tr '\n' ' ' <<<"$want")removed: $(tr '\n' ' ' <<<"$removed")" >&2
+    return 1
+  fi
+}
+check "without --gpu there is no /dev/dri and no /sys inside" t_no_gpu
+# shellcheck disable=SC2086 # word splitting intended: $mode is empty or --no-root
+for mode in "" --no-root; do
+  flag="${mode:+$mode }--gpu"
+  if [ -n "$gpu_host" ]; then
+    check "$flag: /dev/dri holds only the render nodes; /sys only their devices' directories (each card masked) and /sys/dev/char links" \
+      t_gpu $mode
+    check "$flag: every mount in /sys has ro among its own mount options" t_gpu_ro $mode
+    check "$flag adds exactly the nodes, the device directories and the card masks, and removes no mount" \
+      t_gpu_mounts $mode
+  else
+    echo "skip - $flag: this host has no GPU render node that belongs to a device"
+  fi
+done
+
+# Nothing can be written but in the tmpfs mounts watchdog.py's S1 scans (/tmp, /dev/shm, /run,
+# /var, HOME) and bound dirs: every other mount is ro or holds no files of its own (proc, devpts,
+# device files), and the root and /dev, whose directories are mount points, refuse a new file.
+t_writable() {  # [OPTION...]
+  local out
+  out=$("$run" "$@" -- bash -c '
+    while read -r _ _ _ _ mp opts _; do
+      case ",$opts," in *,ro,*) continue ;; esac
+      case "$mp" in
+        /tmp|/dev/shm|/run|/var|"$HOME"|/proc|/dev/pts) ;;
+        *) [ -c "$mp" ] || echo "writable mount: $mp" ;;
+      esac
+    done < /proc/self/mountinfo
+    for d in / /dev /etc /dev/dri /sys /sys/dev/char; do
+      [ -d "$d" ] || continue
+      (: > "$d/fenji-probe.sys") 2>/dev/null && echo "a file was made in $d"
+    done
+    true' < /dev/null 2>&1) || { echo "  exit: $out" >&2; return 1; }
+  [ -z "$out" ] || { echo "  $(tr '\n' '|' <<<"$out")" >&2; return 1; }
+}
+for mode in "" --no-root; do
+  check "${mode:+$mode: }nothing can be written outside /tmp, /dev/shm, /run, /var and HOME" t_writable $mode
+  if [ -n "$gpu_host" ]; then
+    check "${mode:+$mode }--gpu: nothing can be written outside /tmp, /dev/shm, /run, /var and HOME" \
+      t_writable $mode --gpu
+  fi
+done
+
+# --gpu is refused (exit 2) when /dev/dri has no render node that belongs to a device, when a
+# render node isn't one, when its link leads elsewhere, or when a mount lies below its device's
+# directory. Each case changes the host's view in a private mount namespace (unshare -rm).
+t_gpu_refused() {  # SETUP WANT
+  unshare -rm bash -c "$1"'
+    err=$("$0" --gpu -- true 2>&1 < /dev/null); rc=$?
+    if ! { [ "$rc" -eq 2 ] && [[ $err == *"$1"* ]]; }; then echo "  exited $rc: $err" >&2; exit 1; fi' \
+    "$run" "$2"
+}
+if [ -z "$gpu_host" ]; then
+  check "--gpu is refused (exit 2) on a host with no GPU render node" \
+    bash -c 'err=$("$1" --gpu -- true 2>&1 < /dev/null); rc=$?; [ "$rc" -eq 2 ] && [[ $err == *"no GPU render node"* ]]' _ "$run"
+fi
+if unshare -rm true 2>/dev/null; then
+  check "--gpu is refused (exit 2) when /dev/dri has no render node" \
+    t_gpu_refused 'mount -t tmpfs fenji-test /dev/dri || exit 1;' "there is no GPU render node in /dev/dri"
+  if [ -n "$gpu_host" ]; then
+    check "--gpu is refused (exit 2) when a render node's name is on another device (/dev/null)" \
+      t_gpu_refused "mount --bind /dev/null $gpu_host || exit 1;" "isn't a DRM render node (major 1"
+    st=$(stat -c '%t %T' "$gpu_host")
+    gpu_link="/sys/dev/char/$((16#${st% *})):$((16#${st#* }))"
+    check "--gpu is refused (exit 2) when a node's /sys/dev/char link leads elsewhere in its device" \
+      t_gpu_refused "mount -t tmpfs fenji-test /sys/dev/char || exit 1; ln -s ${gpu_cards[0]:-${gpu_dirs[0]}/drm/none} $gpu_link || exit 1;" \
+      "not to ${gpu_dirs[0]}/drm/${gpu_host##*/}"
+    check "--gpu is refused (exit 2) when a mount lies below the device's directory" \
+      t_gpu_refused "mount -t tmpfs fenji-test ${gpu_dirs[0]}/power || exit 1;" \
+      "a filesystem (tmpfs) is mounted at ${gpu_dirs[0]}/power"
+  fi
 else
-  echo "skip - --gpu: this host has no GPU render node"
+  echo "skip - unshare -rm not permitted, can't test the --gpu refusals"
 fi
 
 # Host abstract unix sockets are per network namespace: start one on the host and try it.

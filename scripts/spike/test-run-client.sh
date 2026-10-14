@@ -122,6 +122,20 @@ refuses "--no-gpu is one of run's options" "no workspace" -- --no-gpu
 usage_setup_gpu=$( (FENJI_CLIENT_PATH="" cmd_setup --no-gpu) 2>&1 > /dev/null)
 if [[ $usage_setup_gpu == *"set FENJI_CLIENT_PATH"* ]]; then ok "--no-gpu is one of setup's options"; else bad "setup --no-gpu: $usage_setup_gpu"; fi
 
+# renderer gives the sandbox --gpu and Mesa's CPU-copy presentation, or lavapipe's ICD and no
+# --gpu (#266).
+if (
+  guard
+  gpu=1; renderer
+  [ "${wgpu[*]}" = --gpu ] && [ "${vkenv[*]}" = MESA_VK_WSI_DEBUG=sw ] || exit 1
+  gpu=""; renderer
+  [ "${#wgpu[@]}" = 0 ] && [ "${vkenv[*]}" = "VK_ICD_FILENAMES=$LAVAPIPE" ]
+); then
+  ok "renderer: --gpu with MESA_VK_WSI_DEBUG=sw, or lavapipe's ICD without --gpu"
+else
+  bad "renderer: --gpu with MESA_VK_WSI_DEBUG=sw, or lavapipe's ICD without --gpu"
+fi
+
 # inputs.txt says how the run renders (#266): the GPU through isolated-run.sh --gpu by default,
 # lavapipe with --no-gpu.
 for g in 1 ""; do

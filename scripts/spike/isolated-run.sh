@@ -131,14 +131,16 @@
 # command: `env VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json COMMAND` (newer Vulkan
 # loaders also read VK_DRIVER_FILES). OpenGL falls back to llvmpipe by itself.
 # With --gpu (the owner's choice for client runs, 2026-10-15, #266), each of the host's render
-# nodes goes inside with its device's sysfs directory, read-only, and its /sys/dev/char link:
-# nothing else of /sys, no card node (modesetting and the display stay out) and still no DRI3, so
-# frames reach the nested display through X as before: a hardware Vulkan driver presents through
-# DRI3, so set MESA_VK_WSI_DEBUG=sw inside, which copies each frame over X (run-client.sh does). COMMAND can then submit work to the GPU
-# through its kernel driver's render interface, which widens what a bug in that driver exposes. It
-# opens no network, no host file and no display. --gpu is refused (exit 2) unless /dev/dri has a
-# render node (DRM major 226, minor 128 and up) whose /sys/dev/char link leads to a device's
-# drm/renderDN on sysfs, with nothing mounted below that device's directory.
+# nodes that belongs to a device goes inside with that device's sysfs directory, read-only, and its
+# /sys/dev/char link. Nothing else of /sys goes in. The device's drm/cardN directories (its
+# connectors, and the monitors' EDIDs with their serials) are masked with empty read-only tmpfs
+# mounts, and no card node goes in, so modesetting and the display stay out. There is still no
+# DRI3, so frames reach the nested display through X as before. A hardware Vulkan driver presents
+# through DRI3, so set MESA_VK_WSI_DEBUG=sw inside, which copies each frame over X (run-client.sh
+# does). COMMAND can then submit work to the GPU through its kernel driver's render interface. That
+# widens what a bug in the driver exposes, and a submission that hangs the GPU resets every context
+# on it, the host desktop's included. It opens no network, no host file and no display. A render
+# node with no device of its own, such as vgem's, is left out.
 #
 # A running host Steam (native or Flatpak) is refused (exit 2); the self-test alone overrides that
 # with FENJI_ISOLATED_RUN_ALLOW_STEAM=1 (and adds refused filesystem types for its own test with
@@ -146,8 +148,14 @@
 # errors, a missing --hosts file or bind dir, a refused bind dir or --x11 display, --no-root when
 # your uid or gid is 0 or 65534 (root and nobody inside), --cpu-topology unless
 # /sys/devices/system/cpu is a directory on sysfs with nothing mounted below it (only the kernel's
-# own CPU sysfs goes inside: in LXC containers, for one, lxcfs mounts FUSE files there), a
-# non-x86_64 host, or missing bwrap, pgrep or python3. Otherwise the exit status is COMMAND's.
+# own CPU sysfs goes inside: in LXC containers, for one, lxcfs mounts FUSE files there), --gpu
+# unless /dev/dri has a render node (DRM major 226, minor 128 and up) whose /sys/dev/char link leads
+# to drm/renderDN in its own device's directory, on sysfs with nothing mounted below it (and any
+# other render node is such a one, or has no device), a non-x86_64 host, or missing bwrap, pgrep
+# or python3. Otherwise the exit status is COMMAND's.
+#
+# Inside, the root and /dev are read-only: nothing can be written outside /tmp, /dev/shm, /run,
+# /var, HOME and the caller's binds, the tmpfs mounts watchdog.py's S1 scans for a dropped driver.
 set -euo pipefail
 
 usage() { sed -n '2,28p' "$0" >&2; exit 2; }
@@ -295,29 +303,40 @@ if [ -n "$cputopo" ]; then
     die2 "--cpu-topology: a filesystem (${below_types[0]}) is mounted at ${below_points[0]}, below /sys/devices/system/cpu; only the kernel's own CPU sysfs is bound, with nothing mounted in it"
 fi
 
-# --gpu takes every render node in /dev/dri: a character device of the DRM major (226) with a
-# render minor (128 and up), whose /sys/dev/char link leads to a drm/renderDN directory of a
-# device under /sys/devices, on sysfs with nothing mounted below the device's directory.
-gpu_nodes=() gpu_links=() gpu_dirs=()
+# --gpu takes every render node in /dev/dri that belongs to a device: a character device of the
+# DRM major (226) with a render minor (128 and up), whose /sys/dev/char link leads to drm/renderDN
+# in the directory its own `device` link names, under /sys/devices, on sysfs with nothing mounted
+# below that directory. A render node with no device (a virtual one, such as vgem's) is left out;
+# anything else that doesn't fit refuses the run.
+gpu_nodes=() gpu_links=() gpu_dirs=() gpu_cards=()
 if [ -n "$gpu" ]; then
   for node in /dev/dri/renderD*; do
     [ -c "$node" ] || continue
-    major=$((16#$(stat -c %t -- "$node"))) minor=$((16#$(stat -c %T -- "$node")))
+    st=$(stat -c '%t %T' -- "$node" 2>/dev/null) || die2 "--gpu: $node vanished while it was checked"
+    major=$((16#${st% *})) minor=$((16#${st#* }))
     { [ "$major" = 226 ] && [ "$minor" -ge 128 ]; } ||
       die2 "--gpu: $node isn't a DRM render node (major $major, minor $minor)"
-    target=$(realpath -e -- "/sys/dev/char/$major:$minor" 2>/dev/null) ||
-      die2 "--gpu: $node has no /sys/dev/char/$major:$minor entry"
-    case "$target" in
-      /sys/devices/?*/drm/"${node##*/}") ;;
-      *) die2 "--gpu: /sys/dev/char/$major:$minor leads to $target, not a device's drm/${node##*/}" ;;
-    esac
-    dir=${target%/drm/*}
+    link=/sys/dev/char/$major:$minor
+    target=$(realpath -e -- "$link" 2>/dev/null) || die2 "--gpu: $node has no $link entry"
+    if ! dir=$(realpath -e -- "$link/device" 2>/dev/null); then
+      echo "isolated-run: --gpu: $node belongs to no device (a virtual one); it stays out" >&2
+      continue
+    fi
+    case "$dir" in /sys/devices/?*) ;; *) die2 "--gpu: $node's device is $dir, not under /sys/devices" ;; esac
+    [ "$target" = "$dir/drm/${node##*/}" ] ||
+      die2 "--gpu: $link leads to $target, not to $dir/drm/${node##*/}, in its own device's directory"
     mounts_at "$dir"
     [ "$on_type" = sysfs ] || die2 "--gpu: $dir is on ${on_type:-an unknown filesystem}, not sysfs"
     [ "${#below_points[@]}" -eq 0 ] ||
       die2 "--gpu: a filesystem (${below_types[0]}) is mounted at ${below_points[0]}, below $dir"
-    gpu_nodes+=("$node") gpu_links+=("/sys/dev/char/$major:$minor" "$target")
-    case " ${gpu_dirs[*]} " in *" $dir "*) ;; *) gpu_dirs+=("$dir") ;; esac
+    gpu_nodes+=("$node") gpu_links+=("$link" "$target")
+    case " ${gpu_dirs[*]} " in
+      *" $dir "*) ;;
+      *)
+        gpu_dirs+=("$dir")
+        for card in "$dir"/drm/card*; do [ ! -d "$card" ] || gpu_cards+=("$card"); done
+        ;;
+    esac
   done
   [ "${#gpu_nodes[@]}" -gt 0 ] || die2 "--gpu: there is no GPU render node in /dev/dri"
 fi
@@ -542,12 +561,14 @@ if [ -n "$cputopo" ]; then
   args+=(--ro-bind /sys/devices/system/cpu /sys/devices/system/cpu)
 fi
 
-# --gpu (checked above): each render node, its device's sysfs directory read-only and its
-# /sys/dev/char link, which libdrm follows to find the device. After the caller's binds, so none
-# can sit on top of them.
+# --gpu (checked above): each render node, its device's sysfs directory read-only, with an empty
+# tmpfs over each drm/cardN in it (made read-only below), and its /sys/dev/char link, which libdrm
+# follows to find the device. After the caller's binds, so none can sit on top of them.
+ro_mounts=()
 if [ -n "$gpu" ]; then
   for node in "${gpu_nodes[@]}"; do args+=(--dev-bind "$node" "$node"); done
   for dir in "${gpu_dirs[@]}"; do args+=(--ro-bind "$dir" "$dir"); done
+  for card in "${gpu_cards[@]}"; do args+=(--tmpfs "$card"); ro_mounts+=("$card"); done
   for ((i = 0; i < ${#gpu_links[@]}; i += 2)); do
     args+=(--symlink "${gpu_links[$((i + 1))]}" "${gpu_links[$i]}")
   done
@@ -556,6 +577,13 @@ fi
 # Generated /etc files go last so no bind can shadow them (fds 3-6 are opened on the exec line).
 args+=(--perms 0644 --ro-bind-data 3 /etc/hosts --perms 0644 --ro-bind-data 4 /etc/nsswitch.conf
        --perms 0644 --ro-bind-data 5 /etc/passwd --perms 0644 --ro-bind-data 6 /etc/group)
+
+# Then the root and /dev go read-only, and --gpu's card masks: their directories are the mount
+# points made above (/etc, /tmp/.X11-unix's parent, /sys's for --cpu-topology and --gpu, /dev/dri),
+# and nothing may be written there, where watchdog.py's S1 doesn't look. Each remount is of that
+# mount alone: /tmp, /dev/shm, /run, /var, HOME and the caller's binds stay as they are.
+args+=(--remount-ro / --remount-ro /dev)
+for m in "${ro_mounts[@]}"; do args+=(--remount-ro "$m"); done
 
 # Working dir: the caller's, if it is inside a bound dir; else /.
 cwd=$(pwd -P) chdir=/
