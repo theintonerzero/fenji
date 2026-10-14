@@ -11,6 +11,7 @@ Every outside source we take hints from (design spec §2 rule 2, §4 C). Only cl
 | [LLVM](https://llvm.org) 22 `llvm-undname` (Fedora 44's `llvm-22.1.8`) | Apache-2.0 WITH LLVM-exception | Yes: the upstream toolchain as Fedora packages it; nothing SoLO-specific | External tool: demangled the export names of the client's own `AurogonEngine.dll` ([`README.md`](README.md#naming-functions-from-aurogonenginedll-spike-0-18), spike-0 1.8) | 2026-10-12 |
 | [GNU binutils](https://www.gnu.org/software/binutils/) 2.46 `objdump` (Fedora 44's `binutils-2.46.1`) | GPL-3.0-or-later | Yes: the upstream toolchain as Fedora packages it; nothing SoLO-specific | External tool: disassembled the client's own `AurogonEngine.dll` to compare function shapes with the exe ([`README.md`](README.md#naming-functions-from-aurogonenginedll-spike-0-18), spike-0 1.8) | 2026-10-12 |
 | [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) GE-Proton11-7 | BSD-3-Clause (Proton) with Wine's LGPL and other bundled licences | Yes: a public Proton fork | External runtime for sandboxed client runs, never redistributed (M1 Task 9) | 2026-10-12 |
+| [ooz](https://github.com/powzix/ooz) at `05038060aa68` (`kraken.cpp`) | GPL-3.0-or-later (the file's header) | Yes: a public Kraken/Mermaid/Selkie/Leviathan decompressor its author wrote from Oodle; nothing SoLO-specific | Ported to safe Rust in `crates/fenji-oodle`, to decode the client's Oodle archives (#225) | 2026-10-14 |
 
 ## Rejected
 

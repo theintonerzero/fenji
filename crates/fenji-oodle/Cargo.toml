@@ -1,0 +1,12 @@
+[package]
+name = "fenji-oodle"
+description = "A Rust port of ooz's Oodle decoders (Kraken, Mermaid and Selkie, Leviathan), for the SoLO client's archives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+# Not the workspace's AGPL: this crate ports GPL-3.0-or-later code (NOTICE).
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
