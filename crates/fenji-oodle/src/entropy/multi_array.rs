@@ -162,10 +162,14 @@ pub(super) fn decode_multi_array(
 
     let (head, intervals) = scratch.split_at_mut(decoded_intervals);
     let lenlog2 = &head[interval_lenlog2..interval_lenlog2 + num_indexes];
-    let mut put = |i: usize, v: u32| {
-        if let Some(slot) = intervals.get_mut(i * 4..i * 4 + 4) {
-            slot.copy_from_slice(&v.to_le_bytes());
-        }
+    // ooz's room check above leaves room for every interval. Should a later change break that, an
+    // interval past the scratch is corrupt data, never one quietly dropped.
+    let mut put = |i: usize, v: u32| -> Result<(), Error> {
+        intervals
+            .get_mut(i * 4..i * 4 + 4)
+            .ok_or_else(bad)?
+            .copy_from_slice(&v.to_le_bytes());
+        Ok(())
     };
 
     let mut i = 0;
@@ -191,8 +195,8 @@ pub(super) fn decode_multi_array(
         let value_b = bits_b & bitmask(numbits_b);
         bits_b &= !bitmask(numbits_b);
 
-        put(i, value_f);
-        put(i + 1, value_b);
+        put(i, value_f)?;
+        put(i + 1, value_b)?;
         i += 2;
     }
 
@@ -201,7 +205,7 @@ pub(super) fn decode_multi_array(
         bits_f |= shr(le32_at(src, f).swap_bytes(), (24 - bitpos_f).unsigned_abs());
         let numbits_f = u32::from(lenlog2[i]);
         bits_f = (bits_f | 1).rotate_left(numbits_f);
-        put(i, bits_f & bitmask(numbits_f));
+        put(i, bits_f & bitmask(numbits_f))?;
     }
 
     let indexes = &head[interval_indexes..interval_indexes + num_indexes];
