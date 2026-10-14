@@ -102,6 +102,13 @@ pub(super) struct Services(pub mpsc::UnboundedSender<Service>);
 #[derive(Resource, Default)]
 struct NextSave(Option<u64>);
 
+/// Where characters that left the game a moment ago stood, and until when that is kept
+/// ([`KEEP_LEFT`]).
+///
+/// [`KEEP_LEFT`]: super::KEEP_LEFT
+#[derive(Resource, Default)]
+struct Left(HashMap<ActorId, (Location, u64)>);
+
 /// The world: its ECS, and the phases a tick runs.
 pub struct WorldCore {
     world: World,
@@ -127,6 +134,7 @@ impl WorldCore {
         world.insert_resource(Index::default());
         world.insert_resource(Pending::default());
         world.insert_resource(Services(services));
+        world.insert_resource(Left::default());
         let phases = vec![
             ("inbound", phase(inbound)),
             ("movement", phase(super::movement::system)),
@@ -283,29 +291,32 @@ fn counted(
     Some(e)
 }
 
-/// A character enters. An account already in the game is replaced, and the same character keeps
-/// where it stood, which may be newer than the store's copy.
+/// A character enters. An account already in the game is replaced. A character that was in the
+/// game a moment ago, on the connection this replaces or one that left within [`KEEP_LEFT`],
+/// enters where it stood: the store's copy, which the login read, may be older, since saves are
+/// written off the tick (#222).
+///
+/// [`KEEP_LEFT`]: super::KEEP_LEFT
 fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
     if !(1..=MAX_PLAYER_ID).contains(&player.pid) {
         // The connection side refuses these first; a bad id never gets an actor.
         let _ = out.try_send(WorldOut::Kicked(KickReason::Kicked));
         return;
     }
-    let mut at = player.at;
     let older = world
         .resource::<Index>()
         .accounts
         .get(&player.account)
         .copied();
     if let Some(old) = older {
-        if world.get::<Actor>(old).is_some_and(|a| a.pid == player.pid)
-            && let Some(here) = world.get::<Here>(old)
-        {
-            at = here.0;
-        }
+        // Its place is kept, as for any character that leaves.
         remove(world, old, Some(KickReason::Replaced));
     }
     let now = world.resource::<Now>().0;
+    let at = match world.resource_mut::<Left>().0.remove(&player.pid) {
+        Some((stood, until)) if now < until => stood,
+        _ => player.at,
+    };
     let name = name_key(&player.look.name);
     let e = world
         .spawn((
@@ -415,8 +426,8 @@ pub(super) fn hide(world: &mut World, pid: ActorId) {
     }
 }
 
-/// Takes `e` out of the game now: its viewers are told, its place is saved, its connection hears
-/// why when there is a reason, and the index forgets it.
+/// Takes `e` out of the game now: its viewers are told, its place is saved and kept for a while
+/// (`Left`), its connection hears why when there is a reason, and the index forgets it.
 fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
     let (Some(actor), Some(here), Some(conn), Some(account)) = (
         world.get::<Actor>(e),
@@ -433,6 +444,12 @@ fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
         let _ = conn.out.try_send(WorldOut::Kicked(reason));
     }
     save(world.resource::<Services>(), pid, at);
+    let now = world.resource::<Now>().0;
+    let keep = u64::try_from(super::KEEP_LEFT.as_millis()).unwrap_or(u64::MAX);
+    let mut left = world.resource_mut::<Left>();
+    // Those kept long enough are forgotten as others leave, so the map holds only the last minute.
+    left.0.retain(|_, (_, until)| now < *until);
+    left.0.insert(pid, (at, now.saturating_add(keep)));
     world.despawn(e);
     let mut index = world.resource_mut::<Index>();
     unindex(&mut index.conns, &conn_id, e);
@@ -762,6 +779,43 @@ mod tests {
             }]
         );
         assert_eq!(h.core.players(), 1);
+    }
+
+    #[test]
+    fn a_character_that_left_a_moment_ago_comes_back_where_it_left() {
+        // #222: the save on leaving is written off the tick, so a newer login that read the store
+        // first brings an older place. The world keeps where it left for a minute.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(10.0, 20.0)));
+        h.push(WorldIn::Leave { conn: 1 });
+        h.tick(50);
+        let older = |conn| Player {
+            conn,
+            ..player(1, "Lin", at(-500.0, -500.0))
+        };
+        h.join(older(2));
+        h.tick(50);
+        assert_eq!(
+            h.take(2),
+            vec![WorldOut::LoadScene {
+                pid: 1,
+                at: at(10.0, 20.0)
+            }],
+            "where it left, not the older place"
+        );
+        // Once a minute has passed, the store has had its save: the login's place stands.
+        h.push(WorldIn::Leave { conn: 2 });
+        h.tick(50);
+        h.tick(60_001);
+        h.join(older(3));
+        h.tick(50);
+        assert_eq!(
+            h.take(3),
+            vec![WorldOut::LoadScene {
+                pid: 1,
+                at: at(-500.0, -500.0)
+            }]
+        );
     }
 
     #[test]

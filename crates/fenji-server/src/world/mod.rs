@@ -24,6 +24,11 @@ pub const MAX_INPUTS_PER_TICK: usize = 128;
 /// takes as spread over the periods it missed: a longer one counts as this long (#222).
 pub const MAX_STALL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long the world keeps where a character left. Its save is written off the tick, so a login
+/// that reads the store before it lands would come back at an older place (#222); a minute is far
+/// longer than a save takes.
+pub const KEEP_LEFT: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Rules {
     pub fn from_config(cfg: &Config) -> Self {
         Self {
