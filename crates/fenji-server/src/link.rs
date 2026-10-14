@@ -5,12 +5,15 @@
 //! entering: 772, the time syncs, type 3, then the player's own 7 and 8. Slice 2 (Amendment B)
 //! maps seeing: another player announced (6), pulled (5), sent whole (7 and 8) and taken away
 //! (9). Slice 3 (Amendment C) maps moving: the client's direction command (8) to the world, its
-//! relay to others (13), and a correction or a teleport to the player itself (20). The chat slice
-//! comes later. Script messages go out through the gate's `script_out`, which refuses `NEVER_SEND`.
+//! relay to others (13), and a correction or a teleport to the player itself (20). Slice 4 (Task
+//! 16; docs/protocol/packets/chat.md) maps chat: a line (115) to the world, the lines the world
+//! sends (378), and refusals (270); the admins' commands arrive as lines. Script messages go out
+//! through the gate's `script_out`, which refuses `NEVER_SEND`.
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use fenji_proto::chat;
 use fenji_proto::codec::StoredCodec;
 use fenji_proto::handshake::{Event, Server};
 use fenji_proto::lobby::{self, Appearance, code};
@@ -27,8 +30,8 @@ use tokio::time::{Instant, MissedTickBehavior};
 use crate::gate::{self, Gate};
 use crate::lobby::stored_appearance;
 use crate::world::{
-    ActorId, ConnId, KickReason, Location, Look, MoveStep, Player, Pos, WorldHandle, WorldIn,
-    WorldOut,
+    ActorId, ChatChannel, ChatIn, ChatOut, ChatRefusal, ConnId, KickReason, Location, Look,
+    MoveStep, Player, Pos, Speaker, WhisperTarget, WorldHandle, WorldIn, WorldOut,
 };
 
 /// The world's messages a connection may hold unwritten; one more and the world lets go of it
@@ -124,19 +127,20 @@ pub(crate) async fn play(
                         }
                         _ => continue,
                     };
-                    match on_message(gate, conn, m.ty, &m.body) {
-                        Step::Go => {}
-                        Step::Reply(ty, body) => {
-                            let bytes = server.send(ty, &body, &StoredCodec)?;
-                            if !gate::send_or_replaced(sock, &bytes, deadline, replaced).await? {
-                                tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
-                                return Ok(());
-                            }
-                        }
+                    let reply = match on_message(gate, conn, m.ty, &m.body) {
+                        Step::Go => None,
+                        Step::Reply(ty, body) => Some(server.send(ty, &body, &StoredCodec)?),
+                        Step::Script(body) => Some(gate::script_out(server, &body)?),
                         Step::End(why) => {
                             tracing::info!(%peer, account = %account.username, why, "left the world");
                             return Ok(());
                         }
+                    };
+                    if let Some(bytes) = reply
+                        && !gate::send_or_replaced(sock, &bytes, deadline, replaced).await?
+                    {
+                        tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                        return Ok(());
                     }
                 }
             }
@@ -234,11 +238,16 @@ enum Step {
     Go,
     /// Send this message (its type and body) at once.
     Reply(u8, Vec<u8>),
+    /// Send this script message at once, through the gate's `script_out`.
+    Script(Vec<u8>),
     /// End the session, for this reason (logged).
     End(&'static str),
 }
 
-/// The step for one message from a client in the world (Amendment A's mapping for slice 1).
+/// The step for one message from a client in the world: the client's half of the slices' mappings
+/// (Amendments A to C, and chat.md §6 for slice 4). It decodes only what the world takes: the time
+/// syncs, type 3, a pull (5), a direction command (8), a line of chat (115), and the ways out (4 and
+/// 392); everything else is dropped with a debug line.
 fn on_message(gate: &Gate, conn: ConnId, ty: u8, body: &[u8]) -> Step {
     match Cts::from_u8(ty) {
         // From 772 on, once a second; answered at once (world.md §7).
@@ -315,6 +324,32 @@ fn on_message(gate: &Gate, conn: ConnId, ty: u8, body: &[u8]) -> Step {
                 id: Value::Int(lobby::CLIENT_EXIT),
                 ..
             }) => Step::End("the client is quitting (392)"),
+            // A line of chat, which an admin's command rides on (chat.md §1). The world checks the
+            // text and routes it; the link refuses at once, as it answers a time sync, only what
+            // the world can't take: a channel M4 doesn't carry, or a "line" that isn't text. Its
+            // log says that a line came and on which channel, never what it said or to whom.
+            Ok(Up::Script {
+                id: Value::Int(chat::CHAT_TRANSMIT),
+                args,
+                ..
+            }) => match chat::parse_transmit(&args) {
+                Ok(t) => {
+                    tracing::debug!(
+                        channel = t.channel.number(),
+                        bytes = t.text.len(),
+                        "115: a line for the world"
+                    );
+                    gate.world.send(WorldIn::Chat {
+                        conn,
+                        line: chat_in(t),
+                    });
+                    Step::Go
+                }
+                Err(why) => {
+                    tracing::debug!(?why, "115: a line refused at the link");
+                    Step::Script(chat::refusal(why))
+                }
+            },
             Ok(Up::Script { id, gateway, .. }) => {
                 // The scripts' logs and fetches after type 8 need no answer (world.md §1, step 8).
                 tracing::debug!(id = ?id, gateway, "script message ignored in the world");
@@ -352,8 +387,8 @@ fn masked(body: &[u8], machine: fn(usize) -> bool) -> String {
 /// `now_ms`, or `None` for what isn't sent: what names `own` itself (world.md 14.11: a 9 naming it
 /// would make the client's own player leave, and a 6 would queue its own id; 16.8: a 13 would place
 /// the player's own actor; interest leaves a viewer out of its own view, so this guards against a
-/// bug in the world), a move whose detail isn't [`world::MoveDetail::LEN`] bytes, which only a bug
-/// in the world makes, and what the chat slice maps.
+/// bug in the world), and a move whose detail isn't [`world::MoveDetail::LEN`] bytes, which only a
+/// bug in the world makes. `play` closes on a kick before it gets here.
 fn encode(
     server: &mut Server,
     own: ActorId,
@@ -453,7 +488,8 @@ fn encode(
                 return Ok(None);
             };
             let p = step.pos;
-            tracing::debug!(
+            // At trace: a viewer of 20 movers gets about 400 a second (Task 15's review).
+            tracing::trace!(
                 pid,
                 x = p.x,
                 y = p.y,
@@ -474,12 +510,86 @@ fn encode(
         }
         WorldOut::Correct { pos } => Ok(Some(stand_here(server, own, now_ms, pos, "correct")?)),
         WorldOut::Teleport { pos } => Ok(Some(stand_here(server, own, now_ms, pos, "teleport")?)),
-        // Chat isn't read yet (Task 16): encoding it would send unverified bytes, and closing on
-        // it would end the two-client runs.
-        other => {
-            tracing::debug!(variant = variant(&other), "not sent yet");
+        // A line, on the channel chat.md §3 gives it; the log never holds what it says, or whom.
+        WorldOut::Chat(out) => {
+            let line = wire_line(&out);
+            let channel = match line {
+                chat::Line::Said { channel, .. } => channel.number(),
+                chat::Line::Announce { .. } => chat::channel::MARQUEE,
+                chat::Line::System { .. } => chat::channel::SYSTEM,
+            };
+            tracing::debug!(channel, "378: a line");
+            Ok(Some(gate::script_out(server, &chat::say(&line))?))
+        }
+        WorldOut::ChatRefused(why) => {
+            tracing::debug!(?why, "270: a line refused");
+            let body = chat::refusal(wire_refusal(why));
+            Ok(Some(gate::script_out(server, &body)?))
+        }
+        WorldOut::Kicked(reason) => {
+            tracing::warn!(?reason, "a kick reached the encoder: not sent");
             Ok(None)
         }
+    }
+}
+
+/// The world's line for a 115 the codec read (chat.md §1).
+fn chat_in(t: chat::Transmit) -> ChatIn {
+    ChatIn {
+        channel: match t.channel {
+            chat::Channel::Nearby => ChatChannel::Nearby,
+            chat::Channel::Whisper => ChatChannel::Whisper,
+            chat::Channel::World => ChatChannel::World,
+        },
+        text: t.text,
+        to: t.to.map(|to| match to {
+            chat::Target::Pid(pid) => WhisperTarget::Pid(pid),
+            chat::Target::Name(name) => WhisperTarget::Name(name),
+        }),
+    }
+}
+
+/// The codec's player for one the world names.
+fn wire_player(s: &Speaker) -> chat::Player<'_> {
+    chat::Player {
+        pid: s.pid,
+        name: &s.name,
+        vocation: s.vocation,
+    }
+}
+
+/// The codec's line for one the world sends (chat.md §2, §3).
+fn wire_line(out: &ChatOut) -> chat::Line<'_> {
+    match out {
+        ChatOut::Said {
+            channel,
+            from,
+            to,
+            text,
+        } => chat::Line::Said {
+            channel: match channel {
+                ChatChannel::Nearby => chat::Channel::Nearby,
+                ChatChannel::Whisper => chat::Channel::Whisper,
+                ChatChannel::World => chat::Channel::World,
+            },
+            from: wire_player(from),
+            to: to.as_ref().map(wire_player),
+            text,
+        },
+        ChatOut::Announce { text } => chat::Line::Announce { text },
+        ChatOut::System { text } => chat::Line::System { text },
+    }
+}
+
+/// The codec's refusal for the world's (chat.md §5).
+fn wire_refusal(why: ChatRefusal) -> chat::Refusal {
+    match why {
+        ChatRefusal::Invalid => chat::Refusal::Invalid,
+        ChatRefusal::TooLong => chat::Refusal::TooLong,
+        ChatRefusal::TooFast => chat::Refusal::TooFast,
+        ChatRefusal::NotOnline => chat::Refusal::NotOnline,
+        ChatRefusal::ToSelf => chat::Refusal::ToSelf,
+        ChatRefusal::Channel => chat::Refusal::Channel,
     }
 }
 
@@ -547,23 +657,6 @@ fn enter_and_finish(
     Ok(out)
 }
 
-/// A `WorldOut`'s name, for the log.
-fn variant(msg: &WorldOut) -> &'static str {
-    match msg {
-        WorldOut::LoadScene { .. } => "LoadScene",
-        WorldOut::SelfEnter { .. } => "SelfEnter",
-        WorldOut::Announce { .. } => "Announce",
-        WorldOut::Enter { .. } => "Enter",
-        WorldOut::Leave { .. } => "Leave",
-        WorldOut::Moved { .. } => "Moved",
-        WorldOut::Correct { .. } => "Correct",
-        WorldOut::Teleport { .. } => "Teleport",
-        WorldOut::Chat(_) => "Chat",
-        WorldOut::ChatRefused(_) => "ChatRefused",
-        WorldOut::Kicked(_) => "Kicked",
-    }
-}
-
 /// Closes a connection the world let go of, with the reason its client shows (world.md 10.3): a
 /// replaced login as M3's, through `close_replaced`; a stopping server and an admin's kick with
 /// their keys, lingering within a waiting place; a client that stopped reading or flooded with
@@ -620,7 +713,10 @@ mod tests {
     use crate::gate::{GateLimits, Places};
     use crate::lobby::LobbyLimits;
     use crate::online::Online;
-    use crate::world::{KickReason, WorldIn, WorldOut};
+    use crate::world::{
+        ChatChannel, ChatIn, ChatOut, ChatRefusal, KickReason, Speaker, WhisperTarget, WorldIn,
+        WorldOut,
+    };
 
     const START: Location = Location {
         scene: 5,
@@ -1538,14 +1634,15 @@ mod tests {
                 detail: Arc::from(detail),
             };
             let bytes = running().to_bytes();
-            // Lin's own move, and a detail a byte short, send nothing; then Mai's move goes out.
+            // Lin's own move, and Kai's with a detail a byte short, send nothing; then Mai's move
+            // goes out, the only 13, so a 13 for either of the others would come first.
             for msg in [
                 WorldOut::Moved {
                     pid: 258,
                     step: step(&bytes),
                 },
                 WorldOut::Moved {
-                    pid: 300,
+                    pid: 301,
                     step: step(&bytes[..16]),
                 },
                 WorldOut::Moved {
@@ -1592,5 +1689,271 @@ mod tests {
             }
         })
         .await;
+    }
+
+    // --- Slice 4 (Task 16): chat.
+
+    fn s(x: &str) -> Value {
+        Value::Str(x.as_bytes().to_vec())
+    }
+
+    /// 115 as the client's `net_manager_send` sends it (chat.md 1.1): a type-0 script message.
+    fn transmit(args: &[Value]) -> Vec<u8> {
+        fenji_proto::packet::script_body(chat::CHAT_TRANSMIT, args).unwrap()
+    }
+
+    /// A time sync, then its reply: proof the connection is open and everything before it was read.
+    async fn still_open(l: &mut Linked) {
+        let mut sync = 7u32.to_le_bytes().to_vec();
+        sync.push(1);
+        sync.extend([0; 8]);
+        l.send(Cts::TimeSync.to_u8(), &sync).await;
+        let got = l.messages(1).await;
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].ty, Stc::TimeSync.to_u8());
+    }
+
+    #[tokio::test]
+    async fn a_line_reaches_the_world() {
+        linked(|mut l| async move {
+            let whisper = Value::Table(Table {
+                array: Vec::new(),
+                hash: vec![(s("pid"), Value::Int(300)), (s("name"), s("Mai@Unknown"))],
+            });
+            let typed = Value::Table(Table {
+                array: Vec::new(),
+                hash: vec![(s("name"), s("Mai@Unknown"))],
+            });
+            for (args, want) in [
+                (
+                    vec![Value::Int(0), s("hi"), Value::Nil],
+                    ChatIn {
+                        channel: ChatChannel::Nearby,
+                        text: "hi".into(),
+                        to: None,
+                    },
+                ),
+                (
+                    vec![Value::Int(5), s("all &lt;3"), Value::Nil],
+                    ChatIn {
+                        channel: ChatChannel::World,
+                        text: "all &lt;3".into(),
+                        to: None,
+                    },
+                ),
+                (
+                    vec![Value::Int(1), s("psst"), whisper],
+                    ChatIn {
+                        channel: ChatChannel::Whisper,
+                        text: "psst".into(),
+                        to: Some(WhisperTarget::Pid(300)),
+                    },
+                ),
+                (
+                    vec![Value::Int(1), s("psst"), typed],
+                    ChatIn {
+                        channel: ChatChannel::Whisper,
+                        text: "psst".into(),
+                        to: Some(WhisperTarget::Name("Mai@Unknown".into())),
+                    },
+                ),
+            ] {
+                l.send(Cts::Script.to_u8(), &transmit(&args)).await;
+                let WorldIn::Chat { conn, line } = told(&mut l.inbox).await else {
+                    panic!("a line for the world")
+                };
+                assert_eq!((conn, line), (1, want));
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_line_the_link_cant_take_is_a_270_and_the_world_hears_nothing() {
+        linked(|mut l| async move {
+            // Team chat (2), then a "line" that isn't text.
+            for (args, code) in [
+                (
+                    vec![Value::Int(2), s("hi"), Value::Nil],
+                    chat::code::CHAT_INVALID_CHANNEL,
+                ),
+                (
+                    vec![Value::Int(0), Value::Int(7), Value::Nil],
+                    chat::code::CHAT_INVALID_CONTENT,
+                ),
+            ] {
+                l.send(Cts::Script.to_u8(), &transmit(&args)).await;
+                let got = l.messages(1).await;
+                assert_eq!(got.len(), 1, "{got:?}");
+                assert_eq!(got[0].ty, Stc::Script.to_u8());
+                assert_eq!(
+                    pickle::decode(&got[0].body).unwrap(),
+                    [Value::Int(lobby::ERROR_CODE), Value::Int(code)]
+                );
+            }
+            still_open(&mut l).await;
+            assert!(l.inbox.try_recv().is_err(), "the world got something");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn chat_sends_378() {
+        linked(|mut l| async move {
+            let mai = Speaker {
+                pid: 300,
+                name: "Mai".into(),
+                vocation: 2,
+            };
+            let lin = Speaker {
+                pid: 258,
+                name: "Lin".into(),
+                vocation: 7,
+            };
+            let mai_link = chat::player_link(&chat::Player {
+                pid: 300,
+                name: "Mai",
+                vocation: 2,
+            });
+            let lin_link = chat::player_link(&chat::Player {
+                pid: 258,
+                name: "Lin",
+                vocation: 7,
+            });
+            for (out, want) in [
+                (
+                    ChatOut::Said {
+                        channel: ChatChannel::Nearby,
+                        from: mai.clone(),
+                        to: None,
+                        text: "hi".into(),
+                    },
+                    [Value::Int(0), s(&mai_link), s("hi"), s("")],
+                ),
+                (
+                    ChatOut::Said {
+                        channel: ChatChannel::World,
+                        from: mai.clone(),
+                        to: None,
+                        text: "all".into(),
+                    },
+                    [Value::Int(5), s(&mai_link), s("all"), s("")],
+                ),
+                (
+                    ChatOut::Said {
+                        channel: ChatChannel::Whisper,
+                        from: mai,
+                        to: Some(lin),
+                        text: "psst".into(),
+                    },
+                    [Value::Int(1), s(&mai_link), s("psst"), s(&lin_link)],
+                ),
+                (
+                    ChatOut::Announce {
+                        text: "Restart at 20:00".into(),
+                    },
+                    [Value::Int(66), s(""), s("Restart at 20:00"), s("")],
+                ),
+                (
+                    ChatOut::System {
+                        text: "usage: kick <name>".into(),
+                    },
+                    [Value::Int(64), s(""), s("usage: kick &lt;name&gt;"), s("")],
+                ),
+            ] {
+                l.out.send(WorldOut::Chat(out)).await.unwrap();
+                let got = l.messages(1).await;
+                assert_eq!(got.len(), 1, "{got:?}");
+                assert_eq!(got[0].ty, Stc::Script.to_u8());
+                let v = pickle::decode(&got[0].body).unwrap();
+                assert_eq!(v[0], Value::Int(chat::SYS_CHAT_MESSAGE));
+                assert_eq!(v[1..5], want);
+                assert_eq!(v[5..], [Value::Nil, Value::Nil]);
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_refusal_sends_270_with_its_code() {
+        linked(|mut l| async move {
+            for (why, code) in [
+                (ChatRefusal::Invalid, chat::code::CHAT_INVALID_CONTENT),
+                (ChatRefusal::TooLong, chat::code::CHAT_MAX_CHAR),
+                (ChatRefusal::TooFast, chat::code::CHAT_TOO_FAST),
+                (ChatRefusal::NotOnline, chat::code::CHAT_RECEIVER_OFFLINE),
+                (ChatRefusal::ToSelf, chat::code::CHAT_TALK_TOSELF),
+                (ChatRefusal::Channel, chat::code::CHAT_INVALID_CHANNEL),
+            ] {
+                l.out.send(WorldOut::ChatRefused(why)).await.unwrap();
+                let got = l.messages(1).await;
+                assert_eq!(got.len(), 1, "{got:?}");
+                assert_eq!(got[0].ty, Stc::Script.to_u8());
+                assert_eq!(
+                    pickle::decode(&got[0].body).unwrap(),
+                    [Value::Int(lobby::ERROR_CODE), Value::Int(code)],
+                    "{why:?}"
+                );
+            }
+        })
+        .await;
+    }
+
+    #[test]
+    fn the_logs_never_hold_a_line() {
+        // A host's log says that a line came or went, never what it said or whom a whisper named.
+        let logs = Logs::default();
+        let log = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE);
+        let _logging = tracing::subscriber::set_default(log.finish());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let (gate, _inbox) = gate(dir.path()).await;
+            let secret = Value::Table(Table {
+                array: Vec::new(),
+                hash: vec![(s("name"), s("Zed@Unknown"))],
+            });
+            for args in [
+                vec![Value::Int(0), s("a secret plan"), Value::Nil],
+                vec![Value::Int(1), s("a secret plan"), secret],
+                vec![Value::Int(2), s("a secret plan"), Value::Nil],
+            ] {
+                on_message(&gate, 1, Cts::Script.to_u8(), &transmit(&args));
+            }
+            let (_ours, _peer, mut server, _theirs, _client) = session().await;
+            let said = WorldOut::Chat(ChatOut::Said {
+                channel: ChatChannel::Whisper,
+                from: Speaker {
+                    pid: 300,
+                    name: "Mai".into(),
+                    vocation: 2,
+                },
+                to: Some(Speaker {
+                    pid: 301,
+                    name: "Zed".into(),
+                    vocation: 2,
+                }),
+                text: "a secret plan".into(),
+            });
+            encode(&mut server, 258, NOW as u64, said).unwrap();
+        });
+        let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            text.contains("115"),
+            "the lines were logged as arriving: {text}"
+        );
+        assert!(
+            text.contains("378"),
+            "the line was logged as going out: {text}"
+        );
+        for word in ["secret", "Zed", "Mai"] {
+            assert!(!text.contains(word), "{word}: {text}");
+        }
     }
 }
