@@ -454,6 +454,42 @@ mod tests {
         assert!(copy_literals(&mut dst, 8, &[1, 2, 3, 4], false, -8).is_err());
     }
 
+    /// A stream of one quantum, an LZ chunk of `mode` at the very start of the output, 28 bytes.
+    fn one_lz_chunk(mode: u8) -> Vec<u8> {
+        // At the start, 8 bytes as they are.
+        let mut body = b"ABCDEFGH".to_vec();
+        // The literals, a stored block whose long header keeps the top bit clear.
+        body.extend([0x00, 0x00, 0x04, 1, 2, 3, 4]);
+        // One command: 2 literals, then 14 + 2 bytes from the most recent offset, -8.
+        body.extend([0x80, 0x01, 14 << 2 | 2]);
+        // No packed offsets (the top bit clear: the traditional coding), and no packed lengths.
+        body.extend([0x00, 0x00, 0x00, 0x80, 0x00]);
+        // The bits, one byte: read backwards, its top bit is the gamma code for no 32-bit
+        // lengths, and the forward and backward reads meet in it.
+        body.push(0x80);
+        let used = body.len() as u8;
+        let mut s = vec![0x8C, 0x06, 0x00, 0x00, used + 3 - 1];
+        s.extend([0x80 | mode << 3, 0x00, used]);
+        s.extend(body);
+        s
+    }
+
+    #[test]
+    fn mode_0_runs_add_literals_and_mode_1_copies_them() {
+        // Mode 0 adds each literal to the byte 8 back: 1 + 'A', 2 + 'B', and at the end 3 + 'C'
+        // and 4 + 'D' (the match repeats from 8 back).
+        assert_eq!(
+            crate::decompress(&one_lz_chunk(0), 28),
+            Ok(b"ABCDEFGHBDCDEFGHBDCDEFGHBDFH".to_vec())
+        );
+        assert_eq!(
+            crate::decompress(&one_lz_chunk(1), 28),
+            Ok(b"ABCDEFGH\x01\x02CDEFGH\x01\x02CDEFGH\x01\x02\x03\x04".to_vec())
+        );
+        // A mode ooz doesn't know.
+        assert!(crate::decompress(&one_lz_chunk(2), 28).is_err());
+    }
+
     /// A stream of one quantum: 128 KiB of 'X' in an entropy-coded chunk, an RLE block, then 100
     /// bytes in a stored chunk of `mode`.
     fn two_chunks(mode: u8) -> Vec<u8> {

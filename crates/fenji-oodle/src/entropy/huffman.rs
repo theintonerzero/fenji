@@ -773,6 +773,43 @@ mod tests {
     }
 
     #[test]
+    fn old_gamma_coded_lengths() {
+        // Highest bit first: 0 (old), 1 (gamma-coded), 00 (no forced bits), 1 (no first run of
+        // zeros: ooz's `goto SKIP_INITIAL_ZEROS`), 11 (2 symbols), then each length as a gamma
+        // code: 13 zeros and a 1 (v = 13: -7 + (32 + 2) / 4 = 1 bit), 9 zeros and a 1 (v = 9:
+        // -5 + (25 + 2) / 4 = 1 bit); and a last run of 254 zeros to 256, 000000 11111111.
+        let first = [0x4E, 0x00, 0x08, 0x02, 0x07, 0xF8];
+        // 0, 1, 01 (one forced bit), 0 (a first run), 97 zeros (00000 1100010), 11 (2 symbols),
+        // the lengths with their forced bit: 000000 1 1 (v = 6 * 2 + 1 = 13) and 0000 1 1
+        // (v = 4 * 2 + 1 = 9), and 157 zeros to 256 (000000 10011110).
+        let later = [0x50, 0x31, 0x60, 0x61, 0x81, 0x3C];
+        // Then the streams of the sparse test below: forwards 0 0, the end 1, the middle 1.
+        let streams = [0x01, 0x00, 0x00, 0x01, 0x01];
+        for (table, want) in [(&first, [0, 1]), (&later, *b"ab")] {
+            let mut bits = BitReader::new(table);
+            assert_eq!(bits.read_bit_no_refill(), 0); // old
+            let mut syms = [0u8; 1280];
+            let mut code_prefix = CODE_PREFIX_ORG;
+            assert_eq!(
+                read_code_lengths_old(&mut bits, &mut syms, &mut code_prefix),
+                Ok(2)
+            );
+            assert_eq!(syms[..2], want);
+            assert_eq!(code_prefix[1] - CODE_PREFIX_ORG[1], 2); // both 1 bit long
+            let block = [&table[..], &streams].concat();
+            let mut out = [0u8; 4];
+            assert_eq!(decode(&block, &mut out, 1), Ok(block.len()));
+            assert_eq!(out, [want[0], want[1], want[1], want[0]]);
+        }
+        // One symbol, though its runs reach 256: 0, 1, 00, 1, 10 (1 symbol), 13 zeros and a 1,
+        // and 255 zeros (0000000 100000000). ooz wants two at least.
+        let mut bits = BitReader::new(&[0x4C, 0x00, 0x08, 0x08, 0x00]);
+        assert_eq!(bits.read_bit_no_refill(), 0);
+        let mut code_prefix = CODE_PREFIX_ORG;
+        assert!(read_code_lengths_old(&mut bits, &mut [0; 1280], &mut code_prefix).is_err());
+    }
+
+    #[test]
     fn old_sparse_lengths_and_three_streams() {
         // The table, highest bit first: 0 (old), 0 (sparse), 00000010 (two symbols), 000 (no
         // length bits: each code is 1 bit), 'a', 'b'. Then the middle stream's offset, 1, and a

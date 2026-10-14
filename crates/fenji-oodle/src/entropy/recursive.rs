@@ -76,6 +76,15 @@ mod tests {
     }
 
     #[test]
+    fn a_multi_array_of_no_entropy_arrays_holds_its_array_as_a_block() {
+        // 0xC0: a multi-array (the top bit), of 0x40 parts as a recursive block sees it (2 at
+        // least), and of no entropy arrays (the low 6 bits). Its one array is the block after.
+        let src = b"\xC0\x80\x05hello";
+        assert_eq!(recursive(src, 5).unwrap(), (src.len(), b"hello".to_vec()));
+        assert!(recursive(src, 6).is_err());
+    }
+
+    #[test]
     fn a_multi_array_with_its_lengths_beside_its_indexes() {
         // Q = 0x8000 | 2 bytes of interval bits. Each index byte holds a length's bit count
         // above the array it names: 0x21 is 2 bits from array 1, 0x22 2 bits from array 2, and
