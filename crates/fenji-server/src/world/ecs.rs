@@ -150,6 +150,28 @@ impl WorldCore {
     pub fn players(&self) -> usize {
         self.world.resource::<Index>().conns.len()
     }
+
+    /// After a tick that panicked (Ruling R9): saves where each player stands and lets each
+    /// connection go with the shutdown's reason. It reads the players' components alone, since
+    /// the panic may have left the index and the tick's other state half-done, and the world is
+    /// never ticked again. Returns the connections it told.
+    pub fn abandon(&mut self) -> Vec<mpsc::Sender<WorldOut>> {
+        let mut players = self
+            .world
+            .query::<(Option<&Actor>, Option<&Here>, Option<&Conn>)>();
+        let services = self.world.resource::<Services>();
+        let mut told = Vec::new();
+        for (actor, here, conn) in players.iter(&self.world) {
+            if let (Some(actor), Some(here)) = (actor, here) {
+                save(services, actor.pid, here.0);
+            }
+            if let Some(conn) = conn {
+                let _ = conn.out.try_send(WorldOut::Kicked(KickReason::Shutdown));
+                told.push(conn.out.clone());
+            }
+        }
+        told
+    }
 }
 
 /// A name as the index keeps it. Names are unique without regard to ASCII case, as the store's
@@ -203,6 +225,8 @@ fn inbound(world: &mut World) {
                     world.resource_mut::<Pending>().lines.push((e, line));
                 }
             }
+            #[cfg(test)]
+            WorldIn::Panic(message) => panic!("{message}"),
         }
     }
 }

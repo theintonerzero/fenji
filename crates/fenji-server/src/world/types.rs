@@ -170,6 +170,10 @@ pub enum WorldIn {
     Leave { conn: ConnId },
     /// Save everyone and stop.
     Shutdown,
+    /// A bug: the tick that takes it panics with this message, as a tick with a bug would, for
+    /// the tests of Ruling R9. Built for tests only, so no connection can send it.
+    #[cfg(test)]
+    Panic(&'static str),
 }
 
 /// What the world tells a connection task.

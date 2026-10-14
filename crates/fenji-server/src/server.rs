@@ -51,6 +51,24 @@ impl RunningServer {
         self.world.report()
     }
 
+    /// Serves until `stop` completes, or until the world ends by itself, which only a tick that
+    /// panicked does, then shuts down: what `fenji-server run` awaits. A world that ended takes
+    /// the server with it, so that no login waits for a world that isn't there, and the error
+    /// makes `fenji-server run` exit non-zero for systemd to restart it (Ruling R9).
+    pub async fn serve_until(mut self, stop: impl Future<Output = ()>) -> anyhow::Result<()> {
+        let failed = tokio::select! {
+            () = stop => false,
+            () = self.world.ended() => {
+                tracing::error!("the world has stopped: stopping the server");
+                true
+            }
+        };
+        match self.shutdown().await {
+            Ok(()) if failed => Err(anyhow::anyhow!("the world stopped by itself")),
+            stopped => stopped,
+        }
+    }
+
     /// Stops in an order that lets players in the world read why (#219): the API and the purge
     /// end, the gate stops accepting and lets go of the lobby, the world lets go of every player
     /// with the shutdown reason and saves them, and their connections get the gate's grace to
@@ -183,12 +201,11 @@ pub async fn start(
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let server = start(&cfg, Arc::new(SystemClock), GateLimits::from_config(&cfg)).await?;
     tracing::info!(gate = %server.login_addr, api = %server.api_addr, "Fenji is running");
-    shutdown().await;
-    server.shutdown().await
+    server.serve_until(signalled()).await
 }
 
 /// Ctrl-C, or SIGTERM where there is one.
-async fn shutdown() {
+async fn signalled() {
     #[cfg(unix)]
     {
         let mut term =
@@ -209,4 +226,119 @@ async fn shutdown() {
         let _ = tokio::signal::ctrl_c().await;
     }
     tracing::info!("shutting down");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future;
+
+    use fenji_store::{NewCharacter, Place};
+    use tokio::net::TcpStream;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::clock::TestClock;
+    use crate::world::{KickReason, Location, Look, Player, Pos, WorldOut};
+
+    const NOW: i64 = 1_800_000_000_000;
+
+    const AT: Location = Location {
+        scene: 5,
+        pos: Pos {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            yaw: 90.0,
+        },
+    };
+
+    async fn next(rx: &mut mpsc::Receiver<WorldOut>) -> WorldOut {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("within 5 s")
+            .expect("the channel is open")
+    }
+
+    #[tokio::test]
+    async fn a_panicking_tick_saves_and_kicks_everyone_then_stops_the_server_with_an_error() {
+        // Ruling R9 (#222): a bug that panics a tick mustn't leave a server that takes logins with
+        // no world behind them. The world saves everyone it can and lets them go with the
+        // shutdown's reason, and the server stops with an error, so `fenji-server run` exits
+        // non-zero and systemd restarts it.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::parse(
+            "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\n\
+             api_bind = \"127.0.0.1:0\"\n",
+            dir.path(),
+        )
+        .unwrap();
+        let clock = Arc::new(TestClock::at(NOW));
+        let server = start(&cfg, clock, GateLimits::default()).await.unwrap();
+        let store = server.accounts().store().clone();
+        let mut players = Vec::new();
+        for (n, name) in [(1u8, "aaa"), (2, "bbb")] {
+            store
+                .create_invite(&[n; 32], None, NOW, None)
+                .await
+                .unwrap();
+            let account = store
+                .redeem_invite(&[n; 32], name, "$phc", NOW)
+                .await
+                .unwrap();
+            let new = NewCharacter {
+                name: format!("{name}c"),
+                vocation: 0,
+                skeleton: 2,
+                appearance: vec![1],
+            };
+            players.push(store.create_character(account, &new, 9, NOW).await.unwrap());
+        }
+        let (login, world) = (server.login_addr, server.world());
+        let served = tokio::spawn(server.serve_until(future::pending()));
+        let mut outs = Vec::new();
+        for (conn, c) in (1..).zip(&players) {
+            let (out, mut rx) = mpsc::channel(8);
+            let look = Look {
+                name: c.name.clone(),
+                vocation: c.vocation,
+                skeleton: c.skeleton,
+                level: c.level,
+                appearance: Arc::from(c.appearance.as_slice()),
+            };
+            let player = Player {
+                conn,
+                account: c.account_id,
+                admin: false,
+                pid: c.pid,
+                look,
+                at: AT,
+            };
+            assert!(world.send(WorldIn::Join { player, out }));
+            assert!(matches!(next(&mut rx).await, WorldOut::LoadScene { .. }));
+            outs.push(rx);
+        }
+        world.send(WorldIn::Panic("a bug in a tick"));
+        for rx in &mut outs {
+            assert_eq!(next(rx).await, WorldOut::Kicked(KickReason::Shutdown));
+        }
+        let stopped = tokio::time::timeout(Duration::from_secs(30), served)
+            .await
+            .expect("the server stops by itself")
+            .unwrap();
+        let e = stopped.expect_err("with an error");
+        assert!(format!("{e:#}").contains("a bug in a tick"), "{e:#}");
+        assert!(TcpStream::connect(login).await.is_err(), "no more logins");
+        let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
+        let saved = Place {
+            scene: 5,
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            yaw: 90.0,
+        };
+        for c in &players {
+            let place = store.character(c.account_id, c.pid).await.unwrap();
+            assert_eq!(place.unwrap().place, Some(saved), "{}", c.name);
+        }
+    }
 }
