@@ -856,6 +856,53 @@ class TwoLogs(unittest.TestCase):
         order += [i for i, chunk, _ in self.stream.read(final=True) for _ in chunk.splitlines()]
         self.assertEqual(order, [0] * 20 + [1])
 
+    def scan_lines(self, final=False):
+        """One poll, scanned as the watch scans it: the lines it released, in order, as (log, line)."""
+        out = []
+        for i, chunk, look in self.stream.read(final=final):
+            trig, notes = self.rules.scan(chunk, look)
+            self.trig += [t[0] for t in trig]
+            self.notes += [n[0] for n in notes]
+            out += [(i, line) for line in chunk.decode().splitlines()]
+        return out
+
+    def test_a_trickling_log_holds_back_the_other_logs_later_lines(self):  # review, Important 1
+        # Log 1 gets 20 lines at once, services.exe's answer among them. Log 2, the caller's, gets
+        # one line a poll from before most of log 1's: fewer lines at first than its Tail holds
+        # back, and those must hold log 1's later lines back too.
+        burst = [f"1.{i:03d}:0020:0024:trace:line {i}" for i in range(20)]
+        burst[10] = SVCCTL_CHANGE.replace("2.000:", "1.010:")
+        caller = [open_service("discord-bridge", pid="0150").replace("2.000:0150:0138", "1.005:0150:0154"),
+                  change_config(stype=32, image=DISCORD.replace("--service", "--other"),
+                                pid="0150").replace("2.000:", "1.006:")]
+        trickle = caller + [f"1.{i:03d}:0150:0154:trace:trickle {i}" for i in range(7, 19)]
+        self.write(1, *burst)
+        order = []
+        for line in trickle:
+            self.write(2, line)
+            order += self.scan_lines()
+        order += self.scan_lines(final=True)
+        self.assertEqual(len(order), len(burst) + len(trickle))
+        stamps = [float(line.split(":")[0]) for _, line in order]
+        self.assertEqual(stamps, sorted(stamps), order)
+        self.assertEqual(self.trig, [])
+        self.assertEqual(self.notes, [USER_MODE_NOTE])
+
+    def test_a_line_left_partial_holds_the_other_log_back_no_longer_than_a_quiet_poll(self):
+        # Log 2's writer stopped in the middle of a line (killed mid-write), so the line stays
+        # partial. Once a poll finds nothing new in log 2, it no longer holds log 1's later lines
+        # back: they are scanned while the run goes on, not only after it.
+        with open(self.paths[1], "ab") as fh:
+            fh.write(b"1.000:0150:0154:trace:whole\n1.002:0150:0154:trace:cut sh")
+        self.write(1, "1.001:0020:0024:trace:a", "1.003:0020:0024:trace:b")
+        got = []
+        for _ in range(4):
+            got += self.scan_lines()
+        self.assertEqual(got, [(1, "1.000:0150:0154:trace:whole"), (0, "1.001:0020:0024:trace:a"),
+                               (0, "1.003:0020:0024:trace:b")])
+        got = self.scan_lines(final=True)
+        self.assertEqual(got, [(1, "1.002:0150:0154:trace:cut sh")])
+
 
 class LogsOnTheCommandLine(unittest.TestCase):
     WATCH = ["watch", "--root", "/r", "--out", "/o", "--sandbox-pid", "1"]

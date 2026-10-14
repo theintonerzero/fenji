@@ -685,6 +685,7 @@ class Tail:
     def __init__(self, path):
         self.path, self.off, self.rest, self.fh = path, 0, b"", None
         self.at_eof = False  # whether the last read reached the end of the log as it was then
+        self.quiet = False  # whether the last read found nothing new
 
     def close(self):
         if self.fh is not None:
@@ -710,12 +711,13 @@ class Tail:
             try:
                 self.fh = open_regular(self.path)
             except FileNotFoundError:
-                self.at_eof = True
+                self.at_eof = self.quiet = True
                 return b"", b""
         self.fh.seek(self.off)
         new = self.fh.read(limit)
         self.off += len(new)
         self.at_eof = len(new) < limit
+        self.quiet = not new
         if self.at_eof and self.replaced():
             # GE-Proton removes and recreates its log for each session (umu's createprefix, then
             # the client), and a log can be truncated: the old file is read to its end, its last
@@ -759,8 +761,8 @@ class Follow:
     def __init__(self, path):
         self.tail = Tail(path)
         self.units = collections.deque()
-        self.held = b""  # the Tail's look-ahead after the last read: read, not yet released
-        self.held_min = None  # the earliest stamp in it
+        self.held = b""  # what the Tail holds back after the last read: read, not yet queued
+        self.held_min = None  # the earliest stamp in it, which holds the other logs' later lines back
         self.shown = -math.inf  # the latest stamp read
         self.last = -math.inf  # the stamp a line without one goes by
         self.eof_poll = -1  # the last poll that read the log to its end
@@ -787,12 +789,17 @@ class Follow:
             self.last = stamp
             self.shown = max(self.shown, stamp)
 
-    def hold(self, look):
-        """Notes the Tail's look-ahead: read, so it counts as shown, and not yet queued, so a line
-        of another log stamped at or after it waits for it."""
+    def hold(self, look, stalled=False):
+        """Notes what the Tail holds back: read, so it counts as shown, and not yet queued, so a line
+        of another log stamped at or after it waits for it. A last line still partial after a poll
+        that found nothing new (`stalled`) waits for a writer that stopped mid-line, and no longer
+        holds the others back."""
         self.held = look
+        lines = look.split(b"\n")
+        if stalled and lines[-1]:
+            lines.pop()
         stamps, prev = [], self.last
-        for line in look.split(b"\n"):
+        for line in lines:
             stamp = stamp_of(line)
             if stamp is not None:
                 prev = stamp
@@ -808,7 +815,9 @@ class LogStream:
     Amendment B). Every Wine process takes its stamps from one clock, the host's time since boot,
     so they compare across logs (Task 13's rehearsal: one exchange stamped alike in both). Each
     poll reads every log once; a line is released once each other log has shown a later stamp, or
-    was read to its end in a later poll, and holds back no earlier line: so at most a poll late. A
+    was read to its end in a later poll, and holds back no earlier line, queued or still in its
+    Tail: so at most a poll late, or a few while another log trickles in. A log's last line, left
+    partial through a poll with nothing new, holds no line back (its writer stopped mid-line). A
     log's lines keep their order, and at equal stamps services.exe's answer goes after the caller's
     line. With one log, every line is released as its Tail releases it."""
 
@@ -850,9 +859,11 @@ class LogStream:
                 f.hold(b"")
                 f.eof_poll = poll
             else:
-                chunk, look = f.tail.read()
+                chunk, _ = f.tail.read()
                 f.ingest(chunk, poll)
-                f.hold(look)
+                # All the Tail holds back, not only the look-ahead it returned: with fewer complete
+                # lines than it keeps, it returns none, and those lines must hold the others back too.
+                f.hold(f.tail.rest, stalled=f.tail.quiet)
                 if f.tail.at_eof:
                     f.eof_poll = poll
         released = []
