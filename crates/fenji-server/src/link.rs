@@ -4,8 +4,9 @@
 //! [`WorldOut`] back to messages, and leaves the world however it ends. Slice 1 (Amendment A) maps
 //! entering: 772, the time syncs, type 3, then the player's own 7 and 8. Slice 2 (Amendment B)
 //! maps seeing: another player announced (6), pulled (5), sent whole (7 and 8) and taken away
-//! (9). Later slices add the moves and chat. Script messages go out through the gate's
-//! `script_out`, which refuses `NEVER_SEND`.
+//! (9). Slice 3 (Amendment C) maps moving: the client's direction command (8) to the world, its
+//! relay to others (13), and a correction or a teleport to the player itself (20). The chat slice
+//! comes later. Script messages go out through the gate's `script_out`, which refuses `NEVER_SEND`.
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,13 +27,16 @@ use tokio::time::{Instant, MissedTickBehavior};
 use crate::gate::{self, Gate};
 use crate::lobby::stored_appearance;
 use crate::world::{
-    ActorId, ConnId, KickReason, Location, Look, Player, Pos, WorldHandle, WorldIn, WorldOut,
+    ActorId, ConnId, KickReason, Location, Look, MoveStep, Player, Pos, WorldHandle, WorldIn,
+    WorldOut,
 };
 
 /// The world's messages a connection may hold unwritten; one more and the world lets go of it
-/// (`KickReason::SlowReader`). One mover can push up to 127 relays a tick, so not fewer.
+/// (`KickReason::SlowReader`). A tick relays at most one move of each mover in view (Amendment C),
+/// so a viewer of 20 movers gets 20 relays a tick, besides what comes into or goes out of view: 256
+/// holds more than ten ticks of that.
 pub(crate) const OUTBOUND: usize = 256;
-// Carry-forward 7: two ticks of one mover's 127 relays must fit, so no later slice may shrink it.
+// No later slice may shrink it: it is the slack for a client that pauses its reads for a moment.
 const _: () = assert!(OUTBOUND >= 256);
 
 /// Whether byte `i` of type 3 describes the player's machine (world.md §3): the Windows version
@@ -129,7 +133,8 @@ pub(crate) async fn play(
                     return kicked(sock, peer, gate, server, account, reason).await;
                 }
                 Some(msg) => {
-                    let Some(bytes) = encode(server, pid, msg)? else { continue };
+                    let now = u64::try_from(gate.clock.now_ms()).unwrap_or(0);
+                    let Some(bytes) = encode(server, pid, now, msg)? else { continue };
                     if !gate::send_or_replaced(sock, &bytes, deadline, replaced).await? {
                         tracing::info!(%peer, account = %account.username, "replaced by a newer login while a write was blocked: closing");
                         return Ok(());
@@ -272,6 +277,27 @@ fn on_message(gate: &Gate, conn: ConnId, ty: u8, body: &[u8]) -> Step {
                 Step::Go
             }
         },
+        // A direction command (world.md 16.3): the position goes to the world as it is, which
+        // checks it, and the rest bounded against the server's clock (16.15). The trace shows the
+        // decoded move, never the body: its last bytes describe the player's machine. The other
+        // move types (6, 7, 9, 10, 11) are ignored below, as is 419 with the script messages
+        // (16.11, 16.14, 16.16).
+        Cts::MoveDir => {
+            let now = u64::try_from(gate.clock.now_ms()).unwrap_or(0);
+            match world::move_dir(body, now) {
+                Ok(m) => {
+                    tracing::trace!(pos = ?m.pos, detail = ?m.detail, dir_yaw = m.dir_yaw, "move (type 8)");
+                    let [x, y, z, yaw] = m.pos;
+                    let step = MoveStep {
+                        pos: Pos { x, y, z, yaw },
+                        detail: Arc::from(m.detail.to_bytes()),
+                    };
+                    gate.world.send(WorldIn::Move { conn, step });
+                }
+                Err(e) => tracing::debug!(ty, len = body.len(), error = %e, "type 8 dropped"),
+            }
+            Step::Go
+        }
         Cts::GateScript | Cts::Script => match Up::decode(ty, body) {
             Ok(Up::Script {
                 id: Value::Int(lobby::CLIENT_EXIT),
@@ -310,11 +336,18 @@ fn masked(body: &[u8], machine: fn(usize) -> bool) -> String {
         .collect()
 }
 
-/// The bytes for one message from the world to the player `own`, or `None` for what isn't sent:
-/// what names `own` itself (world.md 14.11: a 9 naming it would make the client's own player
-/// leave, and a 6 would queue its own id; interest leaves a viewer out of its own view, so this
-/// guards against a bug in the world), and what the later slices map.
-fn encode(server: &mut Server, own: ActorId, msg: WorldOut) -> anyhow::Result<Option<Vec<u8>>> {
+/// The bytes for one message from the world to the player `own`, with the server's clock at
+/// `now_ms`, or `None` for what isn't sent: what names `own` itself (world.md 14.11: a 9 naming it
+/// would make the client's own player leave, and a 6 would queue its own id; 16.8: a 13 would place
+/// the player's own actor; interest leaves a viewer out of its own view, so this guards against a
+/// bug in the world), a move whose detail isn't [`world::MoveDetail::LEN`] bytes, which only a bug
+/// in the world makes, and what the chat slice maps.
+fn encode(
+    server: &mut Server,
+    own: ActorId,
+    now_ms: u64,
+    msg: WorldOut,
+) -> anyhow::Result<Option<Vec<u8>>> {
     match msg {
         WorldOut::LoadScene { pid, at } => {
             let p = at.pos;
@@ -392,13 +425,75 @@ fn encode(server: &mut Server, own: ActorId, msg: WorldOut) -> anyhow::Result<Op
                 &StoredCodec,
             )?))
         }
-        // The moves and chat aren't read yet (Tasks 14 to 16): encoding them would send
-        // unverified bytes, and closing on them would end Task 13's two-client runs.
+        WorldOut::Moved { pid, step } => {
+            if pid == own {
+                tracing::warn!(pid, "a move of the player's own actor: not sent");
+                return Ok(None);
+            }
+            // The detail is bounded again here, against this link's clock: the relay is built from
+            // the position the world checked and these fields alone (world.md 16.15).
+            let Some(detail) = world::MoveDetail::from_bytes(&step.detail, now_ms) else {
+                tracing::warn!(
+                    pid,
+                    len = step.detail.len(),
+                    "a move whose detail doesn't fit: not sent"
+                );
+                return Ok(None);
+            };
+            let p = step.pos;
+            tracing::debug!(
+                pid,
+                x = p.x,
+                y = p.y,
+                z = p.z,
+                yaw = p.yaw,
+                time = detail.time,
+                dir = detail.dir,
+                yaw_offset = detail.yaw_offset,
+                rate = detail.rate,
+                "13: another player moved"
+            );
+            let body = world::move_dir_relay(pid, [p.x, p.y, p.z, p.yaw], &detail);
+            Ok(Some(server.send(
+                Stc::MoveDir.to_u8(),
+                &body,
+                &StoredCodec,
+            )?))
+        }
+        WorldOut::Correct { pos } => Ok(Some(stand_here(server, own, now_ms, pos, "correct")?)),
+        WorldOut::Teleport { pos } => Ok(Some(stand_here(server, own, now_ms, pos, "teleport")?)),
+        // Chat isn't read yet (Task 16): encoding it would send unverified bytes, and closing on
+        // it would end the two-client runs.
         other => {
             tracing::debug!(variant = variant(&other), "not sent yet");
             Ok(None)
         }
     }
+}
+
+/// Type 20 for the player `own` at `pos` (world.md 16.12), as `why` (a correction or a teleport):
+/// T is the server's clock floored to 16 ms, less 160 ms, so the client takes the place into its
+/// state of a moment ago and replays its own commands since.
+fn stand_here(
+    server: &mut Server,
+    own: ActorId,
+    now_ms: u64,
+    pos: Pos,
+    why: &'static str,
+) -> anyhow::Result<Vec<u8>> {
+    let t = world::sync_time(now_ms);
+    tracing::debug!(
+        pid = own,
+        t,
+        x = pos.x,
+        y = pos.y,
+        z = pos.z,
+        yaw = pos.yaw,
+        why,
+        "20: the player stands here"
+    );
+    let body = world::move_sync_svr(own, t, [pos.x, pos.y, pos.z, pos.yaw]);
+    Ok(server.send(Stc::MoveSyncSvr.to_u8(), &body, &StoredCodec)?)
 }
 
 /// Type 7 for player `pid`, then type 8 (world.md 4.1, 6.1, 14.9): one write, so both go out
@@ -525,10 +620,18 @@ mod tests {
         },
     };
 
+    /// The test gate's clock, in Unix ms: a multiple of 16.
+    const NOW: i64 = 1_800_000_000_000;
+
     /// A gate whose world is the test's: what the link sends arrives on the receiver.
     async fn gate(dir: &Path) -> (Gate, mpsc::UnboundedReceiver<WorldIn>) {
+        gate_at(dir, NOW).await
+    }
+
+    /// [`gate`] with its clock at `now_ms`.
+    async fn gate_at(dir: &Path, now_ms: i64) -> (Gate, mpsc::UnboundedReceiver<WorldIn>) {
         let store = Store::open(&dir.join("fenji.db")).await.unwrap();
-        let clock: Arc<dyn Clock> = Arc::new(TestClock::at(1_800_000_000_000));
+        let clock: Arc<dyn Clock> = Arc::new(TestClock::at(now_ms));
         let (world, inbox) = WorldHandle::fake();
         let gate = Gate {
             accounts: Arc::new(Accounts::new(
@@ -1092,8 +1195,17 @@ mod tests {
         F: FnOnce(Linked) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
+        linked_at(NOW, test).await;
+    }
+
+    /// [`linked`] with the gate's clock at `now_ms`.
+    async fn linked_at<F, Fut>(now_ms: i64, test: F)
+    where
+        F: FnOnce(Linked) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
         let dir = tempfile::tempdir().unwrap();
-        let (gate, mut inbox) = gate(dir.path()).await;
+        let (gate, mut inbox) = gate_at(dir.path(), now_ms).await;
         let (mut ours, peer, mut server, theirs, client) = session().await;
         let (_newer, mut replaced) = oneshot::channel();
         let tester = account("tester");
@@ -1291,6 +1403,159 @@ mod tests {
                 (got[0].ty, got[0].body.clone()),
                 (Stc::SyncLeave.to_u8(), 300i64.to_le_bytes().to_vec())
             );
+        })
+        .await;
+    }
+
+    // --- Slice 3 (Amendment C): moving.
+
+    /// The plan's T, 1,791,936,000,000 ms: a multiple of 16.
+    const T: u64 = 1_791_936_000_000;
+
+    /// A 200-byte type 8 as the client builds it (world.md §16, the plan's V11 layout): the time,
+    /// x, y and z, the yaw, the state blocks filled with `fill`, the direction part `part` (the
+    /// direction, the yaw again, the yaw offset, the rate and the pitches), and the 24 bytes after
+    /// it with the facts about the machine 0x5A.
+    fn move_body(time: u64, at: [i32; 3], yaw: i16, fill: u8, part: [u8; 11]) -> Vec<u8> {
+        let mut b = time.to_le_bytes().to_vec();
+        for c in at {
+            b.extend(c.to_le_bytes());
+        }
+        b.extend([0; 5]);
+        b.extend(yaw.to_le_bytes());
+        b.extend([0; 4]);
+        b.extend([fill; 134]);
+        b.extend(part);
+        b.extend([
+            0, 0, 0, 0x80, 0x3e, 0x5a, 0, 0, 0, 0x3f, 0x14, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        b.extend([0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0]);
+        assert_eq!(b.len(), world::MOVE_DIR_LEN);
+        b
+    }
+
+    /// The default start, as the plan's vectors use it.
+    const START_XYZ: [i32; 3] = [2366, -71735, 64854];
+
+    #[tokio::test]
+    async fn a_move_reaches_the_world_bounded() {
+        // The plan's V14 with the clock at T + 100: the position as it is, the rest bounded, and
+        // nothing else of the body (Review Focus 3).
+        linked_at(T as i64 + 100, |mut l| async move {
+            let hostile = [
+                0xc8, 0xe7, 0x03, 0xe8, 0x03, 0xff, 0xff, 0x00, 0x80, 0xff, 0x7f,
+            ];
+            l.send(
+                Cts::MoveDir.to_u8(),
+                &move_body(0, START_XYZ, -15, 0xff, hostile),
+            )
+            .await;
+            let WorldIn::Move { conn, step } = told(&mut l.inbox).await else {
+                panic!("a move")
+            };
+            assert_eq!(conn, 1);
+            assert_eq!(
+                step.pos,
+                Pos {
+                    x: 2366.0,
+                    y: -71735.0,
+                    z: 64854.0,
+                    yaw: -15.0
+                }
+            );
+            // V14's bounded detail: T − 1,904, direction 8, offset −80, rate 340, pitches ±90.
+            let want = [
+                0x90, 0x68, 0xb5, 0x37, 0xa1, 0x01, 0x00, 0x00, 0x08, 0xb0, 0xff, 0x54, 0x01, 0xa6,
+                0xff, 0x5a, 0x00,
+            ];
+            assert_eq!(step.detail[..], want);
+            // A body of another length goes nowhere, and the connection stays: a time sync after
+            // it is answered.
+            l.send(Cts::MoveDir.to_u8(), &[0; 150]).await;
+            let mut sync = 7u32.to_le_bytes().to_vec();
+            sync.push(1);
+            sync.extend([0; 8]);
+            l.send(Cts::TimeSync.to_u8(), &sync).await;
+            let got = l.messages(1).await;
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert_eq!(got[0].ty, Stc::TimeSync.to_u8());
+            assert!(l.inbox.try_recv().is_err(), "the world got something");
+        })
+        .await;
+    }
+
+    /// A detail for the test gate's clock: direction 1, rate 100, at [`NOW`].
+    fn running() -> world::MoveDetail {
+        world::MoveDetail {
+            time: NOW as u64,
+            dir: 1,
+            yaw_offset: 0,
+            rate: 100,
+            pitch: -10,
+            pitch2: 10,
+        }
+    }
+
+    #[tokio::test]
+    async fn moved_sends_type_13() {
+        linked(|mut l| async move {
+            let step = |detail: &[u8]| crate::world::MoveStep {
+                pos: AT,
+                detail: Arc::from(detail),
+            };
+            let bytes = running().to_bytes();
+            // Lin's own move, and a detail a byte short, send nothing; then Mai's move goes out.
+            for msg in [
+                WorldOut::Moved {
+                    pid: 258,
+                    step: step(&bytes),
+                },
+                WorldOut::Moved {
+                    pid: 300,
+                    step: step(&bytes[..16]),
+                },
+                WorldOut::Moved {
+                    pid: 300,
+                    step: step(&bytes),
+                },
+            ] {
+                l.out.send(msg).await.unwrap();
+            }
+            let got = l.messages(1).await;
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert_eq!(got[0].ty, Stc::MoveDir.to_u8());
+            let want = world::move_dir_relay(300, [AT.x, AT.y, AT.z, AT.yaw], &running());
+            assert_eq!(got[0].body, want);
+            assert_eq!(got[0].body[..8], 300i64.to_le_bytes());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn correct_and_teleport_send_type_20() {
+        linked(|mut l| async move {
+            let there = Pos {
+                x: -1.5,
+                y: 2.25,
+                z: 30.0,
+                yaw: -45.0,
+            };
+            l.out.send(WorldOut::Correct { pos: AT }).await.unwrap();
+            l.out.send(WorldOut::Teleport { pos: there }).await.unwrap();
+            let got = l.messages(2).await;
+            assert_eq!(got.len(), 2, "{got:?}");
+            let t = world::sync_time(NOW as u64);
+            for (m, pos) in got.iter().zip([AT, there]) {
+                assert_eq!(m.ty, Stc::MoveSyncSvr.to_u8());
+                assert_eq!(
+                    m.body,
+                    world::move_sync_svr(258, t, [pos.x, pos.y, pos.z, pos.yaw])
+                );
+                // Its own pid, T, and the mask for the position and the yaw.
+                assert_eq!(m.body[..8], 258i64.to_le_bytes());
+                assert_eq!(m.body[8..16], (NOW as u64 - 160).to_le_bytes());
+                assert_eq!(m.body[16..18], [0xc0, 0x00]);
+            }
         })
         .await;
     }
