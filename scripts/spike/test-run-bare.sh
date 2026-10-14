@@ -421,6 +421,69 @@ says 1 "Steam started" "Steam starting stops an otherwise clean run" -- bare_ver
 says 3 "Steam also started" "a gate event still reports that Steam started" -- bare_verdict 3 137 1 "$TESTROOT/out"
 rm -f -- "$TESTROOT/out/steam-started"
 
+
+# --- two clients: arguments and command lines (Amendment B)
+echo "a second long password" > "$TESTROOT/password2"
+TWO=(--clients 2 --username2 second --password-file2 "$TESTROOT/password2" --display2 97)
+says 2 "--clients takes 1 or 2" "--clients takes 1 or 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 3
+says 2 "needs --username2" "two clients need client 2's account" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --password-file2 "$TESTROOT/password2" --display2 97
+says 2 "needs --password-file2" "two clients need client 2's password" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --display2 97
+says 2 "another account" "client 2's account is another one" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 tester --password-file2 "$TESTROOT/password2" --display2 97
+says 2 "--password-file2" "an unreadable second password file is refused" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/none" --display2 97
+says 2 "needs --display2" "a nested two-client run needs client 2's display" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/password2"
+says 2 "another display" "client 2's display is another one" -- \
+  cmd_bare_run t "${GOOD[@]}" --display 97 "${TWO[@]}"
+says 1 "0 to 999" "--display2 takes a display number" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/password2" --display2 097
+says 2 "both clients" "--desktop is both clients' display: no --display2" -- \
+  with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --desktop "${TWO[@]}"
+says 2 "at least 2" "--second-after takes at least 2 s" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" "${TWO[@]}" --second-after 1
+says 2 "--timeout2 takes" "--timeout2 takes whole seconds" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" "${TWO[@]}" --timeout2 x
+says 2 "needs --clients 2" "client 2's account needs --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --username2 second
+says 2 "needs --clients 2" "--display2 needs --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --display2 97
+says 2 "need --clients 2" "2@ inputs need --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --key 2@5:Return
+says 2 "--password-file2 is under $TESTROOT/ns" "a second password file the namespace would hide is refused" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/ns/password" --display2 97
+mkdir -p "$TESTROOT/rt3"
+mapfile -t got < <(XDG_RUNTIME_DIR=$TESTROOT/rt3 HOME=$TESTROOT/nohome namespace_cmd 99 "" 97)
+want=(bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$TESTROOT/rt3" --tmpfs /tmp
+  --bind /tmp/.X11-unix/X99 /tmp/.X11-unix/X99 --bind /tmp/.X11-unix/X97 /tmp/.X11-unix/X97 --tmpfs /dev/shm
+  --unshare-net --unshare-pid --die-with-parent --seccomp 7 --)
+if [ "${got[*]}" = "${want[*]}" ]; then ok "a two-client namespace binds both displays' sockets"; else bad "two-client namespace: ${got[*]}"; fi
+mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt3 HOME=$TESTROOT/nohome namespace_cmd 99 "" 97)
+mapfile -t got < <(clients=2 watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242 "${ns[@]}")
+want=(python3 -I "$WATCHDOG" watch --root "$WORK" --prefix "$WORK/compat" --out "$TESTROOT/out" --sandbox-pid 4242
+  --log "$TESTROOT/io/1/steam-1418100.log" --log "$TESTROOT/io/2/steam-1418100.log" --go "$TESTROOT/io/.go"
+  --tmpfs /run --tmpfs /tmp --bind /tmp/.X11-unix/X99 --bind /tmp/.X11-unix/X97 --tmpfs /dev/shm)
+if [ "${got[*]}" = "${want[*]}" ]; then ok "a two-client watchdog gets each client's log, in order"; else bad "two-client watch: ${got[*]}"; fi
+
+# The backstop's count: the wineserver processes below the namespace's bwrap, and nothing else.
+WSD=$TESTROOT/wsd
+mkdir -p "$WSD"
+ln -s "$(command -v sleep)" "$WSD/wineserver"
+(
+  "$WSD/wineserver" 30 &
+  "$WSD/wineserver" 30 &
+  wait
+) &
+tree=$!
+"$WSD/wineserver" 30 &
+alone=$!
+for _ in $(seq 50); do [ "$(namespace_wineservers "$tree")" = 2 ] && break; sleep 0.1; done
+if [ "$(namespace_wineservers "$tree")" = 2 ] && [ "$(namespace_wineservers "$alone")" = 1 ]; then
+  ok "the backstop counts the wineservers below the namespace, and none outside it"
+else
+  bad "the wineserver count: $(namespace_wineservers "$tree") below the tree, $(namespace_wineservers "$alone") alone"
+fi
+pkill -KILL -P "$tree" 2> /dev/null
+kill -KILL "$tree" "$alone" 2> /dev/null
+{ wait "$tree" "$alone"; } 2> /dev/null
+
 # --- the prefix: primed through Proton's launcher, so Proton's own service is in the watchdog's baseline
 mkdir -p "$TESTROOT/proton/files/lib/wine/discord-rpc-bridge" "$TESTROOT/proton-nobridge" "$WORK/compat/drive_c/windows"
 touch "$TESTROOT/proton/files/lib/wine/discord-rpc-bridge/bridge.exe"
@@ -497,10 +560,13 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   F=$TESTROOT/flow
   mkdir -p "$F/bin" "$F/proton/files/bin" "$F/proton/files/lib/wine/discord-rpc-bridge" "$F/release" \
     "$F/pinned/bin64" "$F/home" "$F/log" "$F/rt"
-  touch "$F/pinned/bin64/gujianol.exe" "$F/proton/files/lib/wine/discord-rpc-bridge/bridge.exe" "$F/xauth"
+  cp -- "$(command -v sleep)" "$F/pinned/bin64/gujianol.exe"
+  touch "$F/proton/files/lib/wine/discord-rpc-bridge/bridge.exe" "$F/xauth"
   echo "1789520217 GE-Proton-flow" > "$F/proton/version"
   printf '#!/bin/sh\nexit 0\n' > "$F/proton/proton"
-  cp -- "$F/proton/proton" "$F/proton/files/bin/wineserver"
+  # wineserver -k: recorded.
+  # shellcheck disable=SC2016 # the stand-in expands its own variables
+  printf '#!/bin/sh\n[ -z "${FAKE_LOG:-}" ] || echo "wineserver $*" >> "$FAKE_LOG/wineserver"\n' > "$F/proton/files/bin/wineserver"
   cat > "$F/bin/bwrap" <<'EOF'
 #!/usr/bin/env bash
 # Records its arguments, then runs what follows --.
@@ -568,7 +634,25 @@ EOF
 # removes it once its flow is over, and opening a path that is gone would create a regular file
 # there, where the next flow writes its mark.
 printf '%s\n' "$@" > "$FAKE_LOG/launch"
+echo "$* | PROTON_LOG_DIR=${PROTON_LOG_DIR:-} DISPLAY=${DISPLAY:-}" >> "$FAKE_LOG/launches"
 echo "starting the client" >&2
+# FAKE_CLIENT: the copy's gujianol.exe (sleep) in its own session, outliving this launcher as Wine's
+# processes may. FAKE_WINESERVER: a wineserver of this session's own, as a second umu-run session
+# would start one (Amendment B's backstop).
+client=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = --client ]; then client=$a; fi
+  prev=$a
+done
+if [ -n "${FAKE_CLIENT:-}" ]; then
+  setsid "$client/bin64/gujianol.exe" 60 < /dev/null > /dev/null 2>&1 &
+  echo "$!" >> "$FAKE_LOG/fake-pids"
+fi
+if [ -n "${FAKE_WINESERVER:-}" ]; then
+  "$FAKE_WS" 60 < /dev/null > /dev/null 2>&1 &
+  echo "$!" >> "$FAKE_LOG/fake-pids"
+fi
 if [ -n "${FAKE_PLANT:-}" ]; then ln -s -- "$FAKE_PLANT_TO" "$FAKE_PLANT"; fi
 if [ -n "${FAKE_FIFO:-}" ]; then
   mkfifo -- "$FAKE_FIFO"
@@ -608,6 +692,11 @@ while alive(spid) and time.monotonic() < deadline:
     time.sleep(0.05)
 sys.exit(int(os.environ.get("FAKE_WATCH_RC", "0")))
 EOF
+  mkdir -p "$F/here" "$F/ws"
+  for tool in xclick xkey; do
+    printf 'import os, sys, time\nwith open(os.path.join(os.environ["FAKE_LOG"], "inputs"), "a") as f:\n    f.write("%s " + " ".join(sys.argv[1:]) + "\\n")\n' "$tool" > "$F/here/$tool.py"
+  done
+  ln -s "$(command -v sleep)" "$F/ws/wineserver"
   chmod +x "$F/bin/"* "$F/proton/proton" "$F/proton/files/bin/wineserver" "$F/umu-run" "$F/release/"*
   fake_pgrep ""
   echo "a long password" > "$F/password"
@@ -631,7 +720,8 @@ print(*(x.getsockname()[1] for x in s))')
     rc=0
     t0=$(date +%s)
     (
-      export FAKE_LOG=$F/log/$name FAKE_REAL_SPIKE=$HERE
+      export FAKE_LOG=$F/log/$name FAKE_REAL_SPIKE=$HERE FAKE_WS=$F/ws/wineserver
+      HERE=$F/here
       WORK=$dir PROTON=$F/proton UMU=$F/umu-run STUBBIN=$F/release WATCHDOG=$F/watchdog.py
       PINNED_COPY=$F/pinned HOME=$F/home PATH="$F/bin:$TESTROOT/bin:$PATH" XDG_RUNTIME_DIR=$F/rt
       hash -r
@@ -811,6 +901,72 @@ print(*(x.getsockname()[1] for x in s))')
   else
     bad "the watchdog first: rc $rc after $secs s, mark '$(cat "$F/work/compat/fenji-gate-event" 2> /dev/null)': $out"
   fi
+
+  # --- two clients (M4 world plan, Amendment B; Ruling R14: tested here, not run live yet). Two
+  # reflink copies, two fenji-launch on the one prefix with their own Proton logs and displays, both
+  # logs to the watchdog, client 2 ended by its own pid if it outlives its launcher, and the backstop
+  # that stops a run whose namespace holds a second wineserver.
+  echo "a second long password" > "$F/password2"
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  TWOARGS=(--clients 2 --username2 second --password-file2 "$F/password2" --display2 77 --second-after 2)
+  flow run-two "$F/work" with_env FAKE_LAUNCH_SECS=1 with_env FAKE_CLIENT=1 cmd_bare_run two1 "${RUNARGS[@]}" \
+    --display 78 "${TWOARGS[@]}" --timeout 25 --timeout2 3 --key 1:space --key 2@3:Return
+  BIO=$F/work/io/two1 BOUT=$F/work/out/two1 BRUN=$F/work/runs/two1
+  if [ "$rc" = 0 ] && [[ $out == *"run two1 done:"* ]] && [ -f "$BRUN/client/bin64/gujianol.exe" ] &&
+    [ -f "$BRUN/client2/bin64/gujianol.exe" ]; then
+    ok "a two-client bare run goes end to end, from two copies of the pinned client"
+  else
+    bad "a two-client bare run: rc $rc: $out"
+  fi
+  l1=$(sed -n 1p "$F/log/run-two/launches") l2=$(sed -n 2p "$F/log/run-two/launches")
+  if [[ $l1 == *"--username tester --password-file $F/password --client $BRUN/client --prefix $F/work/compat "*"| PROTON_LOG_DIR=$BIO/1 DISPLAY=:78" ]] &&
+    [[ $l2 == *"--username second --password-file $F/password2 --client $BRUN/client2 --prefix $F/work/compat "*"| PROTON_LOG_DIR=$BIO/2 DISPLAY=:77" ]]; then
+    ok "each client is its own fenji-launch on the one prefix, with its own account, copy, Proton log and display"
+  else
+    bad "the launches: [$l1] [$l2]"
+  fi
+  case " $(grep '^watch ' "$F/log/run-two/watchdog") " in
+    *" --log $BIO/1/steam-1418100.log --log $BIO/2/steam-1418100.log "*" --bind /tmp/.X11-unix/X77 "*)
+      ok "the watchdog gets both logs in order, and leaves client 2's display socket out of its tmpfs scan" ;;
+    *) bad "two clients' watch: $(grep '^watch ' "$F/log/run-two/watchdog")" ;;
+  esac
+  case "$(joined "$F/log/run-two/bwrap")" in
+    *" --bind /tmp/.X11-unix/X78 /tmp/.X11-unix/X78 --bind /tmp/.X11-unix/X77 /tmp/.X11-unix/X77 "*)
+      ok "the namespace has both displays' sockets" ;;
+    *) bad "two clients' namespace: $(joined "$F/log/run-two/bwrap")" ;;
+  esac
+  client2=$(sed -n 2p "$F/log/run-two/fake-pids")
+  if [ "$(sed -n 2p "$BOUT/io/2/ended-by-pid" 2> /dev/null)" = "$client2" ] && [ -f "$BOUT/io/exit-code" ] &&
+    [ -f "$BOUT/io/exit-code-2" ] && [ "$(grep -c . "$F/log/run-two/wineserver")" = 1 ]; then
+    ok "client 2, outliving its fenji-launch, is ended by its own pid; the wineserver stops once, after both"
+  else
+    bad "client 2's end: '$(cat "$BOUT/io/2/ended-by-pid" 2> /dev/null)' vs $client2; wineserver $(cat "$F/log/run-two/wineserver" 2> /dev/null)"
+  fi
+  if grep -qx "xkey --display :78 --key=space" "$F/log/run-two/inputs" && grep -qx "xkey --display :77 --key=Return" "$F/log/run-two/inputs"; then
+    ok "each client's key presses go to its own display"
+  else
+    bad "two clients' inputs: $(cat "$F/log/run-two/inputs" 2> /dev/null)"
+  fi
+  while read -r p; do kill "$p" 2> /dev/null; done < "$F/log/run-two/fake-pids"
+
+  # The backstop: a second wineserver in the namespace once client 2 has started stops the run at
+  # once (exit 1), and the prefix is marked, so setup and run refuse it until it is rebuilt.
+  flow run-ws "$F/work" with_env FAKE_LAUNCH_SECS=20 with_env FAKE_WINESERVER=1 cmd_bare_run ws1 "${RUNARGS[@]}" \
+    --display 78 "${TWOARGS[@]}" --timeout 30 --timeout2 30
+  if [ "$rc" = 1 ] && [ "$secs" -lt 15 ] && [[ $out == *"a second wineserver for the prefix"* ]] &&
+    grep -q '^run ws1: a second wineserver' "$F/work/compat/fenji-gate-event" 2> /dev/null; then
+    ok "a second wineserver in the namespace stops the run at once, exit 1, and marks the prefix"
+  else
+    bad "a second wineserver: rc $rc after $secs s, mark '$(cat "$F/work/compat/fenji-gate-event" 2> /dev/null)': $out"
+  fi
+  while read -r p; do kill "$p" 2> /dev/null; done < "$F/log/run-ws/fake-pids"
+  flow run-after-ws "$F/work" cmd_bare_run t4 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 1 ] && [[ $out == *"rebuild it before anything runs in it again"* ]]; then
+    ok "after a second wineserver, the prefix is refused until it is rebuilt"
+  else
+    bad "after a second wineserver: rc $rc: $out"
+  fi
+  rm -f -- "$F/work/compat/fenji-gate-event"
 else
   echo "skip the end-to-end flows: they need Linux on x86_64"
 fi

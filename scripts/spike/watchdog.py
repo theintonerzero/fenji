@@ -10,11 +10,15 @@ beyond stat() and a SHA-256 for identification.
   watchdog.py baseline --root S --out OUT [--prefix PFX]
       Snapshot of every *.sys under S and of the service keys in PFX/system.reg (default: the
       prefix at S/compat/pfx) -> OUT/watchdog-baseline.json.
-  watchdog.py watch --root S --out OUT --sandbox-pid PID --log FILE [--prefix PFX] [--interval 0.5]
+  watchdog.py watch --root S --out OUT --sandbox-pid PID --log FILE [--log FILE] [--prefix PFX]
+      [--interval 0.5]
       PID is the isolated-run.sh wrapper started in the background (it execs bwrap). Once the
       sandbox's PID namespace exists the watchdog arms itself and creates OUT/.go, which the command
       inside waits for before it starts the client. Exit 0: the sandbox ended, no sign seen.
       Exit 3: gate event. Exit 4: the watchdog itself failed (the sandbox is killed then too).
+      --log names each client's Wine log, once per client, in the order the clients start (M4 world
+      plan, Amendment B: the runner starts them in that order, at least 2 s apart); two naming one
+      file are refused.
   watchdog.py watch ... [--go FILE]
       FILE is the start signal (default OUT/.go); it is created exclusively and never through a link.
   watchdog.py watch ... [--tmpfs DIR]... [--bind PATH]...
@@ -28,14 +32,20 @@ beyond stat() and a SHA-256 for identification.
   watchdog.py scanlog --root S --out OUT FILE...
       Runs only the log rules over finished logs (to test them against r1-r4), prints the hits.
 
+Clients: every gujianol.exe in the namespace is a client, named at first sight or later (#142);
+each poll reads again the name of every live process not yet known as one. Clients are numbered
+by their start, and client n's log is the n-th --log. A client beyond the logs given has no log of
+its own: exit 4.
+
 Signs (any one triggers):
   S1 a *.sys under S that isn't in the baseline, or a baseline one whose identity changed: a regular
      file's size, mtime or inode, or a symlink's target or the target file's size, mtime or inode
      (sys_identity; a link merely re-created by Proton's prefix re-sync is not a change); any *.sys
      in the sandbox's own tmpfs mounts (--tmpfs), seen through /proc/<pid>/root of a sandbox
      process, bar the paths bound into them (--bind).
-  S2 a winedevice.exe process in the sandbox's PID namespace that started after the client
-     (gujianol.exe) started. Those started before it host Wine's own drivers (the baseline).
+  S2 a winedevice.exe process in the sandbox's PID namespace that started after the earliest
+     client (gujianol.exe) started, whichever client's start brought it. Those started before it
+     host Wine's own drivers (the baseline).
   S3 in the Wine log, read incrementally: a .sys module (any letter case) loaded native, not as a
      Wine builtin; a native module loaded from a drivers directory or into a winedevice.exe process
      (Wine's builtin drivers and their imports are all builtin); a resource lookup of the named type
@@ -50,12 +60,24 @@ Signs (any one triggers):
      none the log names (sechost's line has the service's handle, not its name); services.exe's
      svcctl_ChangeServiceConfigW, which logs only its name, with no ChangeServiceConfigW before it
      (a caller the log doesn't trace); the strings ProcessProtect, AGTDriver or AurogonGameTrust.
+     The logs are scanned as one stream with one rule state (Amendment B): the prefix's one
+     wineserver has processes writing to each log (services.exe, which client 1's session starts,
+     answers client 2's calls in log 1), so the pending changes, the services each Wine pid opened,
+     services.exe's and winedevice.exe's pids and the earliest client creation in any log are
+     shared. Lines are scanned in the order of Wine's timestamps, which every Wine process takes
+     from one clock: a line waits until each other log has shown a later one, or was read to its
+     end in a later poll, and holds back nothing of its own that is earlier. A log's lines keep their
+     order, a line without a stamp goes with the line before it, and at equal stamps services.exe's
+     svcctl line goes after the caller's, which it answers. A split LoadDriver message is completed
+     from its own log only.
   S4 the prefix's system.reg (--prefix; re-read when it changes; Wine saves it periodically and at
      exit): a new service key of a driver type (kernel or file system) or with a driver image, or a
      baseline service whose type or image path changed, or a system.reg that is no longer a regular
      file.
-  Fail safe (exit 4, the sandbox killed): the client has run 20 s, the log scan has caught up, and
-  the log still hasn't shown the client's creation, so the LoadDriver sign would be blind.
+  Fail safe (exit 4, the sandbox killed): client n was found 20 s ago, whether or not it still
+  runs, log n has been read to its end, and log n still hasn't shown a client's creation, so the
+  LoadDriver sign would be blind for the lines only that client's log carries. Each log answers
+  for its own client: one log's creation never vouches for another's (Amendment B).
   Notes only (no trigger): a builtin .sys outside the baseline set; a new service of another type;
   CreateService re-registering a baseline service with its baseline image (Proton's discord-bridge,
   at every start); ChangeServiceConfigW that keeps the type and image, or that changes them in a
@@ -66,10 +88,13 @@ Signs (any one triggers):
   Everything else, including a LoadDriver with no readable name after the client's creation,
   triggers.
 """
+import collections
 import contextlib
 import argparse
 import hashlib
+import itertools
 import json
+import math
 import os
 import re
 import signal
@@ -97,8 +122,17 @@ R_SERVICES_PID = re.compile(rb'NtCreateUserProcess L"[^"\n]*\\services\.exe" pid
 R_WINEDEVICE_PID = re.compile(rb'NtCreateUserProcess L"[^"\n]*\\winedevice\.exe" pid ([0-9a-f]+) tid', re.I)
 R_CREATEKEY = re.compile(rb':trace:reg:NtCreateKey \(0x[0-9a-f]+,L"([^"\\\n]+)"')  # needs +reg
 R_HEADER = re.compile(rb"\d+\.\d+:[0-9a-f]+:[0-9a-f]+:")  # "<time>:<pid>:<tid>:" (+timestamp,+pid,+tid)
-# The client's creation (+process): steam.exe's CreateProcessInternalW, or NtCreateUserProcess.
-R_CLIENT_CREATE = re.compile(rb"(?:CreateProcessInternalW|NtCreateUserProcess) [^\n]*gujianol\.exe", re.I)
+# services.exe's side of a service call (svcctl_*), which answers a caller's line in the caller's log.
+R_ANSWER = re.compile(rb"trace:service:svcctl_")
+# The client's creation (+process), by the image actually created: NtCreateUserProcess's first
+# string, CreateProcessInternalW's application name, or else the first token of its command line,
+# quoted or not. A line that only names the client further on, such as session 2's shim starting
+# `explorer.exe /desktop=… <client>` (Ruling R17), creates something else.
+R_CLIENT_CREATE = re.compile(
+    rb'NtCreateUserProcess L"(?:(?:[^"\\\n]|\\.)*\\\\)?gujianol\.exe"'
+    rb'|CreateProcessInternalW app (?:L"(?:(?:[^"\\\n]|\\.)*\\\\)?gujianol\.exe"'
+    rb'|\(null\) cmdline L"(?:\\"(?:(?:[^"\\\n]|\\\\)*\\\\)?gujianol\.exe\\"'
+    rb'|(?:(?:[^"\\\s]|\\\\)*\\\\)?gujianol\.exe[\s"]))', re.I)
 # +service (r7 on, replacing +reg): sechost's "CreateServiceW <scm> L"name" ..." and services.exe's
 # "svcctl_CreateServiceW (L"name", ...)". The first quoted string on the line is the service name.
 R_CREATESERVICE = re.compile(rb'CreateService\w*[^"\n]*"([^"\n]*)"|CreateService\w*[^\n]*')
@@ -415,23 +449,22 @@ def renamed_to(seen, name, info_of):
     return found
 
 
-def track_client(seen, client_start, info_of):
-    """One poll's late naming and rule S2, over `seen` (pid to record, as check_procs keeps it).
-    While no client is known (`client_start` is None), every live process's name is read again, and
-    the earliest-started one now named the client is returned as (start, pid). Once a client is
-    known, the names of the processes started after it are read again too, and S2's hits are the
-    winedevice.exe among them, running or gone: a client found late must not miss a short-lived
-    one. Returns (the client found this poll or None, [(pid, record)])."""
-    found = None
-    if client_start is None:
-        named = renamed_to(seen, CLIENT, info_of)
-        if named:
-            p, info = min(named, key=lambda pi: pi[1]["start"])
-            found = (info["start"], p)
-            client_start = info["start"]
+def track_clients(seen, clients, info_of):
+    """One poll's late naming and rule S2, over `seen` (pid to record, as check_procs keeps it) and
+    `clients` (pid to start, the clients known so far). Every live process not yet known as a
+    client has its name read again, at every poll (#142; Amendment B: a second client may be named
+    late too), and the ones now named the client are returned as (start, pid), in start order. The
+    names of the processes started after the earliest client, known or found now, are read again
+    too, and S2's hits are the winedevice.exe among them, running or gone: a client found late must
+    not miss a short-lived one, and whichever client's start brought one, it is a sign. Returns
+    ([(start, pid)], [(pid, record)])."""
+    others = {p: i for p, i in seen.items() if p not in clients}
+    found = sorted((info["start"], p) for p, info in renamed_to(others, CLIENT, info_of))
+    starts = list(clients.values()) + [start for start, _ in found]
     hits = []
-    if client_start is not None:
-        later = {p: i for p, i in seen.items() if i["start"] > client_start}
+    if starts:
+        earliest = min(starts)
+        later = {p: i for p, i in seen.items() if i["start"] > earliest}
         renamed_to(later, WINEDEVICE, info_of)
         hits = [(p, i) for p, i in later.items() if is_named(i, WINEDEVICE)]
     return found, hits
@@ -659,6 +692,7 @@ class Tail:
     def __init__(self, path):
         self.path, self.off, self.rest, self.fh = path, 0, b"", None
         self.at_eof = False  # whether the last read reached the end of the log as it was then
+        self.quiet = False  # whether the last read found nothing new
 
     def close(self):
         if self.fh is not None:
@@ -684,12 +718,13 @@ class Tail:
             try:
                 self.fh = open_regular(self.path)
             except FileNotFoundError:
-                self.at_eof = True
+                self.at_eof = self.quiet = True
                 return b"", b""
         self.fh.seek(self.off)
         new = self.fh.read(limit)
         self.off += len(new)
         self.at_eof = len(new) < limit
+        self.quiet = not new
         if self.at_eof and self.replaced():
             # GE-Proton removes and recreates its log for each session (umu's createprefix, then
             # the client), and a log can be truncated: the old file is read to its end, its last
@@ -718,6 +753,168 @@ class Tail:
             return b"", b""
         self.rest = data[cut + 1:]
         return data[:cut + 1], self.rest
+
+
+def stamp_of(line):
+    """The Wine timestamp that begins `line` (+timestamp), or None."""
+    return float(line[:line.index(b":")]) if R_HEADER.match(line) else None
+
+
+class Follow:
+    """One client's log in a LogStream: its Tail; the lines read and not yet scanned, each as
+    [the stamp it goes by, the poll that read it, whether it is services.exe's answer, its text];
+    and what the log has shown."""
+
+    def __init__(self, path):
+        self.tail = Tail(path)
+        self.units = collections.deque()
+        self.held = b""  # what the Tail holds back after the last read: read, not yet queued
+        self.held_min = None  # the earliest stamp in it, which holds the other logs' later lines back
+        self.shown = -math.inf  # the latest stamp read
+        self.last = -math.inf  # the stamp a line without one goes by
+        self.eof_poll = -1  # the last poll that read the log to its end
+        self.created = None  # the stamp of the first client creation the log showed
+
+    def ingest(self, chunk, poll):
+        """Queues the lines of `chunk`: a line without a stamp goes with the line before it."""
+        lines = chunk.split(b"\n")
+        if not lines[-1]:
+            lines.pop()
+        for line in lines:
+            text = line + b"\n"
+            stamp = stamp_of(line)
+            if stamp is None:
+                if self.units:
+                    self.units[-1][3] += text
+                    continue
+                stamp, answer = self.last, False
+            else:
+                answer = bool(R_ANSWER.search(line))
+                if self.created is None and R_CLIENT_CREATE.search(line):
+                    self.created = stamp
+            self.units.append([stamp, poll, answer, text])
+            self.last = stamp
+            self.shown = max(self.shown, stamp)
+
+    def hold(self, look, stalled=False):
+        """Notes what the Tail holds back: read, so it counts as shown, and not yet queued, so a line
+        of another log stamped at or after it waits for it. A last line still partial after a poll
+        that found nothing new (`stalled`) waits for a writer that stopped mid-line, and no longer
+        holds the others back."""
+        self.held = look
+        lines = look.split(b"\n")
+        if stalled and lines[-1]:
+            lines.pop()
+        stamps, prev = [], self.last
+        for line in lines:
+            stamp = stamp_of(line)
+            if stamp is not None:
+                prev = stamp
+            if line:
+                stamps.append(prev)
+        self.held_min = min(stamps) if stamps else None
+        if stamps:
+            self.shown = max(self.shown, max(stamps))
+
+
+class LogStream:
+    """The clients' Wine logs read as one stream, in the order of Wine's timestamps (M4 world plan,
+    Amendment B). Every Wine process takes its stamps from one clock, the host's time since boot,
+    so they compare across logs (Task 13's rehearsal: one exchange stamped alike in both). Each
+    poll reads every log once; a line is released once each other log has shown a later stamp, or
+    was read to its end in a later poll, and holds back no earlier line, queued or still in its
+    Tail: so at most a poll late, or a few while another log trickles in. A log's last line, left
+    partial through a poll with nothing new, holds no line back (its writer stopped mid-line). A
+    log's lines keep their order, and at equal stamps services.exe's answer goes after the caller's
+    line. With one log, every line is released as its Tail releases it."""
+
+    LOOK = 8192  # look-ahead for a run, as LogRules.scan uses it
+
+    def __init__(self, paths):
+        self.logs = [Follow(p) for p in paths]
+        self.polls = 0
+
+    def close(self):
+        for f in self.logs:
+            f.tail.close()
+
+    def ready(self, i, unit):
+        """Whether `unit`, at the head of log i's queue, may be scanned now."""
+        stamp, poll = unit[0], unit[1]
+        for j, f in enumerate(self.logs):
+            if j == i:
+                continue
+            if f.held_min is not None and f.held_min <= stamp:
+                return False
+            if not (f.shown > stamp or f.eof_poll > poll):
+                return False
+        return True
+
+    def read(self, final=False):
+        """One poll: reads every log, then returns the lines to scan now as runs of one log's lines,
+        in time order: [(log index, chunk, look)], where look is what follows the run in its own log
+        (look-ahead only). With final=True, everything is read and released."""
+        self.polls += 1
+        poll = self.polls
+        for f in self.logs:
+            if final:
+                while True:
+                    chunk, _ = f.tail.read(final=True)
+                    if not chunk:
+                        break
+                    f.ingest(chunk, poll)
+                f.hold(b"")
+                f.eof_poll = poll
+            else:
+                chunk, _ = f.tail.read()
+                f.ingest(chunk, poll)
+                # All the Tail holds back, not only the look-ahead it returned: with fewer complete
+                # lines than it keeps, it returns none, and those lines must hold the others back too.
+                f.hold(f.tail.rest, stalled=f.tail.quiet)
+                if f.tail.at_eof:
+                    f.eof_poll = poll
+        released = []
+        while True:
+            best = None
+            for i, f in enumerate(self.logs):
+                if f.units:
+                    u = f.units[0]
+                    key = (u[0], u[2], i)
+                    if best is None or key < best[0]:
+                        best = (key, i)
+            if best is None:
+                break
+            i = best[1]
+            if not final and not self.ready(i, self.logs[i].units[0]):
+                break
+            released.append((i, self.logs[i].units.popleft()))
+        return self.runs(released)
+
+    def runs(self, released):
+        runs = []
+        for i, u in released:
+            if runs and runs[-1][0] == i:
+                runs[-1][1].append(u[3])
+            else:
+                runs.append((i, [u[3]]))
+        texts = {}
+        for i, u in released:
+            texts.setdefault(i, []).append(u[3])
+        pos = dict.fromkeys(texts, 0)
+        out = []
+        for i, chunk in runs:
+            pos[i] += len(chunk)
+            ahead = texts[i]
+            following = (ahead[k] for k in range(pos[i], len(ahead)))
+            look, size = [], 0
+            queued = (u[3] for u in self.logs[i].units)
+            for text in itertools.chain(following, queued, (self.logs[i].held,)):
+                if size >= self.LOOK:
+                    break
+                look.append(text)
+                size += len(text)
+            out.append((i, b"".join(chunk), b"".join(look)))
+        return out
 
 
 # --- modes -------------------------------------------------------------------------------------
@@ -764,11 +961,11 @@ def cmd_scanlog(a):
 
 
 def cmd_watch(a):
-    with Log(os.path.join(a.out, "watchdog.log")) as log, contextlib.closing(Tail(a.log)) as tail:
-        return watch(a, log, tail)
+    with Log(os.path.join(a.out, "watchdog.log")) as log, contextlib.closing(LogStream(a.log)) as stream:
+        return watch(a, log, stream)
 
 
-def watch(a, log, tail):
+def watch(a, log, stream):
     base = load_baseline(a.out)
     base_sys = base["sys"]
     rules = baseline_rules(base)
@@ -777,14 +974,12 @@ def watch(a, log, tail):
     ns = None
     init = None
     seen = {}
-    client_start = None
-    client_pid = None
-    client_seen = None  # monotonic time the client was first seen running
+    clients = {}  # pid -> {"start": clock ticks, "found": monotonic time first seen}; never removed
     notes_seen = set()
     polls = 0
     tmpfs_warned = False
     subs, shallow = (a.tmpfs, ()) if a.tmpfs else (TMPFS_SUBS, TMPFS_SHALLOW)
-    log(f"watch start: sandbox pid {spid}, root {a.root}, prefix {a.prefix}, log {a.log}, "
+    log(f"watch start: sandbox pid {spid}, root {a.root}, prefix {a.prefix}, logs {a.log}, "
         f"interval {a.interval}s, baseline {len(base_sys)} .sys / {len(base['services'])} services, "
         f"tmpfs scan of {' '.join(subs)}{' and / (its own entries)' if shallow else ''}")
 
@@ -833,8 +1028,17 @@ def watch(a, log, tail):
                 log(f"registry note: {k}: {name} {json.dumps(detail)}")
         return trig
 
+    def by_start():
+        return sorted(clients.items(), key=lambda pc: pc[1]["start"])
+
+    def new_client(p, start, how):
+        """Client `p` is found: numbered by its start, tied to that log, counted after it ends. A
+        client beyond the logs ends the run with exit 4 (unanswered), once the poll's signs are read."""
+        clients[p] = {"start": start, "found": time.monotonic()}
+        n = [q for q, _ in by_start()].index(p) + 1
+        log(f"client {n} detected{how}: pid {p} start {start}")
+
     def check_procs():
-        nonlocal client_start, client_pid, client_seen
         out = []
         if not init:
             return out
@@ -848,39 +1052,53 @@ def watch(a, log, tail):
                 seen[p] = info
                 log(f"proc + pid {p} ppid {info['ppid']} start {info['start']} comm {info['comm']!r} "
                     f"argv {info['argv'][:4]!r}")
-                if is_named(info, CLIENT) and (client_start is None or info["start"] < client_start):
-                    client_start, client_pid = info["start"], p
-                    client_seen = client_seen or time.monotonic()
-                    log(f"client detected: pid {p} start {client_start}")
+                if is_named(info, CLIENT):
+                    new_client(p, info["start"], "")
         for p, info in seen.items():
             if info.get("alive") and p not in cur:
                 info["alive"] = False
                 log(f"proc - pid {p} comm {info['comm']!r}")
-        found, hits = track_client(seen, client_start, proc_info)
-        if found:
-            client_start, client_pid = found
-            client_seen = client_seen or time.monotonic()
-            log(f"client detected after a rename: pid {client_pid} start {client_start}")
+        found, hits = track_clients(seen, {p: c["start"] for p, c in clients.items()}, proc_info)
+        for start, p in found:
+            new_client(p, start, " after a rename")
         out += [("S2 winedevice.exe started after the client", p, info) for p, info in hits]
         return out
 
     def check_log(final=False):
         out = []
-        while True:
-            chunk, look = tail.read(final=final)
-            if not chunk:
-                break
+        for i, chunk, look in stream.read(final=final):
             trig, notes = rules.scan(chunk, look)
-            out += [(k, l, None) for k, l in trig]
-            for k, l in notes:
-                if (k, l) not in notes_seen:
-                    notes_seen.add((k, l))
-                    log(f"log note: {k}: {l}")
-            if not final:
-                break
+            where = f" (log {i + 1})" if len(stream.logs) > 1 else ""
+            out += [(k + where, ln, None) for k, ln in trig]
+            for k, ln in notes:
+                if (k, ln) not in notes_seen:
+                    notes_seen.add((k, ln))
+                    log(f"log note{where}: {k}: {ln}")
         return out
 
-    def freeze_kill_record(found):
+    def unanswered(final=False):
+        """Why the logs can't answer for a client, or None (Amendment B, Ruling R17): a client beyond
+        the logs (one --log per client, in start order); or one whose own log hasn't shown a
+        client's creation within CLIENT_LOG_GRACE, or, once the sandbox has ended and every log is
+        read (final), at all."""
+        if len(clients) > len(stream.logs):
+            n = len(stream.logs) + 1
+            return (f"{len(clients)} clients, but {len(stream.logs)} log(s): client {n} (pid {by_start()[n - 1][0]}) "
+                    "has no log of its own (one --log per client, in the order they start)")
+        now_m = time.monotonic()
+        for n, (p, c) in enumerate(by_start(), 1):
+            f = stream.logs[n - 1]
+            if final and f.created is None:
+                return (f"the sandbox ended, and log {n} never showed a client's creation for client {n} (pid {p}): "
+                        "the LoadDriver sign was blind")
+            if client_creation_overdue(c["found"], now_m, f.created, f.tail.at_eof):
+                return (f"client {n} (pid {p}) has run {CLIENT_LOG_GRACE:.0f} s, but log {n} never showed a "
+                        "client's creation: the LoadDriver sign would be blind")
+        return None
+
+    def freeze_kill_record(found, failure=None):
+        """Freezes and kills the sandbox and writes the record: of a gate event (`found`, its signs),
+        or of the watchdog's `failure`."""
         t_trig = time.time()
         mem = descendants(init) if init else []
         for p in mem:
@@ -921,8 +1139,12 @@ def watch(a, log, tail):
         # The record is best effort: failing to write it must not turn exit 3 into 4.
         try:
             with open(os.path.join(a.out, "watchdog-trigger.txt"), "w") as fh:
-                fh.write(f"GATE EVENT at {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t_trig))}\n")
-                fh.write(f"client pid {client_pid} start {client_start} (clock ticks since boot)\n\n")
+                at = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(t_trig))
+                fh.write(f"WATCHDOG FAILURE at {at}: {failure}\n" if failure else f"GATE EVENT at {at}\n")
+                for n, (p, c) in enumerate(by_start(), 1):
+                    beyond = ": no log of its own" if n > len(stream.logs) else ""
+                    fh.write(f"client {n} pid {p} start {c['start']} (clock ticks since boot){beyond}\n")
+                fh.write("\n")
                 for kind, what, detail in found:
                     fh.write(f"{kind}: {what}\n")
                     if isinstance(what, str) and what.startswith("/"):
@@ -938,7 +1160,10 @@ def watch(a, log, tail):
                 fh.write(f"\nprocesses left after the kill: {left}; bwrap alive: {alive(spid)}\n")
         except OSError as e:
             log(f"could not write {a.out}/watchdog-trigger.txt: {e}")
-        log(f"GATE EVENT: {found[0][0]}: {found[0][1]} -> sandbox frozen and killed; left {left}")
+        if found:
+            log(f"GATE EVENT: {found[0][0]}: {found[0][1]} -> sandbox frozen and killed; left {left}")
+        else:
+            log(f"fail safe: {failure} -> sandbox frozen and killed; left {left}; record in watchdog-trigger.txt")
 
     try:
         while True:
@@ -970,24 +1195,31 @@ def watch(a, log, tail):
                         log(f"WATCHDOG FAILURE: can't create the start signal {a.go}: {e}")
                         return 4  # the runner kills the sandbox when the watchdog ends first
             found = check_sys() + check_procs() + check_log() + (check_reg() if polls % 4 == 0 else [])
-            if found:
-                freeze_kill_record(found)
-                return 3
-            if client_creation_overdue(client_seen, time.monotonic(), rules.client_ts, tail.at_eof):
-                raise RuntimeError(f"the client has run {CLIENT_LOG_GRACE:.0f} s, but the log never showed "
-                                   "its creation: the LoadDriver sign would be blind")
-            if not sandbox_alive:
+            if not found and not sandbox_alive:
                 found = check_sys() + check_log(final=True) + check_reg()
                 if found:
                     log("sign found after the sandbox had already ended")
-                    freeze_kill_record(found)
-                    return 3
-                log(f"sandbox ended; no sign of driver activity in {polls} polls; client pid {client_pid}; "
-                    f"log bytes scanned {tail.off}; processes seen {len(seen)}")
+            why = None if found else unanswered(final=not sandbox_alive)
+            if why and sandbox_alive:
+                # Exit 4 ends the run: first every log is read to its end and scanned, as at the end
+                # of a run, and the registry read, so that a sign written so far still wins.
+                found = check_log(final=True) + check_reg()
+                if found:
+                    log(f"sign found while ending the run for the fail safe ({why})")
+            if found:
+                freeze_kill_record(found)
+                return 3
+            if why:
+                freeze_kill_record([], failure=why)
+                raise RuntimeError(why)
+            if not sandbox_alive:
+                log(f"sandbox ended; no sign of driver activity in {polls} polls; client pids "
+                    f"{[p for p, _ in by_start()]}; log bytes scanned {[f.tail.off for f in stream.logs]}; "
+                    f"processes seen {len(seen)}")
                 return 0
             if polls % 20 == 0:
                 live = [f"{p}:{i['comm']}" for p, i in seen.items() if i.get("alive")]
-                log(f"heartbeat: poll {polls}, log {tail.off} bytes, live {live}")
+                log(f"heartbeat: poll {polls}, logs {[f.tail.off for f in stream.logs]} bytes, live {live}")
             time.sleep(max(0.0, a.interval - (time.monotonic() - t)))
     except BaseException as e:  # fail safe: no watchdog, no run. Kill first, then say why.
         for p in ((descendants(init) if init else []) + [spid]):
@@ -1011,7 +1243,8 @@ def parser():
     for p in (b, w):
         p.add_argument("--prefix", help="the Wine prefix whose system.reg S4 reads (default: ROOT/compat/pfx)")
     w.add_argument("--sandbox-pid", type=int, required=True)
-    w.add_argument("--log", required=True)
+    w.add_argument("--log", action="append", required=True,
+                   help="a client's Wine log; once per client, in the order the clients start")
     w.add_argument("--interval", type=float, default=0.5)
     w.add_argument("--bind", dest="binds", action="append", default=[],
                    help="other paths bound into the sandbox (skipped by the tmpfs scan)")
@@ -1030,7 +1263,8 @@ def parser():
 
 
 def main():
-    a = parser().parse_args()
+    ap = parser()
+    a = ap.parse_args()
     if a.mode == "collect":
         notes = collect(a.src, a.dest, names=a.names, exclude=a.exclude)
         if notes:
@@ -1048,6 +1282,8 @@ def main():
         return cmd_scanlog(a)
     a.binds = [os.path.realpath(x) for x in a.binds]
     a.go = a.go or os.path.join(a.out, ".go")
+    if len({os.path.realpath(x) for x in a.log}) != len(a.log):
+        ap.error("two --log name one file: each client has its own log")
     return cmd_watch(a)
 
 
