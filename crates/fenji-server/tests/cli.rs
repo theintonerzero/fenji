@@ -1,5 +1,6 @@
 //! The admin subcommands (M3 spec D13, §4 `cli`).
 use std::path::Path;
+use std::process::Output;
 use std::time::Duration;
 
 use fenji_server::cli::{AccountCmd, Command, InviteCmd, admin};
@@ -35,6 +36,82 @@ async fn run(cfg: &Config, cmd: Command) -> String {
         .await
         .unwrap();
     String::from_utf8(out).unwrap()
+}
+
+/// `fenji-server` itself, with a `fenji.toml` in `dir` that keeps its database there.
+fn fenji_server(dir: &Path, args: &[&str]) -> Output {
+    let config = dir.join("fenji.toml");
+    std::fs::write(&config, "[server]\nname = \"Fenji\"\n").unwrap();
+    std::process::Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        .arg("--config")
+        .arg(&config)
+        .args(args)
+        .env("RUST_LOG", "warn")
+        .output()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn invite_create_refuses_the_labels_invite_refuses_and_stores_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let long = "x".repeat(65);
+    for (label, reason) in [
+        ("\u{1b}]0;owned\u{7}", "plain text only"),
+        ("for\u{200B}bob", "plain text only"),
+        (long.as_str(), "at most 64 characters"),
+    ] {
+        let out = fenji_server(dir.path(), &["invite", "create", "--label", label]);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{label:?}: {said}");
+        assert!(said.contains(reason), "{label:?}: {said}");
+        assert!(out.stdout.is_empty(), "{label:?}: no code is shown");
+    }
+    let store = fenji_store::Store::open(&dir.path().join("fenji.db"))
+        .await
+        .unwrap();
+    assert!(store.list_invites().await.unwrap().is_empty());
+    let out = fenji_server(
+        dir.path(),
+        &["invite", "create", "--label", &"é".repeat(64)],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(store.list_invites().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn invite_list_escapes_hidden_characters_in_labels_stored_before_they_were_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path());
+    // An invite from M3, whose labels were never checked.
+    let store = fenji_store::Store::open(&cfg.store.path).await.unwrap();
+    store
+        .create_invite(
+            &[7; 32],
+            Some("for\tBob\u{1b}]0;owned\u{7}\u{202E}"),
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+    let list = run(
+        &cfg,
+        Command::Invite {
+            cmd: InviteCmd::List,
+        },
+    )
+    .await;
+    assert!(
+        list.contains("\tfor\\u{9}Bob\\u{1b}]0;owned\\u{7}\\u{202e}\t"),
+        "{list:?}"
+    );
+    let raw = list
+        .chars()
+        .filter(|&c| fenji_server::text::hidden(c) && c != '\t' && c != '\n');
+    assert_eq!(raw.count(), 0, "{list:?}");
 }
 
 #[tokio::test]

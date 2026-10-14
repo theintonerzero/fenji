@@ -5,6 +5,8 @@ use std::fmt;
 use fenji_auth::invite::InviteCode;
 use fenji_store::Store;
 
+use crate::commands::check_label;
+
 /// A new invite: its code, and the link players open when the server has an address for one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewInvite {
@@ -13,7 +15,9 @@ pub struct NewInvite {
 }
 
 /// Makes an invite with `label`, expiring at `expires_at` if given. Links start with `base`
-/// (`Config::invite_base`).
+/// (`Config::invite_base`). A label `!invite` would refuse is refused here too, with its
+/// [`CommandError`](crate::commands::CommandError), and nothing is stored: `invite list` shows
+/// labels in a host's terminal.
 pub async fn create(
     store: &Store,
     base: Option<&str>,
@@ -21,6 +25,9 @@ pub async fn create(
     now: i64,
     expires_at: Option<i64>,
 ) -> anyhow::Result<NewInvite> {
+    if let Some(label) = label {
+        check_label(label)?;
+    }
     let code = InviteCode::generate()?;
     store
         .create_invite(&code.hash(), label, now, expires_at)
@@ -48,6 +55,7 @@ impl fmt::Display for NewInvite {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::{CommandError, INVITE};
 
     #[tokio::test]
     async fn an_invite_is_stored_open_and_its_link_carries_the_code() {
@@ -84,6 +92,31 @@ mod tests {
         assert!(
             bare.to_string()
                 .starts_with(&format!("invite code: {} (", bare.code))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_label_not_plain_or_over_64_characters_is_refused_and_nothing_is_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("f.db")).await.unwrap();
+        let long = "x".repeat(65);
+        for (label, why) in [
+            ("\u{1b}]0;owned\u{7}", CommandError::NotPlain),
+            ("for\u{202E}boB", CommandError::NotPlain),
+            (long.as_str(), CommandError::Usage(INVITE)),
+        ] {
+            let e = create(&store, None, Some(label), 1, None)
+                .await
+                .unwrap_err();
+            assert_eq!(e.downcast_ref::<CommandError>(), Some(&why), "{label:?}");
+        }
+        assert!(store.list_invites().await.unwrap().is_empty());
+        // 64 characters, in 128 bytes.
+        let longest = "é".repeat(64);
+        create(&store, None, Some(&longest), 1, None).await.unwrap();
+        assert_eq!(
+            store.list_invites().await.unwrap()[0].label.as_deref(),
+            Some(longest.as_str())
         );
     }
 }

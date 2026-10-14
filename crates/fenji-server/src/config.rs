@@ -1,6 +1,7 @@
 //! `fenji.toml` (M3 spec D16; M4 world spec §3): read whole, checked, then used. Unknown keys and
 //! impossible values are refused with the place they were found. Changes need a restart.
 use std::net::{IpAddr, SocketAddr};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -161,11 +162,15 @@ impl Default for WorldConfig {
     }
 }
 
-/// The farthest a start coordinate (x, y or z) may be from 0: 100 km, the world's own limit.
+/// The farthest a coordinate (x, y or z) may be from 0: 100 km. The world takes no point beyond
+/// it, and `[world] start_position` may name none.
 pub const COORDINATE_LIMIT: f64 = 10_000_000.0;
 
-/// The start yaw's bound in degrees: within ±360, as every position's yaw is.
+/// The largest yaw, either way, in degrees: for every position the world takes, the start's too.
 pub const YAW_LIMIT: f64 = 360.0;
+
+/// `[world] move_tolerance`'s range. The speed check holds any tolerance to it.
+pub const MOVE_TOLERANCE: RangeInclusive<f64> = 1.0..=5.0;
 
 fn one() -> u32 {
     1
@@ -297,8 +302,12 @@ impl Config {
                 "[world] start_position: [x, y, z, yaw], with x, y and z from -{COORDINATE_LIMIT} to {COORDINATE_LIMIT} and the yaw from -{YAW_LIMIT} to {YAW_LIMIT} degrees"
             );
         }
-        if !(1.0..=5.0).contains(&w.move_tolerance) {
-            bail!("[world] move_tolerance: 1.0 to 5.0");
+        if !MOVE_TOLERANCE.contains(&w.move_tolerance) {
+            bail!(
+                "[world] move_tolerance: {:?} to {:?}",
+                MOVE_TOLERANCE.start(),
+                MOVE_TOLERANCE.end()
+            );
         }
         if !(30..=3600).contains(&w.save_every_secs) {
             bail!("[world] save_every_secs: 30 to 3600");

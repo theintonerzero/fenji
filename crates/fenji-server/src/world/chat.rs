@@ -104,7 +104,9 @@ impl Bucket {
     }
 }
 
-/// Routes the tick's lines. An admin's `!` line goes to the admin phase as a command.
+/// Routes the tick's lines. Each spends a token of its speaker's [`Bucket`], an admin's command
+/// too, so commands keep the rate as chat does. An admin's `!` line then goes to the admin phase
+/// as a command.
 pub(super) fn system(
     now: Res<Now>,
     index: Res<Index>,
@@ -118,6 +120,11 @@ pub(super) fn system(
             continue;
         };
         if *stage != Stage::InWorld {
+            continue;
+        }
+        if !bucket.take(now.0) {
+            let refused = WorldOut::ChatRefused(ChatRefusal::TooFast);
+            deliver(conn, e, refused, &mut commands);
             continue;
         }
         if account.admin
@@ -137,12 +144,7 @@ pub(super) fn system(
             }
             continue;
         }
-        let refused = if !bucket.take(now.0) {
-            Some(ChatRefusal::TooFast)
-        } else {
-            check(&line.text).err()
-        };
-        if let Some(why) = refused {
+        if let Err(why) = check(&line.text) {
             deliver(conn, e, WorldOut::ChatRefused(why), &mut commands);
             continue;
         }
@@ -313,6 +315,18 @@ mod tests {
     }
 
     #[test]
+    fn each_entity_counts_as_one_character() {
+        for entity in ["&lt;", "&gt;", "&amp;"] {
+            assert_eq!(check(&entity.repeat(140)), Ok(()), "{entity}");
+            assert_eq!(
+                check(&entity.repeat(141)),
+                Err(ChatRefusal::TooLong),
+                "{entity}"
+            );
+        }
+    }
+
+    #[test]
     fn the_rate_is_a_burst_of_five_then_one_a_second() {
         let mut b = Bucket::new(0);
         for _ in 0..5 {
@@ -322,6 +336,31 @@ mod tests {
         assert!(b.take(1_000));
         assert!(!b.take(1_000));
         assert!(!b.take(10), "time going back adds nothing");
+    }
+
+    #[test]
+    fn an_idle_hour_refills_a_burst_and_no_more() {
+        let mut b = Bucket::new(0);
+        for _ in 0..5 {
+            assert!(b.take(0));
+        }
+        // An hour at one a second would be 3,600 lines; the bucket holds five.
+        for _ in 0..5 {
+            assert!(b.take(3_600_000));
+        }
+        assert!(!b.take(3_600_000), "a sixth at once");
+    }
+
+    #[test]
+    fn time_going_back_refills_nothing() {
+        let mut b = Bucket::new(10_000);
+        for _ in 0..5 {
+            assert!(b.take(10_000));
+        }
+        assert!(!b.take(0), "a time before the last");
+        // The time up to 10 s was counted once; coming back to it adds nothing.
+        assert!(!b.take(10_000), "back at the last time");
+        assert!(b.take(11_000), "a second past it");
     }
 
     #[test]
@@ -383,6 +422,27 @@ mod tests {
                 WorldOut::ChatRefused(ChatRefusal::NotOnline)
             ]
         );
+        assert!(h.take(2).is_empty(), "Mai stands by Lin and hears nothing");
+        assert!(h.take(3).is_empty());
+    }
+
+    #[test]
+    fn a_whisper_to_a_player_leaving_this_tick_is_refused_and_reaches_no_one() {
+        let mut h = three();
+        h.push(whisper(1, WhisperTarget::Name("Ren".into()), "bye"));
+        h.push(whisper(1, WhisperTarget::Pid(3), "bye"));
+        h.push(WorldIn::Leave { conn: 3 });
+        h.tick(50);
+        assert_eq!(
+            h.take(1),
+            vec![
+                WorldOut::ChatRefused(ChatRefusal::NotOnline),
+                WorldOut::ChatRefused(ChatRefusal::NotOnline)
+            ]
+        );
+        assert!(h.take(3).is_empty(), "nothing reached Ren's connection");
+        assert!(h.closed(3));
+        assert!(h.take(2).is_empty());
     }
 
     #[test]
@@ -397,8 +457,11 @@ mod tests {
             h.push(say(2, ChatChannel::Nearby, "spam"));
         }
         h.tick(50);
-        h.take(1);
-        h.take(2);
+        let spam = said(ChatChannel::Nearby, speaker(2, "Mai"), None, "spam");
+        let mut lin = vec![WorldOut::ChatRefused(ChatRefusal::Invalid)];
+        lin.extend(std::iter::repeat_n(spam.clone(), 5));
+        assert_eq!(h.take(1), lin, "Lin's refusal, then Mai's lines");
+        assert_eq!(h.take(2), vec![spam; 5], "the forged line reached no one");
         h.push(say(2, ChatChannel::Nearby, "spam"));
         h.tick(50);
         assert_eq!(h.take(2), vec![WorldOut::ChatRefused(ChatRefusal::TooFast)]);
