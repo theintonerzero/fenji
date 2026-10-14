@@ -11,7 +11,7 @@ mod thread;
 pub mod types;
 
 pub use ecs::{Rules, WorldCore};
-pub use thread::{RunningWorld, SAVE_WAIT, TickReport, WorldHandle, start};
+pub use thread::{RunningWorld, SAVE_WAIT, THREAD_WAIT, TickReport, WorldHandle, start};
 pub use types::*;
 
 use crate::config::Config;

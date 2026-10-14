@@ -21,6 +21,10 @@ use crate::clock::Clock;
 /// How long stopping waits for the last saves (Fenji design spec §6.7: 20 characters in 2 s).
 pub const SAVE_WAIT: Duration = Duration::from_secs(5);
 
+/// How long stopping waits for the world's thread to end after its shutdown tick: [`SAVE_WAIT`]
+/// and a second. A thread still running then has a tick that hangs.
+pub const THREAD_WAIT: Duration = Duration::from_secs(SAVE_WAIT.as_secs() + 1);
+
 /// How connections reach the world. Clones share the channel.
 #[derive(Clone)]
 pub struct WorldHandle(mpsc::UnboundedSender<WorldIn>);
@@ -230,14 +234,33 @@ impl RunningWorld {
         }
     }
 
-    /// Saves everyone and stops: the thread ends after its shutdown tick, and the services task
-    /// once it has written the last saves (waiting at most [`SAVE_WAIT`]). Each failure is logged
-    /// and returned, the first if there are two: a tick that panicked (Ruling R9) or a thread that
-    /// failed, or saves lost to a services task that failed, ended before the world (Ruling R13)
-    /// or didn't finish in time (#222). The server's shutdown passes it on, so `fenji-server run`
-    /// exits non-zero.
+    /// Saves everyone and stops: the thread ends after its shutdown tick (waiting at most
+    /// [`THREAD_WAIT`]), and the services task once it has written the last saves (waiting at
+    /// most [`SAVE_WAIT`]). Each failure is logged and returned, the first if there are two: a
+    /// tick that panicked (Ruling R9) or hangs, or a thread that failed; or saves lost to a
+    /// services task that failed, before the world (Ruling R13) or after, or didn't finish in
+    /// time (#222). The server's shutdown passes it on, so `fenji-server run` exits non-zero.
     pub async fn stop(self) -> anyhow::Result<()> {
+        self.stop_within(THREAD_WAIT).await
+    }
+
+    /// [`RunningWorld::stop`], waiting at most `wait` for the world's thread to end.
+    async fn stop_within(mut self, wait: Duration) -> anyhow::Result<()> {
         self.handle.send(WorldIn::Shutdown);
+        // A thread whose tick hangs is left behind, never joined: the process can exit without
+        // it, but not without a join that waits for it.
+        if tokio::time::timeout(wait, self.ended.changed())
+            .await
+            .is_err()
+        {
+            tracing::error!(
+                "the world's thread didn't end within {wait:?}: a tick hangs, and what it held \
+                 is lost"
+            );
+            return Err(anyhow!(
+                "the world's thread didn't end within {wait:?}: a tick hangs"
+            ));
+        }
         let thread = self.thread;
         let ended = match tokio::task::spawn_blocking(move || thread.join()).await {
             Ok(Ok(Ok(()))) => Ok(()),
@@ -674,6 +697,31 @@ mod tests {
         let ended = tokio::time::timeout(Duration::from_secs(5), world.ended()).await;
         assert_eq!(ended, Ok("the world's thread"));
         assert!(world.stop().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_tick_that_hangs_fails_the_stop_within_its_bound() {
+        // A tick that never returns mustn't hang the shutdown: stopping gives up on the thread,
+        // which the process can exit without, and fails.
+        let world = world(rules());
+        let (begun, working) = oneshot::channel();
+        let work = Duration::from_secs(12);
+        world.handle().send(WorldIn::Stall { work, begun });
+        tokio::time::timeout(Duration::from_secs(5), working)
+            .await
+            .expect("the tick begins")
+            .unwrap();
+        let began = std::time::Instant::now();
+        let stopped = tokio::time::timeout(Duration::from_secs(8), world.stop_within(MS * 300))
+            .await
+            .expect("stopping gives up on the thread");
+        let e = stopped.expect_err("a tick that hangs fails the stop");
+        assert!(format!("{e:#}").contains("hangs"), "{e:#}");
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            began.elapsed()
+        );
     }
 
     #[tokio::test]
