@@ -3,9 +3,14 @@
 # Used by .githooks/commit-msg and by CI for PR titles.
 #
 #   scripts/check-commit-subject.sh "feat(proto): add handshake state machine"
+#   scripts/check-commit-subject.sh "feat(proto): add handshake state machine" 246
+#
+# With a PR number, the subject is a PR title: squash-merging adds " (#246)" to it, and the
+# result must still fit in 100 characters (#174).
 set -euo pipefail
 
 subject=${1:-}
+pr=${2:-}
 
 # Let git's own generated messages through.
 case "$subject" in
@@ -28,7 +33,20 @@ MSG
   exit 1
 fi
 
-if [ "${#subject}" -gt 100 ]; then
-  echo "subject is ${#subject} characters; keep it at 100 or fewer" >&2
+max=100
+if [ -n "$pr" ]; then
+  case "$pr" in
+    *[!0-9]*) echo "not a PR number: $pr" >&2; exit 1 ;;
+  esac
+  suffix=" (#$pr)"
+  max=$((100 - ${#suffix}))
+fi
+
+if [ "${#subject}" -gt "$max" ]; then
+  if [ -n "$pr" ]; then
+    echo "PR title is ${#subject} characters; with \"$suffix\" its squash subject needs it at $max or fewer" >&2
+  else
+    echo "subject is ${#subject} characters; keep it at 100 or fewer" >&2
+  fi
   exit 1
 fi

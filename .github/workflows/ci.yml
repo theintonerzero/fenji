@@ -106,4 +106,5 @@ jobs:
       - name: PR title is a Conventional Commit (it becomes the squash commit)
         env:
           TITLE: ${{ github.event.pull_request.title }}
-        run: scripts/check-commit-subject.sh "$TITLE"
+          PR: ${{ github.event.pull_request.number }}
+        run: scripts/check-commit-subject.sh "$TITLE" "$PR"
