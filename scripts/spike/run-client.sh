@@ -3,15 +3,18 @@
 # fenji-stub listening and the AGT driver watchdog (watchdog.py) armed (design spec §4 B; M1 spec
 # §4, W4).
 #
-#   scripts/spike/run-client.sh setup [--display N]
+#   scripts/spike/run-client.sh setup [--display N] [--clients 2]
 #       Makes the git-ignored run workspace re/runs/: client/, a reflink copy of
 #       $FENJI_CLIENT_PATH (a full copy is refused); a Wine prefix in compat/, created with Wine's
-#       own cmd.exe; and empty home/, steamclient/ and hosts-empty.
+#       own cmd.exe; and empty home/, steamclient/ and hosts-empty. With --clients 2, also client2/,
+#       a second reflink copy for a two-client run's second client; on an existing workspace,
+#       client2/ only.
 #   scripts/spike/run-client.sh run NAME [--hosts FILE] [--ports "P1 P2"] [--timeout S]
 #       [--display N] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
 #       [--click T:X,Y]... [--key T:KEY]... [--type T:TEXT]... [--stub-arg ARG]...
 #       [--server CONFIG [--server-data DIR] [--launch "ARGS" [--launch-password FILE]]]
-#       -- [client args...]
+#       [--clients 2 --display2 M [--second-after S] [--timeout2 S]
+#        [--launch2 "ARGS" --launch-password2 FILE]] -- [client args...]
 #       One run: evidence in re/runs/out/NAME/, stub logs in re/stub-logs/NAME/; NAME must be new.
 #       The sandbox writes only to the client copy, the prefix, its home, re/runs/io/NAME and, with
 #       --server-data, DIR; the evidence directories are never bound into it, and the host takes
@@ -36,8 +39,21 @@
 #       records ARGS, and io/launch.txt the pairs with gj_ticket redacted. The account's password
 #       comes from --launch-password FILE (required with --launch), given to the sandbox on its
 #       standard input: it is never bound, copied, recorded, or named in an argument or the evidence.
+#       --clients 2 runs a second client from client2/ in the same sandbox, Wine prefix and server
+#       (M4 world plan, Amendment B): on its own nested display :M (--display2, required, another
+#       display than --display's, started as :N is and checked as it is), S seconds after the
+#       first (--second-after, default 30, at least 2: the watchdog tells the clients apart by the
+#       order they start), with its own timeout (--timeout2, default --timeout) and Proton log
+#       (io/NAME/2), and with --launch, its own account (--launch2 and --launch-password2, required
+#       then; that password is the second line of the sandbox's standard input). --click, --key and
+#       --type take 2@T:... for client 2's display, T counted from the run's start. Client 2's
+#       timeout ends its proton run; if its gujianol.exe is still there 10 s later, the sandbox
+#       ends that process by its own pid (end_client): wineserver -k would end client 1 too. The
+#       wineserver stops once both clients have ended. Client 2's evidence: OUT/client2/ (its
+#       gujianol.log, Log_gujianol.htm and install-root files), OUT/wine-2.log,
+#       OUT/screen-2-<T>s.png and io/exit-code-2.
 #
-# Every run uses isolated-run.sh --no-root --x11 N --cpu-topology (CLAUDE.md "Client runs"), the
+# Every run uses isolated-run.sh --no-root --x11 N [--x11 M] --cpu-topology (CLAUDE.md "Client runs"), the
 # pinned GE-Proton's own `proton run` (umu's runtime container fails in the sandbox), lavapipe, and
 # Wine channels that record lookups, sockets, modules and driver activity. The dev-only
 # --gf-sdk=mocked (gate #11) and --fs=data:_index:_index are the caller's to pass.
@@ -93,11 +109,13 @@ parse_launch_output() {
   printf '%s\n' "${pairs[@]}"
 }
 
-# The launcher password's first line for the sandbox's standard input, or nothing. A pipe, not the
-# file: once the inner shell has read it, nothing in the sandbox can read it again (bwrap's PID 1
-# keeps its standard input open).
+# The launcher passwords' first lines for the sandbox's standard input, each ending its line:
+# client 1's, then with --launch2 client 2's, or nothing. A pipe, not the files: once the inner shell
+# has read them, nothing in the sandbox can read them again (bwrap's PID 1 keeps its standard input
+# open).
 password_line() {
-  if [ -n "${launch_password-}" ]; then head -n 1 -- "$launch_password"; fi
+  if [ -n "${launch_password-}" ]; then printf '%s\n' "$(head -n 1 -- "$launch_password")"; fi
+  if [ -n "${launch_password2-}" ]; then printf '%s\n' "$(head -n 1 -- "$launch_password2")"; fi
 }
 
 # launch_pairs BIN PASSWORD WORDS...: `BIN play --print WORDS` with the password in its
@@ -138,25 +156,41 @@ watch_channels() { echo "$1,$CHANNELS_WATCHDOG"; }
 
 need_display() { [ -S "/tmp/.X11-unix/X$1" ] || die "no nested display :$1 (see isolated-run.sh, \"Display\")"; }
 
+# copy_client DEST: a reflink copy of the pinned client at DEST; a full copy is refused.
+copy_client() {
+  mkdir -p "$1"
+  if ! cp -a --reflink=always "$FENJI_CLIENT_PATH/." "$1/"; then
+    rm -rf "$1"
+    die "the reflink copy failed (it needs a copy-on-write filesystem such as btrfs); refusing a full copy"
+  fi
+}
+
 cmd_setup() {
-  local display=99
+  local display=99 clients=1
   while [ $# -gt 0 ]; do
     case "$1" in
       --display) [ $# -ge 2 ] || usage; display=$2; shift 2 ;;
+      --clients) [ $# -ge 2 ] || usage; clients=$2; shift 2 ;;
       *) usage ;;
     esac
   done
+  case "$clients" in 1 | 2) ;; *) misuse "--clients takes 1 or 2, not '$clients'" ;; esac
   [ -n "${FENJI_CLIENT_PATH:-}" ] || die "set FENJI_CLIENT_PATH to the pinned client copy (docs/re/pinned-build.md)"
   [ -f "$FENJI_CLIENT_PATH/bin64/gujianol.exe" ] || die "no bin64/gujianol.exe under $FENJI_CLIENT_PATH"
+  if [ -e "$WORK/client" ] && [ "$clients" = 2 ]; then
+    # An existing workspace gains client 2's copy only: the prefix and its baseline stay.
+    [ ! -e "$WORK/client2" ] || die "$WORK/client2 exists already"
+    copy_client "$WORK/client2"
+    echo "client 2's copy ready: $WORK/client2"
+    return 0
+  fi
   [ ! -e "$WORK/client" ] || die "$WORK/client exists already; remove re/runs/ to start over"
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
   need_display "$display"
-  mkdir -p "$WORK/client" "$WORK/compat" "$WORK/home" "$WORK/steamclient" "$WORK/out" "$REPO/re/stub-logs"
+  mkdir -p "$WORK/compat" "$WORK/home" "$WORK/steamclient" "$WORK/out" "$REPO/re/stub-logs"
   : > "$WORK/hosts-empty"
-  if ! cp -a --reflink=always "$FENJI_CLIENT_PATH/." "$WORK/client/"; then
-    rm -rf "$WORK/client"
-    die "the reflink copy failed (it needs a copy-on-write filesystem such as btrfs); refusing a full copy"
-  fi
+  copy_client "$WORK/client"
+  if [ "$clients" = 2 ]; then copy_client "$WORK/client2"; fi
   # The prefix is created now, through Proton's own launcher (its steam.exe shim, which also
   # registers Proton's Discord bridge service), and wineserver is left to exit cleanly so the
   # registry reaches disk: everything Proton sets up belongs to the watchdog's baseline. A prefix, or
@@ -196,9 +230,20 @@ record_inputs() {
   fi
   echo "timeout: $tmo"
   echo "display: :$display"
+  echo "clients: ${clients:-1}"
+  if [ "${clients:-1}" = 2 ]; then
+    echo "client 2: display :$display2, started $second_after s after client 1, timeout $tmo2 s, from $WORK/client2"
+    echo "client 2 clicks (2@T:X,Y): ${clicks2[*]-}"
+    echo "client 2 keys (2@T:KEY): ${keys2[*]-}"
+    echo "client 2 text (2@T:TEXT): ${types2[*]-}"
+    if [ -n "${server_cfg-}" ]; then
+      echo "client 2 launch args: ${launch2-}"
+      echo "client 2 launch password: ${launch_password2:+the second line of the sandbox standard input, never recorded}"
+    fi
+  fi
   echo "wine channels (WINEDEBUG, with PROTON_LOG=1): $channels"
   echo "GE-Proton: $PROTON"
-  echo "sandbox: isolated-run.sh --no-root --x11 $display --cpu-topology (sha256 $(sha256sum "$WRAP" | cut -c1-16)…)"
+  echo "sandbox: isolated-run.sh --no-root --x11 $display${display2:+ --x11 $display2} --cpu-topology (sha256 $(sha256sum "$WRAP" | cut -c1-16)…)"
   echo "driver watchdog: watchdog.py sha256 $(sha256sum "$WATCHDOG" | cut -c1-16)…"
   echo "hosts file: $hosts"
   echo "--- hosts content"
@@ -210,25 +255,65 @@ record_inputs() {
   } > "$OUT/inputs.txt"
 }
 
-# --key and --type: whole seconds, then a keysym name or printable ASCII. Uses cmd_run's keys and
-# types.
+# --key and --type: whole seconds, then a keysym name or printable ASCII; client 1's no later than
+# --timeout, client 2's (2@) no later than its own end, --second-after plus --timeout2. Uses cmd_run's
+# keys, types, clicks, their client-2 twins and presses, whose entries are C:KIND:T:WHAT for client C.
 check_presses() {
-  local LC_ALL=C k
-  for k in "${keys[@]}"; do
+  local LC_ALL=C k end2=$((${second_after:-0} + ${tmo2:-${tmo:-0}}))
+  for k in "${keys[@]}" "${keys2[@]}"; do
     [[ "$k" =~ ^[0-9]+:[A-Za-z][A-Za-z0-9_]*$ ]] || misuse "--key takes T:KEY (whole seconds, an X keysym name), not '$k'"
+  done
+  for k in "${types[@]}" "${types2[@]}"; do
+    [[ "$k" =~ ^[0-9]+:[\ -~]+$ ]] || misuse "--type takes T:TEXT (whole seconds, printable ASCII), not '$k'"
+  done
+  for k in "${keys[@]}"; do
     [ "${k%%:*}" -le "$tmo" ] || misuse "--key $k comes after the --timeout of $tmo s"
   done
   for k in "${types[@]}"; do
-    [[ "$k" =~ ^[0-9]+:[\ -~]+$ ]] || misuse "--type takes T:TEXT (whole seconds, printable ASCII), not '$k'"
     [ "${k%%:*}" -le "$tmo" ] || misuse "--type at ${k%%:*} s comes after the --timeout of $tmo s"
   done
   for k in "${clicks[@]}"; do
     [ "${k%%:*}" -le "$tmo" ] || misuse "--click $k comes after the --timeout of $tmo s"
   done
-  # Played in time order, whatever the command line's order.
+  for k in "${keys2[@]}"; do
+    [ "${k%%:*}" -le "$end2" ] || misuse "--key 2@$k comes after client 2's --timeout2 (at $end2 s)"
+  done
+  for k in "${types2[@]}"; do
+    [ "${k%%:*}" -le "$end2" ] || misuse "--type 2@ at ${k%%:*} s comes after client 2's --timeout2 (at $end2 s)"
+  done
+  for k in "${clicks2[@]}"; do
+    [ "${k%%:*}" -le "$end2" ] || misuse "--click 2@$k comes after client 2's --timeout2 (at $end2 s)"
+  done
+  # Played in time order, whatever the command line's order; at one time, in the order given.
   if [ "${#presses[@]}" -gt 0 ]; then
-    mapfile -t presses < <(printf '%s\n' "${presses[@]}" | sort -s -t: -k2,2n)
+    mapfile -t presses < <(printf '%s\n' "${presses[@]}" | sort -s -t: -k3,3n)
   fi
+}
+
+# Both clients' clicks as one schedule in time order (at one time, client 1's first, each in the
+# order given): lines "T DISPLAY C X,Y". Uses cmd_run's clicks, clicks2, display and display2.
+click_plan() {
+  local c
+  {
+    for c in "${clicks[@]}"; do printf '%s %s 1 %s\n' "${c%%:*}" "$display" "${c#*:}"; done
+    for c in "${clicks2[@]}"; do printf '%s %s 2 %s\n' "${c%%:*}" "${display2:-}" "${c#*:}"; done
+  } | sort -s -n -k1,1
+}
+
+# end_client EXE: SIGKILL to every gujianol.exe whose program is EXE, as Wine shows it (Z: and
+# backslashes) or as given, and to nothing else; prints each pid it ended. A two-client run's client
+# 2: its timeout ends its `proton run`, not the client, and wineserver -k would end client 1 too.
+end_client() {
+  local want=$1 d comm a0
+  for d in /proc/[0-9]*; do
+    { read -r comm < "$d/comm"; } 2> /dev/null || continue
+    [ "$comm" = gujianol.exe ] || continue
+    a0=$(head -z -n 1 -- "$d/cmdline" 2> /dev/null | tr -d '\0') || continue
+    a0=${a0//\\//}
+    case "$a0" in [Zz]:/*) a0=${a0#??} ;; esac
+    [ "$a0" = "$want" ] || continue
+    if kill -KILL "${d#/proc/}" 2> /dev/null; then echo "${d#/proc/}"; fi
+  done
 }
 
 # --server, --server-data, --launch and --launch-password. Uses and sets cmd_run's variables; sets
@@ -295,6 +380,43 @@ check_server() {
   fi
 }
 
+# A two-client run's options (Amendment B), after check_server. Uses and sets cmd_run's clients,
+# display, display2, second_after, tmo, tmo2, launch, launch2, launch_password2 and the 2@ inputs.
+check_two() {
+  local LC_ALL=C w words=()
+  case "$clients" in 1 | 2) ;; *) misuse "--clients takes 1 or 2, not '$clients'" ;; esac
+  if [ "$clients" = 1 ]; then
+    [ -z "$display2" ] || misuse "--display2 needs --clients 2"
+    [ "$second_after_given" = 0 ] || misuse "--second-after needs --clients 2"
+    [ "$tmo2_given" = 0 ] || misuse "--timeout2 needs --clients 2"
+    [ -z "$launch2" ] || misuse "--launch2 needs --clients 2"
+    [ -z "$launch_password2" ] || misuse "--launch-password2 needs --clients 2"
+    if [ "$((${#keys2[@]} + ${#types2[@]} + ${#clicks2[@]}))" -gt 0 ]; then
+      misuse "2@ inputs are client 2's: they need --clients 2"
+    fi
+    return 0
+  fi
+  [ -n "$display2" ] || misuse "--clients 2 needs --display2 M: client 2's own nested display"
+  [ "$display2" != "$display" ] ||
+    misuse "--display2 must be another display than --display (:$display): two client windows on one display stack"
+  if [ -n "$launch" ]; then
+    [ -n "$launch2" ] || misuse "--launch with --clients 2 needs --launch2: client 2 signs in with its own account"
+    [ -n "$launch_password2" ] || misuse "--launch2 needs --launch-password2: fenji-launch signs in"
+    [[ "$launch2" =~ ^[\ -~]+$ ]] || misuse "--launch2 takes one line of printable ASCII"
+    read -r -a words <<< "$launch2"
+    for w in "${words[@]}"; do
+      case "$w" in *[!A-Za-z0-9=_.:/@-]*) misuse "--launch2 takes words of [A-Za-z0-9=_.:/@-], not '$w'" ;; esac
+      case "$w" in --password*) misuse "--launch2: the password comes only from --launch-password2" ;; esac
+    done
+    if [ ! -f "$launch_password2" ] || [ ! -r "$launch_password2" ]; then
+      misuse "--launch-password2: can't read the file"
+    fi
+  else
+    [ -z "$launch2" ] || misuse "--launch2 needs --launch"
+    [ -z "$launch_password2" ] || misuse "--launch-password2 needs --launch2"
+  fi
+}
+
 cmd_run() {
   [ $# -ge 1 ] || usage
   local run=$1
@@ -302,12 +424,26 @@ cmd_run() {
   local hosts="$WORK/hosts-empty" ports=7804 tmo=300 display=99 channels=$CHANNELS_DEFAULT
   local envs=() client_files=() clicks=() stub_args=() keys=() types=() presses=()
   local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 launch_words=()
+  local clients=1 display2="" second_after=30 second_after_given=0 tmo2="" tmo2_given=0
+  local launch2="" launch_password2="" clicks2=() keys2=() types2=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --hosts) [ $# -ge 2 ] || usage; hosts=$(realpath -- "$2"); shift 2 ;;
       --ports) [ $# -ge 2 ] || usage; ports=$2; ports_given=1; shift 2 ;;
-      --key) [ $# -ge 2 ] || usage; keys+=("$2"); presses+=("key:$2"); shift 2 ;;
-      --type) [ $# -ge 2 ] || usage; types+=("$2"); presses+=("type:$2"); shift 2 ;;
+      --key)
+        [ $# -ge 2 ] || usage
+        case "$2" in
+          2@*) keys2+=("${2#2@}"); presses+=("2:key:${2#2@}") ;;
+          *) keys+=("$2"); presses+=("1:key:$2") ;;
+        esac
+        shift 2 ;;
+      --type)
+        [ $# -ge 2 ] || usage
+        case "$2" in
+          2@*) types2+=("${2#2@}"); presses+=("2:type:${2#2@}") ;;
+          *) types+=("$2"); presses+=("1:type:$2") ;;
+        esac
+        shift 2 ;;
       --server) [ $# -ge 2 ] || usage; server_cfg=$2; shift 2 ;;
       --server-data) [ $# -ge 2 ] || usage; server_data=$2; shift 2 ;;
       --launch) [ $# -ge 2 ] || usage; launch=$2; shift 2 ;;
@@ -317,8 +453,17 @@ cmd_run() {
       --channels) [ $# -ge 2 ] || usage; channels=$2; shift 2 ;;
       --env) [ $# -ge 2 ] || usage; envs+=("$2"); shift 2 ;;
       --client-file) [ $# -ge 2 ] || usage; client_files+=("$2"); shift 2 ;;
-      --click) [ $# -ge 2 ] || usage; clicks+=("$2"); shift 2 ;;
+      --click)
+        [ $# -ge 2 ] || usage
+        case "$2" in 2@*) clicks2+=("${2#2@}") ;; *) clicks+=("$2") ;; esac
+        shift 2 ;;
       --stub-arg) [ $# -ge 2 ] || usage; stub_args+=("$2"); shift 2 ;;
+      --clients) [ $# -ge 2 ] || usage; clients=$2; shift 2 ;;
+      --display2) [ $# -ge 2 ] || usage; display2=$2; shift 2 ;;
+      --second-after) [ $# -ge 2 ] || usage; second_after=$2; second_after_given=1; shift 2 ;;
+      --timeout2) [ $# -ge 2 ] || usage; tmo2=$2; tmo2_given=1; shift 2 ;;
+      --launch2) [ $# -ge 2 ] || usage; launch2=$2; shift 2 ;;
+      --launch-password2) [ $# -ge 2 ] || usage; launch_password2=$2; shift 2 ;;
       --) shift; break ;;
       *) usage ;;
     esac
@@ -327,6 +472,19 @@ cmd_run() {
   case "$tmo" in '' | *[!0123456789]*) die "--timeout takes whole seconds" ;; esac
   case "$display" in '' | *[!0123456789]*) die "--display takes a display number" ;; esac
   case "$ports" in '' | *[!0123456789\ ]*) die "--ports takes port numbers separated by spaces, not '$ports'" ;; esac
+  case "$clients" in 1 | 2) ;; *) misuse "--clients takes 1 or 2, not '$clients'" ;; esac
+  if [ -n "$display2" ]; then
+    case "$display2" in *[!0123456789]*) misuse "--display2 takes a display number, not '$display2'" ;; esac
+  fi
+  case "$second_after" in '' | *[!0123456789]*) misuse "--second-after takes whole seconds, not '$second_after'" ;; esac
+  if [ "$clients" = 2 ] && [ "$second_after" -lt 2 ]; then
+    misuse "--second-after takes at least 2 s: the watchdog tells the clients apart by the order they start"
+  fi
+  if [ "$tmo2_given" = 1 ]; then
+    case "$tmo2" in '' | *[!0123456789]*) misuse "--timeout2 takes whole seconds, not '$tmo2'" ;; esac
+  else
+    tmo2=$tmo
+  fi
   local ev
   for ev in "${envs[@]}"; do
     [[ "$ev" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || die "--env takes VAR=VALUE with a plain name, not '$ev'"
@@ -335,7 +493,7 @@ cmd_run() {
   done
   channels=$(watch_channels "$channels")
   local c
-  for c in "${clicks[@]}"; do
+  for c in "${clicks[@]}" "${clicks2[@]}"; do
     [[ "$c" =~ ^[0-9]+:[0-9]+,[0-9]+$ ]] || die "--click takes T:X,Y in whole numbers, not '$c'"
   done
   local sa
@@ -345,20 +503,28 @@ cmd_run() {
   check_presses
   local login_port="" api_port=""
   check_server
+  check_two
   local OUT="$WORK/out/$run" IO="$WORK/io/$run" STUB="$REPO/re/stub-logs/$run" PFX="$WORK/compat/pfx"
   if [ ! -d "$WORK/client/bin64" ] || [ ! -f "$PFX/system.reg" ]; then die "no workspace; run: $0 setup"; fi
+  if [ "$clients" = 2 ] && [ ! -d "$WORK/client2/bin64" ]; then
+    die "no copy for client 2; run: $0 setup --clients 2"
+  fi
   if [ -e "$OUT" ] || [ -e "$IO" ] || [ -e "$STUB" ]; then die "run $run exists already; pick a new name"; fi
-  # A run whose evidence couldn't be collected leaves its entries in the copy; never start from them.
-  local left
-  for left in "$WORK/client"/* "$WORK/client"/.[!.]*; do
-    if [ -e "$left" ] || [ -L "$left" ]; then
-      case "${left##*/}" in
-        bin64 | data | tools) ;;
-        *) die "leftover ${left##*/} at the client copy's install root, which should hold only bin64, data and tools; move it first" ;;
-      esac
-    fi
+  # A run whose evidence couldn't be collected leaves its entries in the copies; never start from them.
+  local copies=(client) copy left
+  if [ "$clients" = 2 ]; then copies+=(client2); fi
+  for copy in "${copies[@]}"; do
+    for left in "$WORK/$copy"/* "$WORK/$copy"/.[!.]*; do
+      if [ -e "$left" ] || [ -L "$left" ]; then
+        case "${left##*/}" in
+          bin64 | data | tools) ;;
+          *) die "leftover ${left##*/} at the install root of $copy/, which should hold only bin64, data and tools; move it first" ;;
+        esac
+      fi
+    done
   done
   need_display "$display"
+  if [ "$clients" = 2 ]; then need_display "$display2"; fi
   [ -f "$hosts" ] || die "hosts file missing: $hosts"
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
   if [ -n "$server_cfg" ]; then
@@ -383,12 +549,15 @@ cmd_run() {
       die "--client-file $name would replace a file (or a link) the client copy has"
     fi
   done
-  for f in gujianol.log Log_gujianol.htm; do
-    if [ -e "$WORK/client/bin64/$f" ] || [ -L "$WORK/client/bin64/$f" ]; then
-      die "leftover $f in the client copy's bin64; move it first"
-    fi
+  for copy in "${copies[@]}"; do
+    for f in gujianol.log Log_gujianol.htm; do
+      if [ -e "$WORK/$copy/bin64/$f" ] || [ -L "$WORK/$copy/bin64/$f" ]; then
+        die "leftover $f in $copy/bin64; move it first"
+      fi
+    done
   done
   mkdir -p "$OUT" "$IO/stub" "$STUB"
+  if [ "$clients" = 2 ]; then mkdir -p "$IO/2"; fi
   local server_copy=""
   if [ -n "$server_cfg" ]; then
     mkdir -p "$IO/server"
@@ -411,29 +580,36 @@ cmd_run() {
   start_inputs "$OUT" "$display" "$tmo"
   touch "$OUT/.running"
 
-  # --- the sandboxed run: stub + client in one invocation, started once the watchdog has armed.
+  # --- the sandboxed run: stub + client(s) in one invocation, started once the watchdog has armed.
   # One bind list for the sandbox and the watchdog: the watchdog leaves every bound directory out of
   # its pass over the sandbox's tmpfs mounts (the read-write ones lie under WORK, which it scans on
   # the host side; the read-only ones can't gain a file from inside).
   local binds=(--bind "$WORK/client" --bind "$WORK/compat" --bind "$WORK/home" --bind "$WORK/steamclient"
     --bind "$IO" --ro-bind "$STUBBIN" --ro-bind "$PROTON")
+  if [ "$clients" = 2 ]; then binds+=(--bind "$WORK/client2"); fi
   if [ -n "$server_data" ]; then binds+=(--bind "$server_data"); fi
   local wbinds=() i
   for ((i = 1; i < ${#binds[@]}; i += 2)); do wbinds+=(--bind "${binds[i]}"); done
+  # Each client's display and log, in the order the clients start: the watchdog ties the n-th to
+  # start to the n-th log.
+  local x11s=(--x11 "$display") wlogs=(--log "$IO/steam-1418100.log")
+  if [ "$clients" = 2 ]; then x11s+=(--x11 "$display2") wlogs+=(--log "$IO/2/steam-1418100.log"); fi
   set +e
   # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
-  "$WRAP" --no-root --x11 "$display" --cpu-topology --hosts "$hosts" "${binds[@]}" -- \
+  "$WRAP" --no-root "${x11s[@]}" --cpu-topology --hosts "$hosts" "${binds[@]}" -- \
     env HOME="$WORK/home" STEAM_COMPAT_DATA_PATH="$WORK/compat" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$WORK/steamclient" SteamGameId=1418100 SteamAppId=1418100 \
     PROTON_LOG_DIR="$IO" PROTON_USE_XALIA=0 PROTON_LOG=1 WINEDEBUG="$channels" DXVK_LOG_PATH="$IO" \
     VK_ICD_FILENAMES="$LAVAPIPE" "${envs[@]}" \
-    bash -c "$(declare -f parse_launch_output redact_gj_ticket launch_pairs)"'
+    bash -c "$(declare -f parse_launch_output redact_gj_ticket launch_pairs end_client)"'
       W=$1 IO=$2 STUB=$3 STUBBIN=$4 PORTS=$5 TMO=$6 PROTON=$7 SARGS=$8 SERVER=$9 LAUNCH=${10}
-      LPORT=${11} APORT=${12}
-      shift 12
-      # The launcher password, if any, is this shell'"'"'s standard input; nothing else reads it.
-      PW=""
+      LPORT=${11} APORT=${12} CLIENTS=${13} D2=${14} AFTER=${15} TMO2=${16} LAUNCH2=${17}
+      shift 17
+      # The launcher passwords, if any, are this shell'"'"'s standard input, client 2'"'"'s on the
+      # second line; nothing else reads them.
+      PW="" PW2=""
       [ -z "$LAUNCH" ] || IFS= read -r PW || true
+      [ -z "$LAUNCH2" ] || IFS= read -r PW2 || true
       exec < /dev/null
       for _ in $(seq 200); do [ -e "$IO/.go" ] && break; sleep 0.05; done
       [ -e "$IO/.go" ] || { echo "watchdog never armed; client not started" >&2; exit 98; }
@@ -456,32 +632,73 @@ cmd_run() {
         sleep 1
         kill -0 "$stub" 2>/dev/null || { echo "fenji-stub exited at start; client not started" >&2; exit 97; }
       fi
+      pairs=""
       if [ -n "$LAUNCH" ]; then
         # The validated --launch words, split without globbing. The pairs hold the ticket: they
         # stay in this shell and reach a file only redacted.
         read -r -a LW <<< "$LAUNCH"
         pairs=$(launch_pairs "$STUBBIN/fenji-launch" "$PW" "${LW[@]}" 2> "$IO/launch.err") ||
           { echo "fenji-launch failed, or printed something other than gj_* pairs; client not started" >&2; exit 95; }
-        unset PW
         redact_gj_ticket <<< "$pairs" > "$IO/launch.txt"
-        while IFS= read -r kv; do export "${kv?}"; done <<< "$pairs"
-        unset pairs kv
       fi
       unset PW
-      cd "$W/client/bin64" || exit 99
-      timeout -k 10 "$TMO" python3 "$PROTON/proton" run "$W/client/bin64/gujianol.exe" "$@" > "$IO/proton.out" 2>&1
+      # Each client in a subshell of its own, with its own gj_* pairs.
+      (
+        if [ -n "$pairs" ]; then while IFS= read -r kv; do export "${kv?}"; done <<< "$pairs"; fi
+        unset pairs kv
+        cd "$W/client/bin64" || exit 99
+        timeout -k 10 "$TMO" python3 "$PROTON/proton" run "$W/client/bin64/gujianol.exe" "$@" > "$IO/proton.out" 2>&1
+        rc=$?
+        echo "$rc" > "$IO/exit-code"
+        exit "$rc"
+      ) &
+      c1=$!
+      unset pairs
+      c2=""
+      if [ "$CLIENTS" = 2 ]; then
+        sleep "$AFTER"
+        pairs2=""
+        if [ -n "$LAUNCH2" ]; then
+          read -r -a LW2 <<< "$LAUNCH2"
+          pairs2=$(launch_pairs "$STUBBIN/fenji-launch" "$PW2" "${LW2[@]}" 2> "$IO/2/launch.err") ||
+            { echo "fenji-launch failed for client 2, or printed something other than gj_* pairs; client 2 not started" >&2
+              pairs2="" LAUNCH2=failed; }
+          [ -z "$pairs2" ] || redact_gj_ticket <<< "$pairs2" > "$IO/2/launch.txt"
+        fi
+        unset PW2
+        if [ "$LAUNCH2" != failed ]; then
+          (
+            if [ -n "$pairs2" ]; then while IFS= read -r kv; do export "${kv?}"; done <<< "$pairs2"; fi
+            unset pairs2 kv
+            export DISPLAY=":$D2" PROTON_LOG_DIR="$IO/2" DXVK_LOG_PATH="$IO/2"
+            cd "$W/client2/bin64" || exit 99
+            timeout -k 10 "$TMO2" python3 "$PROTON/proton" run "$W/client2/bin64/gujianol.exe" "$@" > "$IO/2/proton.out" 2>&1
+            rc=$?
+            echo "$rc" > "$IO/exit-code-2"
+            # The timeout ends client 2'"'"'s proton run, not the client, and wineserver -k would end
+            # client 1 too: a client 2 still there 10 s later is ended by its own pid.
+            sleep 10
+            { date +%s; end_client "$W/client2/bin64/gujianol.exe"; } > "$IO/2/ended-by-pid"
+            exit "$rc"
+          ) &
+          c2=$!
+        fi
+        unset pairs2
+      fi
+      wait "$c1"
       rc=$?
-      echo "$rc" > "$IO/exit-code"
+      [ -z "$c2" ] || wait "$c2"
       WINEPREFIX="$W/compat/pfx" "$PROTON/files/bin/wineserver" -k 2>/dev/null
       sleep 2
       kill "$stub" 2>/dev/null
       wait "$stub" 2>/dev/null
       exit "$rc"
     ' _ "$WORK" "$IO" "$IO/stub" "$STUBBIN" "$ports" "$tmo" "$PROTON" "${stub_args[*]}" "$server_copy" \
-    "$launch" "$login_port" "$api_port" "$@" < <(password_line) > "$OUT/sandbox.out" 2>&1 &
+    "$launch" "$login_port" "$api_port" "$clients" "$display2" "$second_after" "$tmo2" "$launch2" \
+    "$@" < <(password_line) > "$OUT/sandbox.out" 2>&1 &
   local spid=$!
   python3 -I "$WATCHDOG" watch --root "$WORK" --out "$OUT" --sandbox-pid "$spid" \
-    --log "$IO/steam-1418100.log" --go "$IO/.go" "${wbinds[@]}" \
+    "${wlogs[@]}" --go "$IO/.go" "${wbinds[@]}" \
     2>> "$OUT/watchdog.err" &
   local wdpid=$!
   # Whichever ends first. If it is the watchdog (gate event, failure, or killed), the sandbox must
@@ -515,49 +732,62 @@ cmd_run() {
 }
 
 # The host-side inputs while a run is active, each at its time from now: screenshots of the nested
-# display, the caller's clicks and its key presses (run-client.sh's cmd_run, run-bare.sh). Sets
-# shots, clicker and typist to their PIDs; each stops once OUT/.running is gone, or when killed.
+# display (and of client 2's, display2, as screen-2-<T>s.png), the caller's clicks and its key
+# presses, client 2's (2@) on its display, each kind in time order across both clients
+# (run-client.sh's cmd_run, run-bare.sh). Uses the caller's clicks, clicks2, presses, display2,
+# second_after and tmo2. Sets shots, clicker and typist to their PIDs; each stops once OUT/.running
+# is gone, or when killed.
 start_inputs() {
-  local out=$1 display=$2 tmo=$3
+  local out=$1 display=$2 tmo=$3 end2=$((${second_after:-0} + ${tmo2:-0})) last=$3
+  if [ -n "${display2:-}" ] && [ "$end2" -gt "$last" ]; then last=$end2; fi
   # --- host-side screenshots while the run is active
   (
     start=$(date +%s)
     for t in 5 10 30 60 90 120 150 180 210 240 270 295; do
-      [ "$t" -le "$tmo" ] || break
+      [ "$t" -le "$last" ] || break
       now=$(date +%s)
       sl=$((start + t - now))
       [ "$sl" -le 0 ] || sleep "$sl"
       [ -e "$out/.running" ] || break
-      import -display ":$display" -window root "$out/screen-${t}s.png" 2>>"$out/screenshot.err" || true
+      if [ "$t" -le "$tmo" ]; then
+        import -display ":$display" -window root "$out/screen-${t}s.png" 2>>"$out/screenshot.err" || true
+      fi
+      if [ -n "${display2:-}" ] && [ "$t" -le "$end2" ]; then
+        import -display ":$display2" -window root "$out/screen-2-${t}s.png" 2>>"$out/screenshot.err" || true
+      fi
     done
   ) &
   shots=$!
-  # --- host-side clicks on the nested display, at their times
+  # --- host-side clicks on the nested displays, at their times
   (
     start=$(date +%s)
-    for c in "${clicks[@]}"; do
-      t=${c%%:*} xy=${c#*:}
+    while read -r t d n xy; do
       now=$(date +%s)
       sl=$((start + t - now))
       [ "$sl" -le 0 ] || sleep "$sl"
       [ -e "$out/.running" ] || break
-      python3 -I "$HERE/xclick.py" --display ":$display" "${xy%,*}" "${xy#*,}" 2>>"$out/click.err" &&
-        echo "$(date -Is) click $c" >> "$out/clicks.log"
-    done
+      label=""
+      [ "$n" = 1 ] || label="2@"
+      python3 -I "$HERE/xclick.py" --display ":$d" "${xy%,*}" "${xy#*,}" 2>>"$out/click.err" &&
+        echo "$(date -Is) click $label$t:$xy" >> "$out/clicks.log"
+    done < <(click_plan)
   ) &
   clicker=$!
-  # --- host-side key presses and typing on the nested display, at their times
+  # --- host-side key presses and typing on the nested displays, at their times
   (
     start=$(date +%s)
     for p in "${presses[@]}"; do
-      kind=${p%%:*} rest=${p#*:}
+      n=${p%%:*} rest=${p#*:}
+      kind=${rest%%:*} rest=${rest#*:}
       t=${rest%%:*} what=${rest#*:}
+      d=$display label=""
+      if [ "$n" = 2 ]; then d=${display2:-} label="2@"; fi
       now=$(date +%s)
       sl=$((start + t - now))
       [ "$sl" -le 0 ] || sleep "$sl"
       [ -e "$out/.running" ] || break
-      python3 -I "$HERE/xkey.py" --display ":$display" "--$kind=$what" 2>>"$out/keys.err" &&
-        echo "$(date -Is) $kind $t:$what" >> "$out/keys.log"
+      python3 -I "$HERE/xkey.py" --display ":$d" "--$kind=$what" 2>>"$out/keys.err" &&
+        echo "$(date -Is) $kind $label$t:$what" >> "$out/keys.log"
     done
   ) &
   typist=$!
@@ -568,7 +798,9 @@ start_inputs() {
 finish_run() {
   local wdrc=$1 wrc=$2 ran=$3
   collect_evidence || echo "run-client: collecting the evidence failed (exit $?); the verdict stands" >&2
-  echo "run $run done: proton exit $(cat "$OUT/io/exit-code" 2>/dev/null || echo '?'), sandbox exit $wrc, watchdog exit $wdrc"
+  local two=""
+  if [ "${clients:-1}" = 2 ]; then two=", client 2's proton exit $(cat "$OUT/io/exit-code-2" 2>/dev/null || echo '?')"; fi
+  echo "run $run done: proton exit $(cat "$OUT/io/exit-code" 2>/dev/null || echo '?')$two, sandbox exit $wrc, watchdog exit $wdrc"
   verdict "$wdrc" "$wrc" "$ran" "$OUT"
 }
 
@@ -623,6 +855,31 @@ collect_evidence() {
   else
     bad=1
   fi
+  # Client 2's own logs and install-root entries (Amendment B), the same way: into OUT/client2.
+  local copies=("$WORK/client")
+  if [ "${clients:-1}" = 2 ]; then
+    copies+=("$WORK/client2")
+    if [ -f "$OUT/io/2/steam-1418100.log" ]; then mv "$OUT/io/2/steam-1418100.log" "$OUT/wine-2.log" || bad=1; fi
+    if python3 -I "$WATCHDOG" collect --src "$WORK/client2/bin64" --dest "$OUT/client2" \
+      --name gujianol.log --name Log_gujianol.htm; then
+      rm -f -- "$WORK/client2/bin64/gujianol.log" "$WORK/client2/bin64/Log_gujianol.htm" || bad=1
+    else
+      bad=1
+    fi
+    if python3 -I "$WATCHDOG" collect --src "$WORK/client2" --dest "$OUT/client2/client-files" \
+      --exclude bin64 --exclude data --exclude tools; then
+      for e in "$WORK/client2"/* "$WORK/client2"/.[!.]*; do
+        if [ -e "$e" ] || [ -L "$e" ]; then
+          case "${e##*/}" in
+            bin64 | data | tools) ;;
+            *) rm -rf -- "$e" || bad=1 ;;
+          esac
+        fi
+      done
+    else
+      bad=1
+    fi
+  fi
   find "$PFX" -iname '*.sys' -printf '%P\t%y\t%l\t%s\t%T@\n' | sort > "$OUT/sys-after.tsv" || bad=1
   diff "$OUT/sys-before.tsv" "$OUT/sys-after.tsv" > "$OUT/sys-diff.txt"
   python3 -I "$WATCHDOG" collect --src "$PFX" --dest "$OUT/reg-after" --name system.reg --name user.reg || bad=1
@@ -631,7 +888,7 @@ collect_evidence() {
   for r in system user; do
     diff "$OUT/reg-before/$r.reg" "$OUT/reg-after/$r.reg" > "$OUT/reg-$r.diff"
   done
-  find "$WORK/client" "$PFX/drive_c" "$WORK/home" -newer "$OUT/.start" -type f -not -path '*/mesa_shader_cache/*' \
+  find "${copies[@]}" "$PFX/drive_c" "$WORK/home" -newer "$OUT/.start" -type f -not -path '*/mesa_shader_cache/*' \
     -printf '%TT\t%s\t%p\n' 2>/dev/null | sort > "$OUT/new-files.txt"
   redact_tickets "$OUT" || bad=1
   return "$bad"
