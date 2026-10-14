@@ -107,7 +107,9 @@ pub(super) struct Services(pub mpsc::UnboundedSender<Service>);
 struct NextSave(Option<u64>);
 
 /// Where characters that left the game a moment ago stood, and until when that is kept
-/// ([`KEEP_LEFT`]).
+/// ([`KEEP_LEFT`]). A join uses it over the place the store gave, which holds only while nothing
+/// but the world writes places: any future tool that moves an offline character (a command to
+/// free a stuck one, say) must clear its entry here, or the world's copy wins for up to a minute.
 ///
 /// [`KEEP_LEFT`]: super::KEEP_LEFT
 #[derive(Resource, Default)]
