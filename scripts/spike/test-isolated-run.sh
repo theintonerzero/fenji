@@ -117,7 +117,7 @@ t_usage() {
   # usage() prints a hand-kept range of header lines: it must hold every option's entry and end
   # with the environment note.
   out=$("$run" --bogus -- true 2>&1 >/dev/null) || true
-  for opt in --hosts --bind --ro-bind --x11 --no-root --cpu-topology; do
+  for opt in --hosts --bind --ro-bind --x11 --no-root --cpu-topology --gpu; do
     grep -q "^#   $opt " <<<"$out" || { echo "  the usage text has no entry for $opt" >&2; return 1; }
   done
   [[ $(tail -n 1 <<<"$out") == *"plus BROWSER=/bin/false (and DISPLAY with --x11)." ]] ||
@@ -308,6 +308,40 @@ check "every mount inside is on the allowlist" "$run" --bind "$tmp/bound" -- bas
       *) echo "  unexpected mount: $mp" >&2; exit 1 ;;
     esac
   done < /proc/self/mountinfo' _ "$tmp/bound"
+
+# --gpu (#266): the host's render nodes, their devices' sysfs directories read-only and their
+# /sys/dev/char links, and nothing more; without it, no GPU and no /sys. The --gpu half needs a
+# render node on the host (CI's runners have none).
+gpu_host=""
+for n in /dev/dri/renderD*; do [ -c "$n" ] && gpu_host=1; done
+t_no_gpu() { "$run" -- bash -c '[ ! -e /dev/dri ] && [ ! -e /sys ]'; }
+check "without --gpu there is no /dev/dri and no /sys inside" t_no_gpu
+t_gpu() {
+  local out want n
+  want=$(for n in /dev/dri/renderD*; do [ -c "$n" ] && echo "${n##*/}"; done)
+  want+=$'\n''sys: dev devices / char'
+  out=$("$run" --gpu --no-root -- bash -c '
+    ls /dev/dri
+    echo "sys: $(ls /sys | tr "\n" " ")/ $(ls /sys/dev | tr "\n" " " | sed "s/ $//")"
+    for l in /sys/dev/char/*; do
+      t=$(readlink "$l") d=${t%/drm/*}
+      { [ -d "$d" ] && [ -c "/dev/dri/${t##*/}" ]; } || echo "bad link: $l -> $t"
+      { echo auto > "$d/power/control"; } 2>/dev/null && echo "writable: $d"
+    done
+    while read -r _ _ _ _ mp _; do
+      case "$mp" in
+        /|/usr|/proc|/proc/*|/dev|/dev/*|/tmp|/run|/var|/etc/*|"$HOME"|/sys/devices/?*) ;;
+        *) echo "unexpected mount: $mp" ;;
+      esac
+    done < /proc/self/mountinfo' 2>&1) || { echo "  exit: $out" >&2; return 1; }
+  [ "$out" = "$want" ] || { echo "  got: $(tr '\n' '|' <<<"$out"), want: $(tr '\n' '|' <<<"$want")" >&2; return 1; }
+}
+if [ -n "$gpu_host" ]; then
+  check "--gpu: /dev/dri holds only the host's render nodes; /sys only their devices' directories, read-only, and their /sys/dev/char links" \
+    t_gpu
+else
+  echo "skip - --gpu: this host has no GPU render node"
+fi
 
 # Host abstract unix sockets are per network namespace: start one on the host and try it.
 abstract="fenji-isolation-test-$$"
@@ -534,7 +568,9 @@ mkdir -p "$tmp/as-run-rw" "$tmp/as-run-ro"
 t_as_run() {
   local out online
   online=$(cat /sys/devices/system/cpu/online) || return 1
-  out=$(DISPLAY=:$xm "$run" --no-root --x11 "$xn" --cpu-topology --hosts "$tmp/hosts" --bind "$tmp/as-run-rw" \
+  local gpu_flag=() gpu_line=()
+  if [ -n "$gpu_host" ]; then gpu_flag=(--gpu) gpu_line=(gpu=render); fi
+  out=$(DISPLAY=:$xm "$run" --no-root --x11 "$xn" --cpu-topology "${gpu_flag[@]}" --hosts "$tmp/hosts" --bind "$tmp/as-run-rw" \
           --ro-bind "$tmp/as-run-ro" -- bash -c '
     [ "$(id -u)" = "$3" ] && echo uid=caller
     [ "$DISPLAY" = ":$1" ] && python3 -I -c "$2" "/tmp/.X11-unix/X$1" && echo x11=connects
@@ -547,10 +583,11 @@ except OSError as e: sys.exit(e.errno != errno.EROFS)
 sys.exit(1)" "$6" && echo ro=readonly
     [ "$(ip -o link show | awk -F": " "{print \$2}")" = lo ] && echo links=lo
     (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null || echo tcp=blocked
-    getent hosts example.com >/dev/null 2>&1 || echo dns=blocked' \
+    getent hosts example.com >/dev/null 2>&1 || echo dns=blocked
+    if [ -e /dev/dri ]; then ls /dev/dri/renderD* >/dev/null 2>&1 && echo gpu=render; fi' \
           _ "$xn" "$x11_probe" "$uid" "$online" "$tmp/as-run-rw" "$tmp/as-run-ro" 2>&1) || true
   [ "$out" = "$(printf '%s\n' uid=caller x11=connects cpu=host hosts=mapped rw=writable ro=readonly links=lo \
-                  tcp=blocked dns=blocked)" ] || { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+                  tcp=blocked dns=blocked "${gpu_line[@]}")" ] || { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
 }
 
 if [ -n "$x11_host" ]; then
@@ -564,7 +601,7 @@ if [ -n "$x11_host" ]; then
     t_x11_session
   check "--no-root --x11 N: COMMAND runs as the caller's uid with DISPLAY=:N, and the nested server's socket takes connections" \
     t_x11_noroot
-  check "the flags as run-client.sh passes them, in one run (--no-root --x11 N --cpu-topology --hosts --bind --ro-bind): each still does its job" \
+  check "the flags as run-client.sh passes them, in one run (--no-root --x11 N --cpu-topology [--gpu] --hosts --bind --ro-bind): each still does its job" \
     t_as_run
 elif [ -n "$fake_x_pid" ]; then
   fail "a fake X server starts in /tmp/.X11-unix (the --x11 checks against it need one): $(head -c 300 "$tmp/fake-x.out")"

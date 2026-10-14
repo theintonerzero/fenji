@@ -5,7 +5,7 @@
 # ground rule 4). Linux x86_64 only; needs bwrap, python3 and unprivileged user namespaces.
 #
 #   scripts/spike/isolated-run.sh [--hosts FILE] [--bind DIR]... [--ro-bind DIR]... [--x11 N [--x11 M]]
-#                                 [--no-root] [--cpu-topology] -- COMMAND [ARGS...]
+#                                 [--no-root] [--cpu-topology] [--gpu] -- COMMAND [ARGS...]
 #
 #   --hosts FILE    FILE's content becomes /etc/hosts inside (after localhost entries), e.g. to
 #                   point the client's hostnames at a stub listening on 127.0.0.1 inside.
@@ -21,6 +21,9 @@
 #                   read-only at the same path; Wine and Proton build their processor information
 #                   from it. No other part of /sys is inside, and without it there is no /sys:
 #                   --bind and --ro-bind refuse /sys and everything in it.
+#   --gpu           give COMMAND the host's GPUs for rendering: each render node /dev/dri/renderDN
+#                   (never a card node, which drives displays), with its device's sysfs directory
+#                   read-only and its /sys/dev/char link, which Mesa follows to find it. See "GPU".
 #   Pass extra environment with `env VAR=value COMMAND`; only PATH, HOME, TERM, LANG, LANGUAGE,
 #   LC_* and USER are inherited, plus BROWSER=/bin/false (and DISPLAY with --x11).
 #
@@ -50,8 +53,9 @@
 # daemon socket (systemd-resolved, D-Bus, systemd --user, PulseAudio/PipeWire, CUPS, sshd, avahi,
 # X11, Wayland, ibus, Steam) exists inside unless a --bind/--ro-bind DIR exposes it, bar the one
 # nested X server socket --x11 N names (see "Display"). Nor does /sys, bar the read-only
-# /sys/devices/system/cpu that --cpu-topology adds: a bind of /sys, or of anything in it, could
-# hand COMMAND the caller's own cgroup files (cgroup.kill, cgroup.freeze).
+# /sys/devices/system/cpu that --cpu-topology adds and the GPUs' device directories that --gpu
+# adds: a bind of /sys, or of anything else in it, could hand COMMAND the caller's own cgroup
+# files (cgroup.kill, cgroup.freeze).
 # Bound dirs must belong to the run. One is refused (exit 2) if, at start:
 #   - it holds a socket or fifo at any depth (also one mounted over another file), or can't be
 #     fully scanned for them;
@@ -122,10 +126,18 @@
 # Xauthority, no other host X socket, and the server's abstract socket stays out of reach in the
 # host's network namespace. Like the bind checks, these run once.
 #
-# No GPU: /dev inside has no dri nodes (and -shm keeps DRI3 from passing one in), so render in
-# software. For Vulkan (DXVK, VKD3D-Proton), pick Mesa's lavapipe inside the command:
-# `env VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json COMMAND` (newer Vulkan loaders
-# also read VK_DRIVER_FILES). OpenGL falls back to llvmpipe by itself.
+# GPU. Without --gpu, /dev inside has no dri nodes (and -shm keeps DRI3 from passing one in), so
+# COMMAND renders in software. For Vulkan (DXVK, VKD3D-Proton), pick Mesa's lavapipe inside the
+# command: `env VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json COMMAND` (newer Vulkan
+# loaders also read VK_DRIVER_FILES). OpenGL falls back to llvmpipe by itself.
+# With --gpu (the owner's choice for client runs, 2026-10-15, #266), each of the host's render
+# nodes goes inside with its device's sysfs directory, read-only, and its /sys/dev/char link:
+# nothing else of /sys, no card node (modesetting and the display stay out) and still no DRI3, so
+# frames reach the nested display through X as before. COMMAND can then submit work to the GPU
+# through its kernel driver's render interface, which widens what a bug in that driver exposes. It
+# opens no network, no host file and no display. --gpu is refused (exit 2) unless /dev/dri has a
+# render node (DRM major 226, minor 128 and up) whose /sys/dev/char link leads to a device's
+# drm/renderDN on sysfs, with nothing mounted below that device's directory.
 #
 # A running host Steam (native or Flatpak) is refused (exit 2); the self-test alone overrides that
 # with FENJI_ISOLATED_RUN_ALLOW_STEAM=1 (and adds refused filesystem types for its own test with
@@ -137,10 +149,10 @@
 # non-x86_64 host, or missing bwrap, pgrep or python3. Otherwise the exit status is COMMAND's.
 set -euo pipefail
 
-usage() { sed -n '2,25p' "$0" >&2; exit 2; }
+usage() { sed -n '2,28p' "$0" >&2; exit 2; }
 die2() { echo "isolated-run: $*" >&2; exit 2; }
 
-hosts="" binds=() x11s=() noroot="" cputopo=""
+hosts="" binds=() x11s=() noroot="" cputopo="" gpu=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --hosts)
@@ -169,6 +181,7 @@ while [ $# -gt 0 ]; do
       ;;
     --no-root) noroot=1; shift ;;
     --cpu-topology) cputopo=1; shift ;;
+    --gpu) gpu=1; shift ;;
     --) shift; break ;;
     *) usage ;;
   esac
@@ -243,7 +256,7 @@ refused_fstype() {
 }
 # Mount table: mount points (octal escapes like \040 decoded) and filesystem types.
 mnt_points=() mnt_types=()
-if [ "${#binds[@]}" -gt 0 ] || [ -n "$cputopo" ]; then
+if [ "${#binds[@]}" -gt 0 ] || [ -n "$cputopo" ] || [ -n "$gpu" ]; then
   while IFS= read -r line; do
     read -r _ _ _ _ mp _ <<<"$line"
     printf -v mp '%b' "${mp//\\/\\0}"
@@ -279,6 +292,33 @@ if [ -n "$cputopo" ]; then
     die2 "--cpu-topology: /sys/devices/system/cpu is on ${on_type:-an unknown filesystem}, not sysfs; only the kernel's own CPU sysfs is bound"
   [ "${#below_points[@]}" -eq 0 ] ||
     die2 "--cpu-topology: a filesystem (${below_types[0]}) is mounted at ${below_points[0]}, below /sys/devices/system/cpu; only the kernel's own CPU sysfs is bound, with nothing mounted in it"
+fi
+
+# --gpu takes every render node in /dev/dri: a character device of the DRM major (226) with a
+# render minor (128 and up), whose /sys/dev/char link leads to a drm/renderDN directory of a
+# device under /sys/devices, on sysfs with nothing mounted below the device's directory.
+gpu_nodes=() gpu_links=() gpu_dirs=()
+if [ -n "$gpu" ]; then
+  for node in /dev/dri/renderD*; do
+    [ -c "$node" ] || continue
+    major=$((16#$(stat -c %t -- "$node"))) minor=$((16#$(stat -c %T -- "$node")))
+    { [ "$major" = 226 ] && [ "$minor" -ge 128 ]; } ||
+      die2 "--gpu: $node isn't a DRM render node (major $major, minor $minor)"
+    target=$(realpath -e -- "/sys/dev/char/$major:$minor" 2>/dev/null) ||
+      die2 "--gpu: $node has no /sys/dev/char/$major:$minor entry"
+    case "$target" in
+      /sys/devices/?*/drm/"${node##*/}") ;;
+      *) die2 "--gpu: /sys/dev/char/$major:$minor leads to $target, not a device's drm/${node##*/}" ;;
+    esac
+    dir=${target%/drm/*}
+    mounts_at "$dir"
+    [ "$on_type" = sysfs ] || die2 "--gpu: $dir is on ${on_type:-an unknown filesystem}, not sysfs"
+    [ "${#below_points[@]}" -eq 0 ] ||
+      die2 "--gpu: a filesystem (${below_types[0]}) is mounted at ${below_points[0]}, below $dir"
+    gpu_nodes+=("$node") gpu_links+=("/sys/dev/char/$major:$minor" "$target")
+    case " ${gpu_dirs[*]} " in *" $dir "*) ;; *) gpu_dirs+=("$dir") ;; esac
+  done
+  [ "${#gpu_nodes[@]}" -gt 0 ] || die2 "--gpu: there is no GPU render node in /dev/dri"
 fi
 
 # Refuse binds that obviously contain host daemon sockets: a dir that is, or is a parent of, one
@@ -499,6 +539,17 @@ fi
 # information from it). After the caller's binds, so none can sit on top of it.
 if [ -n "$cputopo" ]; then
   args+=(--ro-bind /sys/devices/system/cpu /sys/devices/system/cpu)
+fi
+
+# --gpu (checked above): each render node, its device's sysfs directory read-only and its
+# /sys/dev/char link, which libdrm follows to find the device. After the caller's binds, so none
+# can sit on top of them.
+if [ -n "$gpu" ]; then
+  for node in "${gpu_nodes[@]}"; do args+=(--dev-bind "$node" "$node"); done
+  for dir in "${gpu_dirs[@]}"; do args+=(--ro-bind "$dir" "$dir"); done
+  for ((i = 0; i < ${#gpu_links[@]}; i += 2)); do
+    args+=(--symlink "${gpu_links[$((i + 1))]}" "${gpu_links[$i]}")
+  done
 fi
 
 # Generated /etc files go last so no bind can shadow them (fds 3-6 are opened on the exec line).

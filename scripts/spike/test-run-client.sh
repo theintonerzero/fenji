@@ -118,6 +118,34 @@ refuses "--ports can't be empty" "--ports" -- --ports ''
 refuses "--click takes T:X,Y in whole numbers" "--click" -- --click 5:abc
 refuses "valid --ports, --env and --click pass their checks" "no workspace" -- --ports '7800 7801' --env FOO=bar --click 30:640,360
 
+refuses "--no-gpu is one of run's options" "no workspace" -- --no-gpu
+usage_setup_gpu=$( (FENJI_CLIENT_PATH="" cmd_setup --no-gpu) 2>&1 > /dev/null)
+if [[ $usage_setup_gpu == *"set FENJI_CLIENT_PATH"* ]]; then ok "--no-gpu is one of setup's options"; else bad "setup --no-gpu: $usage_setup_gpu"; fi
+
+# inputs.txt says how the run renders (#266): the GPU through isolated-run.sh --gpu by default,
+# lavapipe with --no-gpu.
+for g in 1 ""; do
+  if (
+    guard
+    OUT=$TESTROOT/inputs-gpu-${g:-no} run=t ports=7800 tmo=9 display=99 channels=-all hosts=$TESTROOT/hosts
+    WRAP=$TESTROOT/hosts WATCHDOG=$TESTROOT/hosts PROTON=/nonexistent gpu=$g
+    envs=() client_files=() clicks=() stub_args=()
+    mkdir -p "$OUT" && echo "127.0.0.1 localhost" > "$hosts"
+    record_inputs -x 1 > /dev/null 2>&1
+    if [ -n "$g" ]; then
+      grep -q '^sandbox: isolated-run.sh .* --cpu-topology --gpu ' "$OUT/inputs.txt" &&
+        grep -qx 'rendering: the host GPU, through its render node (DXVK picks it)' "$OUT/inputs.txt"
+    else
+      ! grep -q -- '--gpu' "$OUT/inputs.txt" &&
+        grep -qx 'rendering: lavapipe, in software (--no-gpu)' "$OUT/inputs.txt"
+    fi
+  ); then
+    ok "inputs.txt records the renderer (${g:+GPU}${g:-lavapipe})"
+  else
+    bad "inputs.txt records the renderer (${g:+GPU}${g:-lavapipe})"
+  fi
+done
+
 # record_inputs writes what defines a run, the stub's arguments included.
 if (
   guard
