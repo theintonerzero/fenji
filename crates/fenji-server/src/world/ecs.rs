@@ -69,9 +69,10 @@ pub(super) struct Doomed(pub Option<KickReason>);
 #[derive(Resource, Default)]
 pub(super) struct Now(pub u64);
 
-/// Milliseconds since the last tick: 0 for the first.
+/// Milliseconds between the end of the last tick's work and the start of this tick: 0 for the
+/// first, and for one that starts late because the last one's work ran long (Ruling R10).
 #[derive(Resource, Default)]
-struct Since(u64);
+struct Gap(u64);
 
 #[derive(Resource, Default)]
 struct Inbox(Vec<WorldIn>);
@@ -113,8 +114,6 @@ struct Left(HashMap<ActorId, (Location, u64)>);
 pub struct WorldCore {
     world: World,
     phases: Vec<(&'static str, Schedule)>,
-    /// The last tick's time.
-    last: Option<u64>,
 }
 
 fn phase<M>(systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Schedule {
@@ -129,7 +128,7 @@ impl WorldCore {
         world.insert_resource(NextSave::default());
         world.insert_resource(rules);
         world.insert_resource(Now::default());
-        world.insert_resource(Since::default());
+        world.insert_resource(Gap::default());
         world.insert_resource(Inbox::default());
         world.insert_resource(Index::default());
         world.insert_resource(Pending::default());
@@ -144,20 +143,19 @@ impl WorldCore {
             ("persist", phase(persist)),
             ("cleanup", phase(cleanup)),
         ];
-        Self {
-            world,
-            phases,
-            last: None,
-        }
+        Self { world, phases }
     }
 
-    /// Runs one tick at `now_ms`, with what arrived since the last one in arrival order, and
-    /// returns how long each phase took.
-    pub fn step(&mut self, now_ms: u64, inputs: Vec<WorldIn>) -> Vec<(&'static str, Duration)> {
-        let since = self.last.map_or(0, |last| now_ms.saturating_sub(last));
-        self.last = Some(now_ms);
+    /// Runs one tick at `now_ms`, `gap_ms` after the last one's work ended, with what arrived since
+    /// the last one in arrival order, and returns how long each phase took.
+    pub fn step(
+        &mut self,
+        now_ms: u64,
+        gap_ms: u64,
+        inputs: Vec<WorldIn>,
+    ) -> Vec<(&'static str, Duration)> {
         self.world.resource_mut::<Now>().0 = now_ms;
-        self.world.resource_mut::<Since>().0 = since;
+        self.world.resource_mut::<Gap>().0 = gap_ms;
         self.world.resource_mut::<Inbox>().0 = inputs;
         self.phases
             .iter_mut()
@@ -203,16 +201,18 @@ pub(super) fn name_key(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
-/// The most messages a connection may send in a tick that comes `since_ms` after the last one:
-/// `max_inputs_per_tick` for each tick period in between, at least one period's and at most
-/// [`MAX_STALL`]'s. After a stall of the world's thread (a suspend, a VM pause), what every
-/// connection sent in the periods it missed arrives in one tick, and isn't a flood (#222).
+/// The most messages a connection may send in a tick that starts `gap_ms` after the last one's
+/// work ended: `max_inputs_per_tick` for each tick period in the gap, at least one period's and
+/// at most [`MAX_STALL`]'s. After a stall of the world's thread between ticks (a suspend, a VM
+/// pause), what every connection sent in the periods it missed arrives in one tick, and isn't a
+/// flood (#222). A tick slowed by its own work leaves no gap, so it earns the next one nothing: a
+/// flood can't buy itself more allowance by making ticks slow (Ruling R10).
 ///
 /// [`MAX_STALL`]: super::MAX_STALL
-fn allowance(rules: &Rules, since_ms: u64) -> usize {
+fn allowance(rules: &Rules, gap_ms: u64) -> usize {
     let period_ms = (1_000 / u64::from(rules.tick_hz.max(1))).max(1);
     let stall_ms = u64::try_from(super::MAX_STALL.as_millis()).unwrap_or(u64::MAX);
-    let periods = (since_ms / period_ms).clamp(1, (stall_ms / period_ms).max(1));
+    let periods = (gap_ms / period_ms).clamp(1, (stall_ms / period_ms).max(1));
     let periods = usize::try_from(periods).unwrap_or(usize::MAX);
     rules.max_inputs_per_tick.saturating_mul(periods)
 }
@@ -221,7 +221,7 @@ fn allowance(rules: &Rules, since_ms: u64) -> usize {
 /// their phases. A connection that sends more than its [`allowance`] is kicked.
 fn inbound(world: &mut World) {
     let inputs = std::mem::take(&mut world.resource_mut::<Inbox>().0);
-    let max = allowance(world.resource::<Rules>(), world.resource::<Since>().0);
+    let max = allowance(world.resource::<Rules>(), world.resource::<Gap>().0);
     let mut counts: HashMap<ConnId, usize> = HashMap::new();
     for input in inputs {
         match input {
@@ -657,11 +657,21 @@ pub(crate) mod test_util {
             self.queued.push(input);
         }
 
-        /// Runs a tick `ms` after the last one, with what was queued.
+        /// Runs a tick `ms` after the last one began, with what was queued. The last one took no
+        /// time, so all of `ms` was a gap between ticks.
         pub fn tick(&mut self, ms: u64) {
+            self.run_tick(ms, ms);
+        }
+
+        /// Runs a tick as a last one whose work took `ms` ends: no gap between them.
+        pub fn tick_after_work(&mut self, ms: u64) {
+            self.run_tick(ms, 0);
+        }
+
+        fn run_tick(&mut self, ms: u64, gap: u64) {
             self.now += ms;
             let inputs = std::mem::take(&mut self.queued);
-            self.core.step(self.now, inputs);
+            self.core.step(self.now, gap, inputs);
         }
 
         /// What `conn` was sent since the last call.
@@ -893,6 +903,21 @@ mod tests {
             h.push(WorldIn::Pull { conn: 1, pid: 99 });
         }
         h.tick(50);
+        assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
+    }
+
+    #[test]
+    fn a_slow_tick_is_no_stall() {
+        // Ruling R10: only a gap between ticks is a stall. A tick slowed by its own work (many
+        // connections each sending near the limit, say) gives the next no more allowance, or a
+        // flood would buy itself more tick after tick. This tick starts as one that worked
+        // 500 ms ends: nine is a flood, as in any tick on time.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        for _ in 0..9 {
+            h.push(WorldIn::Pull { conn: 1, pid: 99 });
+        }
+        h.tick_after_work(500);
         assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
     }
 

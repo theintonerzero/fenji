@@ -249,6 +249,8 @@ fn run(
 ) -> Result<(), String> {
     let start = Instant::now();
     let mut next = start;
+    // When the last tick's work ended.
+    let mut ended = None;
     loop {
         let mut inputs = Vec::new();
         let mut stopping = false;
@@ -265,15 +267,18 @@ fn run(
         }
         let joining = joining(&inputs);
         let began = Instant::now();
-        let now_ms = u64::try_from(began.duration_since(start).as_millis()).unwrap_or(u64::MAX);
-        let phases = match catch_unwind(AssertUnwindSafe(|| core.step(now_ms, inputs))) {
+        let now_ms = millis(began.duration_since(start));
+        let gap_ms = gap(ended, began);
+        let phases = match catch_unwind(AssertUnwindSafe(|| core.step(now_ms, gap_ms, inputs))) {
             Ok(phases) => phases,
             Err(panic) => return Err(abandon(core, &mut rx, &joining, panic)),
         };
+        let work = began.elapsed();
+        ended = Some(began + work);
         stats
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .record(began.elapsed(), &phases, tick);
+            .record(work, &phases, tick);
         if stopping {
             turn_away(&mut rx);
             return Ok(());
@@ -287,6 +292,18 @@ fn run(
             next = now;
         }
     }
+}
+
+/// Milliseconds from the end of the last tick's work, `ended`, to a tick that began at `began`:
+/// what the flood check takes as a stall. It is 0 for the first tick, and for one that starts as
+/// the last one ends because that one's work ran long: a tick slowed by its own inputs must earn
+/// the next no more allowance, or a flood would buy itself more tick after tick (Ruling R10).
+fn gap(ended: Option<Instant>, began: Instant) -> u64 {
+    ended.map_or(0, |ended| millis(began.saturating_duration_since(ended)))
+}
+
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The channels of the links joining in a tick: a tick that panics may drop them before their
@@ -363,6 +380,18 @@ mod tests {
     use super::*;
 
     const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn the_gap_runs_from_the_end_of_the_last_ticks_work() {
+        // Ruling R10: the flood check forgives a stall between ticks, never a tick's own work.
+        let t = Instant::now();
+        assert_eq!(gap(None, t), 0, "the first tick");
+        // A tick that worked 500 ms, then the next as soon as it ended: no gap, though the next
+        // began 500 ms after the last one did.
+        assert_eq!(gap(Some(t + MS * 500), t + MS * 500), 0);
+        // A tick that worked 2 ms, then a pause: the gap is the pause.
+        assert_eq!(gap(Some(t + MS * 2), t + MS * 2_002), 2_000);
+    }
 
     #[test]
     fn a_join_after_the_shutdown_hears_the_shutdown() {
