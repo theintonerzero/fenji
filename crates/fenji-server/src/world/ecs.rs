@@ -24,7 +24,8 @@ pub struct Rules {
     pub move_tolerance: f64,
     /// How often everyone's place is saved, in milliseconds (`[world] save_every_secs`).
     pub save_every_ms: u64,
-    /// The most messages a connection may send in one tick; one more and it is kicked.
+    /// The most messages a connection may send in one tick period; one more and it is kicked.
+    /// A tick after a stall allows this for each period it missed ([`allowance`]).
     pub max_inputs_per_tick: usize,
 }
 
@@ -68,6 +69,10 @@ pub(super) struct Doomed(pub Option<KickReason>);
 #[derive(Resource, Default)]
 pub(super) struct Now(pub u64);
 
+/// Milliseconds since the last tick: 0 for the first.
+#[derive(Resource, Default)]
+struct Since(u64);
+
 #[derive(Resource, Default)]
 struct Inbox(Vec<WorldIn>);
 
@@ -101,6 +106,8 @@ struct NextSave(Option<u64>);
 pub struct WorldCore {
     world: World,
     phases: Vec<(&'static str, Schedule)>,
+    /// The last tick's time.
+    last: Option<u64>,
 }
 
 fn phase<M>(systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Schedule {
@@ -115,6 +122,7 @@ impl WorldCore {
         world.insert_resource(NextSave::default());
         world.insert_resource(rules);
         world.insert_resource(Now::default());
+        world.insert_resource(Since::default());
         world.insert_resource(Inbox::default());
         world.insert_resource(Index::default());
         world.insert_resource(Pending::default());
@@ -128,13 +136,20 @@ impl WorldCore {
             ("persist", phase(persist)),
             ("cleanup", phase(cleanup)),
         ];
-        Self { world, phases }
+        Self {
+            world,
+            phases,
+            last: None,
+        }
     }
 
     /// Runs one tick at `now_ms`, with what arrived since the last one in arrival order, and
     /// returns how long each phase took.
     pub fn step(&mut self, now_ms: u64, inputs: Vec<WorldIn>) -> Vec<(&'static str, Duration)> {
+        let since = self.last.map_or(0, |last| now_ms.saturating_sub(last));
+        self.last = Some(now_ms);
         self.world.resource_mut::<Now>().0 = now_ms;
+        self.world.resource_mut::<Since>().0 = since;
         self.world.resource_mut::<Inbox>().0 = inputs;
         self.phases
             .iter_mut()
@@ -180,11 +195,25 @@ pub(super) fn name_key(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
+/// The most messages a connection may send in a tick that comes `since_ms` after the last one:
+/// `max_inputs_per_tick` for each tick period in between, at least one period's and at most
+/// [`MAX_STALL`]'s. After a stall of the world's thread (a suspend, a VM pause), what every
+/// connection sent in the periods it missed arrives in one tick, and isn't a flood (#222).
+///
+/// [`MAX_STALL`]: super::MAX_STALL
+fn allowance(rules: &Rules, since_ms: u64) -> usize {
+    let period_ms = (1_000 / u64::from(rules.tick_hz.max(1))).max(1);
+    let stall_ms = u64::try_from(super::MAX_STALL.as_millis()).unwrap_or(u64::MAX);
+    let periods = (since_ms / period_ms).clamp(1, (stall_ms / period_ms).max(1));
+    let periods = usize::try_from(periods).unwrap_or(usize::MAX);
+    rules.max_inputs_per_tick.saturating_mul(periods)
+}
+
 /// Applies the tick's inputs in arrival order. Moves, pulls and chat lines wait in [`Pending`] for
-/// their phases. A connection that sends more than `max_inputs_per_tick` is kicked.
+/// their phases. A connection that sends more than its [`allowance`] is kicked.
 fn inbound(world: &mut World) {
     let inputs = std::mem::take(&mut world.resource_mut::<Inbox>().0);
-    let max = world.resource::<Rules>().max_inputs_per_tick;
+    let max = allowance(world.resource::<Rules>(), world.resource::<Since>().0);
     let mut counts: HashMap<ConnId, usize> = HashMap::new();
     for input in inputs {
         match input {
@@ -790,6 +819,69 @@ mod tests {
         h.tick(50);
         assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
         assert_eq!(h.core.players(), 0);
+    }
+
+    #[test]
+    fn a_stall_is_not_a_flood_but_a_flood_within_one_period_still_is() {
+        // #222: after a stall of the world's thread (a suspend, a VM pause), what each connection
+        // sent in the periods it missed arrives in one tick. The harness allows 8 a period of
+        // 50 ms: ten periods' worth, 500 ms after the last tick, is normal input.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        for _ in 0..80 {
+            h.push(WorldIn::Pull { conn: 1, pid: 99 });
+        }
+        h.tick(500);
+        assert_eq!(h.take(1), Vec::new(), "not kicked");
+        assert_eq!(h.core.players(), 1);
+        // The next tick comes on time: nine in it is a flood.
+        for _ in 0..9 {
+            h.push(WorldIn::Pull { conn: 1, pid: 99 });
+        }
+        h.tick(50);
+        assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
+    }
+
+    #[test]
+    fn a_long_stall_counts_as_a_few_seconds() {
+        // Ten minutes count as MAX_STALL's five seconds: 100 periods of 8.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        h.enter(player(2, "Mai", at(50_000.0, 0.0)));
+        for (conn, n) in [(1, 800), (2, 801)] {
+            for _ in 0..n {
+                h.push(WorldIn::Pull { conn, pid: 99 });
+            }
+        }
+        h.tick(600_000);
+        assert_eq!(h.take(1), Vec::new(), "within five seconds' worth");
+        assert_eq!(h.take(2), vec![WorldOut::Kicked(KickReason::Flood)]);
+    }
+
+    #[test]
+    fn the_allowance_is_the_limit_for_each_period_since_the_last_tick() {
+        let at_hz = |tick_hz| Rules {
+            tick_hz,
+            max_inputs_per_tick: 10,
+            ..rules()
+        };
+        // 20 Hz: periods of 50 ms, at most 100 of them.
+        for (since, want) in [
+            (0, 10),
+            (49, 10),
+            (99, 10),
+            (100, 20),
+            (5_000, 1_000),
+            (600_000, 1_000),
+        ] {
+            assert_eq!(allowance(&at_hz(20), since), want, "{since} ms");
+        }
+        // 1 Hz: periods of a second; 60 Hz: periods of 16 ms, at most 312.
+        assert_eq!(allowance(&at_hz(1), 999), 10);
+        assert_eq!(allowance(&at_hz(1), 3_000), 30);
+        assert_eq!(allowance(&at_hz(1), 60_000), 50);
+        assert_eq!(allowance(&at_hz(60), 16), 10);
+        assert_eq!(allowance(&at_hz(60), 60_000), 3_120);
     }
 
     #[test]

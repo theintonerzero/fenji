@@ -16,9 +16,13 @@ pub use types::*;
 
 use crate::config::Config;
 
-/// The most messages a connection may send in one tick before it is kicked: far above what a
-/// client sends (a few moves, a pull for each player coming into view, a line of chat).
+/// The most messages a connection may send in one tick period before it is kicked: far above what
+/// a client sends (a few moves, a pull for each player coming into view, a line of chat).
 pub const MAX_INPUTS_PER_TICK: usize = 128;
+
+/// The longest stall of the world's thread (a suspend, a VM pause) whose inputs the flood check
+/// takes as spread over the periods it missed: a longer one counts as this long (#222).
+pub const MAX_STALL: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Rules {
     pub fn from_config(cfg: &Config) -> Self {
