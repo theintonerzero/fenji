@@ -12,6 +12,7 @@ use anyhow::anyhow;
 use fenji_store::Store;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinError;
 
 use super::ecs::{Rules, WorldCore};
 use super::types::{KickReason, Service, WorldIn, WorldOut};
@@ -126,6 +127,9 @@ pub struct RunningWorld {
     /// Closed when the thread ends, however it ends; nothing is sent on it.
     ended: watch::Receiver<()>,
     services: tokio::task::JoinHandle<()>,
+    /// How the services task ended, once [`RunningWorld::ended`] has seen it end before the world
+    /// (Ruling R13).
+    services_ended: Option<Result<(), JoinError>>,
     stats: Arc<Mutex<Stats>>,
 }
 
@@ -181,6 +185,7 @@ fn launch(
         thread,
         ended,
         services,
+        services_ended: None,
         stats,
     })
 }
@@ -197,18 +202,32 @@ impl RunningWorld {
             .report()
     }
 
-    /// Resolves once the world's thread has ended. Before [`RunningWorld::stop`] asks it to, that
-    /// is a failure: a tick panicked, and the world has let everyone go (Ruling R9).
-    pub async fn ended(&mut self) {
-        // Nothing is sent: `changed` fails once the thread has dropped its end.
-        let _ = self.ended.changed().await;
+    /// The services task, for a test to end it early (Ruling R13).
+    #[cfg(test)]
+    pub(crate) fn services_task(&self) -> tokio::task::AbortHandle {
+        self.services.abort_handle()
+    }
+
+    /// Resolves once the world's thread or its services task has ended, and says which. Before
+    /// [`RunningWorld::stop`] asks them to, either is a failure: a tick panicked and the world has
+    /// let everyone go (Ruling R9), or the world's saves have nowhere to go (Ruling R13).
+    pub async fn ended(&mut self) -> &'static str {
+        tokio::select! {
+            // Nothing is sent: `changed` fails once the thread has dropped its end.
+            _ = self.ended.changed() => "the world's thread",
+            done = &mut self.services, if self.services_ended.is_none() => {
+                self.services_ended = Some(done);
+                "the world's services task"
+            }
+        }
     }
 
     /// Saves everyone and stops: the thread ends after its shutdown tick, and the services task
     /// once it has written the last saves (waiting at most [`SAVE_WAIT`]). Each failure is logged
     /// and returned, the first if there are two: a tick that panicked (Ruling R9) or a thread that
-    /// failed, or saves lost to a services task that failed or didn't finish in time (#222). The
-    /// server's shutdown passes it on, so `fenji-server run` exits non-zero.
+    /// failed, or saves lost to a services task that failed, ended before the world (Ruling R13)
+    /// or didn't finish in time (#222). The server's shutdown passes it on, so `fenji-server run`
+    /// exits non-zero.
     pub async fn stop(self) -> anyhow::Result<()> {
         self.handle.send(WorldIn::Shutdown);
         let thread = self.thread;
@@ -221,7 +240,25 @@ impl RunningWorld {
                 Err(anyhow!("the world's thread panicked"))
             }
         };
-        let saved = match tokio::time::timeout(SAVE_WAIT, self.services).await {
+        let saved = match self.services_ended {
+            // Every save since it ended went nowhere, however it ended.
+            Some(done) => {
+                let how = done
+                    .err()
+                    .map_or_else(|| "it returned".into(), |e| e.to_string());
+                tracing::error!(how, "the world's services task ended before the world");
+                Err(anyhow!(
+                    "the world's services task ended before the world, and saves were lost: {how}"
+                ))
+            }
+            None => Self::saved(self.services).await,
+        };
+        ended.and(saved)
+    }
+
+    /// Waits at most [`SAVE_WAIT`] for the services task to write the last saves and end.
+    async fn saved(services: tokio::task::JoinHandle<()>) -> anyhow::Result<()> {
+        match tokio::time::timeout(SAVE_WAIT, services).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => {
                 tracing::error!(error = %e, "the world's services task failed: saves were lost");
@@ -233,8 +270,7 @@ impl RunningWorld {
                 tracing::error!("the world's last saves took over {SAVE_WAIT:?}");
                 Err(anyhow!("the world's last saves took over {SAVE_WAIT:?}"))
             }
-        };
-        ended.and(saved)
+        }
     }
 }
 

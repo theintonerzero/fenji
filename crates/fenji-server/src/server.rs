@@ -51,21 +51,22 @@ impl RunningServer {
         self.world.report()
     }
 
-    /// Serves until `stop` completes, or until the world ends by itself, which only a tick that
-    /// panicked does, then shuts down: what `fenji-server run` awaits. A world that ended takes
-    /// the server with it, so that no login waits for a world that isn't there, and the error
-    /// makes `fenji-server run` exit non-zero for systemd to restart it (Ruling R9).
+    /// Serves until `stop` completes, or until the world's thread or its services task ends by
+    /// itself, then shuts down: what `fenji-server run` awaits. Either ending early takes the
+    /// server with it, so that no login waits for a world that isn't there (Ruling R9) or plays
+    /// in one that can't save (Ruling R13), and the error makes `fenji-server run` exit non-zero
+    /// for systemd to restart it.
     pub async fn serve_until(mut self, stop: impl Future<Output = ()>) -> anyhow::Result<()> {
         let failed = tokio::select! {
-            () = stop => false,
-            () = self.world.ended() => {
-                tracing::error!("the world has stopped: stopping the server");
-                true
+            () = stop => None,
+            what = self.world.ended() => {
+                tracing::error!("{what} has ended: stopping the server");
+                Some(what)
             }
         };
-        match self.shutdown().await {
-            Ok(()) if failed => Err(anyhow::anyhow!("the world stopped by itself")),
-            stopped => stopped,
+        match (self.shutdown().await, failed) {
+            (Ok(()), Some(what)) => Err(anyhow::anyhow!("{what} ended before the server")),
+            (stopped, _) => stopped,
         }
     }
 
@@ -231,8 +232,9 @@ async fn signalled() {
 #[cfg(test)]
 mod tests {
     use std::future;
+    use std::path::Path;
 
-    use fenji_store::{NewCharacter, Place};
+    use fenji_store::{Character, NewCharacter, Place};
     use tokio::net::TcpStream;
     use tokio::sync::mpsc;
 
@@ -259,23 +261,18 @@ mod tests {
             .expect("the channel is open")
     }
 
-    #[tokio::test]
-    async fn a_panicking_tick_saves_and_kicks_everyone_then_stops_the_server_with_an_error() {
-        // Ruling R9 (#222): a bug that panics a tick mustn't leave a server that takes logins with
-        // no world behind them. The world saves everyone it can and lets them go with the
-        // shutdown's reason, and the server stops with an error, so `fenji-server run` exits
-        // non-zero and systemd restarts it.
-        let dir = tempfile::tempdir().unwrap();
+    /// A server in `dir`, with two characters that have never stood in the world.
+    async fn server_with_characters(dir: &Path) -> (RunningServer, Vec<Character>) {
         let cfg = Config::parse(
             "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\n\
              api_bind = \"127.0.0.1:0\"\n",
-            dir.path(),
+            dir,
         )
         .unwrap();
         let clock = Arc::new(TestClock::at(NOW));
         let server = start(&cfg, clock, GateLimits::default()).await.unwrap();
         let store = server.accounts().store().clone();
-        let mut players = Vec::new();
+        let mut characters = Vec::new();
         for (n, name) in [(1u8, "aaa"), (2, "bbb")] {
             store
                 .create_invite(&[n; 32], None, NOW, None)
@@ -291,13 +288,18 @@ mod tests {
                 skeleton: 2,
                 appearance: vec![1],
             };
-            players.push(store.create_character(account, &new, 9, NOW).await.unwrap());
+            let c = store.create_character(account, &new, 9, NOW).await.unwrap();
+            characters.push(c);
         }
-        let (login, world) = (server.login_addr, server.world());
-        let served = tokio::spawn(server.serve_until(future::pending()));
-        let mut outs = Vec::new();
-        for (conn, c) in (1..).zip(&players) {
-            let (out, mut rx) = mpsc::channel(8);
+        (server, characters)
+    }
+
+    /// Each character enters the world at [`AT`], as its link would have it: their channels, once
+    /// each has had its LoadScene.
+    async fn enter(world: &WorldHandle, characters: &[Character]) -> Vec<mpsc::Receiver<WorldOut>> {
+        let mut links = Vec::new();
+        for (conn, c) in (1..).zip(characters) {
+            let (out, mut link) = mpsc::channel(8);
             let look = Look {
                 name: c.name.clone(),
                 vocation: c.vocation,
@@ -314,18 +316,37 @@ mod tests {
                 at: AT,
             };
             assert!(world.send(WorldIn::Join { player, out }));
-            assert!(matches!(next(&mut rx).await, WorldOut::LoadScene { .. }));
-            outs.push(rx);
+            assert!(matches!(next(&mut link).await, WorldOut::LoadScene { .. }));
+            links.push(link);
         }
-        world.send(WorldIn::Panic("a bug in a tick"));
-        for rx in &mut outs {
-            assert_eq!(next(rx).await, WorldOut::Kicked(KickReason::Shutdown));
-        }
-        let stopped = tokio::time::timeout(Duration::from_secs(30), served)
+        links
+    }
+
+    /// The error a server serving in `served` stops with by itself (30 s at most).
+    async fn failure(served: JoinHandle<anyhow::Result<()>>) -> anyhow::Error {
+        tokio::time::timeout(Duration::from_secs(30), served)
             .await
             .expect("the server stops by itself")
-            .unwrap();
-        let e = stopped.expect_err("with an error");
+            .unwrap()
+            .expect_err("with an error")
+    }
+
+    #[tokio::test]
+    async fn a_panicking_tick_saves_and_kicks_everyone_then_stops_the_server_with_an_error() {
+        // Ruling R9 (#222): a bug that panics a tick mustn't leave a server that takes logins with
+        // no world behind them. The world saves everyone it can and lets them go with the
+        // shutdown's reason, and the server stops with an error, so `fenji-server run` exits
+        // non-zero and systemd restarts it.
+        let dir = tempfile::tempdir().unwrap();
+        let (server, characters) = server_with_characters(dir.path()).await;
+        let (login, world) = (server.login_addr, server.world());
+        let served = tokio::spawn(server.serve_until(future::pending()));
+        let mut links = enter(&world, &characters).await;
+        world.send(WorldIn::Panic("a bug in a tick"));
+        for link in &mut links {
+            assert_eq!(next(link).await, WorldOut::Kicked(KickReason::Shutdown));
+        }
+        let e = failure(served).await;
         assert!(format!("{e:#}").contains("a bug in a tick"), "{e:#}");
         assert!(TcpStream::connect(login).await.is_err(), "no more logins");
         let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
@@ -336,9 +357,29 @@ mod tests {
             z: 3.0,
             yaw: 90.0,
         };
-        for c in &players {
+        for c in &characters {
             let place = store.character(c.account_id, c.pid).await.unwrap();
             assert_eq!(place.unwrap().place, Some(saved), "{}", c.name);
         }
+    }
+
+    #[tokio::test]
+    async fn a_services_task_that_ends_early_stops_the_server_with_an_error() {
+        // Ruling R13: without its services task the world can't save, so a server that went on
+        // taking logins and play would lose what everyone does. As when the world itself fails
+        // (R9), everyone is let go with the shutdown's reason, and the server stops with an error.
+        let dir = tempfile::tempdir().unwrap();
+        let (server, characters) = server_with_characters(dir.path()).await;
+        let (login, world) = (server.login_addr, server.world());
+        let services = server.world.services_task();
+        let served = tokio::spawn(server.serve_until(future::pending()));
+        let mut links = enter(&world, &characters).await;
+        services.abort();
+        for link in &mut links {
+            assert_eq!(next(link).await, WorldOut::Kicked(KickReason::Shutdown));
+        }
+        let e = failure(served).await;
+        assert!(format!("{e:#}").contains("services task"), "{e:#}");
+        assert!(TcpStream::connect(login).await.is_err(), "no more logins");
     }
 }
