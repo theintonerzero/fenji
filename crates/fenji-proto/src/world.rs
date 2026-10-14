@@ -539,14 +539,20 @@ pub const MOVE_DIR_LEN: usize = 200;
 pub const MOVE_DIR_SHORT_LEN: usize = 185;
 /// The direction part and the 24 bytes after it: the last 35 bytes of a type 8 (world.md 16.4).
 const MOVE_DIR_TAIL: usize = 35;
-/// How far a move's time may lag or lead the server's clock, in ms (world.md 16.15). In Task 15's
-/// runs, real clients' commands came 0.13 to 2.01 s after their times, and none ahead; the client
-/// keeps 16 s of history for a late one (16.8), so 5 s leaves room and stays well inside it.
+/// How far a move's time may lag the server's clock, in ms (world.md 16.15). In Task 15's runs,
+/// real clients' commands came 0.13 to 2.01 s after their times, and none ahead; the client keeps
+/// 16 s of history for a late one (16.8), so 5 s leaves room and stays well inside it.
 pub const MOVE_TIME_BEHIND: u64 = 5_000;
+/// How far a move's time may lead the server's clock, in ms (world.md 16.15): no real client's
+/// did, and a second covers a client clock that runs a little fast.
 pub const MOVE_TIME_AHEAD: u64 = 1_000;
-/// The largest direction, speed rate and pitch a move keeps (world.md 16.7, 16.15).
+/// The largest direction a move keeps: 0 stops, and 1 to 8 are the eighths of a turn (world.md
+/// 16.7, 16.15).
 pub const MAX_DIR: u8 = 8;
+/// The largest speed rate a move keeps: the game's cap on a rate, 340 (world spec §2.3); a client
+/// sends at most its player's own speed (world.md 16.7, 16.15).
 pub const MAX_MOVE_RATE: u16 = 340;
+/// The largest pitch a move keeps, either way, in degrees (world.md 16.7, 16.15).
 pub const MAX_PITCH: i16 = 90;
 /// Type 13's body as Fenji sends it: the id, an absolute header and the direction part.
 pub const MOVE_DIR_RELAY_LEN: usize = 42;
@@ -648,9 +654,9 @@ pub struct MoveDir {
 /// direction part; world.md 16.3, 16.4): [`MOVE_DIR_LEN`] bytes with the `u32` LE at 27 equal to
 /// 0, or [`MOVE_DIR_SHORT_LEN`] with it not 0; any other body is `BadBody`. Read: the time (0), x,
 /// y and z (8, 12, 16), the yaw (25), and from the direction part, the last 35 bytes, the
-/// direction, the yaw offset, the speed rate and the pitches. The state blocks, the 24 bytes after
-/// the part and the facts about the player's machine among them (181, 194, 196, 197) are never
-/// read (16.15).
+/// direction, the part's own yaw ([`MoveDir::dir_yaw`], for the trace alone), the yaw offset, the
+/// speed rate and the pitches. The state blocks, the 24 bytes after the part and the facts about
+/// the player's machine among them (181, 194, 196, 197) are never read (16.15).
 pub fn move_dir(body: &[u8], now_ms: u64) -> Result<MoveDir> {
     let len = body.len();
     let word = body

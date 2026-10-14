@@ -776,8 +776,8 @@ Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in six sessions on 
 | 0x140170C90 | X20; 16.2, 16.4 | `read_bytes {address: "0x140170c90", length: 932}` | `ev_e4b6627fad1e14bc7edc428971406d297ea34e97dd67184d1ea22a5ed7007678` |
 | FUN_140171040 | X20; type 8's table | `procedure_pseudo_code {procedure: "0x140171040"}` | `ev_f85fc137a9607e4f893e9dc7ccd5528b63b69ac3ba3ca3f2b8334b425f41e6ee` |
 | 0x140171040 | X20; type 8's table | `read_bytes {address: "0x140171040", length: 86}` | `ev_906e13a896f9e990a9bf58c706247451590f554a903256b85d19869fb0ffbe12` |
-| FUN_140170300 | X20; 16.9 | `procedure_pseudo_code {procedure: "0x140170300"}` | `ev_ea5fcb7451c34eac334dbbf5dc5a58c8e232006541218788210feef6ccae8ec6` |
-| FUN_1401FEE60 | X21; 16.3 | `procedure_pseudo_code {procedure: "0x1401fee60"}` | `ev_5c61cdb14fe5e0860d3fc9d5bf68c98d3112090c747a6d4d3e4ef495465ca0ba` |
+| FUN_140170300 | X20; 16.4, 16.9 | `procedure_pseudo_code {procedure: "0x140170300"}` | `ev_ea5fcb7451c34eac334dbbf5dc5a58c8e232006541218788210feef6ccae8ec6` |
+| FUN_1401FEE60 | X21; 16.3, 16.4 | `procedure_pseudo_code {procedure: "0x1401fee60"}` | `ev_5c61cdb14fe5e0860d3fc9d5bf68c98d3112090c747a6d4d3e4ef495465ca0ba` |
 | FUN_140223380 | X21; 16.3 | `procedure_pseudo_code {procedure: "0x140223380"}` | `ev_9142b701da3b012c27ceef58777fd79daa830bf55a5989ca4a817f838173cf3c` |
 | FUN_14016D390 | X21; 16.3, 16.4 | `procedure_pseudo_code {procedure: "0x14016d390"}` | `ev_736f67207c4769e6f4d843223f4f75eeaa0850f57fa57e6ac867f13b990f8059` |
 | FUN_14016F280 | X21; 16.3 | `procedure_pseudo_code {procedure: "0x14016f280"}` | `ev_50c8c82b32efd94311c9cd6f9d6dfa6fbd8087d20467cc48d71dbb094dee2d9b` |
@@ -794,7 +794,7 @@ Read through REA 6.3.0 with Ghidra 12.1.4 on the pinned exe, in six sessions on 
 | FUN_1401781A0 | X24; 16.8 | `procedure_pseudo_code {procedure: "0x1401781a0"}` | `ev_66f6e116bf5ffcf99291f3fbd04dccd158a27ba7f383e48c4e58fabeeebb6fcc` |
 | FUN_140177BF0 | X24; 16.9 | `procedure_pseudo_code {procedure: "0x140177bf0"}` | `ev_4d511f79fad8989458ccf2a371e55716c5024d00852695c3f6768d74c585e571` |
 | FUN_140161060 | X24; 16.9 | `procedure_pseudo_code {procedure: "0x140161060"}` | `ev_b879b34156eec817af065dc5455b6c8da851ced7ff825340e26ba273631c042e` |
-| FUN_140202930 | X24; 16.3, 16.8, 16.12 | `procedure_pseudo_code {procedure: "0x140202930"}` | `ev_1607850ce17e77ce533b8408479ba460d3995ff2369e6c850cbb92ed1c34db98` |
+| FUN_140202930 | X24; 16.3, 16.4, 16.8, 16.12 | `procedure_pseudo_code {procedure: "0x140202930"}` | `ev_1607850ce17e77ce533b8408479ba460d3995ff2369e6c850cbb92ed1c34db98` |
 | FUN_140177880 | X24; 16.12 | `procedure_pseudo_code {procedure: "0x140177880"}` | `ev_9748093220b333e473ffe23a10b91d7ff9c9d813ad4122d51779c1d24366e049` |
 | FUN_14015CD10 | X24; 16.8 | `procedure_pseudo_code {procedure: "0x14015cd10"}` | `ev_4d2164ae34fd08b24cb8939fed0d13d128e09d151eb52571ef98815bc4e81c3a` |
 | FUN_140208790 | X25; 16.7 | `procedure_pseudo_code {procedure: "0x140208790"}` | `ev_9288deb200789d08df553d5b17c0f86db43c6dfc2628b69b2d231aa351a1ae3a` |

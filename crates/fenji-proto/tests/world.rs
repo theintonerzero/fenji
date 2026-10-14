@@ -1,5 +1,6 @@
-//! The world's entering and seeing messages (docs/protocol/packets/world.md; M4 world plan
-//! Amendments A and B): each encoder makes its golden vector, and each decoder reads it back.
+//! The world's entering, seeing and moving messages (docs/protocol/packets/world.md; M4 world plan
+//! Amendments A, B and C): each encoder makes its golden vector, and each decoder reads it back.
+//! Chat's are in `tests/chat.rs`.
 use fenji_proto::Error;
 use fenji_proto::lobby::Appearance;
 use fenji_proto::pickle::{self, Table, Value};
