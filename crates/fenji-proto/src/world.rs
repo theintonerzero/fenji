@@ -1,11 +1,12 @@
-//! Entering the world and seeing each other (docs/protocol/packets/world.md; M4 world plan
-//! Amendments A and B): 772, which loads the scene; the client's type 3 once it has; time syncs
+//! Entering the world, seeing each other and moving (docs/protocol/packets/world.md; M4 world plan
+//! Amendments A, B and C): 772, which loads the scene; the client's type 3 once it has; time syncs
 //! both ways; then the player's own actor (type 7 and its property blob), its speed (type 23) and
 //! type 8. Other players come as type 6, which the client pulls with type 5, then 7 and 8 for each,
-//! and type 9 takes them away. Native bodies go out with `header::write_message` under their type;
-//! 772 is a script message, built by `script_body`, which refuses `NEVER_SEND`. This module builds
-//! and parses; the server decides. Functions are the pinned exe's; their REA Evidence IDs are in
-//! world.md's REA Evidence IDs table.
+//! and type 9 takes them away. A client's move is its type 8; the server relays it to others as
+//! type 13 and puts a player back with type 20. Native bodies go out with `header::write_message`
+//! under their type; 772 is a script message, built by `script_body`, which refuses `NEVER_SEND`.
+//! This module builds and parses; the server decides. Functions are the pinned exe's; their REA
+//! Evidence IDs are in world.md's REA Evidence IDs table.
 use crate::lobby::Appearance;
 use crate::opcode::Cts;
 use crate::packet::script_body;
@@ -480,12 +481,25 @@ pub fn sync_enter_finish(pid: i64) -> [u8; 8] {
 pub fn sync_id_enter(pid: i64, at: [f64; 3]) -> [u8; SYNC_ID_ENTER_LEN] {
     let mut out = [0u8; SYNC_ID_ENTER_LEN];
     out[..8].copy_from_slice(&pid.to_le_bytes());
-    for (i, c) in at.iter().enumerate() {
-        let start = 8 + 4 * i;
-        out[start..start + 4].copy_from_slice(&(c.round() as i32).to_le_bytes());
-    }
+    put_coords(&mut out[8..20], at);
     // Bytes 20 and 21, the fast flag and the priority, stay 0.
     out
+}
+
+/// x, y and z as three `i32` LE, each rounded to the nearest integer (half away from zero) and
+/// clamped, with NaN as 0 (Rust's `as` casts saturate): how the move code's integer positions take
+/// a point (world.md 14.1, 16.10).
+fn put_coords(out: &mut [u8], at: [f64; 3]) {
+    for (i, c) in at.iter().enumerate() {
+        out[4 * i..4 * i + 4].copy_from_slice(&(c.round() as i32).to_le_bytes());
+    }
+}
+
+/// A yaw in degrees as the client's `i16`: rounded, folded into (−180, 180] as `actor_move_dir`
+/// folds its own (world.md 16.7), with NaN and the infinities as 0.
+fn yaw16(yaw: f64) -> i16 {
+    let r = yaw.round().rem_euclid(360.0);
+    (if r > 180.0 { r - 360.0 } else { r }) as i16
 }
 
 /// A client's type 5, `CTS_PROTOCOL_SYNC_FILTER_SET`: an actor and a value, where [`PULL`] asks
@@ -517,4 +531,198 @@ pub fn sync_filter_set(body: &[u8]) -> Result<SyncFilter> {
 /// world, so callers never put it here.
 pub fn sync_leave(pids: &[i64]) -> Vec<u8> {
     pids.iter().flat_map(|pid| pid.to_le_bytes()).collect()
+}
+
+/// Type 8's body: 200 bytes when the state word at 27 is 0, as in every run (world.md 16.4).
+pub const MOVE_DIR_LEN: usize = 200;
+/// Type 8's body when the state word at 27 isn't 0: its last state block is 33 bytes, not 48.
+pub const MOVE_DIR_SHORT_LEN: usize = 185;
+/// The direction part and the 24 bytes after it: the last 35 bytes of a type 8 (world.md 16.4).
+const MOVE_DIR_TAIL: usize = 35;
+/// How far a move's time may lag or lead the server's clock, in ms (world.md 16.15).
+pub const MOVE_TIME_BEHIND: u64 = 2_000;
+pub const MOVE_TIME_AHEAD: u64 = 1_000;
+/// The largest direction, speed rate and pitch a move keeps (world.md 16.7, 16.15).
+pub const MAX_DIR: u8 = 8;
+pub const MAX_MOVE_RATE: u16 = 340;
+pub const MAX_PITCH: i16 = 90;
+/// Type 13's body as Fenji sends it: the id, an absolute header and the direction part.
+pub const MOVE_DIR_RELAY_LEN: usize = 42;
+/// The header's form that carries an absolute time and position (FUN_1401FF030; world.md §16).
+const ABSOLUTE: u8 = 1;
+/// Type 20's body as Fenji sends it: the id, T, the mask and the position with the yaw.
+pub const MOVE_SYNC_SVR_LEN: usize = 32;
+/// Type 20's mask: the position (0x40) and the yaw (0x80) follow (FUN_14016E880; world.md 16.12).
+const SYNC_MASK: u16 = 0x00C0;
+/// How far behind the server's clock a type 20's T lies, in ms: within the client's history, which
+/// reaches 8 to 16 s back, and a little in the past so the client applies it at once (16.12).
+pub const SYNC_LAG: u64 = 160;
+
+/// What a relay carries besides the position (docs/protocol/packets/world.md 16.15): each field
+/// held to its bounds, and never a position. The world keeps it as 17 bytes it never reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveDetail {
+    /// The command's time: the server's Unix time in ms, a multiple of 16 (world.md 16.5).
+    pub time: u64,
+    /// 0 stops; 1 to 8 name the yaw offset by eighths of a turn (16.7).
+    pub dir: u8,
+    /// The heading less the yaw, in degrees (16.7, 16.9).
+    pub yaw_offset: i16,
+    /// The speed rate: 100 is 500 units a second (16.9, 16.10).
+    pub rate: u16,
+    /// The camera's pitches, in degrees (16.7).
+    pub pitch: i16,
+    pub pitch2: i16,
+}
+
+impl MoveDetail {
+    /// The bytes of [`MoveDetail::to_bytes`].
+    pub const LEN: usize = 17;
+
+    /// Each field held to its bounds (world.md 16.15): the time clamped to `now_ms` less
+    /// [`MOVE_TIME_BEHIND`] to plus [`MOVE_TIME_AHEAD`], then less its remainder by 16, since the
+    /// client's queue drops a time that isn't a multiple of 16 (FUN_140177240; 16.5); the
+    /// direction to [`MAX_DIR`]; the yaw offset folded into (−180, 180]; the rate to
+    /// [`MAX_MOVE_RATE`]; each pitch to ±[`MAX_PITCH`].
+    pub fn bounded(self, now_ms: u64) -> Self {
+        let early = now_ms.saturating_sub(MOVE_TIME_BEHIND);
+        let late = now_ms.saturating_add(MOVE_TIME_AHEAD);
+        let time = self.time.clamp(early, late);
+        let fold = self.yaw_offset.rem_euclid(360);
+        Self {
+            time: time - time % 16,
+            dir: self.dir.min(MAX_DIR),
+            yaw_offset: if fold > 180 { fold - 360 } else { fold },
+            rate: self.rate.min(MAX_MOVE_RATE),
+            pitch: self.pitch.clamp(-MAX_PITCH, MAX_PITCH),
+            pitch2: self.pitch2.clamp(-MAX_PITCH, MAX_PITCH),
+        }
+    }
+
+    /// The time (`u64` LE), the direction, the yaw offset (`i16` LE), the rate (`u16` LE) and the
+    /// pitches (`i16` LE), at 0, 8, 9, 11, 13 and 15.
+    pub fn to_bytes(&self) -> [u8; Self::LEN] {
+        let mut out = [0u8; Self::LEN];
+        out[..8].copy_from_slice(&self.time.to_le_bytes());
+        out[8] = self.dir;
+        out[9..11].copy_from_slice(&self.yaw_offset.to_le_bytes());
+        out[11..13].copy_from_slice(&self.rate.to_le_bytes());
+        out[13..15].copy_from_slice(&self.pitch.to_le_bytes());
+        out[15..17].copy_from_slice(&self.pitch2.to_le_bytes());
+        out
+    }
+
+    /// Exactly [`MoveDetail::LEN`] bytes, as [`MoveDetail::to_bytes`] writes them, bounded again
+    /// against `now_ms`; `None` for any other length.
+    pub fn from_bytes(b: &[u8], now_ms: u64) -> Option<Self> {
+        let b: &[u8; Self::LEN] = b.try_into().ok()?;
+        let i16_at = |i: usize| i16::from_le_bytes([b[i], b[i + 1]]);
+        let raw = Self {
+            time: u64::from_le_bytes(b[..8].try_into().expect("8 bytes")),
+            dir: b[8],
+            yaw_offset: i16_at(9),
+            rate: u16::from_le_bytes([b[11], b[12]]),
+            pitch: i16_at(13),
+            pitch2: i16_at(15),
+        };
+        Some(raw.bounded(now_ms))
+    }
+}
+
+/// A client's type 8 (docs/protocol/packets/world.md 16.3, 16.4, 16.15): where the player stands,
+/// unbounded, since the world checks it, and the rest of the move, bounded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoveDir {
+    /// x, y, z and the yaw: the `i32`s at 8, 12 and 16 and the `i16` at 25, as they are.
+    pub pos: [f64; 4],
+    pub detail: MoveDetail,
+    /// The direction part's own yaw, at L − 34, as it is. A relay doesn't carry it: it repeats the
+    /// position's yaw, which FUN_140170300 makes the command's own before the client sends its state
+    /// (world.md 16.4). Read for the trace alone, so that a run can compare the two.
+    pub dir_yaw: i16,
+}
+
+/// Type 8, `CTS_PROTOCOL_MOVE_DIR` (FUN_1401FEE60 with FUN_14016D390's state and FUN_140170870's
+/// direction part; world.md 16.3, 16.4): [`MOVE_DIR_LEN`] bytes with the `u32` LE at 27 equal to
+/// 0, or [`MOVE_DIR_SHORT_LEN`] with it not 0; any other body is `BadBody`. Read: the time (0), x,
+/// y and z (8, 12, 16), the yaw (25), and from the direction part, the last 35 bytes, the
+/// direction, the yaw offset, the speed rate and the pitches. The state blocks, the 24 bytes after
+/// the part and the facts about the player's machine among them (181, 194, 196, 197) are never
+/// read (16.15).
+pub fn move_dir(body: &[u8], now_ms: u64) -> Result<MoveDir> {
+    let len = body.len();
+    let word = body
+        .get(27..31)
+        .map(|w| u32::from_le_bytes(w.try_into().expect("4 bytes")));
+    let fits = matches!((len, word), (MOVE_DIR_LEN, Some(0)))
+        || matches!((len, word), (MOVE_DIR_SHORT_LEN, Some(w)) if w != 0);
+    if !fits {
+        return Err(Error::BadBody {
+            opcode: Cts::MoveDir.to_u8(),
+            len,
+        });
+    }
+    let i32_at = |i: usize| {
+        f64::from(i32::from_le_bytes(
+            body[i..i + 4].try_into().expect("4 bytes"),
+        ))
+    };
+    let i16_at = |i: usize| i16::from_le_bytes([body[i], body[i + 1]]);
+    let part = len - MOVE_DIR_TAIL;
+    let detail = MoveDetail {
+        time: u64::from_le_bytes(body[..8].try_into().expect("8 bytes")),
+        dir: body[part],
+        yaw_offset: i16_at(part + 3),
+        rate: u16::from_le_bytes([body[part + 5], body[part + 6]]),
+        pitch: i16_at(part + 7),
+        pitch2: i16_at(part + 9),
+    };
+    Ok(MoveDir {
+        pos: [i32_at(8), i32_at(12), i32_at(16), f64::from(i16_at(25))],
+        detail: detail.bounded(now_ms),
+        dir_yaw: i16_at(part + 1),
+    })
+}
+
+/// Type 13, `STC_PROTOCOL_MOVE_DIR` (FUN_14020FAA0 with kind 3, FUN_1401FF030's header and the
+/// direction part's reader at 0x140170C90; world.md 16.8, 16.9): the mover's pid, an absolute
+/// header (form 1, the move's time, x, y, z and the yaw), then the direction part: the direction,
+/// the yaw again, the yaw offset, the rate and the pitches. x, y and z are rounded and clamped to
+/// `i32`, and the yaw rounded and folded into (−180, 180], with NaN as 0. The viewer's client puts
+/// the mover at the header's place when the time comes, then moves it in the direction (16.8).
+pub fn move_dir_relay(pid: i64, pos: [f64; 4], detail: &MoveDetail) -> [u8; MOVE_DIR_RELAY_LEN] {
+    let yaw = yaw16(pos[3]).to_le_bytes();
+    let mut out = [0u8; MOVE_DIR_RELAY_LEN];
+    out[..8].copy_from_slice(&pid.to_le_bytes());
+    out[8] = ABSOLUTE;
+    out[9..17].copy_from_slice(&detail.time.to_le_bytes());
+    put_coords(&mut out[17..29], [pos[0], pos[1], pos[2]]);
+    out[29..31].copy_from_slice(&yaw);
+    out[31] = detail.dir;
+    out[32..34].copy_from_slice(&yaw);
+    out[34..36].copy_from_slice(&detail.yaw_offset.to_le_bytes());
+    out[36..38].copy_from_slice(&detail.rate.to_le_bytes());
+    out[38..40].copy_from_slice(&detail.pitch.to_le_bytes());
+    out[40..42].copy_from_slice(&detail.pitch2.to_le_bytes());
+    out
+}
+
+/// The T a type 20 carries for the server's clock at `now_ms`: floored to 16 ms, the client's step,
+/// less [`SYNC_LAG`] (world.md 16.12).
+pub fn sync_time(now_ms: u64) -> u64 {
+    (now_ms - now_ms % 16).saturating_sub(SYNC_LAG)
+}
+
+/// Type 20, `STC_PROTOCOL_MOVE_SYNC_SVR` (FUN_14020D100 with FUN_14016E880's masked state;
+/// world.md 16.12): "at time T you stood here", for the player's own pid. The mask 0x00C0, then
+/// x, y and z and the yaw as type 13 has them. The client takes them into its state of T and
+/// replays its own commands since, and lets its next direction command go out at once.
+pub fn move_sync_svr(pid: i64, time: u64, pos: [f64; 4]) -> [u8; MOVE_SYNC_SVR_LEN] {
+    let mut out = [0u8; MOVE_SYNC_SVR_LEN];
+    out[..8].copy_from_slice(&pid.to_le_bytes());
+    out[8..16].copy_from_slice(&time.to_le_bytes());
+    out[16..18].copy_from_slice(&SYNC_MASK.to_le_bytes());
+    put_coords(&mut out[18..30], [pos[0], pos[1], pos[2]]);
+    out[30..32].copy_from_slice(&yaw16(pos[3]).to_le_bytes());
+    out
 }
