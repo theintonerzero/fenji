@@ -30,7 +30,7 @@ Success for v1: invited friends sign in through the Fenji launcher, each with th
    The server and tools read data from the operator's own installation at runtime. CI enforces this (§9).
 4. **Patched or instrumented clients talk only to Fenji.** The original game is still operated in China, and Gameforge, Steam and Epic services are live. A patched, instrumented or debugged client never reaches them, or any other third party. Instrumented runs (Wine API logging, debuggers) happen only inside `scripts/spike/isolated-run.sh`, connected to our own stub or server. (Owner's decision, 2026-10-13, #114: guarded bare-metal play tests on the Linux game box are the one exception, under the guards in CLAUDE.md.)
 5. **Private and non-commercial.** The server is invite-only, unlisted, and never monetized.
-6. **Patching is allowed; decision gates stop the rest.** By the owner's decision (2026-10-14, #225), Fenji may patch the client on disk or in memory, instrument or debug it, and work around any of its protections (DRM, anti-tamper, the SDK login), for operability and plugins, as long as rule 4 holds. Patches ship as patch data that the launcher applies to each player's own copy, never as patched files (rules 1 and 3); that work starts after M4. Work stops and the owner decides explicitly when a step would:
+6. **Patching is allowed; decision gates stop the rest.** By the owner's decision (2026-10-14, #225), Fenji may patch the client on disk or in memory, instrument or debug it, and work around any of its protections (DRM, anti-tamper, the SDK login), for operability and plugins, as long as rule 4 holds. Patches ship as patch data that the launcher applies to each player's own copy, never as patched files (rules 1 and 3); that work starts after M4. Fenji may also decompress the game's Oodle data (its archives) with an open-source decompressor, such as ooz (GPL-3.0-or-later), on servers and in tools; Epic's own Oodle library stays a dev-only tool inside the sandbox (M2's gate G3). Work stops and the owner decides explicitly when a step would:
    - load the kernel driver embedded in the client (§5.4);
    - let a patched or instrumented client reach a service other than Fenji's;
    - use proprietary middleware outside its licence, for example running Oodle's DLL on our server.
@@ -42,7 +42,7 @@ Legal context the owner has acknowledged:
 - SoLO's EULA and terms likely prohibit reverse engineering and emulation.
 - Copyright and anti-circumvention law apply. Patching the client and working around its protections (allowed since 2026-10-14, #225) sharpen the anti-circumvention question, and a public repo with patch data is a likelier takedown target.
 - The rights holder still operates the game in China, and publishers do pursue private servers.
-- Oodle is Epic Games' proprietary middleware.
+- Oodle is Epic Games' proprietary middleware. Fenji decompresses Oodle data only with an open-source decompressor (#225); Epic's library is used only for dev analysis, inside the sandbox.
 - "Preservation" is not a legal safe harbour for an online server.
 
 The rules keep exposure as low as possible; they don't eliminate it.
