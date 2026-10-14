@@ -572,6 +572,8 @@ async fn a_stopping_server_closes_players_in_the_world_with_server_not_running()
     let (mut mai_bot, mai) = in_lobby(&s, "bbb", "Mai").await;
     select(&mut mai_bot, mai).await;
     enter(&mut mai_bot, mai).await;
+    // Mai's arrival is announced to Lin (6, slice 2), before anything else reaches her.
+    announced(&mut lin_bot, mai).await;
     let (_kai_bot, _) = in_lobby(&s, "ccc", "Kai").await;
     let _silent = TcpStream::connect(s.login_addr).await.unwrap();
     // The store's copies change while they stand at the start: only the world's last saves put
