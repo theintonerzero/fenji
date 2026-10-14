@@ -15,7 +15,7 @@ Success for v1: invited friends sign in through the Fenji launcher, each with th
 
 ## 2. Ground rules (non-negotiable)
 
-1. **Legitimate copies only.** Every player and the server host needs their own legitimately obtained copy of the SoLO client. That means Steam (app 1418100 already in their library, since it was delisted) or Gameforge's own launcher while SoLO was distributed there. Fenji never distributes the client, never points to unofficial copies, and never supports cracked or modified clients. There is no automated ownership check: the host vets everyone they invite (rule 5).
+1. **Legitimate copies only.** Every player and the server host needs their own legitimately obtained copy of the SoLO client. That means Steam (app 1418100 already in their library, since it was delisted) or Gameforge's own launcher while SoLO was distributed there. Fenji never distributes the client or any of its files, patched or not, never points to unofficial copies, and never supports third-party cracks; Fenji's own patches apply to each player's own copy (rule 6). There is no automated ownership check: the host vets everyone they invite (rule 5).
 2. **Clean room.** Everything is derived from our own analysis of our own licensed client, and from watching it run against our own server. Leaked server files, server binaries, server scripts or server source for SoLO / 古剑奇谭网络版 are never used, referenced or accepted in contributions, and neither is anything derived from them. That covers:
    - write-ups based on such leaks, for example the GuJian Online "server RE report" circulated on RaGEZONE, recorded as rejected in `docs/re/sources.md`;
    - anything from the unofficial servers that appeared after the shutdown.
@@ -28,12 +28,11 @@ Success for v1: invited friends sign in through the Fenji launcher, each with th
    - captures and REA evidence bundles.
 
    The server and tools read data from the operator's own installation at runtime. CI enforces this (§9).
-4. **Never touch official services with modified or instrumented clients.** The original game is still operated in China, and Gameforge, Steam and Epic services are live. Instrumented runs (Wine API logging, debuggers) happen only inside `scripts/spike/isolated-run.sh`, connected to our own stub or server. (Owner's decision, 2026-10-13, #114: guarded bare-metal play tests on the Linux game box are the one exception, under the guards in CLAUDE.md.)
+4. **Patched or instrumented clients talk only to Fenji.** The original game is still operated in China, and Gameforge, Steam and Epic services are live. A patched, instrumented or debugged client never reaches them, or any other third party. Instrumented runs (Wine API logging, debuggers) happen only inside `scripts/spike/isolated-run.sh`, connected to our own stub or server. (Owner's decision, 2026-10-13, #114: guarded bare-metal play tests on the Linux game box are the one exception, under the guards in CLAUDE.md.)
 5. **Private and non-commercial.** The server is invite-only, unlisted, and never monetized.
-6. **Decision gates stop the work.** Work stops and the owner decides explicitly when a step would:
-   - patch the client, on disk or in memory;
-   - circumvent any protection;
+6. **Patching is allowed; decision gates stop the rest.** By the owner's decision (2026-10-14, #225), Fenji may patch the client on disk or in memory, instrument or debug it, and work around any of its protections (DRM, anti-tamper, the SDK login), for operability and plugins, as long as rule 4 holds. Patches ship as patch data that the launcher applies to each player's own copy, never as patched files (rules 1 and 3); that work starts after M4. Fenji may also decompress the game's Oodle data (its archives) with an open-source decompressor, such as ooz (GPL-3.0-or-later), on servers and in tools; Epic's own Oodle library stays a dev-only tool inside the sandbox (M2's gate G3). Work stops and the owner decides explicitly when a step would:
    - load the kernel driver embedded in the client (§5.4);
+   - let a patched or instrumented client reach a service other than Fenji's;
    - use proprietary middleware outside its licence, for example running Oodle's DLL on our server.
 
    These are never default plan steps.
@@ -41,9 +40,9 @@ Success for v1: invited friends sign in through the Fenji launcher, each with th
 
 Legal context the owner has acknowledged:
 - SoLO's EULA and terms likely prohibit reverse engineering and emulation.
-- Copyright and anti-circumvention law apply.
+- Copyright and anti-circumvention law apply. Patching the client and working around its protections (allowed since 2026-10-14, #225) sharpen the anti-circumvention question, and a public repo with patch data is a likelier takedown target.
 - The rights holder still operates the game in China, and publishers do pursue private servers.
-- Oodle is Epic Games' proprietary middleware.
+- Oodle is Epic Games' proprietary middleware. Fenji decompresses Oodle data only with an open-source decompressor (#225); Epic's library is used only for dev analysis, inside the sandbox.
 - "Preservation" is not a legal safe harbour for an online server.
 
 The rules keep exposure as low as possible; they don't eliminate it.
@@ -135,7 +134,7 @@ By the owner's decision of 2026-10-13, the Tauri app moved out of M3 to #146, wi
 1. **Inputs the client already accepts**, without modifying any file: its command-line flags (`--gf-appid`, `--steam-appid`, `--gf-region`), `solo_steam.cfg`, `gfclient.ini` and `loader.ini`.
 2. **Standing in for the dead Gameforge side.** The launcher provides what Gameforge used to provide: the region server list, and the ticket over the Gameforge client's named pipe. That talks to the client through its own interfaces; it is not patching.
 3. **A hostname redirect**, active only while playing.
-4. **Patching the client:** an owner decision gate (rule 6).
+4. **Patching the client:** allowed since the owner's decision of 2026-10-14 (#225), within rule 4; the launcher's patcher comes after M4.
 
 The client obtains an auth ticket through `gameforge_api64.dll`, which has Steam, Gameforge and Epic paths. M3 decides what the client sends our login listener and how we bind it to the Fenji game token. If the client turns out to need a running Steam client, M3 documents that requirement and how it affects players without a Steam licence.
 

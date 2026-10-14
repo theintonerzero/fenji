@@ -206,7 +206,7 @@ A `fenji-proto` client that signs in, enters, moves and chats. It runs in CI aga
 
 - **The property blob's format** is the largest unknown. Reading it in the exe is the first slice's core.
 - **The default scene** may need the original server's scene scripts to be playable. If so, the runs pick another one.
-- **The gates.** If any step would need patching the client or loading its driver, work stops for the owner's decision (ground rule 6).
+- **The gates.** If any step would load the client's driver, or let it reach a service other than Fenji's, work stops for the owner's decision (ground rule 6). Patching is allowed since #225, but M4 keeps the unmodified client; the patcher comes after M4.
 
 ## 6. Open questions
 

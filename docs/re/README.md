@@ -168,6 +168,6 @@ The display:
 
 - Static analysis of files on disk comes first. Runtime observation (Wine `WINEDEBUG`, the client's own log, stub sessions) happens only inside the sandbox, against our own stub or server, or in the guarded bare-metal play tests CLAUDE.md describes.
 - Every conclusion distinguishes observation, inference and unknown, and cites evidence as set out in [Evidence for `gujianol.exe`](#evidence-for-gujianolexe). Unresolved questions go into REA with `record_unknown`.
-- Decision gates (client patching, circumventing protection, the embedded kernel driver, Oodle licensing) stop the work until the owner decides.
+- Decision gates (the embedded kernel driver, a patched or instrumented client reaching any service but Fenji's, Oodle licensing) stop the work until the owner decides. Patching the client and working around its protections are allowed within ground rule 4, and Oodle data may be decompressed with an open-source decompressor (#225).
 - Close REA sessions (`close_binary`) when an investigation is finished. Never overwrite an evidence bundle; export to a new name.
 - Community sources must be clearly licensed with clean provenance. List each in `docs/re/sources.md` with its licence and what we used it for. Rejected sources are listed there too, and anyone who has read one does no RE or protocol work.
