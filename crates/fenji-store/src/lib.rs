@@ -2,6 +2,7 @@
 //! in one file in WAL mode with foreign keys on. Every write that must be atomic is one
 //! `BEGIN IMMEDIATE` transaction, so two writers queue on the busy timeout instead of failing
 //! halfway. Times are Unix milliseconds; secrets arrive here already hashed.
+use std::io;
 use std::path::Path;
 use std::time::Duration;
 
@@ -58,6 +59,47 @@ impl Store {
             .fetch_one(&self.pool)
             .await?;
         Ok(busy == 0)
+    }
+
+    /// Writes a consistent copy of the database to `dest`, a new file, with `VACUUM INTO`: it reads
+    /// one snapshot while writers carry on, so it's safe while the server runs. Refuses a `dest`
+    /// that exists, or whose name isn't UTF-8. The copy is owner-only from the start, as the
+    /// database is, and a copy that fails partway is deleted.
+    pub async fn backup_into(&self, dest: &Path) -> Result<()> {
+        let name = dest.to_str().ok_or_else(|| {
+            Error::File(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{}: not UTF-8, which SQLite needs", dest.display()),
+            ))
+        })?;
+        create_new(dest).map_err(|e| {
+            let what = match e.kind() {
+                io::ErrorKind::AlreadyExists => format!(
+                    "{} exists already, and a backup never overwrites a file",
+                    dest.display()
+                ),
+                _ => format!("{}: {e}", dest.display()),
+            };
+            Error::File(io::Error::new(e.kind(), what))
+        })?;
+        if let Err(e) = sqlx::query("VACUUM INTO ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+        {
+            // Best effort: SQLite's error is the one to report.
+            let _ = std::fs::remove_file(dest);
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    /// `PRAGMA integrity_check`'s first line: `ok` when SQLite finds the whole file sound,
+    /// otherwise the first problem it found.
+    pub async fn integrity_check(&self) -> Result<String> {
+        Ok(sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&self.pool)
+            .await?)
     }
 
     /// Closes every connection; later calls fail.
@@ -117,6 +159,16 @@ fn owner_only(path: &Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn owner_only(_path: &Path) -> std::io::Result<()> {
     Ok(())
+}
+
+/// Creates `path` empty, and owner-only (0600) on Unix, failing if it exists, for `VACUUM INTO` to
+/// fill: SQLite writes into an empty file, though it refuses one with anything in it.
+fn create_new(path: &Path) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+    file.open(path).map(drop)
 }
 
 #[cfg(test)]
@@ -275,6 +327,53 @@ mod tests {
         assert!(std::fs::metadata(wal(d.path())).unwrap().len() > 0);
         assert!(s.checkpoint().await.unwrap());
         assert_eq!(std::fs::metadata(wal(d.path())).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_backup_taken_while_a_writer_works_is_consistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
+        let writer = {
+            let store = store.clone();
+            tokio::spawn(async move {
+                for n in 0..300u32 {
+                    let mut code = [0u8; 32];
+                    code[..4].copy_from_slice(&n.to_le_bytes());
+                    store.create_invite(&code, None, 1, None).await.unwrap();
+                }
+            })
+        };
+        let dest = dir.path().join("copy.db");
+        store.backup_into(&dest).await.unwrap();
+        writer.await.unwrap();
+        let copy = Store::open(&dest).await.unwrap();
+        assert_eq!(copy.integrity_check().await.unwrap(), "ok");
+        assert!(
+            store.backup_into(&dest).await.is_err(),
+            "an existing file is never overwritten"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_backup_is_owner_only_and_needs_a_utf_8_name() {
+        use std::os::unix::ffi::OsStrExt;
+        let (d, s) = test_util::store().await;
+        let dest = d.path().join("copy.db");
+        s.backup_into(&dest).await.unwrap();
+        assert_eq!(mode(&dest), 0o600, "it holds the password hashes");
+        let odd = d.path().join(std::ffi::OsStr::from_bytes(b"copy-\xff.db"));
+        assert!(s.backup_into(&odd).await.is_err());
+        let names: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .all(|n| n == "copy.db" || n.as_bytes().starts_with(b"fenji.db")),
+            "nothing written under that name or a lossy one: {names:?}"
+        );
     }
 
     #[tokio::test]

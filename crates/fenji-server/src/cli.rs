@@ -1,6 +1,6 @@
-//! The command line (M3 spec §4 `cli`): `run`, the default, and the admin's subcommands for invites
-//! and accounts. Admin commands open the same database as a running server; SQLite's WAL and busy
-//! timeout let both write.
+//! The command line (M3 spec §4 `cli`): `run`, the default, and the admin's subcommands for invites,
+//! accounts and backups (M4 hosting spec §3.12). Admin commands open the same database as a running
+//! server; SQLite's WAL and busy timeout let both write.
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -8,7 +8,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use fenji_store::Store;
 
-use crate::clock::Clock;
+use crate::clock::{Clock, Utc};
 use crate::config::Config;
 use crate::text::escape_hidden;
 
@@ -36,6 +36,12 @@ pub enum Command {
     Account {
         #[command(subcommand)]
         cmd: AccountCmd,
+    },
+    /// Copy the database into the backups folder beside it; safe while the server runs
+    Backup {
+        /// How many backups to keep, this one among them; the oldest beyond go
+        #[arg(long, default_value_t = crate::backup::DEFAULT_KEEP, value_parser = parse_keep)]
+        keep: usize,
     },
 }
 
@@ -86,23 +92,22 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs(n.saturating_mul(secs)))
 }
 
+/// `--keep`: a number above 0. Some tools take 0 to mean "keep them all"; here it would delete
+/// every older backup.
+fn parse_keep(s: &str) -> Result<usize, String> {
+    s.bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| s.parse().ok())
+        .flatten()
+        .filter(|&n| n > 0)
+        .ok_or_else(|| format!("{s:?}: a number above 0"))
+}
+
 fn time(ms: i64) -> String {
-    let secs = ms / 1000;
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
+    let t = Utc::from_ms(ms);
     format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
-        rem / 3600,
-        rem % 3600 / 60
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        t.year, t.month, t.day, t.hour, t.minute
     )
 }
 
@@ -207,6 +212,11 @@ pub async fn admin(
                 writeln!(out, "no account named {username}")?;
             }
         }
+        Command::Backup { keep } => {
+            let dir = crate::backup::folder(&cfg.store.path);
+            let made = crate::backup::run(&store, &dir, *keep, now).await?;
+            writeln!(out, "{}", made.display())?;
+        }
     }
     store.close().await;
     Ok(())
@@ -216,7 +226,26 @@ pub async fn admin(
 mod tests {
     use std::time::Duration;
 
-    use super::{parse_duration, time};
+    use clap::Parser;
+
+    use super::{Cli, Command, parse_duration, time};
+
+    #[test]
+    fn backup_keeps_14_unless_told_and_never_none() {
+        let keep = |args: &[&str]| match Cli::try_parse_from(args).map(|c| c.command) {
+            Ok(Some(Command::Backup { keep })) => Some(keep),
+            _ => None,
+        };
+        assert_eq!(keep(&["fenji-server", "backup"]), Some(14));
+        assert_eq!(keep(&["fenji-server", "backup", "--keep", "3"]), Some(3));
+        for bad in ["0", "-1", "+3", "x", ""] {
+            assert_eq!(
+                keep(&["fenji-server", "backup", "--keep", bad]),
+                None,
+                "{bad:?}"
+            );
+        }
+    }
 
     #[test]
     fn durations_take_minutes_hours_and_days_and_refuse_the_rest() {
