@@ -251,41 +251,36 @@ pub enum Line<'a> {
     System { text: &'a str },
 }
 
+impl Line<'_> {
+    /// The channel the line goes on (chat.md §3).
+    pub fn channel(&self) -> i64 {
+        match self {
+            Self::Said { channel, .. } => channel.number(),
+            Self::Announce { .. } => channel::MARQUEE,
+            Self::System { .. } => channel::SYSTEM,
+        }
+    }
+}
+
 /// 378 for `line` (chat.md §2): the channel, the sender's link, the content, the receiver's link,
 /// and no options or template. A line from the server names no sender and no receiver (`""`), as
 /// the client's own error lines do. A player's text and an announcement go as they came, already
 /// in the client's form and checked by the world; the server's own text is made to show as written
 /// first.
 pub fn say(line: &Line) -> Vec<u8> {
-    let (ch, sender, content, receiver) = match *line {
-        Line::Said {
-            channel,
-            from,
-            to,
-            text,
-        } => (
-            channel.number(),
+    let (sender, content, receiver) = match *line {
+        Line::Said { from, to, text, .. } => (
             player_link(&from),
             text.to_string(),
             to.map(|p| player_link(&p)).unwrap_or_default(),
         ),
-        Line::Announce { text } => (
-            channel::MARQUEE,
-            String::new(),
-            text.to_string(),
-            String::new(),
-        ),
-        Line::System { text } => (
-            channel::SYSTEM,
-            String::new(),
-            server_text(text),
-            String::new(),
-        ),
+        Line::Announce { text } => (String::new(), text.to_string(), String::new()),
+        Line::System { text } => (String::new(), server_text(text), String::new()),
     };
     script_body(
         SYS_CHAT_MESSAGE,
         &[
-            Value::Int(ch),
+            Value::Int(line.channel()),
             Value::Str(sender.into_bytes()),
             Value::Str(content.into_bytes()),
             Value::Str(receiver.into_bytes()),

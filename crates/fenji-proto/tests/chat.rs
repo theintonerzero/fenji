@@ -477,3 +477,25 @@ fn channels_have_the_clients_numbers() {
     );
     assert_eq!((chat::CHAT_TRANSMIT, chat::SYS_CHAT_MESSAGE), (115, 378));
 }
+
+#[test]
+fn a_lines_channel_is_the_one_say_writes() {
+    let said = |channel| Line::Said {
+        channel,
+        from: LIN,
+        to: None,
+        text: "hi",
+    };
+    for line in [
+        said(Channel::Nearby),
+        said(Channel::Whisper),
+        said(Channel::World),
+        Line::Announce { text: "a" },
+        Line::System { text: "b" },
+    ] {
+        let v = pickle::decode(&chat::say(&line)).unwrap();
+        assert_eq!(v[1], Value::Int(line.channel()), "{line:?}");
+    }
+    assert_eq!(Line::Announce { text: "a" }.channel(), channel::MARQUEE);
+    assert_eq!(Line::System { text: "b" }.channel(), channel::SYSTEM);
+}
