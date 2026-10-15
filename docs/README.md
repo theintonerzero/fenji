@@ -1,5 +1,7 @@
 # Fenji docs
 
+Playing on a friend's server needs only the desktop launcher: the root [README](../README.md#playing) says how to get it and use it, and [PRIVACY.md](../PRIVACY.md) what it sends. The documents below are for people working on Fenji.
+
 | Path | What it holds |
 |---|---|
 | [`superpowers/specs/2026-10-11-fenji-design.md`](superpowers/specs/2026-10-11-fenji-design.md) | The project design: ground rules, architecture, milestones. Start here. |

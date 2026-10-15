@@ -9,7 +9,7 @@ All the protocol and format knowledge here comes from studying our own licensed 
 
 ## Status
 
-**Not a game yet.** A Fenji server runs invite-only accounts and the character lobby (M3), and now a shared world, the first piece of M4. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and enters the starting zone. There, players see each other, move and see each other move, and chat nearby, to the whole server or in whispers, and the server's admins have `!tp`, `!kick`, `!announce` and `!invite`. Each character comes back where it last stood. There are no monsters, combat or quests until M5. The rest of M4 is still to come: hosting, with a console for hosts, release archives with start scripts and a guide for hosts, and then the desktop launcher. The game connection between the client and the server is readable and unauthenticated. It carries no password, but play over a trusted network or a VPN ([PRIVACY.md](PRIVACY.md)). Joining a server means trusting its host: the game client obeys server messages that can write files and run code on your computer. Fenji's server never sends them, but a changed server could ([PRIVACY.md](PRIVACY.md#trusting-a-servers-host)).
+**Not a game yet.** A Fenji server runs invite-only accounts and the character lobby (M3), and now a shared world, the first piece of M4. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and enters the starting zone. There, players see each other, move and see each other move, and chat nearby, to the whole server or in whispers, and the server's admins have `!tp`, `!kick`, `!announce` and `!invite`. Each character comes back where it last stood. There are no monsters, combat or quests until M5. The desktop launcher is built: from an invite link it makes your account, checks your copy of the game or downloads it from Steam, and starts it on Linux. The rest of M4, hosting with a console for hosts, release archives with start scripts and a guide for hosts, is being finished. The game connection between the client and the server is readable and unauthenticated. It carries no password, but play over a trusted network or a VPN ([PRIVACY.md](PRIVACY.md)). Joining a server means trusting its host: the game client obeys server messages that can write files and run code on your computer. Fenji's server never sends them, but a changed server could ([PRIVACY.md](PRIVACY.md#trusting-a-servers-host)).
 
 | Milestone | What it delivers | State |
 |---|---|---|
@@ -17,7 +17,7 @@ All the protocol and format knowledge here comes from studying our own licensed 
 | M1 | Reading the client's data: archives, embedded scripts | Released, v0.2.0 |
 | M2 | The network transport and handshake, against the real client | Released, v0.3.0 |
 | M3 | Accounts, the launcher, character list and creation | Released, v0.4.0 |
-| M4 | Friends in the starting zone: moving, seeing each other, chat | In progress: the world works; hosting and the launcher are next |
+| M4 | Friends in the starting zone: moving, seeing each other, chat | In progress: the world and the desktop launcher work; hosting is being finished |
 | M5 | Monsters, combat, XP, loot and saved progress (v1) | Planned |
 
 The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-design.md) and the [docs index](docs/README.md). Each milestone ends with a summary, such as [M2's](docs/re/m2-summary.md).
@@ -42,7 +42,8 @@ The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-des
 | `crates/fenji-console` | The host console: live logs above and a command line below, full-screen in a terminal or as plain lines, and what a server and its consoles say to each other. |
 | `crates/fenji-store` | The server's SQLite store: accounts, invites, sessions, game tokens and characters. |
 | `crates/fenji-auth` | Password hashing (argon2id) and the invite and token formats. |
-| `crates/fenji-launcher` | The launcher's library and `fenji-launch`, its command line: redeem an invite, check the client folder against the pinned build, and play (on Linux, through umu-launcher). |
+| `crates/fenji-launcher` | The launcher's library, which holds all its state and secrets, and `fenji-launch`, its command line: redeem an invite, check the client folder against the pinned build, and play (on Linux, through umu-launcher). |
+| `apps/launcher` | The desktop launcher for players: a Tauri 2 window over `fenji-launcher`'s model. It pastes an invite link, makes your account, checks or downloads your game, plays, and updates itself. |
 | `crates/fenji-data` | Reads the client's own data: its archives, file index, embedded file system and table cache. |
 | `crates/fenji-oodle` | An open decoder for the Oodle Kraken compression of the client's archives: a safe Rust port of [ooz](https://github.com/powzix/ooz), GPL-3.0-or-later. |
 | `crates/fenji-lua` | The client's Lua 5.3 dialect: parser, disassembler, normaliser. |
@@ -50,7 +51,18 @@ The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-des
 | `scripts/` | Machine setup, the sandbox for client runs, and repository checks. |
 | `docs/` | The design, what we've learned about the client, and how we work. |
 
-Monsters, combat and the rest of the game come in M5. A console for hosts (#147) is in progress, and the launcher's window (#146) comes next.
+Monsters, combat and the rest of the game come in M5. A console for hosts (#147) is being finished.
+
+## Playing
+
+You need the desktop launcher, an invite link from a friend who hosts a Fenji server, and your own copy of the game (above).
+
+1. **Get the launcher** from the [latest release](https://github.com/theintonerzero/fenji/releases/latest), from v0.5.0: the AppImage on Linux, the installer on Windows, or the app on macOS. Microsoft and Apple haven't signed it. So the first time, on Windows choose More info, then Run anyway. On macOS, open it once, then choose Open Anyway in System Settings, Privacy & Security.
+2. **Paste the invite link** your host sent you, and make your account: a name and a password for that server.
+3. **Show it your game.** Choose your copy's folder, and the launcher checks it against the build Fenji supports. On Linux it can also download your copy from Steam instead: it opens DepotDownloader in a terminal, where you sign in with Steam's QR code. Fenji never sees your Steam login.
+4. **Press Play.** On Linux the launcher starts the game through umu-launcher and Proton. On Windows and macOS, Play isn't available yet; the rest works.
+
+The launcher updates itself (Settings, "Update automatically"), and it sends nothing about you; [PRIVACY.md](PRIVACY.md) lists what it fetches. The command-line `fenji-launch` does the same for scripts.
 
 ## For developers
 

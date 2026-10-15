@@ -61,14 +61,17 @@ export function header(ctx: Ctx, s: Snapshot): HTMLElement & { update(s: Snapsho
     ),
   );
   const update = (next: Snapshot): void => {
+    // The routed screen's tab, not only the clicked one: the sign-in screens are the Account tab's
+    // task wherever they show (the Welcome, Redeem and SignIn boards).
+    const shown: Tab = SIGN_IN_SCREENS.has(route(ctx.tab, next)) ? "account" : ctx.tab;
     TABS.forEach(([tab], i) => {
-      if (tab === ctx.tab) {
+      if (tab === shown) {
         tabs[i]!.setAttribute("aria-current", "page");
       } else {
         tabs[i]!.removeAttribute("aria-current");
       }
     });
-    if (ctx.tab === "settings") {
+    if (shown === "settings") {
       settings.setAttribute("aria-current", "page");
     } else {
       settings.removeAttribute("aria-current");

@@ -27,6 +27,7 @@
   { "type": "pickFolder", "purpose": "game" },
   { "type": "openUrl", "url": "https://github.com/theintonerzero/fenji" },
   { "type": "openLogFolder" },
+  { "type": "openNotices" },
   { "type": "minimize" },
   { "type": "close" },
   { "type": "checkUpdate" },

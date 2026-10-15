@@ -522,8 +522,14 @@
 
 .dialog-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 14px;
+}
+
+/* The title and its description, beside the tile, whose top they share. */
+.dialog-heading {
+  min-width: 0;
+  padding-top: 6px;
 }
 
 .dialog-title {
@@ -1408,8 +1414,15 @@
   margin-top: 28px;
 }
 
+/* Each card sits in the wrapper its screen renews: the wrapper takes the row's height and hands it
+   to the card, so both cards' feet sit on one baseline (the ClientSetup board). */
+.choices > * {
+  display: flex;
+}
+
 .choice {
   display: flex;
+  flex: 1;
   flex-direction: column;
 }
 

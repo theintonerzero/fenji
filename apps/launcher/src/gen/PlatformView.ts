@@ -4,4 +4,9 @@ export type PlatformView = {
 /**
  * `linux`, `windows`, `macos` or `other`.
  */
-os: string, canPlay: boolean, canDownload: boolean, };
+os: string, canPlay: boolean, canDownload: boolean, 
+/**
+ * The player's home folder, which the view shows paths under as `~`, for display only:
+ * intents carry whole paths. None on Windows, where `~` means nothing to a player.
+ */
+home: string | null, };

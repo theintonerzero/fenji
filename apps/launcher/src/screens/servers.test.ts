@@ -14,6 +14,9 @@ test("three servers, one ember Play on the selected row, and every state in word
   // In maintenance, the host's message is the row's notice line (the Servers board).
   expect(rows[1]!.textContent).toContain("Mei: moving the server to a new machine. Back around 21:00.");
   expect(rows[2]!.textContent).toContain("Can't reach");
+  // A row keeps the faint dot, as the Servers board draws it; Play and the column carry the icon.
+  expect(rows[2]!.querySelector(".server-status .dot")).not.toBeNull();
+  expect(rows[2]!.querySelector(".status-icon")).toBeNull();
   (rows[1] as HTMLElement).click();
   expect(sent).toContainEqual({ type: "selectServer", id: golden("servers").servers[1]!.id });
 });

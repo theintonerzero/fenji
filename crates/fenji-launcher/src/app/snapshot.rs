@@ -36,6 +36,9 @@ pub struct PlatformView {
     pub os: String,
     pub can_play: bool,
     pub can_download: bool,
+    /// The player's home folder, which the view shows paths under as `~`, for display only:
+    /// intents carry whole paths. None on Windows, where `~` means nothing to a player.
+    pub home: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -213,6 +216,8 @@ pub struct UpdateView {
     pub ready: bool,
     pub notes: Option<String>,
     pub show_dialog: bool,
+    /// The last check found nothing newer: the column's foot says "up to date" (the boards).
+    pub up_to_date: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

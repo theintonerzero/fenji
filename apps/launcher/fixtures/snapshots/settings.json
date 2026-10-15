@@ -3,7 +3,8 @@
   "platform": {
     "os": "linux",
     "canPlay": true,
-    "canDownload": true
+    "canDownload": true,
+    "home": "/home/player"
   },
   "servers": [
     {
@@ -60,7 +61,8 @@
     "available": null,
     "ready": false,
     "notes": null,
-    "showDialog": false
+    "showDialog": false,
+    "upToDate": true
   },
   "settings": {
     "autoUpdate": true,

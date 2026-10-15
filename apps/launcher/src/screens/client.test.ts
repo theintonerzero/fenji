@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 
-import { pathEnd } from "./client-parts";
+import { pathEnd, shown } from "./client-parts";
 import { clientReady } from "./client-ready";
 import { clientRepair } from "./client-repair";
 import { clientSetup } from "./client-setup";
@@ -12,14 +12,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("setup: a folder, or a download into the default folder, which is the one ember action", () => {
+test("setup: a folder, the one ember action as on the ClientSetup board, or a download into the default folder", () => {
   const { root, sent } = mount(clientSetup, golden("client-setup"), undefined, "client");
-  // The card is narrow: the folder's end shows, and the whole path is its title.
+  // The home folder shows as ~, as on the board; a path still too long for the narrow card shows
+  // its end, with the whole path as its title (pathEnd's own test, below).
   const folder = root.querySelector<HTMLElement>(".choice-folder .path")!;
-  expect(folder.textContent).toBe("…/Games/SoLO");
-  expect(folder.title).toBe("/home/player/Games/SoLO");
+  expect(folder.textContent).toBe("~/Games/SoLO");
   expect(embers(root)).toBe(1);
-  expect(root.querySelector(".ember")!.textContent).toBe("Start download");
+  // The board's emphasis (the finish review's fix 2): most invited players have the game already.
+  expect(root.querySelector(".ember")!.textContent).toBe("Choose folder");
   press(root, "Choose folder");
   press(root, "Change");
   press(root, "Start download");
@@ -57,7 +58,7 @@ test("a path too long for its place shows its last folders, the whole in its tit
 
 test("setup off Linux: the Steam card says why and has no button", () => {
   const s = golden("client-setup");
-  s.platform = { os: "windows", canPlay: false, canDownload: false };
+  s.platform = { os: "windows", canPlay: false, canDownload: false, home: null };
   const { root } = mount(clientSetup, s, undefined, "client");
   expect(root.textContent).toContain("Downloading with Steam works on Linux only for now.");
   expect(root.textContent).not.toContain("Start download");
@@ -68,6 +69,9 @@ test("working: fetching the tool, waiting for Steam, and downloading, each in wo
   const fetching = mount(clientWorking, golden("client-fetching"), undefined, "client").root;
   expect(fetching.textContent).toContain("Getting DepotDownloader…");
   expect(fetching.textContent).toContain("40%");
+  // The blade shows the player's copy (DESIGN.md, The Blade And Ground Rule), not the tool's
+  // download: it stays unlit while DepotDownloader comes (the finish review's fix 3).
+  expect(fetching.querySelector('[role="progressbar"]')).toBeNull();
   const waiting = mount(clientWorking, golden("client-waiting-for-steam"), undefined, "client").root;
   expect(waiting.textContent).toContain("Sign in to Steam in DepotDownloader's window: scan its QR code with the Steam app.");
   const { root, sent } = mount(clientWorking, golden("client-downloading"), undefined, "client");
@@ -112,7 +116,7 @@ test("repair names each kind of problem", () => {
 
 test("repair off Linux has no Repair from Steam", () => {
   const s = golden("client-repair");
-  s.platform = { os: "macos", canPlay: false, canDownload: false };
+  s.platform = { os: "macos", canPlay: false, canDownload: false, home: "/Users/player" };
   const { root } = mount(clientRepair, s, undefined, "client");
   expect(root.textContent).not.toContain("Repair from Steam");
   expect(root.textContent).toContain("check again");
@@ -121,8 +125,13 @@ test("repair off Linux has no Repair from Steam", () => {
 test("ready: the folder, the build and the last check, Check every file and Change folder", () => {
   // The boards' clock: 20:14 in Melbourne is 09:14 UTC, and the check ran at 09:10.
   vi.useFakeTimers({ now: 1792055640000, toFake: ["Date"] });
-  const { root, sent } = mount(clientReady, golden("client-verified"), undefined, "client");
-  expect(root.textContent).toContain("/home/player/Games/SoLO");
+  const { root, sent, tabs } = mount(clientReady, golden("client-verified"), undefined, "client");
+  // The home folder shows as ~, as on the boards, so a screenshot doesn't carry the player's name.
+  expect(root.textContent).toContain("~/Games/SoLO");
+  expect(root.textContent).not.toContain("/home/player");
+  // A ready copy leads on to Play (the finish review's minor), in gold, not a second ember.
+  press(root, "Go to Play");
+  expect(tabs).toEqual(["play"]);
   expect(root.textContent).toContain("Verified · build 10015727 · 210 files");
   expect(root.textContent).toContain("Every file checked today at 09:10");
   press(root, "Check every file");
@@ -131,4 +140,12 @@ test("ready: the folder, the build and the last check, Check every file and Chan
     { type: "check", level: "full" },
     { type: "pickFolder", purpose: "game" },
   ]);
+});
+
+test("a path shows the home folder as ~, and nothing that only starts with its name", () => {
+  expect(shown("/home/player/Games/SoLO", "/home/player")).toBe("~/Games/SoLO");
+  expect(shown("/home/player", "/home/player")).toBe("~");
+  expect(shown("/home/playerx/Games", "/home/player")).toBe("/home/playerx/Games");
+  expect(shown("/opt/SoLO", "/home/player")).toBe("/opt/SoLO");
+  expect(shown("/home/player/Games", null)).toBe("/home/player/Games");
 });

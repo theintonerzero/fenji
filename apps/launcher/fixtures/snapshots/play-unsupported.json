@@ -3,7 +3,8 @@
   "platform": {
     "os": "windows",
     "canPlay": false,
-    "canDownload": false
+    "canDownload": false,
+    "home": null
   },
   "servers": [
     {
@@ -60,7 +61,8 @@
     "available": null,
     "ready": false,
     "notes": null,
-    "showDialog": false
+    "showDialog": false,
+    "upToDate": true
   },
   "settings": {
     "autoUpdate": true,

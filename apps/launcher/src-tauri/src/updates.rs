@@ -23,13 +23,15 @@ pub struct Found {
 }
 
 /// What the view shows. The dialog shows only for a downloaded version whose dialog the player
-/// hasn't seen (spec §3.8: once a version).
+/// hasn't seen (spec §3.8: once a version), and "up to date" only when the last check found nothing
+/// newer (`up_to_date`), never beside an update.
 pub fn view(
     current: &str,
     auto: bool,
     checking: bool,
     found: Option<&Found>,
     seen: Option<&str>,
+    up_to_date: bool,
 ) -> UpdateView {
     UpdateView {
         current: current.into(),
@@ -39,11 +41,13 @@ pub fn view(
         ready: found.is_some_and(|f| f.ready),
         notes: found.and_then(|f| f.notes.clone()),
         show_dialog: found.is_some_and(|f| f.ready && seen != Some(f.version.as_str())),
+        up_to_date: up_to_date && found.is_none(),
     }
 }
 
-/// The updater's state in the shell: whether a check is under way, what it found, and the found
-/// update's bytes once they're here.
+/// The updater's state in the shell: whether a check is under way, what it found, the found
+/// update's bytes once they're here, and whether the last check found nothing newer. A check that
+/// fails leaves that as it was.
 #[derive(Default)]
 pub struct Updates {
     inner: Mutex<Inner>,
@@ -54,6 +58,7 @@ struct Inner {
     checking: bool,
     found: Option<Found>,
     downloaded: Option<(Update, Vec<u8>)>,
+    up_to_date: bool,
 }
 
 impl Updates {
@@ -72,6 +77,7 @@ impl Updates {
             inner.checking,
             inner.found.as_ref(),
             seen.as_deref(),
+            inner.up_to_date,
         ));
     }
 
@@ -94,7 +100,10 @@ impl Updates {
             Ok(Some(update)) => update,
             Ok(None) => {
                 tracing::info!("the launcher is up to date");
-                self.lock().checking = false;
+                let mut inner = self.lock();
+                inner.checking = false;
+                inner.up_to_date = true;
+                drop(inner);
                 return self.publish(model);
             }
             Err(e) => return self.failed(model, asked, &e),
@@ -103,6 +112,7 @@ impl Updates {
         {
             let mut inner = self.lock();
             inner.checking = false;
+            inner.up_to_date = false;
             inner.found = Some(Found {
                 version: update.version.clone(),
                 notes: update.body.clone(),
@@ -174,14 +184,31 @@ mod tests {
             notes: Some("Notes".into()),
             ready: true,
         };
-        let v = view("0.5.0", true, false, Some(&found), None);
+        let v = view("0.5.0", true, false, Some(&found), None, false);
         assert!(v.ready && v.show_dialog && v.available.as_deref() == Some("0.5.1"));
-        assert!(!view("0.5.0", true, false, Some(&found), Some("0.5.1")).show_dialog);
+        assert!(!view("0.5.0", true, false, Some(&found), Some("0.5.1"), false).show_dialog);
         let downloading = Found {
             ready: false,
             ..found.clone()
         };
-        assert!(!view("0.5.0", true, false, Some(&downloading), None).show_dialog);
-        assert_eq!(view("0.5.0", false, false, None, None).available, None);
+        assert!(!view("0.5.0", true, false, Some(&downloading), None, false).show_dialog);
+        assert_eq!(
+            view("0.5.0", false, false, None, None, false).available,
+            None
+        );
+    }
+
+    /// The finish review's fix 6: the board's "Launcher 0.5.0 · up to date", after a check found
+    /// nothing newer, and never beside an update.
+    #[test]
+    fn up_to_date_only_after_a_check_found_nothing_newer() {
+        assert!(view("0.5.0", true, false, None, None, true).up_to_date);
+        assert!(!view("0.5.0", true, false, None, None, false).up_to_date);
+        let found = Found {
+            version: "0.5.1".into(),
+            notes: None,
+            ready: false,
+        };
+        assert!(!view("0.5.0", true, false, Some(&found), None, true).up_to_date);
     }
 }

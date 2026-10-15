@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 
 import { play } from "./play";
-import { embers, golden, mount, press } from "./test-kit";
+import { embers, golden, mount, press, settle } from "./test-kit";
 
 test.each([
   "play-ready",
@@ -110,19 +110,73 @@ test("offline lists what to try, and Try again is its one action", () => {
   expect(tabs).toEqual(["servers"]);
 });
 
-test("a changed key says so instead of the list", () => {
-  const { root } = mount(play, golden("play-key-changed"));
-  expect(root.textContent).toContain("Moonward's key has changed. Ask Wen for a new link.");
+test("a changed key asks for the host's new link, and its ember opens Add server here", async () => {
+  // The finish review's fix 1: "Try again" can never cure a changed key; the new link can.
+  const { root, sent } = mount(play, golden("play-key-changed"));
+  expect(root.textContent).toContain("Ask Wen for the new invite link, then add it here.");
   expect(root.textContent).not.toContain("What to try");
+  // Play mounts its buttons once and hides those a state doesn't use.
+  const shown = [...root.querySelectorAll<HTMLButtonElement>("button")].filter((b) => !b.hidden).map((b) => b.textContent);
+  expect(shown).not.toContain("Try again");
+  expect(root.querySelector<HTMLButtonElement>("button.play")!.hidden).toBe(true);
+  const [only] = root.querySelectorAll(".ember:not([disabled])");
+  expect(only!.textContent).toBe("Add the new link");
+  (only as HTMLButtonElement).click();
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("Add server");
+  (dialog.querySelector("input") as HTMLInputElement).value = "fenji://moonward.example.net/?pin=abc";
+  (dialog.querySelector("form") as HTMLFormElement).requestSubmit();
+  await settle();
+  expect(sent).toEqual([{ type: "addServer", text: "fenji://moonward.example.net/?pin=abc" }]);
+  // The column says what's true: the server answered, so nothing waits on its answer.
+  const column = root.querySelector("aside")!;
+  expect(column.textContent).toContain("Who's playing");
+  expect(column.textContent).not.toContain("Playing now");
+  expect(column.textContent).toContain("Who's online shows once you've added Wen's new link.");
+  expect(column.textContent).not.toContain("answers");
 });
 
-test("a server's own key, with no pin, says to open the host's link", () => {
+test("a server's own key, with no pin, asks for the host's link", () => {
   const s = golden("play-key-changed");
   s.servers[0]!.status = { kind: "ownKey" };
   s.servers[0]!.host = null;
   const { root } = mount(play, s);
-  expect(root.textContent).toContain("Moonward uses its own key. Open the link your host sent you.");
+  expect(root.textContent).toContain("Add the invite link your host sent you: it carries the server's key.");
   expect(root.textContent).not.toContain("What to try");
+  const [only] = root.querySelectorAll(".ember:not([disabled])");
+  expect(only!.textContent).toBe("Add the link");
+});
+
+test("a server this launcher can't play on offers the launcher's update check", () => {
+  for (const newer of [true, false]) {
+    const s = golden("play-key-changed");
+    s.servers[0]!.status = { kind: "incompatible", newer };
+    const { root, sent } = mount(play, s);
+    const [only] = root.querySelectorAll(".ember:not([disabled])");
+    expect(only!.textContent).toBe("Check for updates");
+    (only as HTMLButtonElement).click();
+    expect(sent).toEqual([{ type: "checkUpdate" }]);
+    expect(root.textContent).toContain(
+      newer ? "Update the launcher to play on Moonward." : "Check for a launcher update, or ask Wen which build to use.",
+    );
+    expect(root.querySelector("aside")!.textContent).toContain("Who's online shows once this launcher can play on Moonward.");
+  }
+});
+
+test("an unreachable server carries the danger mark on Play and in the column, as on the Offline board", () => {
+  // The finish review's fix 4: an error never reads as a neutral dot (DESIGN.md, Status).
+  const { root } = mount(play, golden("play-offline"));
+  expect(root.querySelector(".status-line .status-icon")).not.toBeNull();
+  expect(root.querySelector("aside .fact-status .status-icon")).not.toBeNull();
+});
+
+test("a closed server's column doesn't say Playing now over a sentence that denies it", () => {
+  // The finish review's fix 8: the heading claimed what its own text denied.
+  for (const state of ["play-maintenance", "play-offline"]) {
+    const column = mount(play, golden(state)).root.querySelector("aside")!;
+    expect(column.textContent).toContain("Who's playing");
+    expect(column.textContent).not.toContain("Playing now");
+  }
 });
 
 test("unsupported uses exactly its words, and lists what still works", () => {

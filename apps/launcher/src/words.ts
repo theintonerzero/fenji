@@ -131,7 +131,7 @@ export function clientLine(s: Snapshot, underHeading = false): string {
 export function versionLine(s: Snapshot): string {
   const { update } = s;
   if (update.available === null) {
-    return `Launcher ${update.current}`;
+    return update.upToDate ? `Launcher ${update.current} · up to date` : `Launcher ${update.current}`;
   }
   return `Launcher ${update.current} · ${update.available} ${update.ready ? "ready" : "available"}`;
 }

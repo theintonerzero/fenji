@@ -16,7 +16,7 @@ test("no ember action; the switch, Check now and the log folder send their inten
 
 test("the client card: the game folder, Change and Check every file", () => {
   const { root, sent } = mount(settings, golden("settings"), undefined, "settings");
-  expect(root.querySelector<HTMLInputElement>("#settings-folder")!.value).toBe("/home/player/Games/SoLO");
+  expect(root.querySelector<HTMLInputElement>("#settings-folder")!.value).toBe("~/Games/SoLO");
   expect(root.textContent).toContain("Verified · build 10015727 · 210 files");
   press(root, "Change");
   press(root, "Check every file");
@@ -44,17 +44,26 @@ test("About: the version, the licence, the contributors, no telemetry, and two l
   for (const words of ["0.5.0", "AGPL-3.0-or-later", "The Fenji contributors", "No telemetry: Fenji sends nothing about you.", "Language: English"]) {
     expect(root.textContent).toContain(words);
   }
+  // The Settings board's About: "0.4.0 · up to date", with an ok dot (the finish review's fix 6).
+  expect(root.textContent).toContain("~/.local/share/fenji-launcher/logs");
+  expect(root.querySelector<HTMLInputElement>("#settings-folder")!.value).toBe("~/Games/SoLO");
+  const version = root.querySelector(".about-version")!;
+  expect(version.textContent).toContain("up to date");
+  expect(version.querySelector(".dot-ok")).not.toBeNull();
   press(root, "Read the privacy page");
   press(root, "Source code");
+  // The bundle's third-party notices (#341), which the shell opens from its resources.
+  press(root, "Third-party notices");
   expect(sent).toEqual([
     { type: "openUrl", url: "https://github.com/theintonerzero/fenji/blob/main/PRIVACY.md" },
     { type: "openUrl", url: "https://github.com/theintonerzero/fenji" },
+    { type: "openNotices" },
   ]);
 });
 
 test("off Linux there is no umu-run card", () => {
   const s = golden("settings");
-  s.platform = { os: "windows", canPlay: false, canDownload: false };
+  s.platform = { os: "windows", canPlay: false, canDownload: false, home: null };
   const { root } = mount(settings, s, undefined, "settings");
   expect(root.querySelector("#settings-umu-run")).toBeNull();
 });

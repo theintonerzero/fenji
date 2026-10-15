@@ -12,11 +12,10 @@ import { percent } from "../words";
 import { clientColumn, GAME, path } from "./client-parts";
 import { noticeSlot, renew } from "./parts";
 
-/** The blade: the tool's or the files' percentage; the readout's line stays short. */
+/** The blade: the files' percentage, its readout's line short. It shows the player's copy (DESIGN.md,
+ * The Blade And Ground Rule), so it stays as the copy is while the tool itself downloads: the lede
+ * says how far that has come (the finish review's fix 3). */
 function bladeState(job: JobView | null, s: Snapshot): BladeState {
-  if (job?.kind === "fetching" && job.percent !== null) {
-    return { kind: "climbing", percent: job.percent, label: job.tool };
-  }
   if (job?.kind === "downloading" && job.percent !== null) {
     return { kind: "climbing", percent: job.percent, label: "downloaded" };
   }
@@ -94,7 +93,7 @@ export function clientWorking(root: HTMLElement, ctx: Ctx): Screen {
               "p",
               { class: "meta" },
               icons.folder(16),
-              h("span", {}, "Saving to ", path(folder), ". Fenji checks every file when the download finishes."),
+              h("span", {}, "Saving to ", path(folder, s.platform.home), ". Fenji checks every file when the download finishes."),
             )
           : null,
         file === null ? null : h("p", { class: "meta" }, icons.download(16), path(file)),

@@ -3,7 +3,8 @@
   "platform": {
     "os": "linux",
     "canPlay": true,
-    "canDownload": true
+    "canDownload": true,
+    "home": "/home/player"
   },
   "servers": [
     {
@@ -60,7 +61,8 @@
     "available": "0.5.1",
     "ready": true,
     "notes": "The Play tab shows the host's maintenance message and when the server is back.\nChecking files shows which file it's on and how many are left.\nPlainer words when the server can't be reached.",
-    "showDialog": true
+    "showDialog": true,
+    "upToDate": false
   },
   "settings": {
     "autoUpdate": true,

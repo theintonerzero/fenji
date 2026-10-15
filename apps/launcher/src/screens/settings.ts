@@ -10,7 +10,7 @@ import { facts } from "../ui/card";
 import { icons } from "../ui/icons";
 import { clientLine } from "../words";
 import { PRIVACY } from "./account";
-import { path } from "./client-parts";
+import { path, shown } from "./client-parts";
 import { contextColumn, noticeSlot, renew } from "./parts";
 
 const REPOSITORY = "https://github.com/theintonerzero/fenji";
@@ -20,14 +20,17 @@ function card(title: string, ...children: Child[]): HTMLElement {
   return h("section", { class: "card settings-card" }, h("h2", { class: "card-title" }, title), ...children);
 }
 
-/** The launcher's own version, and an update only when the updater has found one. */
+/** The launcher's own version, then an update when the updater has found one, or "up to date" when
+ * its last check found nothing newer (the Settings board). */
 function version(s: Snapshot): Child[] {
   const { update } = s;
   if (update.checking) {
     return [update.current, h("span", { class: "muted" }, "· checking…")];
   }
   if (update.available === null) {
-    return [update.current];
+    return update.upToDate
+      ? [update.current, h("span", { class: "dot dot-ok", "aria-hidden": "true" }), "up to date"]
+      : [update.current];
   }
   return [
     update.current,
@@ -125,7 +128,7 @@ export function settings(root: HTMLElement, ctx: Ctx): Screen {
   return {
     update(s) {
       slot.update(s);
-      folder.value = s.client.folder ?? "";
+      folder.value = s.client.folder === null ? "" : shown(s.client.folder, s.platform.home);
       renew(verified, clientLine(s, true), () => {
         const ok = s.client.check.kind === "verified" ? icons.check(13) : null;
         ok?.classList.add("icon-ok");
@@ -155,7 +158,7 @@ export function settings(root: HTMLElement, ctx: Ctx): Screen {
         card(
           "Logs",
           h("p", { class: "settings-lede" }, "The launcher's and the game's logs, for when something goes wrong."),
-          h("p", { class: "settings-path" }, path(s.settings.logFolder)),
+          h("p", { class: "settings-path" }, path(s.settings.logFolder, s.platform.home)),
           button.secondary("Open the log folder", () => void ctx.send({ type: "openLogFolder" }), "compact"),
         ),
       ]);
@@ -182,6 +185,7 @@ export function settings(root: HTMLElement, ctx: Ctx): Screen {
                 ["Made by", "The Fenji contributors"],
               ]),
               button.link(["Source code", icons.external(13)], () => void ctx.send({ type: "openUrl", url: REPOSITORY })),
+              button.link("Third-party notices", () => void ctx.send({ type: "openNotices" })),
             ),
             h(
               "section",

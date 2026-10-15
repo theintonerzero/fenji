@@ -29,13 +29,18 @@ export function dialog(parts: DialogParts): Dialog {
   const box = h(
     "div",
     { class: "dialog", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId, tabindex: "-1" },
+    // The title and its description in one column beside the tile (the AddServer and Update boards).
     h(
       "div",
       { class: "dialog-head" },
       parts.icon ? h("span", { class: "tile" }, parts.icon) : null,
-      h("h2", { class: "dialog-title", id: titleId }, parts.title),
+      h(
+        "div",
+        { class: "dialog-heading" },
+        h("h2", { class: "dialog-title", id: titleId }, parts.title),
+        parts.description === undefined ? null : h("p", { class: "dialog-description" }, parts.description),
+      ),
     ),
-    parts.description === undefined ? null : h("p", { class: "dialog-description" }, parts.description),
     parts.body ? h("div", { class: "dialog-body" }, ...parts.body) : null,
     h("div", { class: "dialog-actions" }, ...parts.actions),
   );

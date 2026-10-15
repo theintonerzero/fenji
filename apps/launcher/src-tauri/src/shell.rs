@@ -19,6 +19,8 @@ use tracing_subscriber::EnvFilter;
 use crate::updates::Updates;
 
 const NOT_OURS: &str = "Fenji only opens its own pages and your servers' source code.";
+/// Open the third-party notices in a build that doesn't carry them: a local build (#341).
+const NO_NOTICES: &str = "This build has no third-party notices file. Fenji's releases include it.";
 /// The launcher's log keeps this many days (the plan's Global Constraints).
 const LOG_DAYS: usize = 7;
 
@@ -36,6 +38,7 @@ pub fn route(intent: &Intent) -> Route {
         Intent::PickFolder { .. }
         | Intent::OpenUrl { .. }
         | Intent::OpenLogFolder
+        | Intent::OpenNotices
         | Intent::Minimize
         | Intent::Close
         | Intent::CheckUpdate
@@ -123,6 +126,23 @@ impl Shell {
                 open(app, &url, false)
             }
             Intent::OpenLogFolder => open(app, &self.logs.display().to_string(), true),
+            Intent::OpenNotices => {
+                // A release bundle carries them at its resources' root (#341); a local build
+                // doesn't.
+                let notices = app
+                    .path()
+                    .resource_dir()
+                    .map(|dir| dir.join("THIRD-PARTY-NOTICES.txt"))
+                    .ok()
+                    .filter(|path| path.is_file());
+                match notices {
+                    Some(path) => open(app, &path.display().to_string(), true),
+                    None => {
+                        self.model.note(NO_NOTICES.into(), false);
+                        Ok(())
+                    }
+                }
+            }
             Intent::Minimize => app
                 .get_webview_window("main")
                 .ok_or("the launcher's window isn't open")?
@@ -296,6 +316,7 @@ mod tests {
         "pickFolder",
         "openUrl",
         "openLogFolder",
+        "openNotices",
         "minimize",
         "close",
         "checkUpdate",
