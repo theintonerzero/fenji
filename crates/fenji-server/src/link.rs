@@ -30,6 +30,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use crate::accounts;
 use crate::gate::{self, Gate};
 use crate::lobby::stored_appearance;
+use crate::online::Closing;
 use crate::world::{
     ActorId, ChatChannel, ChatIn, ChatOut, ChatRefusal, ConnId, KickReason, Location, Look,
     MAX_LINE_BYTES, MoveStep, Player, Pos, Speaker, WhisperTarget, WorldHandle, WorldIn, WorldOut,
@@ -66,7 +67,8 @@ fn filter_machine(i: usize) -> bool {
 }
 
 /// Plays `character` in the world on the gate's connection, until the client leaves, the world
-/// lets go of it, or a newer login replaces it.
+/// lets go of it, or the online registry tells it to close: a newer login replaces it, or the
+/// account is banned. The lobby has checked that the account isn't banned (`gate::entry`).
 #[allow(clippy::too_many_arguments)] // the connection's state, as the lobby loop holds it
 pub(crate) async fn play(
     sock: &mut TcpStream,
@@ -76,7 +78,7 @@ pub(crate) async fn play(
     account: &Account,
     conn: ConnId,
     character: Character,
-    replaced: &mut oneshot::Receiver<()>,
+    replaced: &mut oneshot::Receiver<Closing>,
 ) -> anyhow::Result<()> {
     let deadline = gate.limits.write_deadline;
     let pid = character.pid;
@@ -134,7 +136,7 @@ pub(crate) async fn play(
                         // clock less the one echoed (transport.md 4.4, #269).
                         Event::TimeSync(ms) => {
                             if !gate::send_or_replaced(sock, &server.time_sync(ms), deadline, replaced).await? {
-                                tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                                tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a reply was blocked: closing");
                                 return Ok(());
                             }
                             continue;
@@ -153,7 +155,7 @@ pub(crate) async fn play(
                     if let Some(bytes) = reply
                         && !gate::send_or_replaced(sock, &bytes, deadline, replaced).await?
                     {
-                        tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                        tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a reply was blocked: closing");
                         return Ok(());
                     }
                 }
@@ -166,7 +168,7 @@ pub(crate) async fn play(
                     let now = u64::try_from(gate.clock.now_ms()).unwrap_or(0);
                     let Some(bytes) = encode(server, pid, now, msg)? else { continue };
                     if !gate::send_or_replaced(sock, &bytes, deadline, replaced).await? {
-                        tracing::info!(%peer, account = %account.username, "replaced by a newer login while a write was blocked: closing");
+                        tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a write was blocked: closing");
                         return Ok(());
                     }
                 }
@@ -177,12 +179,9 @@ pub(crate) async fn play(
                     return Ok(());
                 }
             },
-            Ok(()) = &mut *replaced => {
-                tracing::info!(%peer, account = %account.username, "replaced by a newer login");
-                let bytes = server.send(Stc::Close.to_u8(), gate::DUPLICATE_LOGIN.as_bytes(), &StoredCodec)?;
-                let place = gate.waiting.take(peer.ip());
-                gate::close_replaced(sock, &bytes, place, gate.limits.linger).await;
-                return Ok(());
+            // A newer login, or a ban: the world's own `Ban` may come too, and finds it gone.
+            Ok(closing) = &mut *replaced => {
+                return gate::close_told(sock, peer, gate, server, account, closing).await;
             }
             _ = check.tick() => match gate.accounts.store().account_by_id(account.id).await {
                 Ok(Some(_)) => {}
@@ -1083,6 +1082,48 @@ mod tests {
         assert_eq!(
             rest(&mut theirs, &mut client).await,
             [ClientEvent::Closed(b"error auth-failed".to_vec())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ban_the_registry_tells_closes_a_player_in_the_world() {
+        // What the console's `ban` does besides `WorldIn::Ban` (HA5): the online registry tells
+        // the connection to close, as it tells one a newer login replaced, and the link closes
+        // with the ban's reason. The world hears that it left.
+        let dir = tempfile::tempdir().unwrap();
+        let (gate, mut inbox) = gate(dir.path()).await;
+        let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+        let (registry, mut closing) = oneshot::channel();
+        let tester = account("tester");
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut closing,
+        );
+        let world = async {
+            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            registry.send(Closing::Banned).unwrap();
+            // Kept open: the close must come from the registry, not from the world.
+            out
+        };
+        let (ended, _out) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(played, world)
+        })
+        .await
+        .expect("closed within 5 s");
+        ended.unwrap();
+        assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
+        drop(ours);
+        assert_eq!(
+            rest(&mut theirs, &mut client).await,
+            [ClientEvent::Closed(gate::BANNED.as_bytes().to_vec())]
         );
     }
 

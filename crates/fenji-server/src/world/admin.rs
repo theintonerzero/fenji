@@ -1,8 +1,11 @@
-//! Admin commands in the game (world spec §3.6): what `!tp`, `!kick`, `!announce` and `!invite`
-//! do. The chat phase spends a chat token on an admin's `!` line, parses it with
-//! [`crate::commands`] and queues it here; the answer is a line only the admin sees. Each command
-//! run is logged, so a host can see what its admins did.
+//! Admin commands (world spec §3.6; M4 hosting spec §3.3): what `tp`, `kick`, `announce` and
+//! `invite` do, for an admin in the game or for the host's console. The chat phase spends a chat
+//! token on an admin's `!` line, parses it with [`crate::commands`] and queues it here, and its
+//! answer is a line only the admin sees. The console's come as `WorldIn::Console`, from an admin
+//! with no character in the world, and its answers go back on its channel. Each command run is
+//! logged, so a host can see what its admins did.
 use bevy_ecs::prelude::*;
+use tokio::sync::oneshot;
 
 use super::chat;
 use super::ecs::{
@@ -12,94 +15,157 @@ use super::ecs::{
 use super::interest::Sight;
 use super::movement::Gait;
 use super::types::*;
-use crate::commands::Command;
+use crate::commands::{Command, CommandError, TP_CONSOLE};
+
+/// Who runs a command, and so where its answer goes.
+pub(super) enum Caller {
+    /// An admin in the game: the answer is a line only it sees.
+    Admin(Entity),
+    /// The host's console, which has no character: the answer goes back on its channel.
+    Console(oneshot::Sender<String>),
+}
+
+/// What a command came to.
+enum Done {
+    /// An answer for its caller.
+    Answer(String),
+    /// An announcement, sent to this many players. An admin sees it as everyone does, and the
+    /// console hears how many it reached.
+    Announced(usize),
+    /// An invite to make off the tick, with this label: the services task answers.
+    Invite(Option<String>),
+}
 
 /// Runs the tick's commands, in order.
 pub(super) fn system(world: &mut World) {
-    for (admin, order) in std::mem::take(&mut world.resource_mut::<Pending>().orders) {
-        if world.get::<Doomed>(admin).is_some() {
-            continue;
-        }
+    for (caller, order) in std::mem::take(&mut world.resource_mut::<Pending>().orders) {
         // Commands are plain text (`commands::parse`), so they log as they are.
-        let account = world.get::<Account>(admin).map_or(0, |a| a.id);
-        let character = name_of(world, admin);
-        tracing::info!(account, character, command = ?order, "an admin's command");
-        if let Some(text) = run(world, admin, order) {
-            send(world, admin, WorldOut::Chat(ChatOut::System { text }));
+        let me = match &caller {
+            Caller::Admin(admin) if world.get::<Doomed>(*admin).is_some() => continue,
+            Caller::Admin(admin) => {
+                let account = world.get::<Account>(*admin).map_or(0, |a| a.id);
+                let character = name_of(world, *admin);
+                tracing::info!(account, character, command = ?order, "an admin's command");
+                Some(*admin)
+            }
+            Caller::Console(_) => {
+                tracing::info!(by = "console", command = ?order, "an admin's command");
+                None
+            }
+        };
+        if let Some(done) = run(world, me, order) {
+            answer(world, caller, done);
         }
     }
 }
 
-/// Does `order` for `admin`, and returns the answer, if there is one now.
-fn run(world: &mut World, admin: Entity, order: Command) -> Option<String> {
+/// Does `order` for the admin `me`, or for the console (`None`), and says what it came to, if
+/// anything.
+fn run(world: &mut World, me: Option<Entity>, order: Command) -> Option<Done> {
     match order {
-        Command::Tp { who, to } => {
-            let mover = match &who {
-                Some(name) => find(world, name),
-                None => Some(admin),
-            };
-            let Some(mover) = mover else {
-                return Some(absent(who.as_deref().unwrap_or_default()));
-            };
-            let Some(target) = find(world, &to) else {
-                return Some(absent(&to));
-            };
-            if mover == target {
-                return Some(format!("{} is already there", name_of(world, mover)));
-            }
-            // Its client is loading a scene, and its one report would finish both that scene and
-            // another sent now.
-            if world.get::<Stage>(mover) != Some(&Stage::InWorld) {
-                return Some(format!("{} is still loading", name_of(world, mover)));
-            }
-            let at = world.get::<Here>(target)?.0;
-            // A teleport to another scene waits for a local run (#280, Ruling R24; `teleport`).
-            // With one name the admin is the mover, so the answer names the target alone.
-            if world.get::<Here>(mover)?.0.scene != at.scene {
-                return Some(match who {
-                    None => format!("{} is in another scene", name_of(world, target)),
-                    Some(_) => format!(
-                        "{} and {} are in different scenes",
-                        name_of(world, mover),
-                        name_of(world, target)
-                    ),
-                });
-            }
-            teleport(world, mover, at);
-            Some(format!(
-                "{} is with {}",
-                name_of(world, mover),
-                name_of(world, target)
-            ))
-        }
+        Command::Tp { who, to } => tp(world, me, who, &to).map(Done::Answer),
         Command::Kick { name } => {
             let Some(e) = find(world, &name) else {
-                return Some(absent(&name));
+                return Some(Done::Answer(absent(&name)));
             };
             doom(world, e, Some(KickReason::Kicked));
-            Some(format!("{} was kicked", name_of(world, e)))
+            Some(Done::Answer(format!("{} was kicked", name_of(world, e))))
         }
-        Command::Announce { text } => {
-            if let Err(why) = chat::check(&text) {
-                return Some(match why {
-                    ChatRefusal::TooLong => "not announced: over 140 characters".into(),
-                    _ => "not announced: control characters or markup".into(),
-                });
-            }
-            let everyone: Vec<Entity> = world.resource::<Index>().conns.values().copied().collect();
-            for e in everyone {
-                let text = text.clone();
-                send(world, e, WorldOut::Chat(ChatOut::Announce { text }));
-            }
-            None
+        Command::Announce { text } => Some(announce(world, &text)),
+        Command::Invite { label } => Some(Done::Invite(label)),
+    }
+}
+
+/// Takes `who`, or the admin `me` when it names one player, to the player `to`, and answers.
+fn tp(world: &mut World, me: Option<Entity>, who: Option<String>, to: &str) -> Option<String> {
+    let mover = match (&who, me) {
+        (Some(name), _) => find(world, name),
+        (None, Some(me)) => Some(me),
+        // The console has no character to take anywhere.
+        (None, None) => return Some(CommandError::Usage(TP_CONSOLE).to_string()),
+    };
+    let Some(mover) = mover else {
+        return Some(absent(who.as_deref().unwrap_or_default()));
+    };
+    let Some(target) = find(world, to) else {
+        return Some(absent(to));
+    };
+    if mover == target {
+        return Some(format!("{} is already there", name_of(world, mover)));
+    }
+    // Its client is loading a scene, and its one report would finish both that scene and
+    // another sent now.
+    if world.get::<Stage>(mover) != Some(&Stage::InWorld) {
+        return Some(format!("{} is still loading", name_of(world, mover)));
+    }
+    let at = world.get::<Here>(target)?.0;
+    // A teleport to another scene waits for a local run (#280, Ruling R24; `teleport`). With one
+    // name the admin is the mover, so the answer names the target alone.
+    if world.get::<Here>(mover)?.0.scene != at.scene {
+        return Some(match who {
+            None => format!("{} is in another scene", name_of(world, target)),
+            Some(_) => format!(
+                "{} and {} are in different scenes",
+                name_of(world, mover),
+                name_of(world, target)
+            ),
+        });
+    }
+    teleport(world, mover, at);
+    Some(format!(
+        "{} is with {}",
+        name_of(world, mover),
+        name_of(world, target)
+    ))
+}
+
+/// Sends everyone in the game `text`, as its caller typed it, on the marquee. It goes out as the
+/// client's input would write it, `&`, `<` and `>` as entities (chat.md 1.5), and is checked as a
+/// player's line is.
+fn announce(world: &mut World, text: &str) -> Done {
+    let text = chat::escape(text);
+    if let Err(why) = chat::check(&text) {
+        return Done::Answer(match why {
+            ChatRefusal::TooLong => "not announced: over 140 characters".into(),
+            _ => "not announced: control characters or markup".into(),
+        });
+    }
+    let everyone: Vec<Entity> = world.resource::<Index>().conns.values().copied().collect();
+    for &e in &everyone {
+        let text = text.clone();
+        send(world, e, WorldOut::Chat(ChatOut::Announce { text }));
+    }
+    Done::Announced(everyone.len())
+}
+
+/// Gives `caller` what its command came to: a line to an admin, the console's answer on its
+/// channel, and an invite to the services task, which answers each where it should.
+fn answer(world: &mut World, caller: Caller, done: Done) {
+    let services = |world: &World, job| {
+        let _ = world.resource::<Services>().0.send(job);
+    };
+    match (caller, done) {
+        (Caller::Admin(admin), Done::Answer(text)) => {
+            send(world, admin, WorldOut::Chat(ChatOut::System { text }));
         }
-        Command::Invite { label } => {
-            let conn = world.get::<Conn>(admin)?.id;
-            let _ = world
-                .resource::<Services>()
-                .0
-                .send(Service::CreateInvite { conn, label });
-            None
+        (Caller::Admin(_), Done::Announced(_)) => {}
+        (Caller::Admin(admin), Done::Invite(label)) => {
+            if let Some(conn) = world.get::<Conn>(admin).map(|c| c.id) {
+                services(world, Service::CreateInvite { conn, label });
+            }
+        }
+        (Caller::Console(reply), Done::Answer(text)) => {
+            let _ = reply.send(text);
+        }
+        (Caller::Console(reply), Done::Announced(n)) => {
+            let _ = reply.send(match n {
+                0 => "announced, but no one is in the game".into(),
+                1 => "announced to the one player in the game".into(),
+                n => format!("announced to the {n} players in the game"),
+            });
+        }
+        (Caller::Console(reply), Done::Invite(label)) => {
+            services(world, Service::CreateInviteFor { reply, label });
         }
     }
 }
@@ -123,7 +189,7 @@ fn absent(name: &str) -> String {
 
 /// Moves `e`, which stands in the world, to `at`. Its viewers forget it, and see it again where it
 /// lands at their next interest pass. Within its scene it is moved (`Teleport`), near or far.
-/// Another scene would be loaded as on entering, but [`run`] refuses that for now (#280).
+/// Another scene would be loaded as on entering, but [`tp`] refuses that for now (#280).
 fn teleport(world: &mut World, e: Entity, at: Location) {
     let now = world.resource::<Now>().0;
     let (Some(actor), Some(here)) = (world.get::<Actor>(e), world.get::<Here>(e)) else {
@@ -141,7 +207,7 @@ fn teleport(world: &mut World, e: Entity, at: Location) {
         send(world, e, WorldOut::Teleport { pos: at.pos });
         return;
     }
-    // Unreachable for now: `run` refuses a teleport to another scene (#280, Ruling R24), since no
+    // Unreachable for now: `tp` refuses a teleport to another scene (#280, Ruling R24), since no
     // run has tried this path. A local run must verify it first: a 772 to a client already in the
     // world, then, on its type 3, a second 7 and 8 for the player's own pid, where world.md 1.1
     // reads that a later 7 for an existing id only resets that actor's properties. And before the
@@ -158,6 +224,8 @@ fn teleport(world: &mut World, e: Entity, at: Location) {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::oneshot;
+
     use super::super::ecs::test_util::*;
     use super::*;
 
@@ -468,5 +536,397 @@ mod tests {
             ]
         );
         assert!(h.take(2).is_empty());
+    }
+
+    #[test]
+    fn a_commands_arguments_are_what_the_admin_typed_not_the_clients_entities() {
+        // The client's input writes &, < and > as entities (chat.md 1.5). A name is found and
+        // echoed as the admin typed it, and a label is checked and kept so: 64 of `&amp;` are 64
+        // characters.
+        let mut h = admins_world();
+        h.saves();
+        h.push(bang(1, "!tp Nobody&lt;3"));
+        h.push(bang(1, &format!("!invite {}", "&amp;".repeat(64))));
+        h.push(bang(1, "!invite Bob &amp; Kai &lt;3"));
+        h.tick(50);
+        assert_eq!(
+            h.take(1),
+            vec![system("no one called Nobody<3 is in the game")]
+        );
+        assert_eq!(
+            h.saves(),
+            vec![
+                Service::CreateInvite {
+                    conn: 1,
+                    label: Some("&".repeat(64))
+                },
+                Service::CreateInvite {
+                    conn: 1,
+                    label: Some("Bob & Kai <3".into())
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn an_admins_announcement_goes_out_as_the_client_wrote_it() {
+        let mut h = admins_world();
+        h.push(bang(1, "!announce Tom &amp; Jerry &lt;3"));
+        h.tick(50);
+        let note = WorldOut::Chat(ChatOut::Announce {
+            text: "Tom &amp; Jerry &lt;3".into(),
+        });
+        for c in 1..=3 {
+            assert_eq!(h.take(c), vec![note.clone()], "{c}");
+        }
+    }
+
+    // --- The host's console (M4 hosting spec §3.3): an admin with no character.
+
+    /// The console's `order`, and the channel its answer comes back on.
+    fn console(order: Command) -> (WorldIn, oneshot::Receiver<String>) {
+        let (reply, answer) = oneshot::channel();
+        (WorldIn::Console { order, reply }, answer)
+    }
+
+    #[test]
+    fn the_console_moves_one_player_to_another_and_hears_back() {
+        let mut h = Harness::new();
+        h.enter(player(1, "Mai", at(0.0, 0.0)));
+        h.enter(player(2, "Lin", at(5000.0, 0.0)));
+        let (reply, mut answer) = oneshot::channel();
+        h.push(WorldIn::Console {
+            order: Command::Tp {
+                who: Some("Mai".into()),
+                to: "Lin".into(),
+            },
+            reply,
+        });
+        h.tick(50);
+        assert_eq!(answer.try_recv().unwrap(), "Mai is with Lin");
+        assert!(
+            h.take(1)
+                .iter()
+                .any(|m| matches!(m, WorldOut::Teleport { .. }))
+        );
+    }
+
+    #[test]
+    fn the_console_kicks_and_announces() {
+        let mut h = Harness::new();
+        h.enter(player(1, "Mai", at(0.0, 0.0)));
+        let (reply, mut answer) = oneshot::channel();
+        h.push(WorldIn::Console {
+            order: Command::Announce {
+                text: "Maintenance: Updating".into(),
+            },
+            reply,
+        });
+        h.tick(50);
+        assert!(answer.try_recv().is_ok());
+        assert!(
+            h.take(1)
+                .iter()
+                .any(|m| matches!(m, WorldOut::Chat(ChatOut::Announce { .. })))
+        );
+        let (reply, mut answer) = oneshot::channel();
+        h.push(WorldIn::Console {
+            order: Command::Kick { name: "mai".into() },
+            reply,
+        });
+        h.tick(50);
+        assert!(answer.try_recv().unwrap().contains("Mai"));
+        assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Kicked)]);
+        assert!(h.closed(1));
+    }
+
+    #[test]
+    fn the_console_has_no_character_so_its_tp_takes_two_names() {
+        let mut h = admins_world();
+        let (order, mut answer) = console(Command::Tp {
+            who: None,
+            to: "Ren".into(),
+        });
+        h.push(order);
+        h.tick(50);
+        assert_eq!(answer.try_recv().unwrap(), "usage: tp <name> <name>");
+        h.tick(50);
+        for c in 1..=3 {
+            assert!(h.take(c).is_empty(), "{c}: nobody moved");
+        }
+    }
+
+    #[test]
+    fn the_consoles_answers_go_to_the_console_alone() {
+        let mut h = admins_world();
+        let longest = "a".repeat(141);
+        for (order, want) in [
+            (
+                Command::Tp {
+                    who: Some("Nobody".into()),
+                    to: "Ren".into(),
+                },
+                "no one called Nobody is in the game",
+            ),
+            (
+                Command::Tp {
+                    who: Some("Ren".into()),
+                    to: "Nobody".into(),
+                },
+                "no one called Nobody is in the game",
+            ),
+            (
+                Command::Tp {
+                    who: Some("Ren".into()),
+                    to: "REN".into(),
+                },
+                "Ren is already there",
+            ),
+            (
+                Command::Kick {
+                    name: "Nobody".into(),
+                },
+                "no one called Nobody is in the game",
+            ),
+            (
+                Command::Announce {
+                    text: "[link type=\"player\"]".into(),
+                },
+                "not announced: control characters or markup",
+            ),
+            (
+                Command::Announce { text: longest },
+                "not announced: over 140 characters",
+            ),
+        ] {
+            let (order, mut answer) = console(order);
+            h.push(order);
+            h.tick(50);
+            assert_eq!(answer.try_recv().unwrap(), want);
+        }
+        for c in 1..=3 {
+            assert!(h.take(c).is_empty(), "{c}: heard the console's answer");
+        }
+    }
+
+    #[test]
+    fn the_consoles_announcement_is_escaped_for_the_client_and_says_who_saw_it() {
+        // The console's text is raw, and the client takes &, < and > only as its own input writes
+        // them (chat.md 1.5), so the world writes them so first.
+        let mut h = Harness::new();
+        let (order, mut answer) = console(Command::Announce {
+            text: "Hello".into(),
+        });
+        h.push(order);
+        h.tick(50);
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            "announced, but no one is in the game"
+        );
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        let (order, mut answer) = console(Command::Announce {
+            text: "Fish & chips <3".into(),
+        });
+        h.push(order);
+        h.tick(50);
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            "announced to the one player in the game"
+        );
+        let fish = WorldOut::Chat(ChatOut::Announce {
+            text: "Fish &amp; chips &lt;3".into(),
+        });
+        assert_eq!(h.take(1), vec![fish.clone()]);
+        let mut h = admins_world();
+        let (order, mut answer) = console(Command::Announce {
+            text: "Fish & chips <3".into(),
+        });
+        h.push(order);
+        h.tick(50);
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            "announced to the 3 players in the game"
+        );
+        for c in 1..=3 {
+            assert_eq!(h.take(c), vec![fish.clone()], "{c}");
+        }
+    }
+
+    #[test]
+    fn the_consoles_invite_goes_to_the_services_with_its_channel() {
+        let mut h = admins_world();
+        h.saves();
+        let (order, mut answer) = console(Command::Invite {
+            label: Some("for Bob".into()),
+        });
+        h.push(order);
+        h.tick(50);
+        let mut jobs = h.saves();
+        let Some(Service::CreateInviteFor { reply, label }) = jobs.pop() else {
+            panic!("an invite for the console: {jobs:?}")
+        };
+        assert!(jobs.is_empty(), "{jobs:?}");
+        assert_eq!(label.as_deref(), Some("for Bob"));
+        reply.send("invite link: X".into()).unwrap();
+        assert_eq!(answer.try_recv().unwrap(), "invite link: X");
+        for c in 1..=3 {
+            assert!(h.take(c).is_empty(), "{c}");
+        }
+    }
+
+    #[test]
+    fn each_console_command_is_logged_as_the_consoles() {
+        let mut h = admins_world();
+        let ((), log) = logged(|| {
+            let (order, _answer) = console(Command::Kick { name: "Mai".into() });
+            h.push(order);
+            h.tick(50);
+        });
+        let runs: Vec<&str> = log
+            .lines()
+            .filter(|l| l.contains("an admin's command"))
+            .collect();
+        assert_eq!(runs.len(), 1, "{log}");
+        assert!(runs[0].contains("by=\"console\""), "{log}");
+        assert!(runs[0].contains(r#"Kick { name: "Mai" }"#), "{log}");
+    }
+
+    // --- Ops and bans from the console (M4 hosting spec §8, HA5).
+
+    #[test]
+    fn op_and_deop_take_effect_at_once() {
+        let mut h = admins_world();
+        // Lin (account 1) is deopped: its `!kick` the next tick is chat, and Mai stays.
+        h.push(WorldIn::SetAdmin {
+            account: 1,
+            admin: false,
+        });
+        h.tick(50);
+        h.push(bang(1, "!kick Mai"));
+        h.tick(50);
+        assert_eq!(h.take(1), vec![lin_says("!kick Mai")]);
+        assert_eq!(h.take(2), vec![lin_says("!kick Mai")]);
+        assert_eq!(h.core.players(), 3, "Mai stays");
+        // Mai (2) is opped: a command after it in the same tick runs. An account in no one's
+        // hands changes nothing.
+        h.push(WorldIn::SetAdmin {
+            account: 99,
+            admin: true,
+        });
+        h.push(WorldIn::SetAdmin {
+            account: 2,
+            admin: true,
+        });
+        h.push(bang(2, "!kick Ren"));
+        h.tick(50);
+        assert_eq!(h.take(3), vec![WorldOut::Kicked(KickReason::Kicked)]);
+        assert_eq!(h.take(2), vec![system("Ren was kicked")]);
+        assert_eq!(h.core.players(), 2);
+    }
+
+    #[test]
+    fn a_change_of_admin_that_reaches_the_world_before_the_join_holds() {
+        // The link reads whether the account is an admin, then joins: a `deop` between the two
+        // reaches the world first, and the join mustn't bring the old flag back. An `op` likewise.
+        let mut h = Harness::new();
+        h.enter(player(2, "Mai", at(100.0, 0.0)));
+        h.enter(player(3, "Ren", at(50_000.0, 0.0)));
+        h.push(WorldIn::SetAdmin {
+            account: 1,
+            admin: false,
+        });
+        h.push(WorldIn::SetAdmin {
+            account: 2,
+            admin: true,
+        });
+        h.tick(50);
+        h.enter(Player {
+            admin: true,
+            ..player(1, "Lin", at(0.0, 0.0))
+        });
+        h.push(bang(1, "!kick Mai"));
+        h.tick(50);
+        assert_eq!(
+            h.take(1),
+            vec![lin_says("!kick Mai")],
+            "chat, not a command"
+        );
+        assert_eq!(h.core.players(), 3, "Mai stays");
+        // Mai was in the world when she was made an admin: that took at once.
+        h.take(2);
+        h.push(bang(2, "!kick Ren"));
+        h.tick(50);
+        assert_eq!(h.take(3), vec![WorldOut::Kicked(KickReason::Kicked)]);
+        assert_eq!(h.core.players(), 2);
+    }
+
+    #[test]
+    fn a_change_of_admin_holds_for_one_join_only() {
+        let mut h = Harness::new();
+        h.enter(player(2, "Mai", at(50_000.0, 0.0)));
+        h.push(WorldIn::SetAdmin {
+            account: 1,
+            admin: true,
+        });
+        h.tick(50);
+        // An `op` before the join, whose link read the account before it: a command runs.
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        h.push(bang(1, "!announce one"));
+        h.tick(50);
+        let one = WorldOut::Chat(ChatOut::Announce { text: "one".into() });
+        assert_eq!(h.take(1), vec![one]);
+        // Once used, it's forgotten: the same account's next join brings its own link's reading.
+        h.push(WorldIn::Leave { conn: 1 });
+        h.tick(50);
+        h.enter(Player {
+            account: 1,
+            ..player(4, "Lin", at(0.0, 0.0))
+        });
+        h.push(bang(4, "!announce two"));
+        h.tick(50);
+        let said = WorldOut::Chat(ChatOut::Said {
+            channel: ChatChannel::Nearby,
+            from: Speaker {
+                pid: 4,
+                name: "Lin".into(),
+                vocation: 0,
+            },
+            to: None,
+            text: "!announce two".into(),
+        });
+        assert_eq!(h.take(4), vec![said]);
+    }
+
+    #[test]
+    fn a_deop_while_in_the_world_holds_for_a_newer_login_too() {
+        // A newer login's link may read the account before the deop, while the older connection
+        // is still in the world, which takes the deop: the newer join mustn't undo it.
+        let mut h = admins_world();
+        h.push(WorldIn::SetAdmin {
+            account: 1,
+            admin: false,
+        });
+        h.tick(50);
+        h.enter(Player {
+            conn: 4,
+            admin: true,
+            ..player(1, "Lin", at(0.0, 0.0))
+        });
+        h.push(bang(4, "!kick Mai"));
+        h.tick(50);
+        assert_eq!(h.core.players(), 3, "Mai stays");
+    }
+
+    #[test]
+    fn a_ban_lets_the_accounts_player_go_as_a_kick_does() {
+        let mut h = admins_world();
+        h.push(WorldIn::Ban { account: 2 });
+        h.push(WorldIn::Ban { account: 99 });
+        h.tick(50);
+        assert_eq!(h.take(2), vec![WorldOut::Kicked(KickReason::Kicked)]);
+        assert!(h.closed(2));
+        assert_eq!(h.take(1), vec![WorldOut::Leave { pids: vec![2] }]);
+        assert!(h.take(3).is_empty());
+        assert_eq!(h.core.players(), 2);
     }
 }

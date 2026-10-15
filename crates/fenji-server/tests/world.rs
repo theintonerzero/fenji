@@ -6,12 +6,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
-use fenji_server::server::GateLimits;
+use fenji_server::commands::Command;
+use fenji_server::server::{GateLimits, RunningServer};
 use fenji_server::world::{
     ChatChannel, ChatIn, ChatOut, KickReason, Location, Look, Player, Pos, WorldIn, WorldOut,
 };
 use fenji_store::{Character, NewCharacter, Place, Store};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 const AT: Location = Location {
     scene: 5,
@@ -188,6 +189,105 @@ async fn an_admins_invite_is_stored_and_its_link_comes_back() {
             .iter()
             .any(|i| i.label.as_deref() == Some("for Bob"))
     );
+    s.shutdown().await.unwrap();
+}
+
+/// Waits (5 s at most) for the server's status to list `want` as the characters in the world.
+async fn names_become(s: &RunningServer, want: &[&str]) {
+    for _ in 0..100 {
+        if *s.status().names() == *want {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the names never became {want:?}: {:?}", s.status().names());
+}
+
+#[tokio::test]
+async fn the_world_tells_the_status_who_is_in_it_and_greets_each_player_with_its_motd() {
+    // M4 hosting spec §3.8 and §8, HA1: the names reach the players list through the server's
+    // status, and the MOTD in effect, the file's or the console's, comes from it.
+    let dir = tempfile::tempdir().unwrap();
+    let extra = "motd = \"Welcome to Fenji\"\n";
+    let (s, _clock) = server(dir.path(), extra, GateLimits::default()).await;
+    let a = character(&s, "tester").await;
+    let b = character(&s, "other").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: player(1, &a),
+        out: tx,
+    });
+    next(&mut rx).await;
+    names_become(&s, &["testerc"]).await;
+    s.world().send(WorldIn::Loaded { conn: 1 });
+    assert!(matches!(next(&mut rx).await, WorldOut::SelfEnter { .. }));
+    let system = |text: &str| WorldOut::Chat(ChatOut::System { text: text.into() });
+    assert_eq!(next(&mut rx).await, system("Welcome to Fenji"));
+    let store = s.accounts().store().clone();
+    s.status()
+        .set_motd(&store, Some("Doors close at 23:00".into()))
+        .await
+        .unwrap();
+    let (tx, mut rx2) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: player(2, &b),
+        out: tx,
+    });
+    next(&mut rx2).await;
+    s.world().send(WorldIn::Loaded { conn: 2 });
+    assert!(matches!(next(&mut rx2).await, WorldOut::SelfEnter { .. }));
+    assert_eq!(next(&mut rx2).await, system("Doors close at 23:00"));
+    names_become(&s, &["otherc", "testerc"]).await;
+    s.world().send(WorldIn::Leave { conn: 1 });
+    names_become(&s, &["otherc"]).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_consoles_commands_run_in_the_world_and_answer_on_their_channel() {
+    // M4 hosting spec §3.3: the shared four reach the world as `WorldIn::Console`, and `invite`
+    // goes on to the services task, as an admin's does.
+    let dir = tempfile::tempdir().unwrap();
+    let extra = "public_api = \"https://play.example.net\"\n";
+    let (s, _clock) = server(dir.path(), extra, GateLimits::default()).await;
+    let c = character(&s, "tester").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: player(1, &c),
+        out: tx,
+    });
+    next(&mut rx).await;
+    let ask = |order: Command| {
+        let (reply, answer) = oneshot::channel();
+        assert!(s.world().send(WorldIn::Console { order, reply }));
+        async {
+            tokio::time::timeout(Duration::from_secs(5), answer)
+                .await
+                .expect("an answer within 5 s")
+                .expect("the world answers")
+        }
+    };
+    let made = ask(Command::Invite {
+        label: Some("for Lin".into()),
+    })
+    .await;
+    assert!(
+        made.starts_with("invite link: https://play.example.net/#invite="),
+        "{made}"
+    );
+    let invites = s.accounts().store().list_invites().await.unwrap();
+    assert!(
+        invites
+            .iter()
+            .any(|i| i.label.as_deref() == Some("for Lin")),
+        "{invites:?}"
+    );
+    let kicked = ask(Command::Kick {
+        name: "TESTERC".into(),
+    })
+    .await;
+    assert_eq!(kicked, "testerc was kicked");
+    assert_eq!(next(&mut rx).await, WorldOut::Kicked(KickReason::Kicked));
     s.shutdown().await.unwrap();
 }
 

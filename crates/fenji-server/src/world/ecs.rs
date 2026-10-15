@@ -2,13 +2,15 @@
 //! entity per player in the game. A tick runs its phases in order, each its own `Schedule`, so a
 //! slow tick can name its slowest phase.
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::ScheduleSystem;
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, watch};
 
+use super::admin::Caller;
 use super::chat::Bucket;
 use super::interest::Sight;
 use super::movement::Gait;
@@ -61,6 +63,11 @@ pub(super) enum Stage {
     InWorld,
 }
 
+/// Its own actor has entered once, and it has had the MOTD if there was one: a later load, as a
+/// teleport to another scene would bring (#280), doesn't greet it again.
+#[derive(Component)]
+struct Greeted;
+
 /// Leaves at the end of the tick. The reason, if any, goes to its connection.
 #[derive(Component, Clone, Copy)]
 pub(super) struct Doomed(pub Option<KickReason>);
@@ -89,18 +96,39 @@ pub(super) struct Index {
     pub names: HashMap<String, Entity>,
 }
 
-/// What the inbound phase hands to later phases, this tick.
+/// What the inbound and chat phases hand to later phases, this tick.
 #[derive(Resource, Default)]
 pub(super) struct Pending {
     pub moves: Vec<(Entity, MoveStep)>,
     pub pulls: Vec<(Entity, ActorId)>,
     pub lines: Vec<(Entity, ChatIn)>,
-    pub orders: Vec<(Entity, Command)>,
+    /// Commands for the admin phase: the console's, then the admins'.
+    pub orders: Vec<(Caller, Command)>,
 }
 
 /// The services task's channel.
 #[derive(Resource)]
 pub(super) struct Services(pub mpsc::UnboundedSender<Service>);
+
+/// Where the world sends the names of the characters it holds (M4 hosting spec §3.8), and whether
+/// one entered or left this tick.
+#[derive(Resource)]
+struct Names {
+    out: watch::Sender<Arc<[String]>>,
+    changed: bool,
+}
+
+/// The MOTD in effect, which each player gets once its own actor is in (M4 hosting spec §8, HA1).
+#[derive(Resource)]
+struct Motd(watch::Receiver<String>);
+
+/// The last `SetAdmin` for each account, until the account's next join, which takes it over the
+/// flag its link read: a link reads the flag before it joins, so a change that reaches the world
+/// in between is the newer one, whether it finds the account out of the world or on an older
+/// connection. One entry for each account changed since it last joined; account ids are never
+/// handed out again, so an entry can't reach another account.
+#[derive(Resource, Default)]
+struct AdminChanges(HashMap<i64, bool>);
 
 /// When everyone's place is next saved; set by the first tick.
 #[derive(Resource, Default)]
@@ -141,7 +169,15 @@ fn phase<M>(systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Schedule {
 }
 
 impl WorldCore {
-    pub fn new(rules: Rules, services: mpsc::UnboundedSender<Service>) -> Self {
+    /// A world under `rules`, whose saves and invites go to `services`. It sends the sorted names
+    /// of its characters on `names` when one enters or leaves, and greets each player with the
+    /// MOTD `motd` holds when it enters.
+    pub fn new(
+        rules: Rules,
+        services: mpsc::UnboundedSender<Service>,
+        names: watch::Sender<Arc<[String]>>,
+        motd: watch::Receiver<String>,
+    ) -> Self {
         let mut world = World::new();
         world.insert_resource(NextSave::default());
         world.insert_resource(rules);
@@ -152,6 +188,12 @@ impl WorldCore {
         world.insert_resource(Pending::default());
         world.insert_resource(Services(services));
         world.insert_resource(Left::default());
+        world.insert_resource(Names {
+            out: names,
+            changed: false,
+        });
+        world.insert_resource(Motd(motd));
+        world.insert_resource(AdminChanges::default());
         let phases = vec![
             ("inbound", phase(inbound)),
             ("movement", phase(super::movement::system)),
@@ -263,8 +305,9 @@ fn allowance(rules: &Rules, gap_ms: u64) -> usize {
     rules.max_inputs_per_tick.saturating_mul(periods)
 }
 
-/// Applies the tick's inputs in arrival order. Moves, pulls and chat lines wait in [`Pending`] for
-/// their phases. A connection that sends more than its [`allowance`] is kicked.
+/// Applies the tick's inputs in arrival order. Moves, pulls, chat lines and the console's commands
+/// wait in [`Pending`] for their phases. A connection that sends more than its [`allowance`] is
+/// kicked.
 fn inbound(world: &mut World) {
     let inputs = std::mem::take(&mut world.resource_mut::<Inbox>().0);
     let max = allowance(world.resource::<Rules>(), world.resource::<Gap>().0);
@@ -286,6 +329,25 @@ fn inbound(world: &mut World) {
             WorldIn::Tell { conn, text } => {
                 if let Some(e) = live(world, conn) {
                     send(world, e, WorldOut::Chat(ChatOut::System { text }));
+                }
+            }
+            WorldIn::Console { order, reply } => {
+                let order = (Caller::Console(reply), order);
+                world.resource_mut::<Pending>().orders.push(order);
+            }
+            WorldIn::SetAdmin { account, admin } => {
+                world
+                    .resource_mut::<AdminChanges>()
+                    .0
+                    .insert(account, admin);
+                let player = world.resource::<Index>().accounts.get(&account).copied();
+                if let Some(mut a) = player.and_then(|e| world.get_mut::<Account>(e)) {
+                    a.admin = admin;
+                }
+            }
+            WorldIn::Ban { account } => {
+                if let Some(e) = world.resource::<Index>().accounts.get(&account).copied() {
+                    doom(world, e, Some(KickReason::Kicked));
                 }
             }
             WorldIn::Loaded { conn } => {
@@ -345,7 +407,8 @@ fn counted(
 /// A character enters. An account already in the game is replaced. A character that was in the
 /// game a moment ago, on the connection this replaces or one that left within [`KEEP_LEFT`],
 /// enters where it stood: the store's copy, which the login read, may be older, since saves are
-/// written off the tick (#222).
+/// written off the tick (#222). Likewise, an `op` or a `deop` since the account last joined
+/// stands over the flag its link read ([`AdminChanges`]).
 ///
 /// [`KEEP_LEFT`]: super::KEEP_LEFT
 fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
@@ -354,6 +417,11 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
         let _ = out.try_send(WorldOut::Kicked(KickReason::Kicked));
         return;
     }
+    let admin = world
+        .resource_mut::<AdminChanges>()
+        .0
+        .remove(&player.account)
+        .unwrap_or(player.admin);
     let older = world
         .resource::<Index>()
         .accounts
@@ -377,7 +445,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
             },
             Account {
                 id: player.account,
-                admin: player.admin,
+                admin,
             },
             Actor {
                 pid: player.pid,
@@ -395,6 +463,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
     index.pids.insert(player.pid, e);
     index.accounts.insert(player.account, e);
     index.names.insert(name, e);
+    world.resource_mut::<Names>().changed = true;
     send(
         world,
         e,
@@ -405,7 +474,8 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
     );
 }
 
-/// The client has loaded its scene: it gets its own actor. A repeated report changes nothing.
+/// The client has loaded its scene: it gets its own actor, then, the first time, the MOTD if there
+/// is one (M4 hosting spec §8, HA1). A repeated report changes nothing.
 fn loaded(world: &mut World, e: Entity) {
     if world.get::<Stage>(e) != Some(&Stage::Loading) {
         return;
@@ -423,6 +493,17 @@ fn loaded(world: &mut World, e: Entity) {
         *stage = Stage::InWorld;
     }
     send(world, e, msg);
+    let Ok(mut entity) = world.get_entity_mut(e) else {
+        return;
+    };
+    if entity.contains::<Greeted>() {
+        return;
+    }
+    entity.insert(Greeted);
+    let text = world.resource::<Motd>().0.borrow().clone();
+    if !text.is_empty() {
+        send(world, e, WorldOut::Chat(ChatOut::System { text }));
+    }
 }
 
 /// Sends `msg` to `e`'s connection. A full channel means its client stopped reading, so it is
@@ -487,6 +568,7 @@ fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
         world.get::<Account>(e),
     ) else {
         world.despawn(e);
+        world.resource_mut::<Names>().changed = true;
         return;
     };
     let (pid, at, conn_id, account_id) = (actor.pid, here.0, conn.id, account.id);
@@ -507,6 +589,7 @@ fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
     unindex(&mut index.pids, &pid, e);
     unindex(&mut index.accounts, &account_id, e);
     unindex(&mut index.names, &name, e);
+    world.resource_mut::<Names>().changed = true;
     hide(world, pid);
 }
 
@@ -557,19 +640,40 @@ fn save(services: &Services, pid: ActorId, at: Location) {
 }
 
 /// Takes the doomed players out. Telling their viewers can doom more (a full channel), so it goes
-/// on until none is left.
+/// on until none is left. Then, if anyone entered or left this tick, it sends the names.
 fn cleanup(world: &mut World) {
     loop {
         let mut doomed = world.query::<(Entity, &Doomed)>();
         let out: Vec<(Entity, Option<KickReason>)> =
             doomed.iter(world).map(|(e, d)| (e, d.0)).collect();
         if out.is_empty() {
-            return;
+            break;
         }
         for (e, reason) in out {
             remove(world, e, reason);
         }
     }
+    send_names(world);
+}
+
+/// Sends the names of the characters in the world, loading or not, if one entered or left this
+/// tick (M4 hosting spec §3.8): the account API lists them for signed-in players. They're sorted as
+/// the store sorts names, without regard to ASCII case, and a list like the last wakes no one.
+fn send_names(world: &mut World) {
+    if !std::mem::take(&mut world.resource_mut::<Names>().changed) {
+        return;
+    }
+    let mut actors = world.query::<&Actor>();
+    let mut names: Vec<String> = actors.iter(world).map(|a| a.look.name.clone()).collect();
+    names.sort_by_cached_key(|name| (name_key(name), name.clone()));
+    let names: Arc<[String]> = names.into();
+    world.resource::<Names>().out.send_if_modified(|last| {
+        if *last == names {
+            return false;
+        }
+        *last = names;
+        true
+    });
 }
 
 #[cfg(test)]
@@ -577,7 +681,7 @@ pub(crate) mod test_util {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, watch};
 
     use super::*;
 
@@ -668,10 +772,22 @@ pub(crate) mod test_util {
         }
     }
 
+    /// A names channel nobody reads, for a world whose names a test doesn't look at.
+    pub fn unread_names() -> watch::Sender<Arc<[String]>> {
+        watch::channel(Arc::from(Vec::new())).0
+    }
+
+    /// No MOTD, and none to come.
+    pub fn no_motd() -> watch::Receiver<String> {
+        watch::channel(String::new()).1
+    }
+
     /// A world with fake connections: each player's outbound channel is kept here.
     pub struct Harness {
         pub core: WorldCore,
         pub services: mpsc::UnboundedReceiver<Service>,
+        /// The MOTD the world greets players with: none until a test sets one.
+        pub motd: watch::Sender<String>,
         pub now: u64,
         outs: HashMap<ConnId, mpsc::Receiver<WorldOut>>,
         queued: Vec<WorldIn>,
@@ -683,10 +799,21 @@ pub(crate) mod test_util {
         }
 
         pub fn with(rules: Rules) -> Self {
+            Self::built(rules, unread_names())
+        }
+
+        /// A world that sends its names on `names`.
+        pub fn with_names(names: watch::Sender<Arc<[String]>>) -> Self {
+            Self::built(rules(), names)
+        }
+
+        fn built(rules: Rules, names: watch::Sender<Arc<[String]>>) -> Self {
             let (tx, rx) = mpsc::unbounded_channel();
+            let (motd, follows) = watch::channel(String::new());
             Self {
-                core: WorldCore::new(rules, tx),
+                core: WorldCore::new(rules, tx, names, follows),
                 services: rx,
+                motd,
                 now: 1_000,
                 outs: HashMap::new(),
                 queued: Vec::new(),
@@ -763,6 +890,10 @@ pub(crate) mod test_util {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::watch;
+
     use super::test_util::*;
     use super::*;
 
@@ -1175,6 +1306,134 @@ mod tests {
             })]
         );
         assert!(h.take(2).is_empty());
+    }
+
+    #[test]
+    fn the_names_follow_who_is_in_the_world() {
+        let (names, mut seen) = watch::channel(Arc::<[String]>::from(Vec::new()));
+        let mut h = Harness::with_names(names);
+        h.enter(player(1, "Mai", at(0.0, 0.0)));
+        h.enter(player(2, "Lin", at(0.0, 0.0)));
+        assert_eq!(&*seen.borrow_and_update().clone(), ["Lin", "Mai"]);
+        h.push(WorldIn::Leave { conn: 1 });
+        h.tick(50);
+        assert_eq!(&*seen.borrow_and_update().clone(), ["Lin"]);
+    }
+
+    #[test]
+    fn the_names_are_sent_only_when_someone_enters_or_leaves() {
+        // M4 hosting spec §3.8: not every tick. A player still loading is in the world, and the
+        // names are sorted as the store sorts them, without regard to ASCII case.
+        let (names, mut seen) = watch::channel(Arc::<[String]>::from(Vec::new()));
+        let mut h = Harness::with_names(names);
+        h.enter(player(1, "mai", at(0.0, 0.0)));
+        h.enter(player(2, "Zed", at(0.0, 0.0)));
+        h.join(player(3, "Lin", at(0.0, 0.0)));
+        h.tick(50);
+        assert_eq!(&*seen.borrow_and_update().clone(), ["Lin", "mai", "Zed"]);
+        // Ticks with a move and a line of chat, but no one coming or going.
+        h.push(WorldIn::Move {
+            conn: 1,
+            step: MoveStep {
+                pos: at(10.0, 0.0).pos,
+                detail: Arc::from(&[0u8; 17][..]),
+            },
+        });
+        h.push(WorldIn::Chat {
+            conn: 2,
+            line: ChatIn {
+                channel: ChatChannel::World,
+                text: "hi".into(),
+                to: None,
+            },
+        });
+        h.tick(50);
+        h.tick(50);
+        assert!(!seen.has_changed().unwrap(), "nothing new to hear");
+        for c in 1..=3 {
+            h.take(c);
+        }
+        // A newer login of a character already in: the same names, so nothing to hear either.
+        h.join(Player {
+            conn: 4,
+            ..player(1, "mai", at(0.0, 0.0))
+        });
+        h.tick(50);
+        assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Replaced)]);
+        assert!(!seen.has_changed().unwrap(), "the same names");
+        // Everyone leaving at shutdown leaves none.
+        h.push(WorldIn::Shutdown);
+        h.tick(50);
+        assert!(seen.borrow_and_update().is_empty());
+    }
+
+    #[test]
+    fn a_player_hears_the_motd_once_its_own_actor_is_in() {
+        // M4 hosting spec §8, HA1: a system line, after the player's own 7 and 8.
+        let mut h = Harness::new();
+        h.motd.send_replace("Welcome to Moonward".into());
+        h.join(player(1, "Lin", at(0.0, 0.0)));
+        h.tick(50);
+        assert_eq!(
+            h.take(1),
+            vec![WorldOut::LoadScene {
+                pid: 1,
+                at: at(0.0, 0.0)
+            }],
+            "nothing before its actor"
+        );
+        h.push(WorldIn::Loaded { conn: 1 });
+        h.push(WorldIn::Loaded { conn: 1 });
+        h.tick(50);
+        h.tick(50);
+        let motd = |text: &str| WorldOut::Chat(ChatOut::System { text: text.into() });
+        assert_eq!(
+            h.take(1),
+            vec![
+                WorldOut::SelfEnter {
+                    pid: 1,
+                    look: look("Lin"),
+                    pos: at(0.0, 0.0).pos,
+                    speed: SPEED_RATE
+                },
+                motd("Welcome to Moonward")
+            ],
+            "once, however often the client reports"
+        );
+        // A new MOTD is for whoever enters next: those in the world don't hear it.
+        h.motd.send_replace("Doors close at 23:00".into());
+        h.join(player(2, "Mai", at(50_000.0, 0.0)));
+        h.push(WorldIn::Loaded { conn: 2 });
+        h.tick(50);
+        let got = h.take(2);
+        assert_eq!(got.last(), Some(&motd("Doors close at 23:00")), "{got:?}");
+        assert!(h.take(1).is_empty());
+    }
+
+    #[test]
+    fn with_no_motd_a_player_hears_nothing() {
+        let mut h = Harness::new();
+        h.motd.send_replace("Welcome".into());
+        h.motd.send_replace(String::new());
+        h.join(player(1, "Lin", at(0.0, 0.0)));
+        h.push(WorldIn::Loaded { conn: 1 });
+        h.tick(50);
+        h.tick(50);
+        assert_eq!(
+            h.take(1),
+            vec![
+                WorldOut::LoadScene {
+                    pid: 1,
+                    at: at(0.0, 0.0)
+                },
+                WorldOut::SelfEnter {
+                    pid: 1,
+                    look: look("Lin"),
+                    pos: at(0.0, 0.0).pos,
+                    speed: SPEED_RATE
+                }
+            ]
+        );
     }
 
     #[test]

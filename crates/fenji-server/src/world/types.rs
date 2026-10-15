@@ -1,8 +1,11 @@
 //! The world's events and values (M4 world spec §3.9). Connection tasks turn the client's messages
-//! into [`WorldIn`], and [`WorldOut`] back into messages, so the world never sees the wire.
+//! into [`WorldIn`], and [`WorldOut`] back into messages, so the world never sees the wire. The
+//! host's console speaks to it in the same events (M4 hosting spec §3.3; §8, HA5).
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+
+use crate::commands::Command;
 
 /// A connection's id: the gate's online id (`Online::join`).
 pub type ConnId = u64;
@@ -138,7 +141,7 @@ pub enum ChatRefusal {
 pub enum KickReason {
     /// The account entered again, on a newer connection.
     Replaced,
-    /// An admin's `!kick`.
+    /// An admin's `!kick`, the console's `kick`, or a ban.
     Kicked,
     /// The client stopped reading: its outbound channel filled.
     SlowReader,
@@ -166,6 +169,22 @@ pub enum WorldIn {
     Chat { conn: ConnId, line: ChatIn },
     /// A line for one player from outside the tick, such as `!invite`'s link.
     Tell { conn: ConnId, text: String },
+    /// One of the shared commands from the host's console, which has no character (M4 hosting
+    /// spec §3.3): the tick's admin phase runs it as an admin's, with its text as the host typed
+    /// it, and answers on `reply`. Its `tp` takes two names.
+    Console {
+        order: Command,
+        reply: oneshot::Sender<String>,
+    },
+    /// The account is an admin now, or no longer is (`op` and `deop`; M4 hosting spec §8, HA5):
+    /// its player in the world, if any, runs commands from this tick, or no longer does, and so
+    /// does its next join, whose link may have read the account before the change. `admin` is
+    /// what `accounts::is_admin` says after the change, so a `deop` leaves an account that
+    /// `[access].admins` names an admin.
+    SetAdmin { account: i64, admin: bool },
+    /// The host banned the account (HA5): its player in the world, if any, is let go as an
+    /// admin's kick lets one go.
+    Ban { account: i64 },
     /// The connection has ended.
     Leave { conn: ConnId },
     /// Save everyone and stop.
@@ -223,10 +242,75 @@ pub enum WorldOut {
 }
 
 /// Work the world hands to the services task, off the tick.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum Service {
     /// Save where a character stands.
     SavePlace { pid: ActorId, at: Location },
     /// Make an invite for `conn`'s `!invite`, and tell it the link.
     CreateInvite { conn: ConnId, label: Option<String> },
+    /// Make an invite for the console's `invite`, and answer on `reply` as `!invite` is answered.
+    CreateInviteFor {
+        reply: oneshot::Sender<String>,
+        label: Option<String>,
+    },
+}
+
+/// For the tests, which compare the work queued: a reply channel has no equality of its own, so
+/// two invites for the console are alike when their labels are. The match on `self` has no
+/// catch-all, so a new kind of work doesn't compile until it says how it compares.
+#[cfg(test)]
+impl PartialEq for Service {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            Self::SavePlace { pid, at } => {
+                matches!(other, Self::SavePlace { pid: p, at: a } if p == pid && a == at)
+            }
+            Self::CreateInvite { conn, label } => {
+                matches!(other, Self::CreateInvite { conn: c, label: l } if c == conn && l == label)
+            }
+            Self::CreateInviteFor { label, .. } => {
+                matches!(other, Self::CreateInviteFor { label: l, .. } if l == label)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One of each kind of work the world queues.
+    fn one_of_each() -> Vec<Service> {
+        let at = Location {
+            scene: 5,
+            pos: Pos {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+                yaw: 4.0,
+            },
+        };
+        let label = Some("for Bob".to_string());
+        vec![
+            Service::SavePlace { pid: 1, at },
+            Service::CreateInvite {
+                conn: 1,
+                label: label.clone(),
+            },
+            Service::CreateInviteFor {
+                reply: oneshot::channel().0,
+                label,
+            },
+        ]
+    }
+
+    #[test]
+    fn queued_work_is_equal_to_itself_and_to_no_other_kind() {
+        let (left, right) = (one_of_each(), one_of_each());
+        for (i, a) in left.iter().enumerate() {
+            for (j, b) in right.iter().enumerate() {
+                assert_eq!(a == b, i == j, "{a:?} and {b:?}");
+            }
+        }
+    }
 }

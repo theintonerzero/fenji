@@ -28,7 +28,7 @@ use crate::clock::Clock;
 use crate::config::Config;
 use crate::link;
 use crate::lobby::{self, LobbyLimits};
-use crate::online::{Join, Online};
+use crate::online::{Closing, Join, Online};
 use crate::world::{Location, MAX_PLAYER_ID, WorldHandle};
 
 /// The client's close-reason key for a refused login (net.luac's close-reason table).
@@ -41,6 +41,10 @@ pub const SERVER_STOPPING: &str = "error server-not-running";
 /// The client's key for an admin's kick: its text says the player is offline and may log in again,
 /// accusing them of nothing, unlike `error kick-by-gm` (world.md 10.2–10.3).
 pub const KICKED: &str = "error kick-by-user";
+/// The client's key for a banned account's connection, in the lobby or the world (M4 hosting spec
+/// §8, HA5): an admin's kick's, which the world's ban gives too (`KickReason::Kicked`). The
+/// launcher names the ban's reason when the player next signs in.
+pub const BANNED: &str = KICKED;
 /// The client's close-reason table has no key for a full server, so this shows as "Internal
 /// server error: server full" (run m2-r3b showed that form).
 pub const SERVER_FULL: &str = "server full";
@@ -367,18 +371,19 @@ pub(crate) async fn send<W: AsyncWrite + Unpin>(
     }
 }
 
-/// Sends a reply within `deadline`, unless a newer login replaces the connection first: then it
-/// gives up at once and returns false. The newer login holds the account's place, and a client
-/// that stopped reading shouldn't keep this socket until the deadline, outside the caps.
+/// Sends a reply within `deadline`, unless the online registry tells the connection to close
+/// first, for a newer login or a ban: then it gives up at once and returns false. The connection
+/// has lost its place, and a client that stopped reading shouldn't keep this socket until the
+/// deadline, outside the caps.
 pub(crate) async fn send_or_replaced<W: AsyncWrite + Unpin>(
     sock: &mut W,
     bytes: &[u8],
     deadline: Duration,
-    replaced: &mut oneshot::Receiver<()>,
+    replaced: &mut oneshot::Receiver<Closing>,
 ) -> anyhow::Result<bool> {
     tokio::select! {
         sent = send(sock, bytes, deadline) => sent.map(|()| true),
-        Ok(()) = &mut *replaced => Ok(false),
+        Ok(_) = &mut *replaced => Ok(false),
     }
 }
 
@@ -468,7 +473,7 @@ async fn lobby_loop(
     server: &mut Server,
     account: &Account,
     conn: u64,
-    replaced: &mut oneshot::Receiver<()>,
+    replaced: &mut oneshot::Receiver<Closing>,
 ) -> anyhow::Result<()> {
     let deadline = gate.limits.write_deadline;
     let mut out = server.accept(&StoredCodec)?;
@@ -497,7 +502,7 @@ async fn lobby_loop(
                         // clock less the one echoed (transport.md 4.4, #269).
                         Event::TimeSync(ms) => {
                             if !send_or_replaced(sock, &server.time_sync(ms), deadline, replaced).await? {
-                                tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                                tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a reply was blocked: closing");
                                 return Ok(());
                             }
                             continue;
@@ -509,19 +514,23 @@ async fn lobby_loop(
                             for reply in replies {
                                 let bytes = script_out(server, &reply)?;
                                 if !send_or_replaced(sock, &bytes, deadline, replaced).await? {
-                                    tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                                    tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a reply was blocked: closing");
                                     return Ok(());
                                 }
                             }
                         }
-                        Step::Enter(pid) => match character(gate, account, pid).await {
-                            Ok(c) => {
+                        Step::Enter(pid) => match entry(gate, account, pid).await {
+                            Entry::Play(c) => {
                                 return link::play(sock, peer, gate, server, account, conn, c, replaced).await;
                             }
-                            Err(code) => {
+                            Entry::Banned => {
+                                tracing::info!(%peer, account = %account.username, "banned: not entering the world");
+                                return close_with(sock, peer, gate, server, BANNED).await;
+                            }
+                            Entry::Refused(code) => {
                                 let bytes = script_out(server, &fenji_proto::lobby::error_code(code))?;
                                 if !send_or_replaced(sock, &bytes, deadline, replaced).await? {
-                                    tracing::info!(%peer, account = %account.username, "replaced by a newer login while a reply was blocked: closing");
+                                    tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a reply was blocked: closing");
                                     return Ok(());
                                 }
                             }
@@ -537,12 +546,8 @@ async fn lobby_loop(
                     }
                 }
             }
-            Ok(()) = &mut *replaced => {
-                tracing::info!(%peer, account = %account.username, "replaced by a newer login");
-                let bytes = server.send(Stc::Close.to_u8(), DUPLICATE_LOGIN.as_bytes(), &StoredCodec)?;
-                let place = gate.waiting.take(peer.ip());
-                close_replaced(sock, &bytes, place, gate.limits.linger).await;
-                return Ok(());
+            Ok(closing) = &mut *replaced => {
+                return close_told(sock, peer, gate, server, account, closing).await;
             }
             // Closed at once and without a reason, as the shutdown always closed the lobby:
             // lobby.md 9.5 gives none for a stopping server.
@@ -557,7 +562,7 @@ async fn lobby_loop(
 /// Closes a connection that still holds its online place with `reason`, which its client shows:
 /// sent within the write deadline, then a linger so it isn't lost to a reset, only within a
 /// waiting place. For a deleted account (in the lobby, and in the world by Ruling R5), a stopping
-/// server and an admin's kick.
+/// server, an admin's kick, and a banned account's character at the world's door (HA5).
 pub(crate) async fn close_with<S: AsyncRead + AsyncWrite + Unpin>(
     sock: &mut S,
     peer: SocketAddr,
@@ -570,6 +575,33 @@ pub(crate) async fn close_with<S: AsyncRead + AsyncWrite + Unpin>(
     if let Some(_place) = gate.waiting.take(peer.ip()) {
         linger(sock, gate.limits.linger).await;
     }
+    Ok(())
+}
+
+/// Closes a connection the online registry told to close, with the reason its client shows: M3's
+/// for a login that a newer one replaced, and a ban's for an account the host banned
+/// (`Online::ban`). Either has lost its online place, so it closes as [`close_replaced`] does.
+pub(crate) async fn close_told<S: AsyncRead + AsyncWrite + Unpin>(
+    sock: &mut S,
+    peer: SocketAddr,
+    gate: &Gate,
+    server: &mut Server,
+    account: &Account,
+    closing: Closing,
+) -> anyhow::Result<()> {
+    let reason = match closing {
+        Closing::Replaced => {
+            tracing::info!(%peer, account = %account.username, "replaced by a newer login");
+            DUPLICATE_LOGIN
+        }
+        Closing::Banned => {
+            tracing::info!(%peer, account = %account.username, "banned: closing");
+            BANNED
+        }
+    };
+    let bytes = server.send(Stc::Close.to_u8(), reason.as_bytes(), &StoredCodec)?;
+    let place = gate.waiting.take(peer.ip());
+    close_replaced(sock, &bytes, place, gate.limits.linger).await;
     Ok(())
 }
 
@@ -654,6 +686,36 @@ async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Step
     }
 }
 
+/// What a client's 10 comes to.
+enum Entry {
+    /// Enter the world as this character.
+    Play(Character),
+    /// Refuse with this 270 code: the player stays in the lobby, and may try again.
+    Refused(i64),
+    /// The account is banned: close the connection.
+    Banned,
+}
+
+/// Whether the account may enter the world as its character `pid`. A ban that came after its
+/// ticket keeps it out, and its connection closes as a ban closes one in the world (M4 hosting
+/// spec §8, HA5). A store that can't say whether the account is banned refuses it with
+/// `SERVER_NOT_RESP`, as one that can't read the character does ([`character`]): the player stays
+/// in the lobby, and may try again.
+async fn entry(gate: &Gate, account: &Account, pid: i64) -> Entry {
+    match gate.accounts.store().ban_of(account.id).await {
+        Ok(None) => {}
+        Ok(Some(_)) => return Entry::Banned,
+        Err(e) => {
+            tracing::error!(error = %e, account = %account.username, "checking for a ban to enter the world");
+            return Entry::Refused(fenji_proto::lobby::code::SERVER_NOT_RESP);
+        }
+    }
+    match character(gate, account, pid).await {
+        Ok(c) => Entry::Play(c),
+        Err(code) => Entry::Refused(code),
+    }
+}
+
 /// The account's character `pid`, if it may enter the world; otherwise the 270 code to refuse it
 /// with: `ROLE_NOT_FOUND` for another account's, an unknown pid or one no player may have (world.md
 /// 8.2), and `SERVER_NOT_RESP` when the store fails.
@@ -717,7 +779,7 @@ mod tests {
                 .is_err(),
             "the write blocks"
         );
-        newer_login.send(()).unwrap();
+        newer_login.send(Closing::Replaced).unwrap();
         let sent = tokio::time::timeout(Duration::from_secs(1), send)
             .await
             .expect("gave way at once, not at the 30 s deadline")
@@ -767,7 +829,7 @@ mod tests {
     #[tokio::test]
     async fn a_reply_that_fits_is_sent() {
         let (mut w, mut r) = tokio::io::duplex(8192);
-        let (_newer_login, mut replaced) = oneshot::channel::<()>();
+        let (_newer_login, mut replaced) = oneshot::channel::<Closing>();
         assert!(
             send_or_replaced(&mut w, b"hello", Duration::from_secs(1), &mut replaced)
                 .await

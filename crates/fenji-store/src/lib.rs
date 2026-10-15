@@ -159,6 +159,15 @@ impl Store {
         Ok(())
     }
 
+    /// Drops the `bans` table, so that every read of a ban fails as a damaged database's would,
+    /// while the other tables still answer: for tests of what a check for a ban does when the
+    /// store can't say.
+    #[cfg(feature = "test-util")]
+    pub async fn break_bans(&self) -> Result<()> {
+        sqlx::query("DROP TABLE bans").execute(&self.pool).await?;
+        Ok(())
+    }
+
     async fn begin(&self) -> Result<Transaction<'static, Sqlite>> {
         Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
     }

@@ -15,7 +15,7 @@ use fenji_proto::packet::script_body;
 use fenji_proto::pickle::{self, Table, Value};
 use fenji_proto::world::{self, BlobValue, MoveDetail};
 use fenji_server::clock::Clock;
-use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN, KICKED, SERVER_STOPPING};
+use fenji_server::gate::{AUTH_FAILED, BANNED, DUPLICATE_LOGIN, KICKED, SERVER_STOPPING};
 use fenji_server::server::{GateLimits, RunningServer};
 use fenji_server::world::WorldIn;
 use fenji_store::{Place, Store};
@@ -1042,5 +1042,115 @@ async fn an_op_in_the_database_enters_the_world_as_an_admin() {
         heard(&mut a).await,
         line(chat::channel::MARQUEE, "", "Doors open", "")
     );
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_command_reads_what_the_admin_typed_and_its_answer_shows_it_so() {
+    // The client's input writes &, < and > as entities (chat.md 1.5): the world reads a command's
+    // arguments back to what the admin typed, and its answer, the server's own text, is written
+    // for the client's markup once.
+    let dir = tempfile::tempdir().unwrap();
+    let config = format!("{WORLD}[access]\nadmins = [\"aaa\"]\n");
+    let (s, _clock) = server(dir.path(), &config, GateLimits::default()).await;
+    let (mut a, lin) = in_lobby(&s, "aaa", "Lin").await;
+    select(&mut a, lin).await;
+    enter(&mut a, lin).await;
+    say(
+        &mut a,
+        &[Value::Int(0), string("!tp Nobody&lt;3"), Value::Nil],
+    )
+    .await;
+    assert_eq!(
+        heard(&mut a).await,
+        server_line("no one called Nobody&lt;3 is in the game")
+    );
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_motd_greets_a_player_once_its_own_actor_is_in() {
+    // M4 hosting spec §8, HA1: a system line after its own 7 and 8, written for the client's
+    // markup as the server's own text is.
+    let dir = tempfile::tempdir().unwrap();
+    let config = format!("motd = \"Fish & chips [today]\"\n{WORLD}");
+    let (s, _clock) = server(dir.path(), &config, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    select(&mut bot, pid).await;
+    enter(&mut bot, pid).await;
+    assert_eq!(
+        heard(&mut bot).await,
+        server_line("Fish &amp; chips \\[today\\]")
+    );
+    bot.quiet(300).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_banned_account_in_the_lobby_stays_out_of_the_world() {
+    // M4 hosting spec §8, HA5: a ban that came after the login, while the player picks a
+    // character. Its 10 closes the connection as a ban closes one in the world.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    let store = s.accounts().store().clone();
+    let id = store
+        .account_by_username("tester")
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    assert!(store.ban(id, "Griefing", NOW).await.unwrap());
+    bot.send(lobby::SELECT_ACTOR, &[Value::Int(pid)]).await;
+    assert_eq!(bot.expect_closed().await, BANNED.as_bytes());
+    assert!(s.status().names().is_empty(), "it never entered");
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_store_that_cant_say_whether_the_account_is_banned_keeps_it_in_the_lobby() {
+    // The world's door holds on a store error, as the read of the character does: a 270 the
+    // lobby shows, and the player, still in the lobby, can try again. Here the character still
+    // reads, and only the ban doesn't.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    s.accounts().store().break_bans().await.unwrap();
+    bot.send(lobby::SELECT_ACTOR, &[Value::Int(pid)]).await;
+    refused(&mut bot, code::SERVER_NOT_RESP).await;
+    bot.send(lobby::QUERY_ACTORS, &[]).await;
+    assert_eq!(bot.recv().await.0, lobby::ROLE_LIST, "still in the lobby");
+    assert!(s.status().names().is_empty(), "it never entered");
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_ban_closes_the_accounts_connection_in_the_lobby_and_in_the_world() {
+    // What the console's `ban` calls besides `WorldIn::Ban` (HA5): the online registry tells the
+    // account's connection to close, as it tells one a newer login replaced, wherever it is.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut in_the_lobby, _) = in_lobby(&s, "aaa", "Lin").await;
+    let (mut in_the_world, mai) = in_lobby(&s, "bbb", "Mai").await;
+    select(&mut in_the_world, mai).await;
+    enter(&mut in_the_world, mai).await;
+    let online = s.api_state().online;
+    assert_eq!(online.count(), 2);
+    let store = s.accounts().store().clone();
+    for name in ["aaa", "bbb"] {
+        let id = store.account_by_username(name).await.unwrap().unwrap().id;
+        assert!(online.ban(id), "{name}");
+    }
+    assert_eq!(in_the_lobby.expect_closed().await, BANNED.as_bytes());
+    assert_eq!(in_the_world.expect_closed().await, BANNED.as_bytes());
+    assert_eq!(online.count(), 0);
+    // The world heard Mai leave.
+    for _ in 0..100 {
+        if s.status().names().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(s.status().names().is_empty(), "{:?}", s.status().names());
     s.shutdown().await.unwrap();
 }
