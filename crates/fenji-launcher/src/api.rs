@@ -246,7 +246,7 @@ pub struct ApiClient {
 }
 
 /// rustls with the `ring` provider (M3 spec D20), installed once per process.
-fn crypto() {
+pub(crate) fn crypto() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         // Another part of the process may have installed one already; either is fine.
