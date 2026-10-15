@@ -3,13 +3,15 @@ Third-party notices for fenji-server
 
 fenji-server is Fenji's own code, under the GNU Affero General Public License
 (LICENSE), built with Rust's standard library (under the MIT licence or the
-Apache License 2.0) and with the open-source crates listed below. Each
-licence's text follows the crates it covers, as those crates ship it,
-copyright notices included.
+Apache License 2.0) and with the {{len crates}} open-source crates listed below.
+Each licence's text follows the crates it covers. It's their own copy,
+copyright notices included, from the crate's package or, where the package
+lacks one, from the crate's source repository. Where none of the crates' own
+files is recognised as the licence, its standard text stands in, and says so.
 
-Licences, and how many crates each covers:
+Licences, and how many texts of each follow:
 {{#each overview}}
-  {{{name}}}: {{count}}
+  {{{name}}}: {{len indices}}
 {{/each}}
 {{#each licenses}}
 
@@ -18,6 +20,10 @@ Licences, and how many crates each covers:
 {{#each used_by}}
   {{{crate.name}}} {{{crate.version}}}
 {{/each}}
+{{#unless source_path}}
+(The licence's standard text: none of these crates' own files is recognised
+as this licence.)
+{{/unless}}
 
 {{{text}}}
 {{/each}}

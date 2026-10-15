@@ -1,9 +1,12 @@
 # cargo-about's configuration, for the THIRD-PARTY-NOTICES.txt that scripts/package-server.sh writes
-# into each release archive: the licence text of every crate the target's build links.
+# into each release archive: the licence text of every crate the target's build links, or runs in
+# its proc-macros.
 
 # deny.toml's [licenses] allow list, in the same order: scripts/test-package-server.sh fails when the
 # two differ, so change both together. Where a crate offers a choice (MIT OR Apache-2.0), the first
-# accepted licence is the one whose text the notices carry.
+# accepted licence is the one whose text the notices carry. A licence whose standard text writes its
+# copyright line with template fields that scripts/package-server.sh doesn't look for yet needs them
+# added there.
 accepted = [
     "MIT",
     "Apache-2.0",
@@ -15,9 +18,94 @@ accepted = [
     "Zlib",
 ]
 
-# Only what the binary links: crates that only build scripts or tests use aren't in it.
+# Not the crates that only build scripts or tests use. Proc-macros, which the build runs rather than
+# links, are in, with the crates they use: cargo-about doesn't tell them from linked crates.
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
 
 # Fenji's own crates aren't published, and are under Fenji's licence (LICENSE).
 private = { ignore = true }
+
+# Clarifications, for the crates whose own licence text cargo-about can't find or read. Without one,
+# it puts in the licence's standard text, whose MIT copyright line reads "Copyright (c) <year>
+# <copyright holders>", and scripts/package-server.sh then refuses to pack the notices (#328). Each
+# gives the crate's whole licence expression, and the text of the licence the notices carry for it:
+# MIT, which `accepted` puts first. A clarification is for every version of its crate, and its
+# checksum is of the text it takes. When an update changes that text, cargo-about only warns and
+# goes back to the standard text, so the packing stops until the checksum is updated; so it does
+# when a `git` file, which cargo-about fetches from GitHub each time, can't be fetched. A target that
+# doesn't link a crate (windows-sys on Linux) gets a warning about that crate's clarification.
+
+# mutants (cargo-mutants' attributes), a proc-macro that unsynn uses, packages no licence file. It
+# isn't linked, but it's in the notices all the same, so it gets its own text: its repository's
+# LICENSE (git: the file at the commit the crate's .cargo_vcs_info.json names).
+[mutants.clarify]
+license = "MIT"
+
+[[mutants.clarify.git]]
+path = "LICENSE"
+license = "MIT"
+checksum = "479cbeb2506157776cf80abe31df18065d0fe50b5816ff77bfd75d5deb04ab5c"
+
+# rcgen's one LICENSE holds both of its licences, after a preamble: its MIT part.
+[rcgen.clarify]
+license = "MIT OR Apache-2.0"
+
+[[rcgen.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+start = "The MIT License (MIT)"
+end = "OTHER DEALINGS IN THE\nSOFTWARE."
+checksum = "017986d055737c5ca0f7f41fb1a54e3464924b9b04f430988d8ebe21b6884c40"
+
+# sqlx's crates package their LICENSE-MIT as a stub that says "../LICENSE-MIT": the repository's
+# file, at the commit each was published from.
+[sqlx-core.clarify]
+license = "MIT OR Apache-2.0"
+
+[[sqlx-core.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d"
+
+[sqlx-macros.clarify]
+license = "MIT OR Apache-2.0"
+
+[[sqlx-macros.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d"
+
+[sqlx-macros-core.clarify]
+license = "MIT OR Apache-2.0"
+
+[[sqlx-macros-core.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d"
+
+[sqlx-sqlite.clarify]
+license = "MIT OR Apache-2.0"
+
+[[sqlx-sqlite.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d"
+
+# windows-rs's crates name theirs license-mit, in lower case, which cargo-about's search for
+# licence files never opens.
+[windows-link.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-link.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-sys.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-sys.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"

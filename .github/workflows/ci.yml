@@ -99,6 +99,45 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
 
+  # The release archives' third-party notices, which only the release workflow makes: a dependency
+  # change that leaves a crate without a licence text of its own shows here, not when a tag is
+  # pushed (#328). scripts/package-server.sh packs each of the release workflow's server targets
+  # around a stand-in for the binary, so its cargo about and its placeholder check run without a
+  # build.
+  notices:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install cargo-about, at the version scripts/versions.env pins
+        run: |
+          source scripts/versions.env
+          # Its program is behind the cli feature: without it, cargo install builds nothing.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
+      - name: Each release target's notices
+        run: |
+          # The server's targets: the `- target:` lines of release.yml's build job, not another job's.
+          targets=$(sed -n '/^  build:$/,/^  [a-z]/s/^ *- target: *//p' .github/workflows/release.yml)
+          if [ -z "$targets" ]; then
+            echo "No targets in the matrix of release.yml's build job" >&2
+            exit 1
+          fi
+          : > "$RUNNER_TEMP/stand-in"
+          failed=
+          for target in $targets; do
+            echo "::group::$target"
+            scripts/package-server.sh 0.0.0 "$target" "$RUNNER_TEMP/stand-in" "$RUNNER_TEMP/dist" ||
+              failed="$failed $target"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::No release archive packs for:$failed (each target's group says why)."
+            exit 1
+          fi
+
   repo-hygiene:
     runs-on: ubuntu-24.04
     steps:
