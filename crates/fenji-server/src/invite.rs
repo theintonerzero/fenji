@@ -114,7 +114,7 @@ pub(crate) fn bases_among(
         }
         out.push((THIS_COMPUTER.into(), base(IpAddr::V4(Ipv4Addr::LOCALHOST))));
     } else if ip.is_loopback() {
-        out.push((THIS_COMPUTER.into(), base(s.api_bind.ip())));
+        out.push((THIS_COMPUTER.into(), base(ip)));
     } else if let (IpAddr::V4(v4), true) = (ip, own_key) {
         let label = interfaces
             .iter()

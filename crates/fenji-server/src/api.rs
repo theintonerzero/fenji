@@ -35,8 +35,8 @@ pub struct Addrs {
     pub local: SocketAddr,
 }
 
-/// This end's address of `tcp`. The system always has it for a connected socket; the unspecified
-/// address stands in otherwise, which names no gate.
+/// This end's address of `tcp`. The system always has it for a connected socket; otherwise the
+/// unspecified address stands in, a gate launchers refuse.
 fn local_of(tcp: &tokio::net::TcpStream) -> SocketAddr {
     tcp.local_addr()
         .unwrap_or(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))

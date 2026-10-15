@@ -357,11 +357,12 @@ impl Config {
     /// 1. `public_api`'s origin;
     /// 2. with `tls = "self"`, `https://<public_host>:<api_bind's port>`;
     /// 3. `api_bind` itself, when it's a loopback address and `public_host` is one too or unset;
-    /// 4. otherwise none: `run` warns, with [`crate::invite::NO_LINKS`].
+    /// 4. otherwise none, and without `tls = "self"` `run` warns with
+    ///    [`crate::invite::NO_LINKS`].
     ///
     /// Under `tls = "self"` each carries the pin, and there's none without it: a launcher couldn't
     /// trust the server's key. With neither `public_api` nor `public_host` set, `invite::bases`
-    /// also gives one for each of the machine's addresses (Amendment A, HA4).
+    /// gives one for each of the machine's addresses besides (Amendment A, HA4).
     pub fn invite_base(&self, pin: Option<&str>) -> Option<InviteBase> {
         self.labelled_invite_base(pin, self.server.api_bind.port())
             .map(|(_, base)| base)

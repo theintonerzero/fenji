@@ -156,7 +156,8 @@ fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<&'static str> {
     if s.tls.is_none() && cfg.invite_base(pin).is_none() {
         warnings.push(crate::invite::NO_LINKS);
     }
-    if s.public_api.is_some() && s.api_bind.ip().is_loopback() && s.trusted_proxies.is_empty() {
+    let loopback = s.api_bind.ip().to_canonical().is_loopback();
+    if s.public_api.is_some() && loopback && s.trusted_proxies.is_empty() {
         warnings.push(PROXY_NOT_TRUSTED);
     }
     warnings

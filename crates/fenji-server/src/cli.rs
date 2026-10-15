@@ -132,7 +132,7 @@ pub async fn admin(
             let expires_at = expires
                 .map(|d| now.saturating_add(i64::try_from(d.as_millis()).unwrap_or(i64::MAX)));
             // The pin from the certificate alone, and no key made here: this may run as another
-            // user than the server's, who couldn't read a key this run made.
+            // user than the server, which couldn't then read a key made here.
             let tls = crate::tls::folder(&cfg.store.path);
             let own_key = cfg.server.tls == Some(Tls::OwnKey);
             let pin = if own_key {
