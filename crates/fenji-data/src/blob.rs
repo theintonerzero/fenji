@@ -215,7 +215,7 @@ pub fn decode(bytes: &[u8], at: u64, codecs: &dyn Decompressor) -> Result<Vec<u8
 mod tests {
     use super::*;
     use crate::BuiltinCodecs;
-    use crate::test_util::{lz4_blob, lz4_blob_blocks, oodle_blob, oodle_memset_blob, stored_blob};
+    use crate::test_util::{lz4_blob, lz4_blob_blocks, stored_blob};
 
     #[test]
     fn single_block_lz4_round_trip() {
@@ -286,8 +286,10 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "oodle")]
     #[test]
     fn builtin_codecs_decode_an_oodle_blob_block_by_block() {
+        use crate::test_util::{oodle_blob, oodle_memset_blob};
         // Three blocks of 512 KiB, the last one short; each holds an uncompressed stream of two
         // quanta, or one.
         let content: Vec<u8> = (0..1_200_000u32).map(|i| (i % 253) as u8).collect();
@@ -307,8 +309,10 @@ mod tests {
         assert_eq!(e.to_string(), "codec 7 isn't one Fenji decodes");
     }
 
+    #[cfg(feature = "oodle")]
     #[test]
     fn an_oodle_block_that_doesnt_decode_names_its_block() {
+        use crate::test_util::oodle_blob;
         let mut blob = oodle_blob(&[7; 1000], 400);
         let last = blob.len() - 1;
         blob.truncate(last); // the third block's stream ends early …

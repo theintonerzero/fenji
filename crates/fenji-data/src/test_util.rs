@@ -84,16 +84,20 @@ fn blob_of_blocks(blocks: &[Vec<u8>], raw_size: u64, block_size: u32, codec: u16
     b
 }
 
+/// Output bytes per Oodle stream header: `fenji_oodle::QUANTUM`, here so that these streams can be
+/// built without the `oodle` feature, as tools/oodle-helper's tests do.
+const OODLE_QUANTUM: usize = 0x4_0000;
+
 /// An Oodle stream (Kraken, decoder 6) of `len` copies of `byte`: one memset quantum per 256 KiB,
 /// each behind its stream header. Six bytes for each 256 KiB of output.
 pub fn oodle_memset_stream(len: usize, byte: u8) -> Vec<u8> {
-    [0x8C, 0x06, 0x07, 0xFF, 0xFF, byte].repeat(len.div_ceil(fenji_oodle::QUANTUM))
+    [0x8C, 0x06, 0x07, 0xFF, 0xFF, byte].repeat(len.div_ceil(OODLE_QUANTUM))
 }
 
 /// An Oodle stream (Kraken) whose quanta hold `content` as it is, each 256 KiB behind a stream
 /// header that says so.
 pub fn oodle_uncompressed_stream(content: &[u8]) -> Vec<u8> {
-    let quanta = content.chunks(fenji_oodle::QUANTUM);
+    let quanta = content.chunks(OODLE_QUANTUM);
     let mut s = Vec::with_capacity(content.len() + 2 * quanta.len());
     for quantum in quanta {
         s.extend_from_slice(&[0xCC, 0x06]);

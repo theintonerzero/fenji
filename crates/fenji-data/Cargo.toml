@@ -8,12 +8,16 @@ publish.workspace = true
 license.workspace = true
 
 [features]
+default = ["oodle"]
+# Decodes Oodle (codec 4) with fenji-oodle, which is GPL-3.0-or-later. tools/oodle-helper, the
+# program that loads the client's own Oodle DLL, turns it off, so it links no GPL code.
+oodle = ["dep:fenji-oodle"]
 # Synthetic PE images and blobs for tests in this and other crates: never game bytes.
 test-util = []
 
 [dependencies]
 # GPL-3.0-or-later, which combines with Fenji's AGPL by section 13 of each (its NOTICE).
-fenji-oodle = { path = "../fenji-oodle" }
+fenji-oodle = { path = "../fenji-oodle", optional = true }
 lz4_flex.workspace = true
 sha1.workspace = true
 sha2.workspace = true

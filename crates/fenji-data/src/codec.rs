@@ -1,6 +1,7 @@
 //! Block decompression. Fenji decodes stored, LZ4 and Oodle (codec 4) blocks itself, Oodle with
-//! fenji-oodle, its port of ooz's Kraken decoder. The [`OodleSpool`](crate::oodle_spool::OodleSpool)
-//! and the sandboxed helper with the client's own DLL stay, as a dev-only cross-check (gate #39).
+//! fenji-oodle, its port of ooz's Kraken decoder, under the default `oodle` feature. The
+//! [`OodleSpool`](crate::oodle_spool::OodleSpool) and the sandboxed helper with the client's own DLL
+//! stay, as a dev-only cross-check (gate #39); the helper builds without the feature.
 use crate::{Codec, Error, Result};
 
 /// The most an LZ4 block can expand: each extra length byte adds at most 255 output bytes.
@@ -23,7 +24,7 @@ pub trait Decompressor {
     ) -> Result<Vec<u8>>;
 }
 
-/// Stored, LZ4 and Oodle.
+/// Stored, LZ4 and, with the `oodle` feature, Oodle.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BuiltinCodecs;
 
@@ -51,6 +52,7 @@ impl Decompressor for BuiltinCodecs {
                     reason: e.to_string(),
                 })?
             }
+            #[cfg(feature = "oodle")]
             Codec::Oodle => decode_oodle_block(input, raw_len, index)?.0,
             other => return Err(Error::CodecUnavailable(other.as_u16())),
         };
@@ -71,6 +73,7 @@ impl Decompressor for BuiltinCodecs {
 /// decoder plan's Review Focus 5): fenji-oodle's output grows only as the stream backs it, but a
 /// memset quantum backs 256 KiB with 6 bytes, so a tampered blob header could still ask for
 /// gigabytes. Then the block's `u32` raw length must match the blob header's ([`oodle_payload`]).
+#[cfg(feature = "oodle")]
 pub fn decode_oodle_block(
     input: &[u8],
     raw_len: usize,
@@ -129,6 +132,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "oodle")]
     #[test]
     fn builtin_codecs_decode_oodle() {
         // A memset stream (fenji-oodle's own format test), behind the archive's raw-length prefix.
@@ -142,6 +146,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "oodle")]
     #[test]
     fn oversized_oodle_blocks_are_refused() {
         // Review Focus 5: a tampered header can't make the decoder allocate more than a block.
@@ -165,6 +170,18 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "oodle"))]
+    #[test]
+    fn without_the_oodle_feature_oodle_is_unavailable() {
+        // tools/oodle-helper's build: no fenji-oodle, so no Oodle.
+        let block = crate::test_util::oodle_block(6, &[0xCC, 0x06, 1, 2, 3, 4, 5, 6]);
+        let e = BuiltinCodecs
+            .decompress_block(Codec::Oodle, &block, 6, 0)
+            .unwrap_err();
+        assert!(matches!(e, Error::CodecUnavailable(4)), "{e}");
+    }
+
+    #[cfg(feature = "oodle")]
     #[test]
     fn decode_oodle_block_counts_where_the_port_departs_from_ooz() {
         // Ruling O14: an entropy-only chunk of one stored block, after an RLE one (as in

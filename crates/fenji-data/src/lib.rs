@@ -14,7 +14,9 @@ pub mod re_dir;
 pub mod test_util;
 
 pub use blob::{BlobHeader, Block, Codec, FIXED_LEN, blocks, decode as decode_blob};
-pub use codec::{BuiltinCodecs, Decompressor, MAX_OODLE_BLOCK, decode_oodle_block, oodle_payload};
+#[cfg(feature = "oodle")]
+pub use codec::decode_oodle_block;
+pub use codec::{BuiltinCodecs, Decompressor, MAX_OODLE_BLOCK, oodle_payload};
 pub use error::{Error, Result};
 pub use exe_fs::{ExeEntry, ExeFs, PIECE_LEN};
 pub use pe::{PeImage, Section};

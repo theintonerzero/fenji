@@ -408,13 +408,22 @@ mod tests {
         }
     }
 
-    /// The DLL's stand-in: fenji-data's own decoder, on the stream behind its raw length.
+    /// The DLL's stand-in for these tests' streams, which are all memset quanta: six bytes for
+    /// each 256 KiB, the last of them repeated. Anything else fails, as a block the DLL can't
+    /// decode does. (The helper builds fenji-data without its Oodle decoder.)
     fn native(stream: &[u8], raw_len: usize) -> Option<Vec<u8>> {
-        use fenji_data::{BuiltinCodecs, Codec, Decompressor};
-        let block = fenji_data::test_util::oodle_block(raw_len, stream);
-        BuiltinCodecs
-            .decompress_block(Codec::Oodle, &block, raw_len, 0)
-            .ok()
+        const QUANTUM: usize = 0x4_0000;
+        if stream.len() != 6 * raw_len.div_ceil(QUANTUM) {
+            return None;
+        }
+        let mut out = Vec::with_capacity(raw_len);
+        for quantum in stream.chunks(6) {
+            let &[0x8C, 0x06, 0x07, 0xFF, 0xFF, byte] = quantum else {
+                return None;
+            };
+            out.resize(out.len() + (raw_len - out.len()).min(QUANTUM), byte);
+        }
+        Some(out)
     }
 
     /// A client copy's `data/`: `_index` in two memset blocks, and a part with a memset file, a
