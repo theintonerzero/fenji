@@ -31,7 +31,7 @@ use crate::config::Config;
 use crate::console::log::{LogHub, LogItem, LogSubscription, QUEUE};
 use crate::online::Online;
 use crate::status::{DEFAULT_MESSAGE, Maintenance, Status};
-use crate::world::{MAX_LINE_CHARS, WorldHandle, WorldIn};
+use crate::world::{ConsoleReply, MAX_LINE_CHARS, WorldHandle, WorldIn};
 
 /// How long a command waits for the world's answer: a tick runs it, and an invite's store write
 /// takes a moment more.
@@ -52,6 +52,10 @@ const TO_CONSOLE: usize = 64;
 
 /// The command lines a console may send ahead of their answers.
 const TO_SERVER: usize = 16;
+
+/// How long a console's goodbye waits for the answers to commands still running as the server
+/// stopped.
+const ANSWERS_WAIT: Duration = Duration::from_secs(2);
 
 /// What a command line came to: whether it did what was asked, and what it says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,15 +318,19 @@ impl ConsoleService {
         })
     }
 
-    /// Runs `order` in the world, as an admin's, and gives its answer; a world that has stopped,
-    /// or doesn't answer within [`WORLD_WAIT`], is answered for (carry-forward 10).
+    /// Runs `order` in the world, as an admin's, and gives its answer, done or refused as the
+    /// world says; a world that has stopped, or doesn't answer within [`WORLD_WAIT`], is answered
+    /// for (carry-forward 10).
     async fn ask_world(&self, order: Command) -> Answer {
         let (reply, answer) = oneshot::channel();
         if !self.world.send(WorldIn::Console { order, reply }) {
             return Answer::failed("the world has stopped");
         }
         match tokio::time::timeout(self.world_wait, answer).await {
-            Ok(Ok(text)) => Answer::line(text),
+            Ok(Ok(ConsoleReply { ok, text })) => Answer {
+                ok,
+                lines: vec![text],
+            },
             Ok(Err(_)) => Answer::failed("the world stopped before it answered"),
             Err(_) => Answer::failed("the world didn't answer in time"),
         }
@@ -367,9 +375,14 @@ impl ConsoleService {
             MaintenanceArg::Show => Ok(Answer::done(self.maintenance_lines())),
             MaintenanceArg::On { lasts, message } => {
                 let message = message.unwrap_or_else(|| DEFAULT_MESSAGE.into());
-                // Turned on again, it keeps the time it began.
-                let since_ms = self.status.maintenance().map_or(now, |m| m.since_ms);
-                let until_ms = lasts.map(|lasts| cli::ms_after(now, lasts));
+                // Turned on again, it keeps the time it began, and the time the host expects to be
+                // back unless given a new duration, which runs from now.
+                let was = self.status.maintenance();
+                let since_ms = was.as_ref().map_or(now, |m| m.since_ms);
+                let until_ms = match lasts {
+                    Some(lasts) => Some(cli::ms_after(now, lasts)),
+                    None => was.and_then(|m| m.until_ms),
+                };
                 let note = maintenance_note(&message);
                 let m = Maintenance {
                     message,
@@ -768,7 +781,22 @@ async fn forward(
                 true
             }
             Next::Stopped => {
-                // What was logged as it stopped, then goodbye.
+                // The answers still due, from a command the server's end caught running: the
+                // command task ends once the server has stopped, with a store and a world that
+                // answer at once. Then what was logged as it stopped, and goodbye.
+                let until = tokio::time::Instant::now() + ANSWERS_WAIT;
+                while answering {
+                    match tokio::time::timeout_at(until, answers.recv()).await {
+                        Ok(Some(answer)) => {
+                            let sent = catch_up(&mut logs, &mut status, &out).await
+                                && out.send(answer).await.is_ok();
+                            if !sent {
+                                return;
+                            }
+                        }
+                        Ok(None) | Err(_) => answering = false,
+                    }
+                }
                 if catch_up(&mut logs, &mut status, &out).await {
                     let bye = ServerMsg::Bye {
                         reason: STOPPING.into(),
@@ -898,7 +926,7 @@ mod tests {
     use crate::online::{Closing, Join, Online, Playing};
     use crate::server::{GateLimits, RunningServer, start};
     use crate::status::{DEFAULT_MESSAGE, Maintenance, Status};
-    use crate::world::{WorldHandle, WorldIn, logged};
+    use crate::world::{ConsoleReply, WorldHandle, WorldIn, logged};
 
     const NOW: i64 = 1_800_000_000_000;
 
@@ -1438,6 +1466,35 @@ mod tests {
         s.shutdown().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn maintenance_turned_on_again_keeps_its_end_unless_given_another() {
+        // Review 1, Minor 4: turned on again with a new message, it keeps when it began and when
+        // the host expects to be back; a new duration is a new end, from now.
+        let (s, clock, _dir) = started_with("").await;
+        let c = s.console();
+        assert!(c.run_line("maintenance on 30m Updating").await.ok);
+        clock.advance(60_000);
+        assert!(c.run_line("maintenance on Still updating").await.ok);
+        assert_eq!(
+            s.status().maintenance(),
+            Some(Maintenance {
+                message: "Still updating".into(),
+                since_ms: NOW,
+                until_ms: Some(NOW + 1_800_000),
+            })
+        );
+        assert!(c.run_line("maintenance on 1h Nearly done").await.ok);
+        assert_eq!(
+            s.status().maintenance(),
+            Some(Maintenance {
+                message: "Nearly done".into(),
+                since_ms: NOW,
+                until_ms: Some(NOW + 60_000 + 3_600_000),
+            })
+        );
+        s.shutdown().await.unwrap();
+    }
+
     #[test]
     fn the_maintenance_announcement_is_cut_to_fit_the_marquee() {
         // Carry-forward 9: the marquee takes 140 characters, `Maintenance: ` and the message
@@ -1476,6 +1533,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn what_the_world_refused_is_answered_as_not_done() {
+        // Review 1, Minor 2: `ok` says whether the command did what was asked, so that the
+        // attached console's `--run` exits 1 for "kick Nobody" (M4 hosting spec §3.1).
+        let (s, _dir) = started().await;
+        let c = s.console();
+        assert_eq!(
+            c.run_line("kick Nobody").await,
+            failed(["no one called Nobody is in the game"])
+        );
+        assert_eq!(
+            c.run_line("tp Mai Lin").await,
+            failed(["no one called Mai is in the game"])
+        );
+        assert_eq!(
+            c.run_line(&format!("say {}", "a".repeat(141))).await,
+            failed(["not announced: over 140 characters"])
+        );
+        assert_eq!(
+            c.run_line("say Doors open").await,
+            done(["announced, but no one is in the game"])
+        );
+        s.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn the_worlds_answers_come_back_cleaned() {
         // Carry-forward 13: a character's name in the world's answer can't act on the host's
         // terminal.
@@ -1485,7 +1567,8 @@ mod tests {
             let Some(WorldIn::Console { reply, .. }) = world.recv().await else {
                 panic!("a command for the world")
             };
-            reply.send("Mai\u{1b}[2J was kicked".into()).unwrap();
+            let text = "Mai\u{1b}[2J was kicked".into();
+            reply.send(ConsoleReply { ok: true, text }).unwrap();
         });
         assert_eq!(
             c.run_line("kick Mai").await,
@@ -1654,6 +1737,11 @@ mod tests {
         // In the order they happen (M4 hosting plan, Task 11's interface): `stop`, with nothing
         // serving to act on it, logs its line and changes the status at once, then answers.
         use tracing_subscriber::layer::SubscriberExt;
+        // While one subscriber alone is registered, tracing-core asks only the subscriber of the
+        // thread that first logs at a place whether it's wanted (`Rebuilder::JustOne`), and keeps
+        // the answer: another test's thread, with none, could then make this one's lines unwanted
+        // everywhere. With a second registered, every subscriber is asked.
+        let _asked = tracing::Dispatch::new(tracing_subscriber::registry());
         let hub = LogHub::new(500);
         let subscriber = tracing_subscriber::registry().with(hub.layer());
         let _log = tracing::subscriber::set_default(subscriber);
@@ -1692,6 +1780,48 @@ mod tests {
             );
             s.shutdown().await.unwrap();
         });
+    }
+
+    #[tokio::test]
+    async fn an_answer_due_as_the_server_stops_comes_before_the_goodbye() {
+        // Review 1, Minor 3: a command still running when the server has stopped is answered,
+        // and then the console is told goodbye.
+        let dir = tempfile::tempdir().unwrap();
+        let (c, mut world, _store, _online) = with_fake_world(dir.path(), "", WORLD_WAIT).await;
+        let hub = LogHub::new(10);
+        let Session {
+            mut from_server,
+            to_server,
+            ..
+        } = session(&c, &hub);
+        while !matches!(next(&mut from_server).await, ServerMsg::Status { .. }) {}
+        let kick = ConsoleMsg::Run {
+            id: 1,
+            line: "kick Mai".into(),
+        };
+        to_server.send(kick).await.unwrap();
+        let Some(WorldIn::Console { reply, .. }) = world.recv().await else {
+            panic!("the kick, for the world")
+        };
+        // The server stops while the world works on it, and the feed sees it first.
+        c.end();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let text = "Mai was kicked".into();
+        reply.send(ConsoleReply { ok: true, text }).unwrap();
+        let mut seen = Vec::new();
+        let reason = loop {
+            match next(&mut from_server).await {
+                ServerMsg::Bye { reason } => break reason,
+                msg => seen.push(msg),
+            }
+        };
+        assert_eq!(reason, STOPPING);
+        let kicked = ServerMsg::Answer {
+            id: 1,
+            ok: true,
+            lines: vec!["Mai was kicked".into()],
+        };
+        assert!(seen.contains(&kicked), "before the goodbye: {seen:?}");
     }
 
     #[tokio::test]

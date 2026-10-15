@@ -174,7 +174,7 @@ pub enum WorldIn {
     /// it, and answers on `reply`. Its `tp` takes two names.
     Console {
         order: Command,
-        reply: oneshot::Sender<String>,
+        reply: oneshot::Sender<ConsoleReply>,
     },
     /// The account is an admin now, or no longer is (`op` and `deop`; M4 hosting spec §8, HA5):
     /// its player in the world, if any, runs commands from this tick, or no longer does, and so
@@ -201,6 +201,15 @@ pub enum WorldIn {
         work: std::time::Duration,
         begun: tokio::sync::oneshot::Sender<()>,
     },
+}
+
+/// The world's answer to a command from the host's console: what it says, and whether the command
+/// did what was asked. A refusal, such as "no one called Mai is in the game", isn't, so an attached
+/// console's `--run` exits 1 for it (M4 hosting spec §3.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleReply {
+    pub ok: bool,
+    pub text: String,
 }
 
 /// What the world tells a connection task.
@@ -250,7 +259,7 @@ pub enum Service {
     CreateInvite { conn: ConnId, label: Option<String> },
     /// Make an invite for the console's `invite`, and answer on `reply` as `!invite` is answered.
     CreateInviteFor {
-        reply: oneshot::Sender<String>,
+        reply: oneshot::Sender<ConsoleReply>,
         label: Option<String>,
     },
 }

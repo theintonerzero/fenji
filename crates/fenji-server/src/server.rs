@@ -6,10 +6,12 @@
 //! started in the full-screen console, or plain lines (§3.1).
 use std::io::Write;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use fenji_console::text::clean;
 use fenji_console::{Colours, Ending, Mode};
 use fenji_store::Store;
 use tokio::net::TcpListener;
@@ -398,16 +400,13 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
     let session = service::session(&console, &hub);
     match front {
         Front::Full => {
-            let ended = fenji_console::run_tui(session, Mode::InProcess, Colours::from_env()).await;
+            let tui = fenji_console::run_tui(session, Mode::InProcess, Colours::from_env());
+            let ended = held(tui).await;
             // The terminal is the host's again, whatever ended the console.
             let logs = console::log::folder(&cfg.store.path);
-            if let Some(why) = still_serving(&ended) {
-                say(&format!(
-                    "The console has closed ({why}). The server runs on until Ctrl-C or SIGTERM \
-                     stops it; its log is in {}. `fenji-server --plain` gives the console as plain \
-                     lines, for a terminal the full-screen one doesn't suit.",
-                    logs.display()
-                ));
+            let serving = !served.is_finished() && !*console.stopping().borrow();
+            if let Some(note) = closed_note(&ended, serving, &logs) {
+                say(&note);
             }
             let served = joined(served).await;
             say(&format!(
@@ -427,6 +426,23 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
     }
 }
 
+/// Why the full-screen console ended when its own code panicked: the panic hook has given the
+/// terminal back and printed the message.
+const CONSOLE_PANICKED: &str = "a panic ended the console; its message is above";
+
+/// The full-screen console, run on a task of its own until it ends. One whose own code panics
+/// ends as a console that failed, so `run` goes on serving until a signal stops the server
+/// gracefully, rather than unwinding through it and out of the process (review 1, Important 1).
+async fn held(
+    console: impl Future<Output = std::io::Result<Ending>> + Send + 'static,
+) -> std::io::Result<Ending> {
+    match tokio::spawn(console).await {
+        Ok(ended) => ended,
+        Err(e) if e.is_panic() => Err(std::io::Error::other(CONSOLE_PANICKED)),
+        Err(e) => Err(std::io::Error::other(e.to_string())),
+    }
+}
+
 /// Why the full-screen console ended while the server may run on; `None` once the server said
 /// goodbye, having stopped.
 fn still_serving(ended: &std::io::Result<Ending>) -> Option<String> {
@@ -438,6 +454,21 @@ fn still_serving(ended: &std::io::Result<Ending>) -> Option<String> {
     }
 }
 
+/// What `run` tells the host once the full-screen console has ended while the server still serves
+/// (`serving`): why, how the server stops now, and where its log is. Nothing once the server has
+/// said goodbye, or stopped meanwhile.
+fn closed_note(ended: &std::io::Result<Ending>, serving: bool, logs: &Path) -> Option<String> {
+    let why = still_serving(ended)?;
+    serving.then(|| {
+        format!(
+            "The console has closed ({why}). The server runs on until Ctrl-C or SIGTERM stops \
+             it; its log is in {}. `fenji-server --plain` gives the console as plain lines, for \
+             a terminal the full-screen one doesn't suit.",
+            logs.display()
+        )
+    })
+}
+
 /// The server's result, once its task has ended.
 async fn joined(served: JoinHandle<anyhow::Result<()>>) -> anyhow::Result<()> {
     served
@@ -447,7 +478,13 @@ async fn joined(served: JoinHandle<anyhow::Result<()>>) -> anyhow::Result<()> {
 
 /// A line for the host's terminal, outside the log: on stderr, and never a panic when it's gone.
 fn say(text: &str) {
-    let _ = writeln!(std::io::stderr(), "{text}");
+    say_to(&mut std::io::stderr(), text);
+}
+
+/// `text` as a line on `out`, cleaned of hidden characters as everything a console prints is
+/// (Review Focus 1): an error's text, or a path, may hold one.
+fn say_to(out: &mut impl Write, text: &str) {
+    let _ = writeln!(out, "{}", clean(text));
 }
 
 /// With no account in the store, says how to invite the first player: a server whose first run
@@ -581,6 +618,63 @@ mod tests {
             links.push(link);
         }
         links
+    }
+
+    /// A console whose own code panics, as a bug in the view or the terminal's library would.
+    async fn panicking_console() -> std::io::Result<Ending> {
+        panic!("in the console's own code")
+    }
+
+    #[tokio::test]
+    async fn a_console_that_panics_ends_as_one_that_failed_and_the_server_runs_on() {
+        // Review 1, Important 1 (carry-forward 5): a panic in the full-screen console's own code
+        // mustn't unwind through `run` and take the server down without a graceful stop. It ends
+        // the console as an error; the panic hook has given the terminal back by then.
+        let ended = held(panicking_console()).await;
+        let e = ended.expect_err("the console failed");
+        assert_eq!(
+            e.to_string(),
+            "a panic ended the console; its message is above"
+        );
+        assert_eq!(
+            still_serving(&Err(e)),
+            Some("a panic ended the console; its message is above".into())
+        );
+        // A console that ends ends so.
+        let closed = held(async { Ok(Ending::InputClosed) }).await;
+        assert_eq!(closed.unwrap(), Ending::InputClosed);
+    }
+
+    #[test]
+    fn the_console_says_the_server_runs_on_only_while_it_does() {
+        // Review 1, Minor 3: a console that ends as the server stops (a key pressed just then, or
+        // the server's own task failing) mustn't be told the server runs on.
+        let logs = Path::new("/srv/fenji/data/logs");
+        let panicked = || Err(std::io::Error::other(CONSOLE_PANICKED));
+        let note = closed_note(&panicked(), true, logs).expect("a note while it serves");
+        assert_eq!(
+            note,
+            "The console has closed (a panic ended the console; its message is above). The \
+             server runs on until Ctrl-C or SIGTERM stops it; its log is in /srv/fenji/data/logs. \
+             `fenji-server --plain` gives the console as plain lines, for a terminal the \
+             full-screen one doesn't suit."
+        );
+        assert_eq!(closed_note(&panicked(), false, logs), None);
+        assert_eq!(closed_note(&Ok(Ending::Lost), false, logs), None);
+        let stopped = Ok(Ending::ServerStopped(service::STOPPING.into()));
+        assert_eq!(closed_note(&stopped, true, logs), None);
+    }
+
+    #[test]
+    fn runs_own_lines_reach_the_terminal_cleaned() {
+        // Review 1, Minor 8 (Review Focus 1): an error's text or a path with a hidden character
+        // can't act on the host's terminal.
+        let mut out = Vec::new();
+        say_to(&mut out, "its log is in /srv/\u{1b}[2Jfenji/logs");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "its log is in /srv/\\u{1b}[2Jfenji/logs\n"
+        );
     }
 
     #[tokio::test]

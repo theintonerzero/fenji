@@ -22,13 +22,16 @@ pub(super) enum Caller {
     /// An admin in the game: the answer is a line only it sees.
     Admin(Entity),
     /// The host's console, which has no character: the answer goes back on its channel.
-    Console(oneshot::Sender<String>),
+    Console(oneshot::Sender<ConsoleReply>),
 }
 
 /// What a command came to.
 enum Done {
-    /// An answer for its caller.
+    /// It did what was asked: an answer for its caller.
     Answer(String),
+    /// It didn't, and nothing changed: why, for its caller. An admin reads it as any answer; the
+    /// console hears it wasn't done.
+    Refused(String),
     /// An announcement, sent to this many players. An admin sees it as everyone does, and the
     /// console hears how many it reached.
     Announced(usize),
@@ -63,10 +66,10 @@ pub(super) fn system(world: &mut World) {
 /// anything.
 fn run(world: &mut World, me: Option<Entity>, order: Command) -> Option<Done> {
     match order {
-        Command::Tp { who, to } => tp(world, me, who, &to).map(Done::Answer),
+        Command::Tp { who, to } => tp(world, me, who, &to),
         Command::Kick { name } => {
             let Some(e) = find(world, &name) else {
-                return Some(Done::Answer(absent(&name)));
+                return Some(Done::Refused(absent(&name)));
             };
             doom(world, e, Some(KickReason::Kicked));
             Some(Done::Answer(format!("{} was kicked", name_of(world, e))))
@@ -76,47 +79,52 @@ fn run(world: &mut World, me: Option<Entity>, order: Command) -> Option<Done> {
     }
 }
 
-/// Takes `who`, or the admin `me` when it names one player, to the player `to`, and answers.
-fn tp(world: &mut World, me: Option<Entity>, who: Option<String>, to: &str) -> Option<String> {
+/// Takes `who`, or the admin `me` when it names one player, to the player `to`, and answers: done
+/// once it's moved, refused otherwise.
+fn tp(world: &mut World, me: Option<Entity>, who: Option<String>, to: &str) -> Option<Done> {
     let mover = match (&who, me) {
         (Some(name), _) => find(world, name),
         (None, Some(me)) => Some(me),
         // The console has no character to take anywhere.
-        (None, None) => return Some(CommandError::Usage(TP_CONSOLE).to_string()),
+        (None, None) => {
+            return Some(Done::Refused(CommandError::Usage(TP_CONSOLE).to_string()));
+        }
     };
     let Some(mover) = mover else {
-        return Some(absent(who.as_deref().unwrap_or_default()));
+        return Some(Done::Refused(absent(who.as_deref().unwrap_or_default())));
     };
     let Some(target) = find(world, to) else {
-        return Some(absent(to));
+        return Some(Done::Refused(absent(to)));
     };
     if mover == target {
-        return Some(format!("{} is already there", name_of(world, mover)));
+        let mover = name_of(world, mover);
+        return Some(Done::Refused(format!("{mover} is already there")));
     }
     // Its client is loading a scene, and its one report would finish both that scene and
     // another sent now.
     if world.get::<Stage>(mover) != Some(&Stage::InWorld) {
-        return Some(format!("{} is still loading", name_of(world, mover)));
+        let mover = name_of(world, mover);
+        return Some(Done::Refused(format!("{mover} is still loading")));
     }
     let at = world.get::<Here>(target)?.0;
     // A teleport to another scene waits for a local run (#280, Ruling R24; `teleport`). With one
     // name the admin is the mover, so the answer names the target alone.
     if world.get::<Here>(mover)?.0.scene != at.scene {
-        return Some(match who {
+        return Some(Done::Refused(match who {
             None => format!("{} is in another scene", name_of(world, target)),
             Some(_) => format!(
                 "{} and {} are in different scenes",
                 name_of(world, mover),
                 name_of(world, target)
             ),
-        });
+        }));
     }
     teleport(world, mover, at);
-    Some(format!(
+    Some(Done::Answer(format!(
         "{} is with {}",
         name_of(world, mover),
         name_of(world, target)
-    ))
+    )))
 }
 
 /// Sends everyone in the game `text`, as its caller typed it, on the marquee. It goes out as the
@@ -125,7 +133,7 @@ fn tp(world: &mut World, me: Option<Entity>, who: Option<String>, to: &str) -> O
 fn announce(world: &mut World, text: &str) -> Done {
     let text = chat::escape(text);
     if let Err(why) = chat::check(&text) {
-        return Done::Answer(match why {
+        return Done::Refused(match why {
             ChatRefusal::TooLong => "not announced: over 140 characters".into(),
             _ => "not announced: control characters or markup".into(),
         });
@@ -139,13 +147,14 @@ fn announce(world: &mut World, text: &str) -> Done {
 }
 
 /// Gives `caller` what its command came to: a line to an admin, the console's answer on its
-/// channel, and an invite to the services task, which answers each where it should.
+/// channel, saying whether it was done, and an invite to the services task, which answers each
+/// where it should.
 fn answer(world: &mut World, caller: Caller, done: Done) {
     let services = |world: &World, job| {
         let _ = world.resource::<Services>().0.send(job);
     };
     match (caller, done) {
-        (Caller::Admin(admin), Done::Answer(text)) => {
+        (Caller::Admin(admin), Done::Answer(text) | Done::Refused(text)) => {
             send(world, admin, WorldOut::Chat(ChatOut::System { text }));
         }
         (Caller::Admin(_), Done::Announced(_)) => {}
@@ -155,14 +164,18 @@ fn answer(world: &mut World, caller: Caller, done: Done) {
             }
         }
         (Caller::Console(reply), Done::Answer(text)) => {
-            let _ = reply.send(text);
+            let _ = reply.send(ConsoleReply { ok: true, text });
+        }
+        (Caller::Console(reply), Done::Refused(text)) => {
+            let _ = reply.send(ConsoleReply { ok: false, text });
         }
         (Caller::Console(reply), Done::Announced(n)) => {
-            let _ = reply.send(match n {
+            let text = match n {
                 0 => "announced, but no one is in the game".into(),
                 1 => "announced to the one player in the game".into(),
                 n => format!("announced to the {n} players in the game"),
-            });
+            };
+            let _ = reply.send(ConsoleReply { ok: true, text });
         }
         (Caller::Console(reply), Done::Invite(label)) => {
             services(world, Service::CreateInviteFor { reply, label });
@@ -584,9 +597,25 @@ mod tests {
     // --- The host's console (M4 hosting spec §3.3): an admin with no character.
 
     /// The console's `order`, and the channel its answer comes back on.
-    fn console(order: Command) -> (WorldIn, oneshot::Receiver<String>) {
+    fn console(order: Command) -> (WorldIn, oneshot::Receiver<ConsoleReply>) {
         let (reply, answer) = oneshot::channel();
         (WorldIn::Console { order, reply }, answer)
+    }
+
+    /// The world's answer to the console when the command did what was asked.
+    fn done(text: &str) -> ConsoleReply {
+        ConsoleReply {
+            ok: true,
+            text: text.into(),
+        }
+    }
+
+    /// The world's answer to the console when it refused the command.
+    fn refused(text: &str) -> ConsoleReply {
+        ConsoleReply {
+            ok: false,
+            text: text.into(),
+        }
     }
 
     #[test]
@@ -603,7 +632,7 @@ mod tests {
             reply,
         });
         h.tick(50);
-        assert_eq!(answer.try_recv().unwrap(), "Mai is with Lin");
+        assert_eq!(answer.try_recv().unwrap(), done("Mai is with Lin"));
         assert!(
             h.take(1)
                 .iter()
@@ -623,7 +652,10 @@ mod tests {
             reply,
         });
         h.tick(50);
-        assert!(answer.try_recv().is_ok());
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            done("announced to the one player in the game")
+        );
         assert!(
             h.take(1)
                 .iter()
@@ -635,7 +667,7 @@ mod tests {
             reply,
         });
         h.tick(50);
-        assert!(answer.try_recv().unwrap().contains("Mai"));
+        assert_eq!(answer.try_recv().unwrap(), done("Mai was kicked"));
         assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Kicked)]);
         assert!(h.closed(1));
     }
@@ -649,7 +681,10 @@ mod tests {
         });
         h.push(order);
         h.tick(50);
-        assert_eq!(answer.try_recv().unwrap(), "usage: tp <name> <name>");
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            refused("usage: tp <name> <name>")
+        );
         h.tick(50);
         for c in 1..=3 {
             assert!(h.take(c).is_empty(), "{c}: nobody moved");
@@ -658,6 +693,8 @@ mod tests {
 
     #[test]
     fn the_consoles_answers_go_to_the_console_alone() {
+        // Each is a refusal: nothing the host asked for happened, which the console's `ok` says
+        // (review 1, Minor 2).
         let mut h = admins_world();
         let longest = "a".repeat(141);
         for (order, want) in [
@@ -702,10 +739,34 @@ mod tests {
             let (order, mut answer) = console(order);
             h.push(order);
             h.tick(50);
-            assert_eq!(answer.try_recv().unwrap(), want);
+            assert_eq!(answer.try_recv().unwrap(), refused(want));
         }
         for c in 1..=3 {
             assert!(h.take(c).is_empty(), "{c}: heard the console's answer");
+        }
+    }
+
+    #[test]
+    fn the_console_hears_a_tp_across_scenes_or_of_a_player_loading_refused() {
+        let mut h = admins_world();
+        let elsewhere = Location {
+            scene: SCENE + 1,
+            ..at(0.0, 0.0)
+        };
+        h.enter(player(4, "Kai", elsewhere));
+        h.join(player(5, "Ivy", elsewhere));
+        h.tick(50);
+        for (who, to, want) in [
+            ("Kai", "Ren", "Kai and Ren are in different scenes"),
+            ("Ivy", "Kai", "Ivy is still loading"),
+        ] {
+            let (order, mut answer) = console(Command::Tp {
+                who: Some(who.into()),
+                to: to.into(),
+            });
+            h.push(order);
+            h.tick(50);
+            assert_eq!(answer.try_recv().unwrap(), refused(want));
         }
     }
 
@@ -721,7 +782,7 @@ mod tests {
         h.tick(50);
         assert_eq!(
             answer.try_recv().unwrap(),
-            "announced, but no one is in the game"
+            done("announced, but no one is in the game")
         );
         h.enter(player(1, "Lin", at(0.0, 0.0)));
         let (order, mut answer) = console(Command::Announce {
@@ -731,7 +792,7 @@ mod tests {
         h.tick(50);
         assert_eq!(
             answer.try_recv().unwrap(),
-            "announced to the one player in the game"
+            done("announced to the one player in the game")
         );
         let fish = WorldOut::Chat(ChatOut::Announce {
             text: "Fish &amp; chips &lt;3".into(),
@@ -745,7 +806,7 @@ mod tests {
         h.tick(50);
         assert_eq!(
             answer.try_recv().unwrap(),
-            "announced to the 3 players in the game"
+            done("announced to the 3 players in the game")
         );
         for c in 1..=3 {
             assert_eq!(h.take(c), vec![fish.clone()], "{c}");
@@ -767,8 +828,8 @@ mod tests {
         };
         assert!(jobs.is_empty(), "{jobs:?}");
         assert_eq!(label.as_deref(), Some("for Bob"));
-        reply.send("invite link: X".into()).unwrap();
-        assert_eq!(answer.try_recv().unwrap(), "invite link: X");
+        reply.send(done("invite link: X")).unwrap();
+        assert_eq!(answer.try_recv().unwrap(), done("invite link: X"));
         for c in 1..=3 {
             assert!(h.take(c).is_empty(), "{c}");
         }

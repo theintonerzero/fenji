@@ -246,13 +246,24 @@ fn give_back_to(terminal: &mut impl io::Write) {
 #[cfg(unix)]
 static STDERR: std::sync::Mutex<Option<std::os::fd::OwnedFd>> = std::sync::Mutex::new(None);
 
-/// Points stderr at `/dev/null` while the console holds the terminal: a line a library prints
-/// there, such as the log file's writer's when a day's file can't be made, would draw over the
-/// console. Whatever the console's process logs reaches its pane through the log instead. Where
-/// it can't, stderr stays as it is.
+/// Points stderr at `/dev/null` while the console holds the terminal, if stderr is that terminal:
+/// a line a library prints there, such as the log file's writer's when a day's file can't be made,
+/// would draw over the console. Whatever the console's process logs reaches its pane through the
+/// log instead. A stderr the host sent elsewhere (`2>file`) is left there.
 #[cfg(unix)]
 fn quiet_stderr() {
+    use std::io::IsTerminal;
+    quiet_stderr_when(io::stderr().is_terminal());
+}
+
+/// [`quiet_stderr`], `terminal` saying whether stderr is a terminal. Where stderr can't be pointed
+/// away, it stays as it is.
+#[cfg(unix)]
+fn quiet_stderr_when(terminal: bool) {
     use std::os::fd::AsFd;
+    if !terminal {
+        return;
+    }
     let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") else {
         return;
     };
@@ -480,15 +491,29 @@ mod tests {
         let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
         let stderr = || std::fs::read_link("/proc/self/fd/2").unwrap();
         let before = stderr();
-        quiet_stderr();
+        quiet_stderr_when(true);
         let during = stderr();
         // Twice is harmless, either way.
-        quiet_stderr();
+        quiet_stderr_when(true);
         loud_stderr();
         let after = stderr();
         loud_stderr();
         assert_eq!(during, std::path::Path::new("/dev/null"));
         assert_eq!(after, before);
+        assert_eq!(stderr(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stderr_the_host_sent_elsewhere_is_left_there() {
+        // Review 1, Minor 6: a host's own `2>file`, or a pipe, keeps getting what's written to
+        // stderr; only a terminal's is pointed away.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        let stderr = || std::fs::read_link("/proc/self/fd/2").unwrap();
+        let before = stderr();
+        quiet_stderr_when(false);
+        assert_eq!(stderr(), before);
+        loud_stderr();
         assert_eq!(stderr(), before);
     }
 
