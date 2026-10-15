@@ -1155,13 +1155,706 @@
   line-height: 1.5;
 }
 
-/* A screen that comes with a later task. */
-.placeholder {
-  position: relative;
-  padding: 120px 0 0 250px;
+/* A title with its actions on the right (Servers) or a note on the baseline (Settings). */
+.title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-24);
 }
 
-.placeholder-name {
+.title-row .lede {
+  margin-top: 10px;
+  color: var(--text-prose);
+}
+
+.title-row-baseline {
+  align-items: baseline;
+}
+
+.title-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-20);
+  padding-bottom: 2px;
+}
+
+.title-actions .btn-link {
+  gap: var(--space-8);
+  height: var(--button-secondary-compact-height);
+  padding: 0 var(--space-4);
+}
+
+.title-note {
   color: var(--muted);
   font-size: var(--type-secondary-size);
+}
+
+/* Server rows (DESIGN.md, Server rows): one ink-850 list, rows split by hairlines; the selected
+ * row in ink-800 with an inset outline, and its compact PLAY. */
+.server-list {
+  margin-top: 28px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--rounded-card);
+  background: var(--ink-850);
+}
+
+.server-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-16);
+  padding: 14px 16px;
+  cursor: pointer;
+}
+
+.server-row + .server-row {
+  border-top: 1px solid var(--line);
+}
+
+.server-row:hover {
+  background: var(--ink-800);
+}
+
+.server-row-selected {
+  background: var(--ink-800);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.server-row-selected:first-child {
+  border-radius: 11px 11px 0 0;
+}
+
+.server-row-selected:last-child {
+  border-radius: 0 0 11px 11px;
+}
+
+.server-row-selected:only-child {
+  border-radius: 11px;
+}
+
+.server-tile {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--rounded-control);
+  background: var(--ink-950);
+  color: var(--text-2);
+  font-family: var(--type-display-family);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.server-row-selected .server-tile {
+  color: var(--text);
+}
+
+.server-main {
+  min-width: 0;
+}
+
+.server-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.server-name {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--type-display-family);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: var(--type-display-tracking);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-address {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--type-small-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin-top: 3px;
+  color: var(--text-2);
+  font-size: var(--type-secondary-size);
+}
+
+.server-motd {
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--text-prose);
+  font-size: 14px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-play-compact {
+  width: auto;
+  min-width: 128px;
+  height: 44px;
+  padding: 0 22px;
+  font-size: 15px;
+}
+
+.column-facts {
+  padding: var(--space-16);
+}
+
+.column-facts .facts {
+  margin: 0;
+}
+
+.column-facts .btn-link {
+  gap: 6px;
+  margin-top: 14px;
+  font-size: var(--type-secondary-size);
+}
+
+/* The column's last action, above the launcher's version. */
+.column-end {
+  margin-top: auto;
+}
+
+.column-end + .column-foot {
+  margin-top: -8px;
+}
+
+.remove {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: var(--type-secondary-size);
+  font-weight: 600;
+}
+
+.remove:hover {
+  color: var(--text);
+}
+
+/* The update dialog (the Update board). */
+.dialog-subtitle {
+  font-size: var(--type-body-size);
+  font-weight: 600;
+}
+
+.dialog-bullets {
+  gap: 10px;
+  line-height: 1.5;
+}
+
+.dialog-bullets li::before {
+  margin-top: 9px;
+}
+
+.signed {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin-top: var(--space-20);
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+  line-height: 1.5;
+}
+
+.signed > .icon {
+  flex: none;
+}
+
+/* The Client tab's hero is a little wider: two cards side by side (the ClientSetup board). */
+.hero-wide {
+  max-width: 812px;
+}
+
+.hero-wide > .lede {
+  margin-top: 14px;
+}
+
+/* Setting up sits higher, as Welcome does, so the cards and the line under them fit. */
+.hero-setup {
+  padding-top: 96px;
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-16);
+  margin-top: 28px;
+}
+
+.choice {
+  display: flex;
+  flex-direction: column;
+}
+
+.choice-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+.choice-tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--rounded-control);
+  background: var(--ink-800);
+  color: var(--gold-300);
+}
+
+.choice-title {
+  font-size: var(--type-title-size);
+  font-weight: var(--type-title-weight);
+  line-height: var(--type-title-line-height);
+}
+
+.choice-text,
+.choice .icon-line {
+  margin-top: 14px;
+  color: var(--text-2);
+  font-size: var(--type-secondary-size);
+  line-height: 1.55;
+}
+
+.choice .icon-line {
+  margin-top: var(--space-12);
+  gap: 10px;
+}
+
+.choice-why {
+  color: var(--muted);
+}
+
+.choice-folder {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.choice-folder .path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.choice-change {
+  margin-left: auto;
+  text-decoration: none;
+}
+
+.choice-foot {
+  margin-top: auto;
+  padding-top: var(--space-20);
+}
+
+.choice-foot .btn {
+  width: 100%;
+  min-width: 0;
+}
+
+.path {
+  font-size: var(--type-mono-size);
+}
+
+.manual {
+  margin-top: var(--space-16);
+}
+
+.manual .btn-link {
+  font-size: var(--type-secondary-size);
+}
+
+.command-line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-12);
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--rounded-control);
+  background: var(--ink-950);
+}
+
+.command-line code {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* Downloading: the Steam sign-in stays in DepotDownloader. */
+.steam-card {
+  display: flex;
+  gap: var(--space-16);
+  margin-top: 28px;
+  border-color: var(--line-strong);
+}
+
+.steam-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--rounded-dot);
+  background: var(--info-tint);
+  color: var(--info);
+}
+
+.steam-title {
+  font-size: var(--type-title-size);
+  font-weight: var(--type-title-weight);
+  line-height: 1.35;
+}
+
+.steam-text {
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: var(--type-secondary-size);
+  line-height: 1.55;
+}
+
+.hero > .actions + div > .meta,
+.hero > .actions + div > .meta + .meta {
+  margin-top: var(--space-16);
+}
+
+.hero > .actions + div > .meta + .meta {
+  margin-top: var(--space-8);
+}
+
+/* Almost ready: the check's counts, and each file with its problem (the Repair board). */
+.results {
+  margin-top: var(--space-24);
+  padding: 0;
+  overflow: hidden;
+}
+
+.results-counts {
+  display: flex;
+  gap: 28px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.results-counts p {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: var(--type-body-size);
+}
+
+.results-counts strong {
+  font-weight: 600;
+}
+
+.results-files {
+  max-height: 176px;
+  overflow-y: auto;
+}
+
+.results table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.results th {
+  padding: 12px 20px 6px;
+  color: var(--muted);
+  font-size: var(--type-small-size);
+  font-weight: 600;
+  text-align: left;
+}
+
+.results th:first-child {
+  width: 56%;
+}
+
+.results td {
+  padding: 8px 20px 16px;
+  vertical-align: top;
+}
+
+.results td.mono {
+  font-size: var(--type-secondary-size);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.problem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--warn);
+  font-size: var(--type-secondary-size);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.problem > .icon {
+  flex: none;
+}
+
+.problem-detail {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--type-small-size);
+  line-height: 1.5;
+}
+
+.results + .actions {
+  margin-top: 28px;
+}
+
+.repair-note {
+  margin-top: var(--space-12);
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+  line-height: 1.55;
+}
+
+.gameforge {
+  display: flex;
+  gap: 10px;
+  margin-top: var(--space-16);
+  padding-top: var(--space-16);
+  border-top: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: var(--type-secondary-size);
+  line-height: 1.55;
+}
+
+.gameforge > .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--info);
+}
+
+/* Settings (the Settings board): two columns of cards, 20 px apart. */
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+  gap: var(--space-20);
+  margin-top: var(--space-20);
+}
+
+.settings-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-20);
+}
+
+.settings-column > div:empty {
+  display: none;
+}
+
+.settings-card .card-title {
+  margin-bottom: 14px;
+}
+
+.settings-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.settings-card .input {
+  padding: 0 12px;
+}
+
+.settings-fact {
+  margin-top: 14px;
+}
+
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: var(--space-16);
+}
+
+.settings-check .hint {
+  margin-top: 0;
+  line-height: 1.45;
+}
+
+.settings-lede {
+  margin: -8px 0 var(--space-16);
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+  line-height: 1.5;
+}
+
+.settings-card .field-label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.settings-path {
+  margin-bottom: 14px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.settings-language {
+  margin-top: 18px;
+  color: var(--text-2);
+}
+
+/* The switch (DESIGN.md, Switch): a 40 x 24 track, gold-300 when on, an ink-950 18 px knob, over
+ * a real checkbox with role="switch". */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-16);
+  cursor: pointer;
+}
+
+.switch-label {
+  display: block;
+  font-size: var(--type-body-size);
+  font-weight: 500;
+}
+
+.switch-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+}
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+}
+
+.switch-input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switch-track {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--field-line);
+  border-radius: var(--switch-on-radius);
+  background: var(--ink-800);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--rounded-dot);
+  background: var(--muted);
+}
+
+.switch-input:checked + .switch-track {
+  border-color: var(--switch-on-bg);
+  background: var(--switch-on-bg);
+}
+
+.switch-input:checked + .switch-track .switch-knob {
+  left: 18px;
+  background: var(--ink-950);
+}
+
+.switch-input:focus-visible + .switch-track {
+  outline: 2px solid var(--ember-500);
+  outline-offset: 2px;
+}
+
+.about-version {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.about-version .muted,
+.muted {
+  color: var(--muted);
+}
+
+.column section > .btn-link {
+  gap: 6px;
+  margin-top: var(--space-12);
+  font-size: var(--type-secondary-size);
+}
+
+.telemetry {
+  padding: var(--space-16);
+}
+
+.telemetry-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.telemetry-title > .icon {
+  flex: none;
+  margin-top: 1px;
+}
+
+.telemetry-link {
+  margin: var(--space-8) 0 0 26px;
+  font-size: var(--type-secondary-size);
+}
+
+.telemetry-link .inline-link {
+  font-weight: 400;
 }
