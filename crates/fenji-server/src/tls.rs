@@ -195,7 +195,20 @@ fn temporary_beside(path: &Path) -> anyhow::Result<PathBuf> {
 /// that finds the files there, another first start's made meanwhile, loads those instead, and two
 /// starts never serve two keys. A crash between the two links leaves the key without its
 /// certificate, which the next start refuses, as it refuses any key without its certificate.
+/// Where links can't be made (FAT32 and exFAT drives, some network shares), each file is written
+/// in place instead, as a new file, which never replaces one either (Ruling HP10); there a crash
+/// can also leave a file cut short, which the next start refuses as one that doesn't parse.
 fn make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
+    make_with(dir, public_host, |from, to| std::fs::hard_link(from, to))
+}
+
+/// [`make`], linking each file into place with `link`: [`std::fs::hard_link`], but in tests of the
+/// folders where links can't be made.
+fn make_with(
+    dir: &Path,
+    public_host: &str,
+    link: impl Fn(&Path, &Path) -> io::Result<()>,
+) -> anyhow::Result<ServerKey> {
     crate::config::private_folder(dir)
         .with_context(|| format!("can't make the key's folder {}", dir.display()))?;
     owner_only(dir)?;
@@ -222,26 +235,21 @@ fn make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
     for stale in [key_new, cert_new] {
         let _ = std::fs::remove_file(stale);
     }
-    write_file(key_new, key.serialize_pem().as_bytes(), true)?;
-    write_file(cert_new, cert.pem().as_bytes(), false)?;
-    for (from, to) in [(key_new, &key_path), (cert_new, &cert_path)] {
-        match std::fs::hard_link(from, to) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                tracing::info!(
-                    "found the server's key made meanwhile in {}: serving that one",
-                    dir.display()
-                );
-                return load(&key_path, &cert_path);
-            }
-            Err(e) => {
-                let e = anyhow::Error::new(e);
-                return Err(e.context(format!(
-                    "can't link {} to {}",
-                    from.display(),
-                    to.display()
-                )));
-            }
+    let (key_pem, cert_pem) = (key.serialize_pem(), cert.pem());
+    let files = [
+        (key_new, &key_path, key_pem.as_bytes(), true),
+        (cert_new, &cert_path, cert_pem.as_bytes(), false),
+    ];
+    for (new, _, bytes, private) in files {
+        write_file(new, bytes, private)?;
+    }
+    for (new, path, bytes, private) in files {
+        if !put(new, path, bytes, private, &link)? {
+            tracing::info!(
+                "found the server's key made meanwhile in {}: serving that one",
+                dir.display()
+            );
+            return load(&key_path, &cert_path);
         }
     }
     drop(own);
@@ -253,6 +261,40 @@ fn make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
         dir.display()
     );
     Ok(made)
+}
+
+/// Puts the file written whole at `new`, this start's own name for it, at `path`, unless a file is
+/// there already: false then. By a link, which never replaces a file; or, when the link fails for
+/// any other reason, as where links can't be made, by writing `bytes` to `path` as a new file,
+/// which never replaces one either.
+fn put(
+    new: &Path,
+    path: &Path,
+    bytes: &[u8],
+    private: bool,
+    link: &impl Fn(&Path, &Path) -> io::Result<()>,
+) -> anyhow::Result<bool> {
+    let unlinked = match link(new, path) {
+        Ok(()) => return Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => e,
+    };
+    tracing::debug!(
+        error = %unlinked,
+        "can't link {} to {}: writing it in place",
+        new.display(),
+        path.display()
+    );
+    match write_file(path, bytes, private) {
+        Ok(()) => Ok(true),
+        Err(e)
+            if e.downcast_ref::<io::Error>()
+                .is_some_and(|e| e.kind() == io::ErrorKind::AlreadyExists) =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Writes `bytes` to `path` as a new file, owner-only (0600) on Unix when `private`, from the
@@ -619,6 +661,53 @@ mod tests {
         let first = ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
         let key = std::fs::read(dir.as_path().join(KEY_FILE)).unwrap();
         let second = make(dir.as_path(), "127.0.0.1").unwrap();
+        assert_eq!(second.pin, first.pin);
+        assert_eq!(std::fs::read(dir.as_path().join(KEY_FILE)).unwrap(), key);
+        assert_eq!(
+            names(dir.as_path()),
+            ["cert.pem", "key.pem"],
+            "no file left over"
+        );
+    }
+
+    /// A link that fails with `kind`, as in the folders that can't hold links: FAT32 and exFAT
+    /// drives, and some network shares.
+    fn no_links(kind: io::ErrorKind) -> impl Fn(&Path, &Path) -> io::Result<()> {
+        move |_, _| Err(io::Error::new(kind, "this folder can't hold links"))
+    }
+
+    #[test]
+    fn where_links_cant_be_made_the_files_are_written_in_place() {
+        // Ruling HP10. Linux's FAT drivers say a link isn't permitted; macOS's, Windows' and
+        // network shares say it isn't supported.
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Unsupported] {
+            let (_root, dir) = key_dir();
+            let made = make_with(dir.as_path(), "127.0.0.1", no_links(kind)).unwrap();
+            assert_eq!(
+                names(dir.as_path()),
+                ["cert.pem", "key.pem"],
+                "no file left over"
+            );
+            let again = ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
+            assert_eq!(again.pin, made.pin, "{kind:?}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let key = std::fs::metadata(dir.as_path().join(KEY_FILE)).unwrap();
+                assert_eq!(key.permissions().mode() & 0o777, 0o600, "{kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn where_links_cant_be_made_a_key_made_meanwhile_is_still_never_replaced() {
+        // Written in place, each file is still made new: a start that finds the files another
+        // start made loads those, as when it links.
+        let (_root, dir) = key_dir();
+        let first = ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
+        let key = std::fs::read(dir.as_path().join(KEY_FILE)).unwrap();
+        let no_links = no_links(io::ErrorKind::PermissionDenied);
+        let second = make_with(dir.as_path(), "127.0.0.1", no_links).unwrap();
         assert_eq!(second.pin, first.pin);
         assert_eq!(std::fs::read(dir.as_path().join(KEY_FILE)).unwrap(), key);
         assert_eq!(
