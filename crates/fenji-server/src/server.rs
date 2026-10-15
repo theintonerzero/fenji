@@ -99,22 +99,27 @@ impl RunningServer {
     }
 }
 
-/// Makes the data folder if it's missing, opens the store, binds both listeners (port 0 takes a
-/// free port) and starts serving.
+/// Opens the configured store, making its folder, the data folder, if it's missing (owner-only on
+/// Unix): `init` writes a config without that folder, and SQLite makes no folders. The server's
+/// start and the admin commands both open it so, whichever runs first.
+pub async fn open_store(cfg: &Config) -> anyhow::Result<Store> {
+    if let Some(data) = cfg.store.path.parent() {
+        config::private_folder(data)
+            .with_context(|| format!("can't make the data folder {}", data.display()))?;
+    }
+    Store::open(&cfg.store.path)
+        .await
+        .with_context(|| format!("opening {}", cfg.store.path.display()))
+}
+
+/// Opens the store ([`open_store`]), binds both listeners (port 0 takes a free port) and starts
+/// serving.
 pub async fn start(
     cfg: &Config,
     clock: Arc<dyn Clock>,
     limits: GateLimits,
 ) -> anyhow::Result<RunningServer> {
-    // The data folder is the database's. `init` writes a config without it, and SQLite makes no
-    // folders.
-    if let Some(data) = cfg.store.path.parent() {
-        config::private_folder(data)
-            .with_context(|| format!("can't make the data folder {}", data.display()))?;
-    }
-    let store = Store::open(&cfg.store.path)
-        .await
-        .with_context(|| format!("opening {}", cfg.store.path.display()))?;
+    let store = open_store(cfg).await?;
     let world = world::start(
         Rules::from_config(cfg),
         store.clone(),

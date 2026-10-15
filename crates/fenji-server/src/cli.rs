@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use fenji_store::Store;
 
 use crate::clock::{Clock, Utc};
 use crate::config::Config;
@@ -122,7 +121,7 @@ pub async fn admin(
     out: &mut dyn Write,
     clock: &dyn Clock,
 ) -> anyhow::Result<()> {
-    let store = Store::open(&cfg.store.path).await?;
+    let store = crate::server::open_store(cfg).await?;
     let now = clock.now_ms();
     match cmd {
         Command::Run => anyhow::bail!("`run` isn't an admin command"),

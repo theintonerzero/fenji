@@ -283,6 +283,48 @@ fn init_writes_the_template_here_or_at_the_config_path_and_never_over_a_file() {
     );
 }
 
+#[test]
+fn invite_create_right_after_init_makes_the_data_folder() {
+    // A VPS host makes the first invite before the service first starts.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fenji.toml");
+    let p = path.to_str().unwrap();
+    let out = fenji_server_in(dir.path(), &["--config", p, "init"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = fenji_server_in(dir.path(), &["--config", p, "invite", "create"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("code: "));
+    let names = |d: &Path| {
+        let mut n: Vec<String> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        n.sort();
+        n
+    };
+    assert_eq!(names(dir.path()), ["data", "fenji.toml"], "nothing else");
+    let data = dir.path().join("data");
+    let db = names(&data);
+    assert!(
+        db.iter().all(|n| n.starts_with("fenji.db")) && db.contains(&"fenji.db".into()),
+        "the database alone: {db:?}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&data).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "data/ is owner-only");
+    }
+}
+
 #[tokio::test]
 async fn invite_create_refuses_the_labels_invite_refuses_and_stores_nothing() {
     let dir = tempfile::tempdir().unwrap();
