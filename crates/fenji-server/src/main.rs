@@ -5,16 +5,13 @@ use clap::Parser;
 use fenji_server::cli::{Cli, Command, admin};
 use fenji_server::clock::SystemClock;
 use fenji_server::config::{self, Config};
-use tracing_subscriber::EnvFilter;
+use fenji_server::console;
+use fenji_server::console::log::Sink;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    // The log goes to stderr, which systemd's journal keeps (M4 hosting spec §3.4).
+    console::log::init(&[Sink::Stderr])?;
     let cli = Cli::parse();
     let given = cli.config.as_deref();
     let path = given.unwrap_or(Path::new(config::DEFAULT_PATH));
