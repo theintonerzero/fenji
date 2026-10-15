@@ -935,6 +935,7 @@ dependencies = [
  "anyhow",
  "clap",
  "fenji-auth",
+ "rcgen",
  "reqwest",
  "rustls",
  "serde",
@@ -943,6 +944,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

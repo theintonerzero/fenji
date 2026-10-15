@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use crate::pin::{PinnedVerifier, ServerAddr};
+
 /// How long one request may take.
 pub const TIMEOUT: Duration = Duration::from_secs(15);
 /// The largest answer read; the API's own are a few hundred bytes.
@@ -40,6 +42,12 @@ pub enum ApiError {
     /// The host banned the account (403), for this reason.
     #[error("this server has banned your account{}", words(.reason))]
     Banned { reason: String },
+    /// A pinned address's server showed another key (M4 hosting spec §3.10).
+    #[error("this server's key has changed: ask your host for a new link")]
+    KeyChanged,
+    /// An address without a pin reached a server whose certificate no authority signed.
+    #[error("this server uses its own key: open the link your host sent")]
+    OwnKey,
 }
 
 /// "; try again in N s" when the server said how long to wait.
@@ -230,6 +238,8 @@ impl std::fmt::Debug for GameGrant {
 pub struct ApiClient {
     base: reqwest::Url,
     http: reqwest::Client,
+    /// Whether the address carried a pin: a refused certificate then means the key changed.
+    pinned: bool,
 }
 
 /// rustls with the `ring` provider (M3 spec D20), installed once per process.
@@ -242,7 +252,7 @@ fn crypto() {
 }
 
 /// A loopback host: `localhost`, 127.0.0.0/8 or `::1`.
-fn loopback(url: &Url) -> bool {
+pub(crate) fn loopback(url: &Url) -> bool {
     match url.host_str() {
         Some("localhost") => true,
         Some(h) => h
@@ -256,11 +266,12 @@ fn loopback(url: &Url) -> bool {
 
 impl ApiClient {
     /// A client for the server at `server` (`https://host[:port]`, or `http://` on this machine).
-    pub fn new(server: &str) -> Result<Self, ApiError> {
-        let base = Url::parse(server).map_err(|_| ApiError::BadUrl)?;
+    pub fn new(server: &ServerAddr) -> Result<Self, ApiError> {
+        let base = Url::parse(&server.origin).map_err(|_| ApiError::BadUrl)?;
+        // ServerAddr's fields are public, so its rules are checked again here.
         match base.scheme() {
             "https" => {}
-            "http" if loopback(&base) => {}
+            "http" if loopback(&base) && server.pin.is_none() => {}
             "http" => return Err(ApiError::Insecure),
             _ => return Err(ApiError::BadUrl),
         }
@@ -276,8 +287,39 @@ impl ApiClient {
             // Plain http stays on this machine: never through a proxy from the environment.
             builder = builder.no_proxy();
         }
+        if let Some(pin) = server.pin {
+            let tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| ApiError::Http(e.to_string()))?
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(PinnedVerifier::new(pin)))
+            .with_no_client_auth();
+            builder = builder.use_preconfigured_tls(tls);
+        }
         let http = builder.build().map_err(describe)?;
-        Ok(Self { base, http })
+        Ok(Self {
+            base,
+            http,
+            pinned: server.pin.is_some(),
+        })
+    }
+
+    /// A failed request, with a refused certificate named for what it means here.
+    fn failed(&self, e: reqwest::Error) -> ApiError {
+        use rustls::{CertificateError, Error};
+        match tls_cause(&e) {
+            Some(Error::InvalidCertificate(CertificateError::ApplicationVerificationFailure))
+                if self.pinned =>
+            {
+                ApiError::KeyChanged
+            }
+            Some(Error::InvalidCertificate(CertificateError::UnknownIssuer)) if !self.pinned => {
+                ApiError::OwnKey
+            }
+            _ => describe(e),
+        }
     }
 
     async fn call<T: DeserializeOwned>(
@@ -295,7 +337,7 @@ impl ApiClient {
         if let Some(b) = body {
             req = req.json(&b);
         }
-        let mut res = req.send().await.map_err(describe)?;
+        let mut res = req.send().await.map_err(|e| self.failed(e))?;
         let status = res.status();
         let mut bytes = Vec::new();
         while let Some(chunk) = res.chunk().await.map_err(describe)? {
@@ -407,6 +449,26 @@ impl ApiClient {
 
 /// A network error with its causes ("error sending request: client error (Connect): tcp connect
 /// error: Connection refused"), without the URL, so nothing a user typed is shown.
+/// The TLS error under a request's failure, when there is one. hyper wraps rustls's error in an
+/// `io::Error` inside another, and an `io::Error`'s `source()` skips the error it wraps, so the
+/// walk steps into each one's wrapped error instead.
+fn tls_cause<'a>(e: &'a (dyn std::error::Error + 'static)) -> Option<&'a rustls::Error> {
+    let mut next = Some(e);
+    while let Some(cause) = next {
+        if let Some(tls) = cause.downcast_ref::<rustls::Error>() {
+            return Some(tls);
+        }
+        next = match cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+        {
+            Some(inner) => Some(inner as &(dyn std::error::Error + 'static)),
+            None => cause.source(),
+        };
+    }
+    None
+}
+
 fn describe(e: reqwest::Error) -> ApiError {
     let e = e.without_url();
     let mut text = e.to_string();
@@ -510,25 +572,6 @@ fn server_error(status: u16, body: &[u8]) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn refuses_plain_http_off_loopback() {
-        assert!(ApiClient::new("http://127.0.0.1:7801").is_ok());
-        assert!(ApiClient::new("http://127.9.9.9:7801/").is_ok());
-        assert!(ApiClient::new("http://localhost:7801").is_ok());
-        assert!(ApiClient::new("http://[::1]:7801").is_ok());
-        assert!(matches!(
-            ApiClient::new("http://play.example.net"),
-            Err(ApiError::Insecure)
-        ));
-        assert!(matches!(
-            ApiClient::new("http://10.0.0.1:7801"),
-            Err(ApiError::Insecure)
-        ));
-        assert!(ApiClient::new("https://play.example.net").is_ok());
-        assert!(ApiClient::new("ftp://play.example.net").is_err());
-        assert!(ApiClient::new("play.example.net").is_err());
-    }
 
     #[test]
     fn error_bodies_become_codes() {

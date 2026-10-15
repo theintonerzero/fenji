@@ -6,6 +6,7 @@ pub mod invite_link;
 pub mod launch;
 pub mod login_path;
 pub mod manifest;
+pub mod pin;
 pub mod settings;
 pub mod start;
 pub mod verify;

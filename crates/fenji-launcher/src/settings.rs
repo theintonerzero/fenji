@@ -10,6 +10,9 @@ pub struct Settings {
     pub server: Option<String>,
     pub username: Option<String>,
     pub client: Option<PathBuf>,
+    /// The server's pin, from its link (M4 hosting spec §3.10); files from before it load as None.
+    #[serde(default)]
+    pub pin: Option<String>,
 }
 
 const FILE: &str = "settings.json";
@@ -180,10 +183,26 @@ mod tests {
             server: Some("https://play.example.net".into()),
             username: Some("tester".into()),
             client: Some("/games/solo".into()),
+            pin: Some("A".repeat(43)),
         };
         s.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir).unwrap(), s);
         let text = std::fs::read_to_string(dir.join(FILE)).unwrap();
         assert!(!text.contains("password") && !text.contains("token"));
+    }
+
+    #[test]
+    fn a_settings_file_from_before_pins_still_loads() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join(FILE),
+            br#"{"server":"https://play.example.net","username":"tester","client":null}"#,
+        )
+        .unwrap();
+        let s = Settings::load(d.path()).unwrap();
+        assert_eq!(
+            (s.server.as_deref(), s.pin),
+            (Some("https://play.example.net"), None)
+        );
     }
 }
