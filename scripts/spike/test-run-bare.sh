@@ -167,8 +167,13 @@ case " ${got[*]} " in
   *) bad "namespace with XDG_CACHE_HOME: ${got[*]}" ;;
 esac
 mapfile -t got < <(namespace_env 99)
-want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:99)
-if [ "${got[*]}" = "${want[*]}" ]; then ok "inside: no session bus, no agents, no Wayland, no password"; else bad "env: ${got[*]}"; fi
+want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD
+  -u FENJI_LOGIN_BIND -u FENJI_API_BIND DISPLAY=:99)
+if [ "${got[*]}" = "${want[*]}" ]; then
+  ok "inside: no session bus, no agents, no Wayland, no password, and the server's binds its config's"
+else
+  bad "env: ${got[*]}"
+fi
 mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/home2 namespace_cmd 99)
 mapfile -t got < <(watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242 "${ns[@]}")
 want=(python3 -I "$WATCHDOG" watch --root "$WORK" --prefix "$WORK/compat" --out "$TESTROOT/out" --sandbox-pid 4242
@@ -240,7 +245,8 @@ case " ${got[*]} " in
   *) bad "desktop watch: ${got[*]}" ;;
 esac
 mapfile -t got < <(namespace_env 0 "$TESTROOT/xauth")
-want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:0 XAUTHORITY="$TESTROOT/xauth")
+want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD
+  -u FENJI_LOGIN_BIND -u FENJI_API_BIND DISPLAY=:0 XAUTHORITY="$TESTROOT/xauth")
 if [ "${got[*]}" = "${want[*]}" ]; then ok "inside a desktop run: the session's display and its auth file"; else bad "desktop env: ${got[*]}"; fi
 inputs=(stale)
 bare_inputs 1 "$TESTROOT/out" 0 60
@@ -982,7 +988,9 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && command -v bwrap > /dev/null 
   mapfile -t ne < <(namespace_env 99)
   bpf=$(seccomp_filter)
   # shellcheck disable=SC2016 # the probe expands its own variables, inside
-  probe=$("${ns[@]}" "${ne[@]}" sh -c '
+  # Binds in the environment that would move the server off its config's 127.0.0.1 (Ruling HP7)
+  # must not reach it.
+  probe=$(FENJI_LOGIN_BIND=0.0.0.0:7800 FENJI_API_BIND=0.0.0.0:7801 "${ns[@]}" "${ne[@]}" sh -c '
     [ -e /run/dbus/system_bus_socket ] || echo "no system bus"
     [ -e /run/systemd/resolve/io.systemd.Resolve ] || echo "no resolver socket"
     [ -e "$XDG_RUNTIME_DIR/bus" ] || echo "no session bus"
@@ -991,8 +999,9 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && command -v bwrap > /dev/null 
     [ "$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d " ")" = lo ] && echo "loopback only"
     getent hosts example.org > /dev/null || echo "no name lookups"
     python3 -I -c "import ctypes,sys; c=ctypes.CDLL(None, use_errno=True); r=c.syscall(248, None, None, None, 0, -3); sys.exit(0 if r == -1 and ctypes.get_errno() == 1 else 1)" && echo "no key requests"
+    [ -z "${FENJI_LOGIN_BIND+set}${FENJI_API_BIND+set}" ] && echo "no bind overrides"
   ' 7< <(printf '%b' "$bpf") 2>&1)
-  for want in "no system bus" "no resolver socket" "no session bus" "empty /dev/shm" "the display" "loopback only" "no name lookups" "no key requests"; do
+  for want in "no system bus" "no resolver socket" "no session bus" "empty /dev/shm" "the display" "loopback only" "no name lookups" "no key requests" "no bind overrides"; do
     if grep -qx "$want" <<< "$probe"; then ok "inside the namespace: $want"; else bad "inside the namespace: $want missing ($probe)"; fi
   done
 elif [ "${FENJI_REQUIRE_LIVE_PROBES:-}" = 1 ]; then
