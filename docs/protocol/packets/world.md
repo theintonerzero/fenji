@@ -233,7 +233,7 @@ What Fenji puts in the player's own blob, in index order. Types and defaults are
 | 9 | 1 | 100670202 | 100670207 | — | 100670222 | 83886287 |
 | 9 | 2 | 100665874 | 100665876 | 100665880 | 100665882 | 83886287 |
 
-The item ids are documented interoperability data, by the owner's decision of 2026-10-13 (the M4 world spec §3.2, #180): a host's server can't read the client's compressed tables, so Fenji ships these ids.
+The item ids are documented interoperability data, by the owner's decision of 2026-10-13 (the M4 world spec §3.2, #180): M4's server reads no game data, so Fenji ships these ids. Since #284 the open decoder `fenji-oodle` reads the client's compressed tables, so a server could take them from the host's own copy; that loader is M5's (#180).
 
 ## 10. Closing a player's connection
 
