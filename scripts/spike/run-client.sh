@@ -815,6 +815,7 @@ start_inputs() {
       [ "$n" = 1 ] || label="2@"
       python3 -I "$HERE/xclick.py" --display ":$d" "${xy%,*}" "${xy#*,}" 2>>"$out/click.err" &&
         echo "$(date -Is) click $label$t:$xy" >> "$out/clicks.log"
+      shot_after "$out" "$d" "$label${t}s-click"
     done < <(click_plan)
   ) &
   clicker=$!
@@ -831,6 +832,18 @@ start_inputs() {
       sl=$((start + t - now))
       [ "$sl" -le 0 ] || sleep "$sl"
       [ -e "$out/.running" ] || break
+      if [ "$kind" = type ] && [ "$what" = @password ]; then
+        # The account's password, from the run's password file through xkey.py's --type-file
+        # (launcher Task 16): never on a command line, and logged by name only.
+        if [ -n "${type_secret:-}" ]; then
+          python3 -I "$HERE/xkey.py" --display ":$d" "--type-file=$type_secret" 2>>"$out/keys.err" &&
+            echo "$(date -Is) type $label$t:@password" >> "$out/keys.log"
+          shot_after "$out" "$d" "$label${t}s-type"
+        else
+          echo "$(date -Is) type $label$t:@password skipped: this run has no password file to type" >> "$out/keys.err"
+        fi
+        continue
+      fi
       if [ "$kind" = key ] && [[ $what == */* ]]; then
         # A held key goes on by itself, so the presses after it go when they are due. Its hold ends
         # by the timeout (check_presses); xkey.py lets go of the key if it is stopped first.
@@ -843,9 +856,22 @@ start_inputs() {
       fi
       python3 -I "$HERE/xkey.py" --display ":$d" "--$kind=$what" 2>>"$out/keys.err" &&
         echo "$(date -Is) $kind $label$t:$what" >> "$out/keys.log"
+      shot_after "$out" "$d" "$label${t}s-$kind"
     done
   ) &
   typist=$!
+}
+
+# A screenshot of display D 2 s after an input, as step-NAME.png, when the run asks for one after
+# every input (shot_after_inputs; run-bare.sh's --launcher-app). In the background, so later inputs
+# go when they are due.
+shot_after() {
+  [ -n "${shot_after_inputs:-}" ] || return 0
+  (
+    sleep 2
+    [ -e "$1/.running" ] || exit 0
+    import -display ":$2" -window root "$1/step-$3.png" 2>>"$1/screenshot.err" || true
+  ) &
 }
 
 # After a run: the evidence, best effort (a failure there is reported but never changes the verdict:

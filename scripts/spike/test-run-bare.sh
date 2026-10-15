@@ -82,7 +82,7 @@ NESTED=(--display 98)
 
 # --- arguments
 says 2 "" "run with no name is a usage error" -- cmd_bare_run
-says 2 "" "an unknown option is a usage error" -- cmd_bare_run t --print
+says 2 "" "an unknown option is a usage error" -- cmd_bare_run t --no-such-option
 says 1 "bad run name" "a run name with a slash is refused" -- cmd_bare_run ../t "${GOOD[@]}"
 says 2 "--server is required" "a run needs a local fenji-server" -- cmd_bare_run t --server-data "$WORK/data" --username tester --password-file "$TESTROOT/password"
 says 2 "--server-data is required" "a run needs the server's store folder" -- cmd_bare_run t --server "$TESTROOT/fenji.toml" --username tester --password-file "$TESTROOT/password"
@@ -114,6 +114,67 @@ says 1 "umu-run not found" "good arguments reach the guards, which stop at a mis
 else
   echo "skip the guard tests: they need Linux"
 fi
+
+# --- the desktop launcher in place of fenji-launch (launcher Task 16)
+APP=$TESTROOT/Fenji_0.5.0_amd64.AppImage
+printf '#!/bin/sh\n' > "$APP"
+chmod +x "$APP"
+says 2 "--launcher-app" "a launcher run is one launcher, never --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --launcher-app "$APP" --clients 2
+says 2 "--launcher-app" "a missing AppImage is refused" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --launcher-app "$TESTROOT/none.AppImage"
+says 2 "--launcher-app" "an AppImage that can't run is refused" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --launcher-app "$TESTROOT/password"
+plan=$(cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --launcher-app "$APP" --print 2>&1)
+rc=$?
+mapfile -t got <<< "$plan"
+has_line() { local l; for l in "${got[@]}"; do [ "$l" = "$1" ] && return 0; done; return 1; }
+binds_prefix() {
+  local i
+  for ((i = 0; i + 2 < ${#got[@]}; i++)); do
+    [ "${got[i]}" = --bind ] && [ "${got[i + 1]}" = "$WORK/compat" ] &&
+      [ "${got[i + 2]}" = "$WORK/runs/t/data/fenji-launcher/prefix" ] && return 0
+  done
+  return 1
+}
+if [ "$rc" = 0 ] && has_line "XDG_DATA_HOME=$WORK/runs/t/data" && has_line "XDG_CONFIG_HOME=$WORK/runs/t/config" &&
+  has_line "PROTONPATH=$PROTON" && has_line "$WORK/runs/t/launcher/AppRun" && binds_prefix &&
+  ! grep -q "a long password" <<< "$plan"; then
+  ok "--print plans the launcher in the run's own data folder, on the dedicated prefix, with GE-Proton, and no password"
+else
+  bad "--print's launcher plan (exit $rc): $plan"
+fi
+plan=$(cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --print 2>&1)
+rc=$?
+if [ "$rc" = 0 ] && grep -qxF -- "$STUBBIN/fenji-launch" <<< "$plan" && grep -qx play <<< "$plan" &&
+  grep -qxF -- "$TESTROOT/password" <<< "$plan" &&
+  ! grep -q "a long password" <<< "$plan" && [ ! -e "$WORK/runs/t" ]; then
+  ok "--print plans fenji-launch with the password file's name, not its words, and starts nothing"
+else
+  bad "--print's fenji-launch plan (exit $rc): $plan"
+fi
+
+# --- @password: the typist types --password-file's first line through xkey.py's --type-file, so
+# the password is never on a command line and never in keys.log.
+(
+  K=$TESTROOT/typist
+  mkdir -p "$K/here" "$K/out"
+  cat > "$K/here/xkey.py" <<'PY'
+import os, sys
+with open(os.environ["KEYLOG"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+PY
+  touch "$K/out/.running"
+  export KEYLOG=$K/keys
+  # shellcheck disable=SC2034 # start_inputs reads these from its caller
+  type_secret=$TESTROOT/password presses=("1:type:0:@password" "1:type:0:lin_yue") clicks=() clicks2=() display2=""
+  HERE=$K/here start_inputs "$K/out" 98 1
+  wait "$typist" "$clicker" "$shots" 2> /dev/null
+  want=$(printf '%s\n' "--display :98 --type-file=$TESTROOT/password" "--display :98 --type=lin_yue")
+  if [ "$(cat "$K/keys")" = "$want" ] && ! grep -q "a long password" "$K/keys" "$K/out/keys.log" &&
+    grep -q "type 0:@password" "$K/out/keys.log"; then
+    ok "@password is typed from the password file through --type-file, and logged by name"
+  else
+    bad "@password: $(cat "$K/keys" "$K/out/keys.log" 2> /dev/null)"
+  fi
+)
 
 # --- the pinned copy: never a link, never holding one, never in a Steam library
 mkdir -p "$TESTROOT/pinned/bin64" "$TESTROOT/home/.steam/steam/steamapps/common/SoLO/bin64"
