@@ -53,7 +53,7 @@ The repository is set up for Claude Code (`CLAUDE.md`, `.claude/`, `.mcp.json`).
 
 ## Licence of contributions
 
-Fenji is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE). By contributing, you agree that your contribution is licensed under the same terms, and you confirm that you have the right to submit it.
+Fenji is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE). By contributing, you agree that your contribution is licensed under the same terms, and you confirm that you have the right to submit it. A contribution to `crates/fenji-oodle`, its fuzz target included, is licensed under the [GNU General Public License v3.0 or later](crates/fenji-oodle/COPYING) instead, as that crate is (see its [NOTICE](crates/fenji-oodle/NOTICE)).
 
 ## Conduct and security
 
