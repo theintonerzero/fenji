@@ -100,25 +100,9 @@ case $target in
       cat -- "$root/deploy/archive/musl-COPYRIGHT"
     } >> "$dir/THIRD-PARTY-NOTICES.txt" ;;
 esac
-# For a crate whose own licence text it can't find or read, cargo about puts in the licence's
-# standard text, and says so only in its debug log: --fail lets it through (#328). MIT's and BSD's
-# standard texts leave the copyright line a template, "Copyright (c) <year> <copyright holders>",
-# so the notices would ship a placeholder where the crate's copyright notice belongs. These are the
-# fields of the copyright lines in the standard texts of the licences about.toml accepts, in any
-# case and number, as other licences write them (MIT-0's "<YEAR> <COPYRIGHT HOLDER>"). Nothing
-# broader: a crate's own text may have other things in angle brackets, such as an email address.
-# When the notices hold one, each section that does is shown, and nothing is packed.
-fields='<(year|owner|copyright holders?)>'
-if grep -q -i -E "$fields" "$dir/THIRD-PARTY-NOTICES.txt"; then
-  awk -v fields="$fields" '
-    /^=+$/ { heading = ""; in_heading = 1; shown = 0; next }
-    in_heading && /^$/ { in_heading = 0; next }
-    in_heading { heading = heading $0 "\n"; next }
-    tolower($0) ~ fields {
-      if (!shown) { printf "\n%s", heading; shown = 1 }
-      printf "  line %d: %s\n", NR, $0
-    }
-  ' "$dir/THIRD-PARTY-NOTICES.txt" >&2
+# No placeholder where a copyright line belongs (#328): scripts/check-notices.sh shows each section
+# that has one, and nothing is packed.
+if ! "$root/scripts/check-notices.sh" "$dir/THIRD-PARTY-NOTICES.txt"; then
   fail "the third-party notices have a placeholder where a copyright line belongs, above, so give the crates listed with it a clarification in deploy/archive/about.toml"
 fi
 

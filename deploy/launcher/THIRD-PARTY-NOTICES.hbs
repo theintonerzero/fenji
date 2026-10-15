@@ -1,0 +1,32 @@
+Third-party notices for Fenji's launcher
+========================================
+
+Fenji's launcher is Fenji's own code, under the GNU Affero General Public
+License (its source and licence: https://github.com/theintonerzero/fenji),
+built with Rust's standard library (under the MIT licence or the Apache
+License 2.0), with the {{len crates}} open-source crates listed first below,
+and with the packages and fonts its window carries, listed after them.
+
+Each licence's text follows the crates it covers. It's their own copy,
+copyright notices included, from the crate's package or, where the package
+lacks one, from the crate's source repository. Where none of the crates' own
+files is recognised as the licence, its standard text stands in, and says so.
+
+The crates' licences, and how many texts of each follow:
+{{#each overview}}
+  {{{name}}}: {{len indices}}
+{{/each}}
+{{#each licenses}}
+
+==============================================================================
+{{{name}}} ({{{id}}}), for:
+{{#each used_by}}
+  {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+{{#unless source_path}}
+(The licence's standard text: none of these crates' own files is recognised
+as this licence.)
+{{/unless}}
+
+{{{text}}}
+{{/each}}
