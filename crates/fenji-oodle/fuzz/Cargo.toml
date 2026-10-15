@@ -1,0 +1,26 @@
+# fenji-oodle's cargo-fuzz target (README.md): outside the workspace (the root Cargo.toml's
+# `exclude`), run locally on nightly Rust, never in CI.
+[package]
+name = "fenji-oodle-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+fenji-oodle = { path = ".." }
+
+[[bin]]
+name = "decompress"
+path = "fuzz_targets/decompress.rs"
+test = false
+doc = false
+bench = false
+
+# A workspace of its own. The root's `exclude` alone doesn't keep it out: Cargo counts a manifest
+# under a member's directory, `crates/fenji-oodle`, as that workspace's.
+[workspace]
