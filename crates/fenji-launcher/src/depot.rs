@@ -7,6 +7,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::appimage;
+
 /// The script the terminal runs: `sh depot.sh <run folder> <DepotDownloader> <folder> [<file list>]`.
 const SCRIPT: &str = include_str!("depot.sh");
 
@@ -150,8 +152,14 @@ pub struct DepotRun {
 
 impl DepotRun {
     /// Writes the script (and a repair's file list) into a fresh `run_dir`, then opens the
-    /// terminal on it. The terminal's own exit isn't waited on: many return at once.
-    pub fn start(t: &Terminal, job: &Job, run_dir: &Path) -> std::io::Result<DepotRun> {
+    /// terminal on it, with `env` as it is outside an AppImage ([`appimage::outside`]). The
+    /// terminal's own exit isn't waited on: many return at once.
+    pub fn start(
+        t: &Terminal,
+        job: &Job,
+        run_dir: &Path,
+        env: impl IntoIterator<Item = (OsString, OsString)>,
+    ) -> std::io::Result<DepotRun> {
         let mut dirs = std::fs::DirBuilder::new();
         dirs.recursive(true);
         #[cfg(unix)]
@@ -173,7 +181,9 @@ impl DepotRun {
             std::fs::write(&list, text)?;
             cmd.arg(list);
         }
-        cmd.stdin(std::process::Stdio::null())
+        cmd.env_clear()
+            .envs(appimage::outside(env))
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let mut child = cmd.spawn()?;
@@ -334,8 +344,13 @@ mod tests {
             folder: dir.path().join("game"),
             files: None,
         };
-        let run =
-            DepotRun::start(&fake_terminal(dir.path()), &job, &dir.path().join("run")).unwrap();
+        let run = DepotRun::start(
+            &fake_terminal(dir.path()),
+            &job,
+            &dir.path().join("run"),
+            std::env::vars_os(),
+        )
+        .unwrap();
         drop(spawn);
         assert_eq!(
             wait_for(&run, |s| matches!(s, RunState::Ended { .. })),
@@ -343,6 +358,48 @@ mod tests {
         );
         let progress = std::fs::read_to_string(run.run_dir.join("progress")).unwrap();
         assert!(progress.contains("100.00% b.bin") && !progress.contains("QR here"));
+    }
+
+    /// #329: the terminal, and DepotDownloader in it, start outside the AppImage.
+    #[test]
+    fn the_terminal_gets_the_environment_outside_the_appimage() {
+        let spawn = spawning();
+        let dir = tempfile::tempdir().unwrap();
+        let seen = dir.path().join("seen");
+        let term = Terminal {
+            program: script(
+                dir.path(),
+                "term",
+                &format!(
+                    r#"env | sort > {}; setsid "$@" </dev/null >/dev/null 2>&1 &"#,
+                    seen.display()
+                ),
+            ),
+            before: vec![],
+        };
+        let job = Job {
+            dd: script(dir.path(), "dd", "exit 0"),
+            folder: dir.path().join("game"),
+            files: None,
+        };
+        let env = [
+            ("APPDIR", "/tmp/.mount_FenjiAb12"),
+            ("PATH", "/tmp/.mount_FenjiAb12/usr/bin/:/usr/bin:/bin"),
+            ("PYTHONHOME", "/tmp/.mount_FenjiAb12/usr/"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let run = DepotRun::start(&term, &job, &dir.path().join("run"), env).unwrap();
+        drop(spawn);
+        assert_eq!(
+            wait_for(&run, |s| matches!(s, RunState::Ended { .. })),
+            RunState::Ended { code: 0 }
+        );
+        let text = std::fs::read_to_string(&seen).unwrap();
+        let vars: Vec<&str> = text
+            .lines()
+            .filter(|l| !["PWD=", "SHLVL=", "_="].iter().any(|p| l.starts_with(p)))
+            .collect();
+        assert_eq!(vars, ["PATH=/usr/bin:/bin"]);
     }
 
     #[test]
@@ -364,8 +421,13 @@ mod tests {
             folder: dir.path().join("game"),
             files: Some(files.clone()),
         };
-        let run =
-            DepotRun::start(&fake_terminal(dir.path()), &job, &dir.path().join("run")).unwrap();
+        let run = DepotRun::start(
+            &fake_terminal(dir.path()),
+            &job,
+            &dir.path().join("run"),
+            std::env::vars_os(),
+        )
+        .unwrap();
         drop(spawn);
         assert_eq!(
             wait_for(&run, |s| matches!(s, RunState::Ended { .. })),
@@ -401,8 +463,13 @@ mod tests {
             folder: dir.path().join("game"),
             files: None,
         };
-        let run =
-            DepotRun::start(&fake_terminal(dir.path()), &job, &dir.path().join("run")).unwrap();
+        let run = DepotRun::start(
+            &fake_terminal(dir.path()),
+            &job,
+            &dir.path().join("run"),
+            std::env::vars_os(),
+        )
+        .unwrap();
         drop(spawn);
         assert!(matches!(
             wait_for(&run, |s| matches!(s, RunState::Running { .. })),
@@ -432,8 +499,13 @@ mod tests {
             folder: dir.path().join("game"),
             files: None,
         };
-        let run =
-            DepotRun::start(&fake_terminal(dir.path()), &job, &dir.path().join("run")).unwrap();
+        let run = DepotRun::start(
+            &fake_terminal(dir.path()),
+            &job,
+            &dir.path().join("run"),
+            std::env::vars_os(),
+        )
+        .unwrap();
         wait_for(&run, |_| run.run_dir.join("pgid").exists());
         run.cancel().unwrap();
         assert!(matches!(
@@ -447,7 +519,8 @@ mod tests {
             program: script(dir.path(), "dud", "exit 0"),
             before: vec![],
         };
-        let mut never = DepotRun::start(&dud, &job, &dir.path().join("run2")).unwrap();
+        let mut never =
+            DepotRun::start(&dud, &job, &dir.path().join("run2"), std::env::vars_os()).unwrap();
         drop(spawn);
         never.start_limit = std::time::Duration::from_millis(300);
         assert_eq!(wait_for(&never, |s| *s == RunState::Lost), RunState::Lost);

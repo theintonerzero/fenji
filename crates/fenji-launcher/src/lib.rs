@@ -3,6 +3,7 @@
 //! is a small CLI over it; `apps/launcher` is the desktop shell.
 pub mod api;
 pub mod app;
+pub mod appimage;
 pub mod depot;
 pub mod invite_link;
 pub mod launch;

@@ -392,7 +392,7 @@ impl App {
             // A fork while a test writes a script would make that script busy to exec.
             #[cfg(test)]
             let _spawn = crate::test_support::spawning();
-            DepotRun::start(&terminal, &job, &self.run_dir())
+            DepotRun::start(&terminal, &job, &self.run_dir(), self.inner.cfg.env.clone())
         };
         let run = match started {
             Ok(run) => run,

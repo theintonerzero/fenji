@@ -9,6 +9,7 @@ use std::process::{Command, ExitStatus};
 use anyhow::{Context, bail};
 
 use crate::api::{ApiClient, ServerInfo, Session};
+use crate::appimage;
 use crate::launch::{LaunchSpec, Platform, base_spec, resolve_ipv4, umu_env};
 use crate::login_path::available;
 use crate::manifest::Manifest;
@@ -179,7 +180,8 @@ fn passed_on(name: &OsStr) -> bool {
 }
 
 /// The process for `spec`: its program, arguments and folder, and an environment of `parent`'s
-/// variables less [`SECRET_ENV`] and `gj_*`, then the spec's own.
+/// variables less [`SECRET_ENV`], `gj_*` and an AppImage's ([`appimage::outside`]), then the
+/// spec's own.
 pub fn command(
     spec: &LaunchSpec,
     parent: impl IntoIterator<Item = (OsString, OsString)>,
@@ -187,7 +189,9 @@ pub fn command(
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args)
         .env_clear()
-        .envs(parent.into_iter().filter(|(k, _)| passed_on(k)))
+        .envs(appimage::outside(
+            parent.into_iter().filter(|(k, _)| passed_on(k)),
+        ))
         .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     if !spec.cwd.as_os_str().is_empty() {
         cmd.current_dir(&spec.cwd);
@@ -580,6 +584,33 @@ mod tests {
             .collect();
         seen.sort();
         assert_eq!(seen, ["PATH=/usr/bin", "gj_ticket=fenji1-new"]);
+    }
+
+    /// #329: umu-run, a Python zipapp, died at once on the AppImage's `PYTHONHOME`.
+    #[cfg(unix)]
+    #[test]
+    fn the_child_gets_nothing_of_the_appimage_the_launcher_runs_in() {
+        let _spawn = spawning();
+        let spec = LaunchSpec {
+            program: "/usr/bin/env".into(),
+            args: vec![],
+            env: vec![],
+            cwd: "/".into(),
+        };
+        let parent = [
+            ("APPDIR", "/tmp/.mount_FenjiAb12"),
+            ("PATH", "/tmp/.mount_FenjiAb12/usr/bin/:/usr/bin"),
+            ("PYTHONHOME", "/tmp/.mount_FenjiAb12/usr/"),
+            ("PYTHONPATH", "/tmp/.mount_FenjiAb12/usr/share/pyshared/:"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let out = command(&spec, parent).output().unwrap();
+        let seen: Vec<String> = String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(seen, ["PATH=/usr/bin"]);
     }
 
     #[cfg(unix)]

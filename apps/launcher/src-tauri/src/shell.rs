@@ -2,9 +2,11 @@
 //! one gives the current snapshot; each new snapshot reaches the view as the `snapshot` event. The
 //! few things only the shell can do (the folder dialog, links, the window) happen here when the
 //! view asks; the model does the rest.
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use fenji_launcher::app::{App, AppConfig, FolderPurpose, Intent, Snapshot};
+use fenji_launcher::appimage;
 use fenji_launcher::manifest::{Manifest, PINNED_BUILD};
 use fenji_launcher::settings::{self, Os};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -116,14 +118,9 @@ impl Shell {
                     self.model.note(NOT_OURS.into(), true);
                     return Err(NOT_OURS.into());
                 }
-                app.opener()
-                    .open_url(url, None::<&str>)
-                    .map_err(|e| e.to_string())
+                open(app, &url, false)
             }
-            Intent::OpenLogFolder => app
-                .opener()
-                .open_path(self.logs.display().to_string(), None::<&str>)
-                .map_err(|e| e.to_string()),
+            Intent::OpenLogFolder => open(app, &self.logs.display().to_string(), true),
             Intent::Minimize => app
                 .get_webview_window("main")
                 .ok_or("the launcher's window isn't open")?
@@ -140,6 +137,21 @@ impl Shell {
             other => self.model.intent(other).await.map_err(|e| e.to_string()),
         }
     }
+}
+
+/// Opens a link, or a folder, in the desktop's own program. Inside an AppImage, `xdg-open` starts
+/// with the environment from outside it (#329), which the opener plugin would pass on.
+fn open(app: &AppHandle, target: &str, folder: bool) -> Result<(), String> {
+    if let Some(opened) = appimage::open(OsStr::new(target), std::env::vars_os()) {
+        return opened.map_err(|e| e.to_string());
+    }
+    let opener = app.opener();
+    if folder {
+        opener.open_path(target, None::<&str>)
+    } else {
+        opener.open_url(target, None::<&str>)
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// The model's configuration for this machine. A missing config or data folder is fatal.
