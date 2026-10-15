@@ -10,7 +10,7 @@ Once: `rustup toolchain install nightly` and `cargo install --locked cargo-fuzz`
 
 Then, from `crates/fenji-oodle`, seed the corpus with the fixtures, each behind the raw length its manifest row gives, and fuzz for five minutes:
 
-```sh
+```bash
 mkdir -p fuzz/corpus/decompress
 tail -n +2 tests/fixtures/manifest.tsv | while IFS=$'\t' read -r file _ size _; do
   python3 -I -c 'import sys; sys.stdout.buffer.write(int(sys.argv[1]).to_bytes(4, "little"))' "$size" |
