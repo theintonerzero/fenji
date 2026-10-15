@@ -430,13 +430,17 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
 /// terminal back and printed the message.
 const CONSOLE_PANICKED: &str = "a panic ended the console; its message is above";
 
-/// The full-screen console, run on a task of its own until it ends. One whose own code panics
-/// ends as a console that failed, so `run` goes on serving until a signal stops the server
-/// gracefully, rather than unwinding through it and out of the process (review 1, Important 1).
+/// The full-screen console, run until it ends on a thread of its own, off the runtime's workers:
+/// its writes to the terminal block, and a terminal that stops reading (a stalled SSH link) would
+/// otherwise hold a worker, all of them on a one-CPU host, and the server with them (re-review,
+/// NB2). One whose own code panics ends as a console that failed, so `run` goes on serving until a
+/// signal stops the server gracefully, rather than unwinding through it and out of the process
+/// (review 1, Important 1). `main` doesn't wait for this thread as it exits.
 async fn held(
     console: impl Future<Output = std::io::Result<Ending>> + Send + 'static,
 ) -> std::io::Result<Ending> {
-    match tokio::spawn(console).await {
+    let runtime = tokio::runtime::Handle::current();
+    match tokio::task::spawn_blocking(move || runtime.block_on(console)).await {
         Ok(ended) => ended,
         Err(e) if e.is_panic() => Err(std::io::Error::other(CONSOLE_PANICKED)),
         Err(e) => Err(std::io::Error::other(e.to_string())),
@@ -643,6 +647,41 @@ mod tests {
         // A console that ends ends so.
         let closed = held(async { Ok(Ending::InputClosed) }).await;
         assert_eq!(closed.unwrap(), Ending::InputClosed);
+    }
+
+    #[test]
+    fn a_console_that_blocks_its_thread_leaves_the_runtimes_workers_free() {
+        // Re-review, NB2: a terminal that stops reading (a stalled SSH link) blocks the
+        // console's writes. On a host with one CPU, tokio has one worker: a console on it would
+        // stop the whole server.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut console = Box::pin(held(async {
+                // A write to a terminal that has stopped reading.
+                std::thread::sleep(Duration::from_millis(1_000));
+                Ok(Ending::InputClosed)
+            }));
+            // Started: `held`'s first poll hands the console to the thread it runs on.
+            tokio::select! {
+                biased;
+                _ = &mut console => panic!("the console ended at once"),
+                () = std::future::ready(()) => {}
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            // A task of the server's, while the console blocks: its one worker must be free.
+            let probing = std::time::Instant::now();
+            tokio::spawn(async {}).await.unwrap();
+            let took = probing.elapsed();
+            assert!(
+                took < Duration::from_millis(200),
+                "the runtime's one worker waited {took:?} on the console"
+            );
+            assert_eq!(console.await.unwrap(), Ending::InputClosed);
+        });
     }
 
     #[test]

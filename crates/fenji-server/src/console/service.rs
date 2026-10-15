@@ -255,15 +255,6 @@ impl ConsoleService {
             }),
             Err(e) => Answer::failed(e.to_string()),
         };
-        if in_world && !answer.ok {
-            let why = answer.lines.join(" ");
-            tracing::warn!(
-                by = "console",
-                command = line,
-                why,
-                "an admin's command the world didn't answer"
-            );
-        }
         answer.cleaned()
     }
 
@@ -319,21 +310,33 @@ impl ConsoleService {
     }
 
     /// Runs `order` in the world, as an admin's, and gives its answer, done or refused as the
-    /// world says; a world that has stopped, or doesn't answer within [`WORLD_WAIT`], is answered
-    /// for (carry-forward 10).
+    /// world says. A world that has stopped, or doesn't answer within [`WORLD_WAIT`], is answered
+    /// for (carry-forward 10), and warned about: the world logs the commands it runs, so these
+    /// alone would leave no trace.
     async fn ask_world(&self, order: Command) -> Answer {
+        let command = format!("{order:?}");
         let (reply, answer) = oneshot::channel();
-        if !self.world.send(WorldIn::Console { order, reply }) {
-            return Answer::failed("the world has stopped");
-        }
-        match tokio::time::timeout(self.world_wait, answer).await {
-            Ok(Ok(ConsoleReply { ok, text })) => Answer {
-                ok,
-                lines: vec![text],
-            },
-            Ok(Err(_)) => Answer::failed("the world stopped before it answered"),
-            Err(_) => Answer::failed("the world didn't answer in time"),
-        }
+        let why = if self.world.send(WorldIn::Console { order, reply }) {
+            match tokio::time::timeout(self.world_wait, answer).await {
+                Ok(Ok(ConsoleReply { ok, text })) => {
+                    return Answer {
+                        ok,
+                        lines: vec![text],
+                    };
+                }
+                Ok(Err(_)) => "the world stopped before it answered",
+                Err(_) => "the world didn't answer in time",
+            }
+        } else {
+            "the world has stopped"
+        };
+        tracing::warn!(
+            by = "console",
+            command,
+            why,
+            "an admin's command the world didn't answer"
+        );
+        Answer::failed(why)
     }
 
     /// Announces `text` on the marquee: what the world said of it.
@@ -1125,6 +1128,39 @@ mod tests {
         assert!(runs[0].contains("command=\"motd Hello\""), "{log}");
         assert!(runs[1].contains("command=\"dance\""), "{log}");
         rt.block_on(s.shutdown()).unwrap();
+    }
+
+    #[test]
+    fn only_a_world_that_didnt_answer_is_warned_about() {
+        // Re-review, NB1: a refusal is the world's answer, which it logs at INFO; only a world
+        // that has gone, or doesn't answer in time, gets the console's warning.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (s, _dir) = rt.block_on(started());
+        let c = s.console();
+        let (refused, log) = logged(|| rt.block_on(c.run_line("kick Nobody")));
+        assert_eq!(refused, failed(["no one called Nobody is in the game"]));
+        assert!(!log.contains("didn't answer"), "{log}");
+        rt.block_on(s.shutdown()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let wait = Duration::from_millis(100);
+        let (c, world, _store, _online) = rt.block_on(with_fake_world(dir.path(), "", wait));
+        // Held past the wait, then gone.
+        let (late, log) = logged(|| rt.block_on(c.run_line("kick Mai")));
+        assert_eq!(late, failed(["the world didn't answer in time"]));
+        assert!(
+            log.contains("WARN") && log.contains("an admin's command the world didn't answer"),
+            "{log}"
+        );
+        drop(world);
+        let (gone, log) = logged(|| rt.block_on(c.run_line("say Hello")));
+        assert_eq!(gone, failed(["the world has stopped"]));
+        assert!(
+            log.contains("WARN") && log.contains("an admin's command the world didn't answer"),
+            "{log}"
+        );
     }
 
     #[tokio::test]

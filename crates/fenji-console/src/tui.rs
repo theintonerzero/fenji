@@ -326,7 +326,10 @@ impl PanicHook {
 
 impl Drop for PanicHook {
     fn drop(&mut self) {
-        // A panicking thread can't change the hook, and the process is on its way out then.
+        // A panicking thread can't change the hook, so ours stays when the console unwinds. The
+        // process may run on after that, as the server catches its console's panic: harmless, as
+        // `give_back` does nothing once the terminal is given back, and the hook hands every
+        // panic on to the one it replaced.
         if std::thread::panicking() {
             return;
         }
