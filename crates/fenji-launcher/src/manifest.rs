@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
 
+/// The build Fenji pins (the client every player runs), whose manifest ships in the launcher.
+pub const PINNED_BUILD: &str = "10015727";
+
 /// The comment `fenji-launch manifest` writes first.
 pub const HEADER: &str = "Fenji client manifest: path, size and SHA-256 of each file; hashes only, no game \
                           content (M3 spec D15)";

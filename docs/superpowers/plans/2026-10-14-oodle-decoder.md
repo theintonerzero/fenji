@@ -57,7 +57,7 @@ These are the five inputs most likely to bite that no step's happy-path test rea
 
 ## Corrections to the spec
 
-The plan changes four details of the spec. Each is a controller ruling, to be put in the ledger when the plan is dispatched.
+The plan changes four details of the spec (1–4). Each is a controller ruling, to be put in the ledger when the plan is dispatched: Rulings O1 to O4, below. The whole-plan review found three more places where the shipped code differs from the spec (5–7). They're recorded here, and the spec stays as the owner approved it.
 1. **`chunks` takes the raw length:** `chunks(input: &[u8], raw_len: usize)`. Each quantum's output length depends on the bytes still to come, so a walk can't size its chunks without it. (Spec §3.1 gives `chunks(input)`.)
 2. **`verify-oodle` compares against hashes, not a spool.**
    - Spooling every block would copy the whole compressed archive set into `re/`.
@@ -65,6 +65,29 @@ The plan changes four details of the spec. Each is a controller ruling, to be pu
    - `archive verify-oodle` decodes natively and compares. (Spec §3.3 says through the spool.)
 3. **Fixtures are binary `.oz` files**, under a 2 MiB budget for the folder. Hex would double their size. (Spec §4.2 says `.hex`.)
 4. **Task 4 ports the entropy decoders together with the first codec.** The entropy decoders can't be tested apart without an encoder; with the first codec, they get the fixtures end to end. (Spec §6, items 3 and 4.)
+5. **The third command that decodes inline is `dump`.** `archive` has no command that lists a container's files. `extract --key`, `paths` and `dump` (Task 7, Step 3) decode inline by default, and `--spool DIR` keeps the helper's route. (Spec §1, success 2, and §3.3 name `extract`, `paths` and "the container listing".)
+6. **Only the full check reaches the files that only the containers hold.** `extract --key` looks a key up among the parts' live records, so it can't extract the 14,885 files whose keys only the containers hold (`m1-archives.md` 3.7: 35 of their 14,920 keys are live records too). `verify-oodle` and `oodle-helper hash-parts` walk them (Ruling O9), and keep only their hashes. (Spec §1: with the decoder, "Fenji's tools can read game data from a host's own install now".)
+7. **Speed is measured on the full run only.** `verify-oodle` times its whole walk, `_index`, the containers and the parts together, so `m1-archives.md` 5.2 records the full run alone: 148,807 MB in 317 s on one core (469 MB/s). `_index` alone wasn't timed. (Spec §4.5 asks for both.)
+
+## Rulings made while executing
+
+The controller's rulings while the plan ran, numbered as code, help text and docs cite them. Each was first recorded in the controller's ledger, which isn't in the repository. O1 to O4 are the corrections above.
+- **O1:** `chunks` takes the raw length, since each quantum's output length depends on the bytes left (Correction 1). Cost if wrong: one argument.
+- **O2:** `verify-oodle` compares against SHA-256s that `oodle-helper hash-parts` makes straight from the parts, in the sandbox, since spooling every block would copy the whole compressed archive set into `re/` (Correction 2). Cost if wrong: a helper mode that wasn't needed.
+- **O3:** the fixtures are binary `.oz` files with a manifest, the folder under 2 MiB, not `.hex` (Correction 3). Cost if wrong: binary test data in the repository, all of it Fenji's own synthetic bytes, compressed.
+- **O4:** Task 4 ports the entropy decoders with the first codec, since without an encoder only the fixtures can test them, end to end (Correction 4). Cost if wrong: a larger Task 4 review.
+- **O5:** every fenji-oodle source file carries spec §3.1's header (a port of `ooz`'s `kraken.cpp`, © 2016 Powzix; changes © 2026 the Fenji contributors; GPL-3.0-or-later), and `NOTICE` names 2026 too, since GPL-3.0 §5(a) asks for a relevant date. Cost if wrong: a few comment lines.
+- **O6:** `decompress` grows its output a quantum at a time instead of allocating `raw_len` up front, as Task 1's code did, so that a huge `raw_len` behind a short stream is `Truncated`, never a panic or an abort (spec §4.4). Cost if wrong: none, since fenji-data also bounds a block at 512 KiB.
+- **O7:** `lib.rs` no longer says that checksums are "never checked, as in ooz": `ooz` checks them against an unimplemented CRC stub that returns 0, and the port parses them without verifying them. Cost if wrong: none.
+- **O8:** Kraken (decoder 6) is the only codec ported, since every Oodle chunk in the parts, the containers and `_index` names it (`m1-archives.md` 3.6, 3.7): Tasks 5 and 6 weren't needed (#233 and #234, closed as not planned), and Task 3's fixtures are Kraken's (compressor 8), at levels 4 and 8. Cost if wrong: a later build with another codec needs that codec's port.
+- **O9:** `verify-oodle` and `oodle-helper hash-parts` also walk `_index` and the files inside the containers (`m1-archives.md` 4.3), so that Task 8's full check covers every Oodle block of the pinned client (spec §1, success 1). Cost if wrong: one more walker in Task 7.
+- **O10:** Task 2's deviations stand, among them that the package is `fenji-archive`, so the tool runs as `cargo run -p fenji-archive`, not `-p archive`; and Task 8 records its full check under evidence key AT, since AS is 3.7's. Cost if wrong: none.
+- **O11:** the fixtures' manifest pins each input and each stream with a 64-bit FNV-1a hash that a test checks, since spec §4.2 asks for hashes of both, which the plan dropped, and the crate takes no dependency to compute SHA-256. Cost if wrong: two columns and a dozen lines of test code.
+- **O12:** Task 3's review minors joined O11's fix round, since they touch the same files and harden the tests Task 4 relies on: among them, the loader ties the manifest to the folder's files, a fixture of 367,689 bytes (the size of `_index`'s last block) was added at both levels, and the fixtures' README records the DLL's SHA-256 and the helper's commit. Cost if wrong: one more helper run and a few lines.
+- **O13:** the port's two departures from `ooz`'s output stand, writing a stored block inside an entropy-only chunk (which `ooz` leaves unwritten) and copying a match 1 to 7 bytes back exactly (where `ooz`'s 8-byte copy reads bytes not yet written), since the client's DLL, not `ooz`, is the reference, and Task 8's full check decides them. Cost if wrong: a one-line change each.
+- **O14:** Task 8's full check also counts, per block, (a) chunks in the new offset coding (flag byte 0x80 or more) with a match 1 to 7 bytes back and (b) entropy-only chunks (bit 23 of the chunk header clear) of one stored block (first byte 0x00 to 0x02), so that a mismatch traces to O13's departures at once; it found none of either (`m1-archives.md` 5.3). Cost if wrong: two counters in the walk.
+- **O15:** O14's count (a) takes matches 1 to 7 bytes back in both offset codings, not only the new one, since a crafted distance in the traditional coding can wrap to one. Cost if wrong: none; more is counted, and nothing decodes differently.
+- **O16:** fenji-oodle sits behind fenji-data's default `oodle` feature, and `oodle-helper` builds without it, so that the program that loads Epic's DLL links no GPL code; the README says that `archive` and `luatool` carry fenji-oodle's GPL-3.0-or-later code, so its `COPYING` and `NOTICE` go with them. Since Cargo turns a feature on for every package that one command builds, the whole-plan review made the helper's Windows build refuse to compile with it on (`fenji_data::OODLE_DECODER`). Cost if wrong: one feature flag.
 
 ## How this plan runs
 

@@ -8,6 +8,7 @@ pub mod launch;
 pub mod login_path;
 pub mod manifest;
 pub mod pin;
+pub mod probe;
 pub mod servers;
 pub mod settings;
 pub mod start;
