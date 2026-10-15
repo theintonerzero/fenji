@@ -847,7 +847,7 @@ start_inputs() {
         # The account's password, from the run's password file through xkey.py's --type-file
         # (launcher Task 16): never on a command line, and logged by name only.
         if [ -n "${type_secret:-}" ]; then
-          python3 -I "$HERE/xkey.py" --display ":$d" "--type-file=$type_secret" 2>>"$out/keys.err" &&
+          python3 -I "$HERE/xkey.py" --display ":$d" "--type-file=$type_secret" ${type_pace:+"--pace=$type_pace"} 2>>"$out/keys.err" &&
             echo "$(date -Is) type $label$t:@password" >> "$out/keys.log"
           shot_after "$out" "$d" "$label${t}s-type"
         else
@@ -865,7 +865,9 @@ start_inputs() {
         ) &
         continue
       fi
-      python3 -I "$HERE/xkey.py" --display ":$d" "--$kind=$what" 2>>"$out/keys.err" &&
+      pace=()
+      if [ "$kind" = type ] && [ -n "${type_pace:-}" ]; then pace=("--pace=$type_pace"); fi
+      python3 -I "$HERE/xkey.py" --display ":$d" "--$kind=$what" "${pace[@]}" 2>>"$out/keys.err" &&
         echo "$(date -Is) $kind $label$t:$what" >> "$out/keys.log"
       shot_after "$out" "$d" "$label${t}s-$kind"
     done

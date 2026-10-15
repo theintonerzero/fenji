@@ -164,10 +164,10 @@ PY
   touch "$K/out/.running"
   export KEYLOG=$K/keys
   # shellcheck disable=SC2034 # start_inputs reads these from its caller
-  type_secret=$TESTROOT/password presses=("1:type:0:@password" "1:type:0:lin_yue") clicks=() clicks2=() display2=""
+  type_secret=$TESTROOT/password type_pace=150 presses=("1:type:0:@password" "1:type:0:lin_yue") clicks=() clicks2=() display2=""
   HERE=$K/here start_inputs "$K/out" 98 1
   wait "$typist" "$clicker" "$shots" 2> /dev/null
-  want=$(printf '%s\n' "--display :98 --type-file=$TESTROOT/password" "--display :98 --type=lin_yue")
+  want=$(printf '%s\n' "--display :98 --type-file=$TESTROOT/password --pace=150" "--display :98 --type=lin_yue --pace=150")
   if [ "$(cat "$K/keys")" = "$want" ] && ! grep -q "a long password" "$K/keys" "$K/out/keys.log" &&
     grep -q "type 0:@password" "$K/out/keys.log"; then
     ok "@password is typed from the password file through --type-file, and logged by name"
