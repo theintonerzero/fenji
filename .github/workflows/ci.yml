@@ -111,6 +111,8 @@ jobs:
         run: scripts/test-check-commit-subject.sh
       - name: Session-link check tests
         run: scripts/test-check-no-session-links.sh
+      - name: Release packaging tests
+        run: scripts/test-package-server.sh
       - name: No session links in the PR's title, description or new commits
         # In this job, not pr-title, because this one is a required check on dev and main.
         if: github.event_name == 'pull_request'
@@ -138,7 +140,7 @@ jobs:
       - name: ShellCheck
         run: |
           sudo apt-get install -y shellcheck
-          shellcheck scripts/*.sh scripts/spike/*.sh .githooks/*
+          shellcheck scripts/*.sh scripts/spike/*.sh .githooks/* deploy/start/*.sh deploy/start/*.command
       - name: Network isolation self-test
         run: |
           sudo apt-get update

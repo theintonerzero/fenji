@@ -143,6 +143,7 @@ tool_bin() {
     tauri-cli) echo cargo-tauri ;;
     git-cliff) echo git-cliff ;;
     cargo-deny) echo cargo-deny ;;
+    cargo-about) echo cargo-about ;;
     sqlx-cli) echo sqlx ;;
     *) echo "" ;;
   esac
@@ -158,6 +159,7 @@ check_all() {
   report tauri-cli "$TAURI_CLI_VERSION" "$(cargo_tool_version tauri-cli cargo-tauri)"
   report git-cliff "$GIT_CLIFF_VERSION" "$(cargo_tool_version git-cliff git-cliff)"
   report cargo-deny "$CARGO_DENY_VERSION" "$(cargo_tool_version cargo-deny cargo-deny)"
+  report cargo-about "$CARGO_ABOUT_VERSION" "$(cargo_tool_version cargo-about cargo-about)"
   report sqlx-cli "$SQLX_CLI_VERSION" "$(cargo_tool_version sqlx-cli sqlx)"
   report bevy_brp_mcp "$BEVY_BRP_MCP_VERSION" "$(cargo_tool_version bevy_brp_mcp)"
   report node "$NODE_MAJOR" "$(node --version 2>/dev/null | sed 's/^v//')"
@@ -267,6 +269,9 @@ cargo_tool() {
 cargo_tool tauri-cli "$TAURI_CLI_VERSION"
 cargo_tool git-cliff "$GIT_CLIFF_VERSION"
 cargo_tool cargo-deny "$CARGO_DENY_VERSION"
+# Its program is behind the `cli` feature: without it, cargo install builds nothing, and says so
+# only in a warning.
+cargo_tool cargo-about "$CARGO_ABOUT_VERSION" --features cli
 cargo_tool sqlx-cli "$SQLX_CLI_VERSION" --no-default-features --features rustls,sqlite
 cargo_tool bevy_brp_mcp "$BEVY_BRP_MCP_VERSION"
 
