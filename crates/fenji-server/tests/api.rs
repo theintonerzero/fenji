@@ -65,6 +65,7 @@ async fn api_with(trusted: Vec<std::net::IpAddr>, peer: &str) -> Api {
         gate_port: 7800,
         server_id: 1,
         source: "https://example.net/fenji".into(),
+        host: None,
     };
     let app = router(AppState {
         accounts,
@@ -1198,4 +1199,12 @@ async fn without_tls_there_is_no_key_and_no_pin() {
     assert_eq!(s.server.pin(), None);
     assert!(!s._dir.path().join("tls").exists());
     s.stop().await;
+}
+
+#[tokio::test]
+async fn the_servers_facts_name_its_host_only_when_set() {
+    let with = get_json(&started_with("host = \"Wen\"\n").await, "/api/v1/server").await;
+    assert_eq!(with["host"], "Wen");
+    let without = get_json(&started().await, "/api/v1/server").await;
+    assert!(without.get("host").is_none(), "{without}");
 }
