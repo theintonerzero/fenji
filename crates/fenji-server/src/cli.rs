@@ -1,12 +1,12 @@
-//! The command line (M3 spec §4 `cli`): `run`, the default, and the admin's subcommands for invites,
-//! accounts and backups (M4 hosting spec §3.12). Admin commands open the same database as a running
-//! server; SQLite's WAL and busy timeout let both write.
+//! The command line (M3 spec §4 `cli`): `run`, the default; `init`, which writes a config to edit
+//! (M4 hosting spec §3.6); and the admin's subcommands for invites, accounts and backups (§3.12).
+//! Admin commands open the same database as a running server; SQLite's WAL and busy timeout let
+//! both write.
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use fenji_store::Store;
 
 use crate::clock::{Clock, Utc};
 use crate::config::Config;
@@ -16,9 +16,10 @@ use crate::text::escape_hidden;
 #[derive(Debug, Parser)]
 #[command(version, about)]
 pub struct Cli {
-    /// The configuration file (fenji.example.toml shows every key)
-    #[arg(long, default_value = "fenji.toml")]
-    pub config: PathBuf,
+    /// The configuration file (fenji.example.toml shows every key); without it, fenji.toml in the
+    /// working directory, which the server writes on its first run
+    #[arg(long, global = true)]
+    pub config: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -27,6 +28,8 @@ pub struct Cli {
 pub enum Command {
     /// Run the server (the default)
     Run,
+    /// Write a configuration file to edit, at --config's path or as fenji.toml here; never over one
+    Init,
     /// Create, list and revoke invites
     Invite {
         #[command(subcommand)]
@@ -118,10 +121,11 @@ pub async fn admin(
     out: &mut dyn Write,
     clock: &dyn Clock,
 ) -> anyhow::Result<()> {
-    let store = Store::open(&cfg.store.path).await?;
+    let store = crate::server::open_store(cfg).await?;
     let now = clock.now_ms();
     match cmd {
         Command::Run => anyhow::bail!("`run` isn't an admin command"),
+        Command::Init => anyhow::bail!("`init` isn't an admin command"),
         Command::Invite {
             cmd: InviteCmd::Create { label, expires },
         } => {
@@ -229,6 +233,25 @@ mod tests {
     use clap::Parser;
 
     use super::{Cli, Command, parse_duration, time};
+
+    #[test]
+    fn config_is_optional_and_goes_before_or_after_the_command() {
+        // The spec writes `init [--config <path>]`; the missing-config hint, `--config <path> init`.
+        for args in [
+            ["fenji-server", "init", "--config", "x.toml"],
+            ["fenji-server", "--config", "x.toml", "init"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(
+                cli.config.as_deref(),
+                Some(std::path::Path::new("x.toml")),
+                "{args:?}"
+            );
+            assert!(matches!(cli.command, Some(Command::Init)), "{args:?}");
+        }
+        let cli = Cli::try_parse_from(["fenji-server"]).unwrap();
+        assert!(cli.config.is_none() && cli.command.is_none());
+    }
 
     #[test]
     fn backup_keeps_14_unless_told_and_never_none() {

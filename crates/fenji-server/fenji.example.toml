@@ -14,7 +14,7 @@ trusted_proxies = []            # e.g. ["127.0.0.1"] when Caddy runs on this mac
 tick_hz = 20                    # the world's ticks per second (1 to 60)
 
 [store]
-path = "fenji.db"               # relative to this file
+path = "fenji.db"               # relative to this file; a first run puts it at data/fenji.db
 
 [data]
 # client_path = "/srv/fenji/solo-client"   # your own copy of the pinned client (not read yet)

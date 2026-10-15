@@ -13,7 +13,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::accounts::Accounts;
 use crate::api::{AppState, ServerInfo, router};
 use crate::clock::{Clock, SystemClock};
-use crate::config::Config;
+use crate::config::{self, Config, Loaded};
 pub use crate::gate::GateLimits;
 use crate::gate::{self, Gate, Places, accept_loop};
 use crate::lobby::LobbyLimits;
@@ -99,15 +99,27 @@ impl RunningServer {
     }
 }
 
-/// Opens the store, binds both listeners (port 0 takes a free port) and starts serving.
+/// Opens the configured store, making its folder, the data folder, if it's missing (owner-only on
+/// Unix): `init` writes a config without that folder, and SQLite makes no folders. The server's
+/// start and the admin commands both open it so, whichever runs first.
+pub async fn open_store(cfg: &Config) -> anyhow::Result<Store> {
+    if let Some(data) = cfg.store.path.parent() {
+        config::private_folder(data)
+            .with_context(|| format!("can't make the data folder {}", data.display()))?;
+    }
+    Store::open(&cfg.store.path)
+        .await
+        .with_context(|| format!("opening {}", cfg.store.path.display()))
+}
+
+/// Opens the store ([`open_store`]), binds both listeners (port 0 takes a free port) and starts
+/// serving.
 pub async fn start(
     cfg: &Config,
     clock: Arc<dyn Clock>,
     limits: GateLimits,
 ) -> anyhow::Result<RunningServer> {
-    let store = Store::open(&cfg.store.path)
-        .await
-        .with_context(|| format!("opening {}", cfg.store.path.display()))?;
+    let store = open_store(cfg).await?;
     let world = world::start(
         Rules::from_config(cfg),
         store.clone(),
@@ -198,34 +210,55 @@ pub async fn start(
     })
 }
 
-/// `fenji-server run`: serves until Ctrl-C or SIGTERM.
-pub async fn run(cfg: Config) -> anyhow::Result<()> {
+/// `fenji-server run`: serves until Ctrl-C or SIGTERM. A first run (M4 hosting spec §3.6) says what
+/// it wrote before it starts, and what's next once it runs.
+pub async fn run(loaded: Loaded) -> anyhow::Result<()> {
+    let (cfg, first_run) = match loaded {
+        Loaded::Existing(cfg) => (cfg, None),
+        Loaded::FirstRun(cfg) => {
+            let here = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            (cfg, Some(config::first_run_lines(&here)))
+        }
+    };
+    if let Some([wrote, ..]) = &first_run {
+        tracing::info!("{wrote}");
+    }
     let server = start(&cfg, Arc::new(SystemClock), GateLimits::from_config(&cfg)).await?;
+    let stop = signalled();
     tracing::info!(gate = %server.login_addr, api = %server.api_addr, "Fenji is running");
-    server.serve_until(signalled()).await
-}
-
-/// Ctrl-C, or SIGTERM where there is one.
-async fn signalled() {
-    #[cfg(unix)]
-    {
-        let mut term =
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                Ok(t) => t,
-                Err(_) => {
-                    let _ = tokio::signal::ctrl_c().await;
-                    return;
-                }
-            };
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
+    if let Some([_, next @ ..]) = &first_run {
+        for line in next {
+            tracing::info!("{line}");
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+    server.serve_until(stop).await
+}
+
+/// Ctrl-C or SIGTERM. SIGTERM is caught from this call on, not from the future's first poll, so
+/// that one sent as soon as the server says it runs stops it cleanly.
+#[cfg(unix)]
+fn signalled() -> impl Future<Output = ()> {
+    let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+    async move {
+        match term {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+        tracing::info!("shutting down");
     }
+}
+
+/// Ctrl-C.
+#[cfg(not(unix))]
+async fn signalled() {
+    let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutting down");
 }
 
@@ -320,6 +353,36 @@ mod tests {
             links.push(link);
         }
         links
+    }
+
+    #[tokio::test]
+    async fn a_config_from_init_starts_and_makes_its_data_folder() {
+        // `init` writes the template, whose database is in data/, but not that folder, and SQLite
+        // makes no folders: the start makes it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.toml");
+        config::init(&path).unwrap();
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\"127.0.0.1:7800\"", "\"127.0.0.1:0\"")
+            .replace("\"127.0.0.1:7801\"", "\"127.0.0.1:0\"");
+        std::fs::write(&path, text).unwrap();
+        let cfg = Config::load(&path).unwrap();
+        let ports = (cfg.server.login_bind.port(), cfg.server.api_bind.port());
+        assert_eq!(ports, (0, 0), "the binds are free ports");
+        let clock = Arc::new(TestClock::at(NOW));
+        let server = start(&cfg, clock, GateLimits::default()).await.unwrap();
+        let data = dir.path().join("data");
+        assert!(data.join("fenji.db").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&data).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "data/ is owner-only");
+        }
+        TcpStream::connect(server.login_addr).await.unwrap();
+        TcpStream::connect(server.api_addr).await.unwrap();
+        server.shutdown().await.unwrap();
     }
 
     /// The error a server serving in `served` stops with by itself (30 s at most).

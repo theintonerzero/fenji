@@ -25,7 +25,9 @@ pub fn folder(store_path: &Path) -> PathBuf {
 /// if it's missing; checks the copy; then deletes the oldest backups beyond `keep`, never the copy
 /// just made. Returns the new file.
 pub async fn run(store: &Store, dir: &Path, keep: usize, now_ms: i64) -> anyhow::Result<PathBuf> {
-    make_folder(dir).with_context(|| format!("can't make the backups folder {}", dir.display()))?;
+    // Owner-only on Unix, as backups hold the password hashes.
+    crate::config::private_folder(dir)
+        .with_context(|| format!("can't make the backups folder {}", dir.display()))?;
     let name = name(now_ms);
     let made = dir.join(&name);
     store
@@ -65,15 +67,6 @@ fn is_backup(name: &str) -> bool {
                     }
                 })
         })
-}
-
-/// Makes `dir` if it's missing, owner-only (0700) on Unix, as backups hold the password hashes.
-fn make_folder(dir: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(dir)
 }
 
 /// Requires the copy to open as a store and pass SQLite's integrity check (Ruling HP5). A copy that
