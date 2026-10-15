@@ -641,6 +641,16 @@ pub(crate) fn private_folder(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
+/// The data folder of a database at `store_path`: its directory, or the working directory for a
+/// database named alone. It holds the database, its backups, the server's key, the full-screen
+/// console's logs and the console socket.
+pub fn data_folder(store_path: &Path) -> PathBuf {
+    match store_path.parent() {
+        Some(folder) if !folder.as_os_str().is_empty() => folder.to_owned(),
+        _ => PathBuf::from("."),
+    }
+}
+
 /// A configuration for `run`, and whether this run wrote it.
 #[derive(Debug)]
 pub enum Loaded {

@@ -39,11 +39,15 @@ pub enum ServerMsg {
     Skipped { lines: u64 },
     /// The server's state and facts, when they change.
     Status { status: Status },
-    /// The answer to the console's command `id`: whether it ran, and what it says.
+    /// The answer to the console's command `id`: whether it ran, and what it says. An answer too
+    /// long for one line comes in parts, in order, each with the same `id` and `ok`: every part but
+    /// the last says `more` ([`encode_server`]).
     Answer {
         id: u64,
         ok: bool,
         lines: Vec<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        more: bool,
     },
     /// The last message: why the server closes this console.
     Bye { reason: String },
@@ -242,6 +246,140 @@ pub fn encode<T: Serialize>(msg: &T) -> String {
     serde_json::to_string(msg).expect("the console's messages are JSON")
 }
 
+/// What ends a line cut to fit.
+const CUT: &str = "…";
+
+/// `msg` as the lines a server sends on the console socket, without their line endings, each at
+/// most [`LINE_MAX`] bytes:
+/// - a log line too long, such as a packet's hex or an error's chain, is cut, `…` where it was;
+/// - an answer too long comes in parts, as many whole lines in each as fit, and every part but
+///   the last says `more`; a line too long for a part alone is cut so;
+/// - the other messages go whole: the server keeps its name, its maintenance message and its
+///   commands short.
+pub fn encode_server(msg: ServerMsg) -> Vec<String> {
+    let whole = encode(&msg);
+    if whole.len() <= LINE_MAX {
+        return vec![whole];
+    }
+    match msg {
+        ServerMsg::Log { line } => vec![cut_log(&line)],
+        ServerMsg::Answer { id, ok, lines, .. } => answer_parts(id, ok, lines),
+        _ => vec![whole],
+    }
+}
+
+/// `line` as a log message within a line: as many of its first characters as fit, in their parts,
+/// then `…`.
+fn cut_log(line: &LogLine) -> String {
+    let cut = |kept| {
+        encode(&ServerMsg::Log {
+            line: first_chars(line, kept),
+        })
+    };
+    // `fits` fits, and `over` doesn't: no character takes less than a byte, and the whole line
+    // didn't fit.
+    let total: usize = line.parts.iter().map(|p| p.text.chars().count()).sum();
+    let (mut fits, mut over) = (0, total.min(LINE_MAX));
+    while over - fits > 1 {
+        let mid = fits + (over - fits) / 2;
+        if cut(mid).len() <= LINE_MAX {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    cut(fits)
+}
+
+/// `line` with the first `kept` characters of its text, in its parts as they were, then `…`, which
+/// names no one.
+fn first_chars(line: &LogLine, kept: usize) -> LogLine {
+    let mut left = kept;
+    let mut parts = Vec::new();
+    for part in &line.parts {
+        if left == 0 {
+            break;
+        }
+        let text: String = part.text.chars().take(left).collect();
+        left -= text.chars().count();
+        parts.push(Part {
+            text,
+            name: part.name,
+        });
+    }
+    match parts.last_mut() {
+        Some(last) if !last.name => last.text.push_str(CUT),
+        _ => parts.push(Part {
+            text: CUT.into(),
+            name: false,
+        }),
+    }
+    LogLine {
+        at_ms: line.at_ms,
+        level: line.level,
+        parts,
+    }
+}
+
+/// An answer too long for a line, as parts that each fit, in order: as many whole lines in each
+/// as fit, the last part alone without `more`.
+fn answer_parts(id: u64, ok: bool, lines: Vec<String>) -> Vec<String> {
+    let part = |lines, more| {
+        encode(&ServerMsg::Answer {
+            id,
+            ok,
+            lines,
+            more,
+        })
+    };
+    // What a part's lines may take: the line, less the answer around them, `more` and all. JSON
+    // puts a comma between two lines, and nothing else.
+    let room = LINE_MAX - part(Vec::new(), true).len();
+    let mut parts = Vec::new();
+    let (mut kept, mut used) = (Vec::new(), 0);
+    for line in lines {
+        let line = fit(line, room);
+        let size = json_len(&line);
+        if !kept.is_empty() && used + 1 + size > room {
+            parts.push(part(std::mem::take(&mut kept), true));
+            used = 0;
+        }
+        used += size + usize::from(!kept.is_empty());
+        kept.push(line);
+    }
+    parts.push(part(kept, false));
+    parts
+}
+
+/// `line`, or as many of its first characters as fit in `room` bytes of JSON, then `…`.
+fn fit(line: String, room: usize) -> String {
+    if json_len(&line) <= room {
+        return line;
+    }
+    let cut = |kept| {
+        let mut text: String = line.chars().take(kept).collect();
+        text.push_str(CUT);
+        text
+    };
+    // `fits` fits, and `over` doesn't: no character takes less than a byte, and the whole line
+    // didn't fit.
+    let (mut fits, mut over) = (0, line.chars().count().min(room));
+    while over - fits > 1 {
+        let mid = fits + (over - fits) / 2;
+        if json_len(&cut(mid)) <= room {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    cut(fits)
+}
+
+/// The bytes `text` takes as a JSON string, its quotes and escapes included.
+fn json_len(text: &str) -> usize {
+    encode(&text).len()
+}
+
 /// A server's line as its message. Refused over [`LINE_MAX`] bytes; a line ending doesn't count.
 pub fn decode_server(line: &str) -> Result<ServerMsg, WireError> {
     decode(line)
@@ -271,6 +409,7 @@ mod tests {
             id: 7,
             ok: true,
             lines: vec!["a\nb".into()],
+            more: false,
         };
         let line = encode(&msg);
         assert!(!line.contains('\n'));
@@ -352,6 +491,145 @@ mod tests {
             decode_console(r#"{"type":"dance"}"#),
             Err(WireError::Bad(_))
         ));
+    }
+
+    /// The answers `lines` decode to, one per line, each checked against the limit.
+    fn answers(lines: &[String]) -> Vec<(u64, bool, Vec<String>, bool)> {
+        lines
+            .iter()
+            .map(|line| {
+                assert!(line.len() <= LINE_MAX, "{} bytes", line.len());
+                match decode_server(line).unwrap() {
+                    ServerMsg::Answer {
+                        id,
+                        ok,
+                        lines,
+                        more,
+                    } => (id, ok, lines, more),
+                    other => panic!("not an answer: {other:?}"),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_log_line_too_long_for_a_line_is_cut_and_says_so() {
+        // M4 hosting plan, Task 11's carry-forward 1: a packet's hex or an error's chain can pass
+        // the limit. The console gets the line cut, rather than one it must refuse. Quotes and
+        // backslashes take two bytes each in JSON.
+        let line = LogLine {
+            at_ms: 5,
+            level: Level::Trace,
+            parts: vec![
+                Part {
+                    text: "sent ".into(),
+                    name: false,
+                },
+                Part {
+                    text: "Mai".into(),
+                    name: true,
+                },
+                Part {
+                    text: format!(" {}", "\"ab\\".repeat(5_000)),
+                    name: false,
+                },
+            ],
+        };
+        let encoded = encode_server(ServerMsg::Log { line: line.clone() });
+        let [only] = encoded.as_slice() else {
+            panic!("one line, not {}", encoded.len())
+        };
+        assert!(only.len() <= LINE_MAX, "{} bytes", only.len());
+        // Cut no more than it must: one character's bytes and the ellipsis at most.
+        assert!(only.len() > LINE_MAX - 8, "{} bytes", only.len());
+        let ServerMsg::Log { line: cut } = decode_server(only).unwrap() else {
+            panic!("a log line")
+        };
+        assert_eq!((cut.at_ms, cut.level), (5, Level::Trace));
+        assert_eq!(cut.parts[..2], line.parts[..2], "the name stays a name");
+        let text = cut.message();
+        assert!(text.starts_with("sent Mai \"ab\\\"ab\\"), "{text:.40}");
+        assert!(text.ends_with('…'), "{}", &text[text.len() - 10..]);
+    }
+
+    #[test]
+    fn an_answer_too_long_for_a_line_comes_in_parts_each_but_the_last_saying_more() {
+        // Carry-forward 1: `invites` lists every invite ever made.
+        let lines: Vec<String> = (0..300)
+            .map(|n| format!("{n:03} {}", "z".repeat(60)))
+            .collect();
+        let encoded = encode_server(ServerMsg::Answer {
+            id: 7,
+            ok: false,
+            lines: lines.clone(),
+            more: false,
+        });
+        let parts = answers(&encoded);
+        assert!(parts.len() > 1, "{} part", parts.len());
+        let mut got = Vec::new();
+        for (i, (id, ok, part, more)) in parts.into_iter().enumerate() {
+            assert_eq!((id, ok), (7, false), "part {i}");
+            assert_eq!(more, i + 1 < encoded.len(), "part {i}");
+            got.extend(part);
+        }
+        assert_eq!(got, lines);
+    }
+
+    #[test]
+    fn a_line_too_long_for_a_part_alone_is_cut_and_the_rest_kept() {
+        let encoded = encode_server(ServerMsg::Answer {
+            id: 1,
+            ok: true,
+            lines: vec!["first".into(), "w".repeat(10_000), "last".into()],
+            more: false,
+        });
+        let got: Vec<String> = answers(&encoded)
+            .into_iter()
+            .flat_map(|(.., lines, _)| lines)
+            .collect();
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert_eq!((got[0].as_str(), got[2].as_str()), ("first", "last"));
+        assert!(
+            got[1].starts_with("www") && got[1].ends_with('…'),
+            "{:.20}",
+            got[1]
+        );
+        assert!(got[1].len() > 3_000, "cut no more than it must");
+    }
+
+    #[test]
+    fn a_message_that_fits_goes_as_one_line_as_encode_makes_it() {
+        for msg in [
+            ServerMsg::Answer {
+                id: 3,
+                ok: true,
+                lines: vec!["nobody is online".into()],
+                more: false,
+            },
+            ServerMsg::Answer {
+                id: 4,
+                ok: false,
+                lines: vec![],
+                more: false,
+            },
+            ServerMsg::Skipped { lines: 37 },
+            ServerMsg::Bye {
+                reason: "the server is stopping".into(),
+            },
+        ] {
+            assert_eq!(encode_server(msg.clone()), [encode(&msg)]);
+        }
+        // A whole answer says nothing of parts.
+        let whole = ServerMsg::Answer {
+            id: 3,
+            ok: true,
+            lines: vec![],
+            more: false,
+        };
+        assert_eq!(
+            encode(&whole),
+            r#"{"type":"answer","id":3,"ok":true,"lines":[]}"#
+        );
     }
 
     #[test]
