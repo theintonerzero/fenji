@@ -10,10 +10,6 @@ libXtst). It sends input to that display and nothing else; it never touches the 
     xkey.py --display :99 --type "Lin Two"   printable ASCII, one key at a time, Shift as needed
     xkey.py --display :99 --type-file FILE   the same for FILE's first line, so a password typed
                                              into a form never sits on a command line
-    xkey.py --display :99 --type ... --pace 150
-                                             typing with 150 ms (1 to 2,000) between characters,
-                                             for a field that completes as it's typed (GTK's file
-                                             chooser) and would mix its completion into faster text
 """
 import argparse
 import ctypes
@@ -26,8 +22,6 @@ import time
 MAX_HOLD_MS = 60_000
 # How long a plain press holds its key, in seconds.
 TAP = 0.03
-# The slowest pace between typed characters, in ms.
-MAX_PACE_MS = 2_000
 
 
 def main():
@@ -38,7 +32,6 @@ def main():
     what.add_argument("--type")
     what.add_argument("--type-file", metavar="FILE")
     ap.add_argument("--hold", type=int, metavar="MS")
-    ap.add_argument("--pace", type=int, metavar="MS")
     a = ap.parse_args()
     if a.type_file is not None:
         try:
@@ -50,10 +43,6 @@ def main():
     if a.type is not None and not (a.type and all(" " <= c <= "~" for c in a.type)):
         print("xkey: --type takes printable ASCII only", file=sys.stderr)
         return 2
-    if a.pace is not None and (a.key is not None or not 1 <= a.pace <= MAX_PACE_MS):
-        print(f"xkey: --pace takes 1 to {MAX_PACE_MS} ms, with --type or --type-file", file=sys.stderr)
-        return 2
-    gap = TAP if a.pace is None else a.pace / 1000
     if a.hold is not None and (a.key is None or not 1 <= a.hold <= MAX_HOLD_MS):
         print(f"xkey: --hold takes 1 to {MAX_HOLD_MS} ms, with --key", file=sys.stderr)
         return 2
@@ -117,7 +106,7 @@ def main():
                 if shifted:
                     xtst.XTestFakeKeyEvent(dpy, shift, 0, 0)
                 x11.XFlush(dpy)
-            time.sleep(gap)
+            time.sleep(TAP)
     finally:
         x11.XCloseDisplay(dpy)
     return 0

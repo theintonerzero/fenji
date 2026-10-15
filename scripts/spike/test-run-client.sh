@@ -337,18 +337,6 @@ if [ "$rc" = 1 ]; then ok "xkey.py takes a file's first line as text to type"; e
 python3 -I "$XK" --display :9999 "--type-file=$KF/good" --hold=100 > /dev/null 2>&1
 rc=$?
 if [ "$rc" = 2 ]; then ok "xkey.py holds keys, not a file's text"; else bad "xkey.py --type-file --hold: exit $rc"; fi
-# --pace slows typing (ms between characters), for text fields that complete as they're typed.
-for a in "--pace=0" "--pace=2001" "--pace=x"; do
-  python3 -I "$XK" --display :9999 --type=hi "$a" > /dev/null 2>&1
-  rc=$?
-  if [ "$rc" = 2 ]; then ok "xkey.py refuses $a"; else bad "xkey.py refuses $a: exit $rc"; fi
-done
-python3 -I "$XK" --display :9999 --key=w --pace=150 > /dev/null 2>&1
-rc=$?
-if [ "$rc" = 2 ]; then ok "xkey.py paces typing, not keys"; else bad "xkey.py --key --pace: exit $rc"; fi
-python3 -I "$XK" --display :9999 "--type-file=$KF/good" --pace=150 > /dev/null 2>&1
-rc=$?
-if [ "$rc" = 1 ]; then ok "xkey.py takes a pace for typing"; else bad "xkey.py --type-file --pace: exit $rc"; fi
 python3 -I "$XK" --display :9999 "--type-file=$KF/good" --type=x > /dev/null 2>&1
 rc=$?
 if [ "$rc" = 2 ]; then ok "xkey.py types a file or text, not both"; else bad "xkey.py --type-file --type: exit $rc"; fi

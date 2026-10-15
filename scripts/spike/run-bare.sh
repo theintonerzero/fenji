@@ -575,7 +575,7 @@ cmd_bare_run() {
   local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 stub_args=()
   local clients=1 user2="" pwfile2="" display2="" second_after=30 second_after_given=0 tmo2="" tmo2_given=0
   local keys2=() types2=() clicks2=() rehearsed=0
-  local app="" print=0 type_secret="" type_pace="" shot_after_inputs="" prefix_at=""
+  local app="" print=0 type_secret="" shot_after_inputs="" prefix_at=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --launcher-app) [ $# -ge 2 ] || usage; app=$2; shift 2 ;;
@@ -626,9 +626,6 @@ cmd_bare_run() {
     local app_hidden
     if app_hidden=$(ns_hides "$app"); then misuse "--launcher-app is under $app_hidden, which the namespace replaces with an empty tmpfs: $app"; fi
     shot_after_inputs=1
-    # GTK's file chooser completes the location as it's typed, asynchronously: typed faster, its
-    # completions land among the characters (rehearsal m4-launcher-e2e-r3).
-    type_pace=150
   fi
   # Ruling R14, in code by Ruling R25 (#280): checked first, so nothing else about client 2 matters.
   if [ "$clients" = 2 ] && [ "$rehearsed" = 0 ]; then
