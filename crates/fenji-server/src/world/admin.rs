@@ -54,8 +54,16 @@ fn run(world: &mut World, admin: Entity, order: Command) -> Option<String> {
             }
             let at = world.get::<Here>(target)?.0;
             // A teleport to another scene waits for a local run (#280, Ruling R24; `teleport`).
+            // With one name the admin is the mover, so the answer names the target alone.
             if world.get::<Here>(mover)?.0.scene != at.scene {
-                return Some(format!("{} is in another scene", name_of(world, target)));
+                return Some(match who {
+                    None => format!("{} is in another scene", name_of(world, target)),
+                    Some(_) => format!(
+                        "{} and {} are in different scenes",
+                        name_of(world, mover),
+                        name_of(world, target)
+                    ),
+                });
             }
             teleport(world, mover, at);
             Some(format!(
@@ -258,12 +266,13 @@ mod tests {
         h.push(bang(1, "!tp Kai Ren"));
         h.push(bang(1, "!tp Mai Kai"));
         h.tick(50);
+        // One name is the admin's own move; with two, either may be the one elsewhere.
         assert_eq!(
             h.take(1),
             vec![
                 system("Kai is in another scene"),
-                system("Ren is in another scene"),
-                system("Kai is in another scene")
+                system("Kai and Ren are in different scenes"),
+                system("Mai and Kai are in different scenes")
             ]
         );
         // The next tick's interest pass would show anyone who had moved.
