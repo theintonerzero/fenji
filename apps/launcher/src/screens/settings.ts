@@ -184,6 +184,8 @@ export function settings(root: HTMLElement, ctx: Ctx): Screen {
                 ],
                 ["Made by", "The Fenji contributors"],
               ]),
+              // A ready update stays installable here, after "Later" too (the final review's Important 1).
+              s.update.ready ? button.link("Restart and update", () => void ctx.send({ type: "installUpdate" })) : null,
               button.link(["Source code", icons.external(13)], () => void ctx.send({ type: "openUrl", url: REPOSITORY })),
               button.link("Third-party notices", () => void ctx.send({ type: "openNotices" })),
             ),

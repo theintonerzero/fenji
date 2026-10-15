@@ -23,6 +23,10 @@ pub struct Settings {
     pub auto_update: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub umu_run: Option<PathBuf>,
+    /// Where Start download saves the game, when the player changed it ("Change" beside the
+    /// folder); `~/Games/SoLO` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_folder: Option<PathBuf>,
     /// The launcher version whose update dialog was shown (launcher spec §3.8: once a version).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_seen: Option<String>,
@@ -49,6 +53,7 @@ impl Default for Settings {
             client: None,
             auto_update: true,
             umu_run: None,
+            download_folder: None,
             update_seen: None,
             server: None,
             username: None,

@@ -66,7 +66,8 @@ pub fn route(intent: &Intent) -> Route {
         | Intent::PlayOn { .. }
         | Intent::DismissNotice
         | Intent::SetAutoUpdate { .. }
-        | Intent::SetUmuRun { .. } => Route::Model,
+        | Intent::SetUmuRun { .. }
+        | Intent::SetDownloadFolder { .. } => Route::Model,
     }
 }
 
@@ -114,7 +115,9 @@ impl Shell {
                     .to_string();
                 let chosen = match purpose {
                     FolderPurpose::Game => Intent::ChooseFolder { path },
-                    FolderPurpose::Download => Intent::Download { folder: path },
+                    // "Change" beside the download folder: where Start download saves, not a
+                    // download (the final review).
+                    FolderPurpose::Download => Intent::SetDownloadFolder { path },
                 };
                 self.model.intent(chosen).await.map_err(|e| e.to_string())
             }
@@ -149,7 +152,7 @@ impl Shell {
                 .minimize()
                 .map_err(|e| e.to_string()),
             Intent::Close => {
-                app.exit(0);
+                self.updates.close(app, &self.model);
                 Ok(())
             }
             Intent::CheckUpdate => {

@@ -282,6 +282,16 @@ impl App {
                 });
                 Ok(())
             }
+            Intent::SetDownloadFolder { path } => {
+                if path.trim().is_empty() {
+                    return Err(refused(words::NO_FOLDER));
+                }
+                self.change(|st| {
+                    st.settings.download_folder = Some(PathBuf::from(path));
+                    self.save(st);
+                });
+                Ok(())
+            }
             Intent::PickFolder { .. }
             | Intent::OpenUrl { .. }
             | Intent::OpenLogFolder
@@ -371,11 +381,13 @@ impl State {
     fn snapshot(&self, cfg: &AppConfig) -> Snapshot {
         let active = self.settings.active.and_then(|id| self.live.get(&id));
         let platform = platform(cfg.os, cfg.home.as_deref());
-        let default_folder = cfg
-            .home
-            .as_ref()
-            .map(|h| h.join("Games").join("SoLO"))
-            .unwrap_or_default();
+        // Where Start download saves: the folder the player chose, or ~/Games/SoLO.
+        let default_folder = self.settings.download_folder.clone().unwrap_or_else(|| {
+            cfg.home
+                .as_ref()
+                .map(|h| h.join("Games").join("SoLO"))
+                .unwrap_or_default()
+        });
         let folder = self.settings.client.as_ref();
         // For a player without a terminal Fenji can open (spec §3.12), wherever a download works.
         let manual_command = platform
@@ -790,6 +802,28 @@ mod tests {
             "{notice:?}"
         );
         assert!(dir.path().join("config/settings.json.bad").exists());
+    }
+
+    /// The final review: "Change" beside the download folder started the download at once. It
+    /// now only changes where "Start download" saves, and the choice is kept.
+    #[tokio::test]
+    async fn the_download_folder_the_player_picks_is_where_start_download_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        let before = app.snapshot().client.default_folder;
+        assert!(before.ends_with("Games/SoLO"), "{before}");
+        app.intent(Intent::SetDownloadFolder {
+            path: "/mnt/games/SoLO".into(),
+        })
+        .await
+        .unwrap();
+        let snap = app.snapshot();
+        assert_eq!(snap.client.default_folder, "/mnt/games/SoLO");
+        assert_eq!(snap.job, None, "nothing downloads until the player says so");
+        assert_eq!(snap.notice, None);
+        drop(app);
+        let again = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        assert_eq!(again.snapshot().client.default_folder, "/mnt/games/SoLO");
     }
 
     #[tokio::test]
