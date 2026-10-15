@@ -1117,8 +1117,8 @@ fn verify_oodle_matches_every_block_with_the_dlls_hash() {
     // it.
     assert!(
         text.contains(
-            "(Rulings O13 to O15): 1 chunks in 1 blocks match 1 to 7 bytes back, and \
-             1 chunks in 1 blocks are one stored block in an entropy-only chunk; \
+            "(the Oodle decoder plan's Rulings O13 to O15): 1 chunks in 1 blocks match 1 to 7 \
+             bytes back, and 1 chunks in 1 blocks are one stored block in an entropy-only chunk; \
              2 of those 2 blocks match the DLL"
         ),
         "{text}"

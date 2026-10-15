@@ -105,8 +105,8 @@ enum Command {
     /// live Oodle records. DLL_HASHES is oodle-helper hash-parts' TSV, which
     /// scripts/spike/run-oodle-helper.sh --hash-parts writes: one `key, block, raw length, SHA-256`
     /// line per block. Writes OUT/summary.txt, OUT/mismatches.tsv (each block that doesn't match,
-    /// and why) and OUT/departures.tsv (each block with chunks where fenji-oodle departs from ooz,
-    /// Rulings O13 to O15). Exit 0 only when every block matches.
+    /// and why) and OUT/departures.tsv (each block with chunks where fenji-oodle departs from ooz:
+    /// the Oodle decoder plan's Rulings O13 to O15). Exit 0 only when every block matches.
     VerifyOodle {
         #[arg(long)]
         dll_hashes: PathBuf,
@@ -707,9 +707,9 @@ fn verify_oodle(client: &Path, dll_hashes: &Path, out: &Path) -> Result<ExitCode
          and {} DLL hashes match no block; {mb:.1} MB decoded in {secs:.1} s ({:.0} MB/s)\n\
          walked {} files and {} blocks in _index, {} files and {} blocks in the containers, \
          {} files and {} blocks in the parts\n\
-         where fenji-oodle departs from ooz (Rulings O13 to O15): {} chunks in {} blocks match 1 \
-         to 7 bytes back, and {} chunks in {} blocks are one stored block in an entropy-only \
-         chunk; {} of those {} blocks match the DLL\n",
+         where fenji-oodle departs from ooz (the Oodle decoder plan's Rulings O13 to O15): {} \
+         chunks in {} blocks match 1 to 7 bytes back, and {} chunks in {} blocks are one \
+         stored block in an entropy-only chunk; {} of those {} blocks match the DLL\n",
         v.same,
         v.differ,
         v.native_failed,
