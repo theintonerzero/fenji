@@ -38,9 +38,9 @@ pub async fn run_plain(
         if !input_open && queued.is_none() && waiting.is_empty() {
             return Ok(Ending::InputClosed);
         }
+        // No branch goes first, so neither a flood from the server nor a fast pipe of commands
+        // keeps the other waiting.
         tokio::select! {
-            // The server first, so its answers and log never wait on the input.
-            biased;
             msg = from_server.recv() => match msg {
                 None => return Ok(Ending::Lost),
                 Some(ServerMsg::Bye { reason }) => return Ok(Ending::ServerStopped(reason)),
@@ -75,10 +75,14 @@ pub async fn run_plain(
                 None => input_open = false,
                 Some(Read::TooLong) => {
                     writeln!(err, "that line is too long: a command is at most {INPUT_MAX} bytes")?;
+                    err.flush()?;
                 }
                 Some(Read::Line(line)) => match line.trim() {
                     "" => {}
-                    line if !plain(line) => writeln!(err, "commands take plain text only")?,
+                    line if !plain(line) => {
+                        writeln!(err, "commands take plain text only")?;
+                        err.flush()?;
+                    }
                     line => queued = Some(line.to_owned()),
                 },
             },
@@ -152,8 +156,119 @@ mod tests {
     use super::*;
     use crate::view::tests::help;
     use crate::wire::{ConsoleMsg, INPUT_MAX, Level, LogLine, Part, ServerMsg};
-    use tokio::io::BufReader;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::sync::mpsc;
+
+    /// A writer that keeps what was flushed apart from what was written since.
+    #[derive(Clone, Default)]
+    struct Flushed(Arc<Mutex<(Vec<u8>, Vec<u8>)>>);
+
+    impl Write for Flushed {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().1.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            let mut written = self.0.lock().unwrap();
+            let pending = std::mem::take(&mut written.1);
+            written.0.extend(pending);
+            Ok(())
+        }
+    }
+
+    impl Flushed {
+        /// What was flushed, and what was written after.
+        fn text(&self) -> (String, String) {
+            let written = self.0.lock().unwrap();
+            let text = |bytes: &[u8]| String::from_utf8(bytes.to_vec()).unwrap();
+            (text(&written.0), text(&written.1))
+        }
+    }
+
+    #[tokio::test]
+    async fn refusals_reach_err_at_once() {
+        // Review M5: like everything else plain mode writes, a refusal is flushed.
+        let (_to_console, from_server) = mpsc::channel(8);
+        let (to_server, _console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let err = Flushed::default();
+        let input = format!("{}\nannounce \u{1b}[2J\n", "x".repeat(INPUT_MAX + 1));
+        let ending = run_plain(
+            session,
+            input.as_bytes(),
+            std::io::sink(),
+            err.clone(),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ending, Ending::InputClosed);
+        let (flushed, pending) = err.text();
+        assert!(pending.is_empty(), "written, not flushed: {pending:?}");
+        assert!(
+            flushed.contains("too long") && flushed.contains("plain text only"),
+            "{flushed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_flood_from_the_server_doesnt_hold_up_a_typed_command() {
+        // Review M1: with the server's queue never empty, the input still takes its turns.
+        const FLOOD: usize = 10_000;
+        let (to_console, from_server) = mpsc::channel(FLOOD);
+        for n in 0..FLOOD {
+            to_console
+                .try_send(ServerMsg::Log {
+                    line: LogLine {
+                        at_ms: 0,
+                        level: Level::Info,
+                        parts: vec![Part {
+                            text: format!("line {n}"),
+                            name: false,
+                        }],
+                    },
+                })
+                .unwrap();
+        }
+        let (to_server, mut console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let server = tokio::spawn(async move {
+            let ConsoleMsg::Run { id, line } = console_out.recv().await.unwrap();
+            assert_eq!(line, "stop");
+            let unread = to_console.max_capacity() - to_console.capacity();
+            to_console
+                .send(ServerMsg::Answer {
+                    id,
+                    ok: true,
+                    lines: vec![],
+                })
+                .await
+                .unwrap();
+            unread
+        });
+        // Typed through tokio's own I/O, which shares the task's budget as stdin does.
+        let (mut typed, input) = tokio::io::duplex(64);
+        typed.write_all(b"stop\n").await.unwrap();
+        drop(typed);
+        let ending = run_plain(
+            session,
+            BufReader::new(input),
+            std::io::sink(),
+            std::io::sink(),
+            true,
+        )
+        .await
+        .unwrap();
+        let unread = server.await.unwrap();
+        assert_eq!(ending, Ending::InputClosed);
+        assert!(
+            unread > FLOOD / 2,
+            "`stop` went out only after {} of the {FLOOD} log lines",
+            FLOOD - unread
+        );
+    }
 
     #[tokio::test]
     async fn plain_mode_runs_lines_and_prints_answers() {
