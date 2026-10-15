@@ -21,6 +21,9 @@ tar.workspace = true
 tokio.workspace = true
 zip.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 axum.workspace = true
 tempfile.workspace = true
