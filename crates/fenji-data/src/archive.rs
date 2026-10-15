@@ -257,7 +257,8 @@ pub enum OodleSource {
 ///
 /// Every part's index chain and blob headers, every container's records and their files' blob
 /// headers, and `_index`'s, are read first: a damaged part or container stops the walk before
-/// `each` sees any blob. An error from `each` stops it too, and is handed back.
+/// `each` sees any blob. So do more than [`MAX_CONTAINERS`] containers. One container at a time is
+/// in memory. An error from `each` stops the walk too, and is handed back.
 pub fn each_oodle_blob<E: From<Error>>(
     data: &Path,
     mut each: impl FnMut(OodleSource, &str, &[u8]) -> std::result::Result<(), E>,
@@ -268,9 +269,10 @@ pub fn each_oodle_blob<E: From<Error>>(
         each(OodleSource::Index, "_index", &index)?;
     }
     for c in &containers {
-        for r in &c.oodle {
+        let (content, oodle) = read_container(c)?;
+        for r in &oodle {
             // In bounds: `container_records` checks every record's file.
-            let file = &c.content[r.offset as usize..][..r.size as usize];
+            let file = &content[r.offset as usize..][..r.size as usize];
             let name = format!("{}/{}/{}", crate::hex(&c.key), r.slot, crate::hex(&r.key));
             each(OodleSource::Container, &name, file)?;
         }
@@ -288,20 +290,25 @@ pub fn each_oodle_blob<E: From<Error>>(
     Ok(())
 }
 
+/// More containers than this among the parts' live records means a damaged archive: the pinned
+/// client has 2 (docs/re/m1-archives.md 4.3).
+pub const MAX_CONTAINERS: usize = 16;
+
 /// A part, and its live Oodle records' keys, offsets and sizes, for [`each_oodle_blob`].
 type PartPlaces = (PathBuf, Vec<([u8; 20], u64, u32)>);
 
-/// A container found among the parts' live records: its key, its content, and the records of its
-/// Oodle files.
-struct Container {
+/// A container found among the parts' live records: its part, key, offset and size. Its bytes are
+/// read when they're needed, so one container at a time is in memory.
+struct ContainerPlace {
+    part: PathBuf,
     key: [u8; 20],
-    content: Vec<u8>,
-    oodle: Vec<Record>,
+    at: u64,
+    size: u32,
 }
 
 /// The first pass of [`each_oodle_blob`]: every part's index chain and blob headers, giving each
-/// part's live Oodle records, the first for each key, and every container with its Oodle files.
-fn oodle_places(data: &Path) -> Result<(Vec<PartPlaces>, Vec<Container>)> {
+/// part's live Oodle records, the first for each key, and every container, each checked.
+fn oodle_places(data: &Path) -> Result<(Vec<PartPlaces>, Vec<ContainerPlace>)> {
     let (mut parts, mut containers) = (Vec::new(), Vec::new());
     let mut seen = HashSet::new();
     for n in 0..1000 {
@@ -330,31 +337,56 @@ fn oodle_places(data: &Path) -> Result<(Vec<PartPlaces>, Vec<Container>)> {
             if &magic != CONTAINER_MAGIC {
                 continue;
             }
-            let blob = read_blob(&mut f, at, r.size)?;
-            let (_, blocks) = crate::blocks(&blob, at)?;
-            let content = blocks[0].input.to_vec();
-            let damaged = |e: Error| {
+            if containers.len() == MAX_CONTAINERS {
                 let key = crate::hex(&r.key);
-                Error::BadArchive(format!("{key} at {at:#x} in {}: {e}", path.display()))
-            };
-            let mut files = Vec::new();
-            for file in container_records(&content).map_err(damaged)? {
-                // In bounds: `container_records` checks every record's file.
-                let bytes = &content[file.offset as usize..][..file.size as usize];
-                let h = BlobHeader::parse(bytes, u64::from(file.offset)).map_err(damaged)?;
-                if h.codec == Codec::Oodle {
-                    files.push(file);
-                }
+                return Err(Error::BadArchive(format!(
+                    "{key} at {at:#x} in {}: more than {MAX_CONTAINERS} containers, which means \
+                     a damaged archive (the pinned client has 2)",
+                    path.display()
+                )));
             }
-            containers.push(Container {
+            let place = ContainerPlace {
+                part: path.clone(),
                 key: r.key,
-                content,
-                oodle: files,
-            });
+                at,
+                size: r.size,
+            };
+            read_container(&place)?;
+            containers.push(place);
         }
         parts.push((path, oodle));
     }
     Ok((parts, containers))
+}
+
+/// A container's content, and the records of its Oodle files, checked: its records as
+/// [`container_records`] checks them, and each file's blob header. An error names the container.
+fn read_container(c: &ContainerPlace) -> Result<(Vec<u8>, Vec<Record>)> {
+    let damaged = |e: Error| {
+        let key = crate::hex(&c.key);
+        Error::BadArchive(format!("{key} at {:#x} in {}: {e}", c.at, c.part.display()))
+    };
+    let mut content = read_blob(&mut File::open(&c.part)?, c.at, c.size).map_err(damaged)?;
+    let h = BlobHeader::parse(&content, c.at).map_err(damaged)?;
+    if h.codec != Codec::Stored || h.stored_size > u64::from(c.size) {
+        return Err(damaged(Error::BadArchive("not a whole stored blob".into())));
+    }
+    // The stored blob's data, in place: its content, from the `[SP]`.
+    content.truncate(h.stored_size as usize);
+    content.drain(..h.header_len());
+    let mut oodle = Vec::new();
+    for file in container_records(&content).map_err(damaged)? {
+        // In bounds: `container_records` checks every record's file.
+        let bytes = &content[file.offset as usize..][..file.size as usize];
+        if BlobHeader::parse(bytes, u64::from(file.offset))
+            .map_err(damaged)?
+            .codec
+            == Codec::Oodle
+        {
+            oodle.push(file);
+        }
+    }
+    Ok((content, oodle))
 }
 
 /// The `size` bytes of the blob at `at`, once they're known to lie inside the file.
@@ -699,5 +731,64 @@ mod tests {
             matches!(r, Err(Error::OutDir(ref m)) if m == "stop"),
             "{r:?}"
         );
+    }
+
+    /// A client copy's `data/` with a small `_index` and one part, `part`.
+    fn data_with(part: Vec<u8>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("_index"), oodle_file(b"the index", 4)).unwrap();
+        std::fs::write(dir.path().join("data000"), part).unwrap();
+        dir
+    }
+
+    /// A part whose index names one blob, `blob`, under each of `keys`.
+    fn one_blob_under_many_keys(keys: &[[u8; 20]], blob: &[u8]) -> Vec<u8> {
+        let records = keys
+            .iter()
+            .enumerate()
+            .map(|(i, &key)| (1, key, if i == 0 { blob.to_vec() } else { Vec::new() }))
+            .collect();
+        let mut part = zfs_part(&[records]);
+        let first = FIRST_INDEX as usize + 8;
+        let place: [u8; 8] = part[first + 20..first + 28].try_into().unwrap();
+        for i in 1..keys.len() {
+            let r = first + i * RECORD_LEN;
+            part[r + 20..r + 28].copy_from_slice(&place);
+            let crc = crc16_arc(&part[r..r + 28]);
+            part[r + 28..r + 30].copy_from_slice(&crc.to_le_bytes());
+        }
+        part
+    }
+
+    #[test]
+    fn records_naming_one_container_are_bounded() {
+        // Each key's record is a container to walk, held one at a time. Past 16 (the pinned
+        // client has 2), the archive is damaged: refused before any blob.
+        let content = stored_blob(&two_files_and_a_note());
+        let keys: Vec<[u8; 20]> = (0..17u8).map(|i| [0x40 + i; 20]).collect();
+        let data = data_with(one_blob_under_many_keys(&keys[..16], &content));
+        let mut blobs = 0;
+        each_oodle_blob(data.path(), |_, _, _| {
+            blobs += 1;
+            Ok::<(), Error>(())
+        })
+        .unwrap();
+        assert_eq!(
+            blobs,
+            1 + 16 * 2,
+            "_index, then each container's two Oodle files"
+        );
+        let data = data_with(one_blob_under_many_keys(&keys, &content));
+        let mut called = false;
+        let r = each_oodle_blob(data.path(), |_, _, _| {
+            called = true;
+            Ok::<(), Error>(())
+        });
+        assert!(
+            matches!(r, Err(Error::BadArchive(ref m))
+                if m.contains("more than 16 containers") && m.contains(&"50".repeat(20))),
+            "{r:?}"
+        );
+        assert!(!called);
     }
 }
