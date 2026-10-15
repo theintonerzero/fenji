@@ -94,6 +94,10 @@ pub enum Intent {
         url: String,
     },
     OpenLogFolder,
+    /// Where Start download saves ("Change" beside the folder): it doesn't start a download.
+    SetDownloadFolder {
+        path: String,
+    },
     /// The bundle's third-party notices (#341), which the shell opens from its resources.
     OpenNotices,
     Minimize,
@@ -151,6 +155,7 @@ pub fn name(i: &Intent) -> &'static str {
         Intent::PickFolder { .. } => "pickFolder",
         Intent::OpenUrl { .. } => "openUrl",
         Intent::OpenLogFolder => "openLogFolder",
+        Intent::SetDownloadFolder { .. } => "setDownloadFolder",
         Intent::OpenNotices => "openNotices",
         Intent::Minimize => "minimize",
         Intent::Close => "close",
@@ -188,6 +193,7 @@ pub const ALL: &[&str] = &[
     "pickFolder",
     "openUrl",
     "openLogFolder",
+    "setDownloadFolder",
     "openNotices",
     "minimize",
     "close",

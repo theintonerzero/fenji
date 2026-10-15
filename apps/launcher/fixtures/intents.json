@@ -27,6 +27,7 @@
   { "type": "pickFolder", "purpose": "game" },
   { "type": "openUrl", "url": "https://github.com/theintonerzero/fenji" },
   { "type": "openLogFolder" },
+  { "type": "setDownloadFolder", "path": "/mnt/games/SoLO" },
   { "type": "openNotices" },
   { "type": "minimize" },
   { "type": "close" },
