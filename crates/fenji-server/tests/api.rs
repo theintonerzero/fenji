@@ -1053,6 +1053,42 @@ async fn with_its_own_key_the_api_answers_over_https_and_invite_links_carry_the_
     again.shutdown().await.unwrap();
 }
 
+/// A TLS record header for a 512-byte handshake record, then a ClientHello's first bytes: a
+/// handshake that stops partway, which the server waits on until its time runs out.
+const PARTIAL_CLIENT_HELLO: [u8; 11] = [
+    0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc, 0x03, 0x03,
+];
+
+#[tokio::test]
+async fn stalled_handshakes_keep_no_one_from_the_account_api() {
+    // Review Focus 3, against the server itself: one connection never sends a ClientHello and
+    // another stops partway through one, while a third player gets the server's facts at once,
+    // well within the handshake time limit the other two are held to.
+    let dir = tempfile::tempdir().unwrap();
+    let (server, _clock) =
+        common::server(dir.path(), "tls = \"self\"\n", GateLimits::default()).await;
+    let addr = server.api_addr;
+    let silent = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut partial = tokio::net::TcpStream::connect(addr).await.unwrap();
+    partial.write_all(&PARTIAL_CLIENT_HELLO).await.unwrap();
+    let client = any_certificate();
+    let started = std::time::Instant::now();
+    let info: Value = client
+        .get(format!("https://127.0.0.1:{}/api/v1/server", addr.port()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let took = started.elapsed();
+    assert_eq!(info["name"], "Fenji");
+    let limit = fenji_server::tls::TlsLimits::default().handshake;
+    assert!(took < limit / 4, "{took:?}, the limit being {limit:?}");
+    drop((silent, partial));
+    server.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn without_tls_there_is_no_key_and_no_pin() {
     let s = started().await;

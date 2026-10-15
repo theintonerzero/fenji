@@ -512,18 +512,58 @@ mod tests {
         };
         let addr = serving(dir.path(), limits).await;
         let client = client();
-        let idle: Vec<_> =
-            futures_util::future::join_all((0..4).map(|_| TcpStream::connect(addr))).await;
         let started = Instant::now();
+        let idle = idle(addr, 4).await;
         get_ok(&client, addr).await;
         let took = started.elapsed();
         assert!(took < Duration::from_secs(3), "{took:?}");
-        // Four idle connections held every place, so the request waited for one to time out.
-        assert!(
-            took >= Duration::from_millis(250),
-            "at most in_flight at once: {took:?}"
-        );
+        // The four held every place, the request queued behind them, and its handshake began
+        // only once one of theirs had run out of time: at most in_flight run at once.
+        assert!(took >= limits.handshake, "{took:?}");
         drop(idle);
+    }
+
+    /// `n` connections to `addr` that never begin a handshake.
+    async fn idle(addr: SocketAddr, n: usize) -> Vec<TcpStream> {
+        futures_util::future::join_all((0..n).map(|_| TcpStream::connect(addr)))
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// A TLS record header for a 512-byte handshake record, then a ClientHello's first bytes.
+    const PARTIAL_CLIENT_HELLO: [u8; 11] = [
+        0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc, 0x03, 0x03,
+    ];
+
+    #[tokio::test]
+    async fn a_handshake_that_stalls_is_closed_when_its_time_runs_out() {
+        // Silent, or stopped partway through a ClientHello: the server lets go of either once the
+        // limit has passed, which frees its place.
+        let dir = tempfile::tempdir().unwrap();
+        let limits = TlsLimits {
+            handshake: Duration::from_millis(300),
+            in_flight: 4,
+        };
+        let addr = serving(dir.path(), limits).await;
+        let started = Instant::now();
+        let mut silent = TcpStream::connect(addr).await.unwrap();
+        let mut partial = TcpStream::connect(addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut partial, &PARTIAL_CLIENT_HELLO)
+            .await
+            .unwrap();
+        for stream in [&mut silent, &mut partial] {
+            let mut rest = Vec::new();
+            // The server's end closes: the read ends, empty or reset.
+            let read = tokio::io::AsyncReadExt::read_to_end(stream, &mut rest);
+            let _ = tokio::time::timeout(Duration::from_secs(3), read)
+                .await
+                .expect("closed by the server within its limit");
+            assert!(rest.is_empty(), "no answer: {rest:?}");
+        }
+        let took = started.elapsed();
+        assert!(took >= limits.handshake, "not before the limit: {took:?}");
     }
 
     #[tokio::test]
@@ -537,8 +577,7 @@ mod tests {
         };
         let addr = serving(dir.path(), limits).await;
         let client = client();
-        let idle: Vec<_> =
-            futures_util::future::join_all((0..8).map(|_| TcpStream::connect(addr))).await;
+        let idle = idle(addr, 8).await;
         let started = Instant::now();
         get_ok(&client, addr).await;
         assert!(
