@@ -57,7 +57,7 @@ These are the five inputs most likely to bite that no step's happy-path test rea
 
 ## Corrections to the spec
 
-The plan changes four details of the spec. Each is a controller ruling, to be put in the ledger when the plan is dispatched.
+The plan changes four details of the spec (1–4). Each is a controller ruling, to be put in the ledger when the plan is dispatched: Rulings O1 to O4, below. The whole-plan review found three more places where the shipped code differs from the spec (5–7). They're recorded here, and the spec stays as the owner approved it.
 1. **`chunks` takes the raw length:** `chunks(input: &[u8], raw_len: usize)`. Each quantum's output length depends on the bytes still to come, so a walk can't size its chunks without it. (Spec §3.1 gives `chunks(input)`.)
 2. **`verify-oodle` compares against hashes, not a spool.**
    - Spooling every block would copy the whole compressed archive set into `re/`.
@@ -65,6 +65,9 @@ The plan changes four details of the spec. Each is a controller ruling, to be pu
    - `archive verify-oodle` decodes natively and compares. (Spec §3.3 says through the spool.)
 3. **Fixtures are binary `.oz` files**, under a 2 MiB budget for the folder. Hex would double their size. (Spec §4.2 says `.hex`.)
 4. **Task 4 ports the entropy decoders together with the first codec.** The entropy decoders can't be tested apart without an encoder; with the first codec, they get the fixtures end to end. (Spec §6, items 3 and 4.)
+5. **The third command that decodes inline is `dump`.** `archive` has no command that lists a container's files. `extract --key`, `paths` and `dump` (Task 7, Step 3) decode inline by default, and `--spool DIR` keeps the helper's route. (Spec §1, success 2, and §3.3 name `extract`, `paths` and "the container listing".)
+6. **Only the full check reaches the files that only the containers hold.** `extract --key` looks a key up among the parts' live records, so it can't extract the 14,885 files whose keys only the containers hold (`m1-archives.md` 3.7: 35 of their 14,920 keys are live records too). `verify-oodle` and `oodle-helper hash-parts` walk them (Ruling O9), and keep only their hashes. (Spec §1: with the decoder, "Fenji's tools can read game data from a host's own install now".)
+7. **Speed is measured on the full run only.** `verify-oodle` times its whole walk, `_index`, the containers and the parts together, so `m1-archives.md` 5.2 records the full run alone: 148,807 MB in 317 s on one core (469 MB/s). `_index` alone wasn't timed. (Spec §4.5 asks for both.)
 
 ## Rulings made while executing
 
