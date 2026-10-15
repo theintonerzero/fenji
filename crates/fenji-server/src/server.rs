@@ -244,6 +244,7 @@ pub async fn start(
         gate_port: login_addr.port(),
         server_id: cfg.server.id,
         source: cfg.server.source_url.clone(),
+        host: cfg.server.host.clone(),
     };
     let online = Arc::new(Online::new(limits.max_players));
     let gate = Arc::new(Gate {
