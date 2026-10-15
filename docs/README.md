@@ -1,9 +1,10 @@
 # Fenji docs
 
-Playing on a friend's server needs only the desktop launcher: the root [README](../README.md#playing) says how to get it and use it, and [PRIVACY.md](../PRIVACY.md) what it sends. The documents below are for people working on Fenji.
+Playing on a friend's server needs only the desktop launcher: the root [README](../README.md#playing) says how to get it and use it, and [PRIVACY.md](../PRIVACY.md) what it sends. Hosting a server for your friends is in [`hosting.md`](hosting.md). The other documents below are for people working on Fenji.
 
 | Path | What it holds |
 |---|---|
+| [`hosting.md`](hosting.md) | For hosts: running a Fenji server for invited friends on your own computer or a VPS, the console and its commands, letting friends in, the reference deployment with systemd, updating, backups and troubleshooting. |
 | [`superpowers/specs/2026-10-11-fenji-design.md`](superpowers/specs/2026-10-11-fenji-design.md) | The project design: ground rules, architecture, milestones. Start here. |
 | [`superpowers/specs/2026-10-12-m1-data-layer-design.md`](superpowers/specs/2026-10-12-m1-data-layer-design.md) | M1 design: Lua tooling, the login hunt and first connection, the script census, archives and the Oodle gate. |
 | [`superpowers/specs/2026-10-12-m2-transport-design.md`](superpowers/specs/2026-10-12-m2-transport-design.md) | M2 design: the transport reading, `fenji-proto`, the stub's handshake ladder, the Oodle wire test and the archive helper. |

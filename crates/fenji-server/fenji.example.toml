@@ -1,5 +1,6 @@
 # Fenji server configuration (docs/superpowers/specs/2026-10-12-m3-login-lobby-design.md, D16).
-# Changes take effect when the server restarts.
+# Changes take effect when the server restarts. The guide for hosts is docs/hosting.md: letting
+# friends in, a VPS, updating and backups.
 
 [server]
 id = 1                          # sent to the client as gj_uinfo's first field
@@ -11,9 +12,10 @@ api_bind = "127.0.0.1:7801"     # the account API, where launchers sign players 
 # public_host = "203.0.113.5"   # the address players' game clients connect to (the gate); unset,
 #                               # each player's is the one they reached the account API at
 # public_api = "https://play.example.net"   # where players reach the account API, which invite
-#                                            # links name: Caddy (TLS) in front of api_bind, say
+#                                            # links name: Caddy (TLS) in front of api_bind, say,
+#                                            # as docs/hosting.md sets it up
 max_players = 20
-trusted_proxies = []            # e.g. ["127.0.0.1"] when Caddy runs on this machine
+trusted_proxies = []            # e.g. ["127.0.0.1"] when Caddy runs on this machine (docs/hosting.md)
 tick_hz = 20                    # the world's ticks per second (1 to 60)
 motd = ""                       # a notice launchers show players: plain text, at most 200 characters
 # host = "Your name"            # who hosts this server, as players' launchers show it ("hosted by");
@@ -37,7 +39,8 @@ max_characters = 9              # the select screen shows 9 places; more scroll
 
 [access]
 invite_only = true
-admins = []                     # accounts that may use !tp, !kick, !announce and !invite in chat
+admins = []                     # accounts that may use !tp, !kick, !announce and !invite in chat,
+#                               # besides those the console's op makes (docs/hosting.md)
 
 [world]
 start_scene = 5                 # the scene new characters enter

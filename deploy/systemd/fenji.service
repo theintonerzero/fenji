@@ -1,0 +1,33 @@
+# The Fenji server as a systemd service, for the reference deployment in docs/hosting.md: the
+# program in /usr/local/bin, its settings in /etc/fenji/fenji.toml, whose [store] path is
+# /var/lib/fenji/fenji.db, and its data folder, /var/lib/fenji, for the fenji user alone.
+# It goes in /etc/systemd/system.
+[Unit]
+Description=Fenji, a private server for Swords of Legends Online
+Documentation=https://github.com/theintonerzero/fenji/blob/main/docs/hosting.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=fenji
+Group=fenji
+ExecStart=/usr/local/bin/fenji-server --config /etc/fenji/fenji.toml run
+# The data folder holds the database, its backups, the server's key (tls/) and the console socket.
+StateDirectory=fenji
+StateDirectoryMode=0700
+UMask=0077
+# The server keeps a file open for each connection.
+LimitNOFILE=4096
+# A crash restarts the server. The console's stop, and systemctl stop, don't.
+Restart=on-failure
+RestartSec=5
+# SIGTERM stops it as the console's stop does, saving everyone's place first.
+TimeoutStopSec=30
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

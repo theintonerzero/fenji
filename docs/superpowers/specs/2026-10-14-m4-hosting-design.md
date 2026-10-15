@@ -139,7 +139,7 @@ A server that doesn't answer is offline. The launcher concludes that itself.
 
 - `maintenance on [<duration>] [<message>]` turns it on.
   - The duration (`30m`, `2h`, `1d`: `invite create`'s syntax) is when the host expects to be back. It's shown to players, and doesn't end maintenance by itself.
-  - The message is plain text of at most 200 characters. The default is "The server is in maintenance."
+  - The message is plain text of at most 200 characters. The default is "Back soon", which reads well after the words players see before it, such as the launcher's "Moonward is in maintenance: " (the plan's Task 8 ruled it).
 - **While it's on:**
   - Signing in and asking for a game ticket answer 503 with `{"error": "maintenance", "message", "until"}`, except for admins (`[access].admins`), so the host can check the server before opening it again.
   - Redeeming an invite answers the same 503 for everyone, so that the invite isn't spent on an account that can't sign in.

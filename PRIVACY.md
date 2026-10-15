@@ -28,7 +28,7 @@ Those requests come from umu, not from Fenji. They carry nothing about your acco
 - **Your characters:** for now their name, class, body type, level and appearance (voice, face, outfit and portrait), when they were created, and where they last stood in the game world (a scene, a position and a facing), so they survive a restart. Stats, inventory and skills join them in later milestones.
 - **Tokens, as hashes only:** invite codes, session tokens and game tokens are stored as SHA-256 hashes with their times, never as the codes or tokens themselves.
 - **Ops and bans:** whether the operator has made your account an op (one of the server's admins), and, if they have banned it, the reason they gave and when.
-- **Backups:** the reference setup (design spec §8) keeps nightly backups of the server's database for 14 days; each operator can choose otherwise.
+- **Backups:** the reference setup ([`docs/hosting.md`](docs/hosting.md)) backs up the server's database each night and keeps the last 14 copies; each operator can choose otherwise.
 
 It also handles short-lived tokens: a session token after you sign in, and a single-use game token, valid for 60 seconds by default, when you press Play.
 
@@ -36,7 +36,7 @@ In the game world it passes each chat line on to the players it is for and keeps
 
 Players who are signed in to the server's launcher see the names of the characters in the world.
 
-Like any server, it sees the IP address you connect from, and its logs may record it. The operator decides how long logs and backups are kept.
+Like any server, it sees the IP address you connect from, and its logs may record it. A server started in its own terminal also writes its log to files in its data folder, one for each day it runs, and keeps those of the last 14 days it ran; under systemd, the system's journal keeps the log. The operator decides how long logs and backups are kept.
 
 ## The game connection
 
@@ -64,7 +64,7 @@ Developers who study the client run it inside a sandbox, against their own stub 
 ## Deleting your data
 
 Ask your server's operator. There is no self-service deletion yet. The operator runs `fenji-server account delete <username>`, and then:
-- **What goes:** your account, password hash, characters, sessions and game tokens. If you are in the lobby at the time, your connection is closed at your next action.
+- **What goes:** your account, password hash, characters, sessions and game tokens, your op status and any ban. If you are in the lobby at the time, your connection is closed at your next action.
 - **What stays:** the invite you redeemed keeps its label, the operator's note (such as who it was for), and when it was redeemed. Its code was only ever stored as a hash.
 - **The database file:** SQLite overwrites deleted rows (`secure_delete`). `account delete` then folds the write-ahead log into the file and empties it, so the account is gone from both at once. If the server has the log in use at that moment, `account delete` says so, and older copies stay in the log until SQLite next restarts it (it then cuts the log back to nothing) or the server stops.
 - **Backups** keep a copy until they expire.
