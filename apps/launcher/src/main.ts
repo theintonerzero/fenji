@@ -1,14 +1,20 @@
-// Until the screens come (launcher plan Task 12), the window shows the model's snapshot as text.
-import { onSnapshot, snapshot } from "./ipc";
-import type { Snapshot } from "./types";
+// The launcher's view: the styles, then the frame over the shell (or, in development, over a
+// golden snapshot named in the address).
+import "./styles/tokens.css";
+import "./styles/base.css";
+import "./styles/components.css";
 
-const pre = document.createElement("pre");
-document.body.append(pre);
+import { mount, type Ipc } from "./app";
+import * as live from "./ipc";
+import type { Tab } from "./route";
 
-function show(s: Snapshot): void {
-  // textContent, never innerHTML: a server's words are untrusted (plan Global Constraints).
-  pre.textContent = JSON.stringify(s, null, 2);
+let ipc: Ipc = live;
+let tab: Tab = "play";
+if (import.meta.env.DEV) {
+  const { goldenIpc } = await import("./dev-golden");
+  const golden = await goldenIpc(new URLSearchParams(location.search));
+  if (golden) {
+    ({ ipc, tab } = golden);
+  }
 }
-
-show(await snapshot());
-await onSnapshot(show);
+await mount(document.body, ipc, tab);

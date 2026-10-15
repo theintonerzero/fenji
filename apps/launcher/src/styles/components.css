@@ -1,0 +1,597 @@
+/* The launcher's components, each as its board draws it (docs/design/launcher/boards/) and as
+ * DESIGN.md's Components section names it. Ember is only for the one primary action, the active
+ * tab, focus, progress, the blade and the seal (The One Ember Rule). */
+
+/* The window: the header, then a screen. */
+.window {
+  display: flex;
+  flex-direction: column;
+  width: 1200px;
+  height: 720px;
+  overflow: hidden;
+  background: var(--ink-950);
+}
+
+.screen {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--context-column-width);
+}
+
+.main {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* The header */
+.header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: var(--header-height);
+  padding-left: var(--space-24);
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.seal {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--rounded-chip);
+  background: var(--ember-600);
+  color: var(--on-ember);
+  font-family: var(--type-mark-family);
+  font-weight: var(--type-mark-weight);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.wordmark {
+  font-family: var(--type-wordmark-family);
+  font-weight: var(--type-wordmark-weight);
+  font-size: var(--type-wordmark-size);
+  letter-spacing: var(--type-wordmark-tracking);
+}
+
+.tabs {
+  display: flex;
+  gap: 28px;
+  height: var(--tab-height);
+  margin-left: var(--space-48);
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 2px 0 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--tab-color);
+  font-family: var(--type-nav-family);
+  font-size: var(--type-nav-size);
+  font-weight: var(--type-nav-weight);
+}
+
+.tab:hover {
+  color: var(--text-2);
+}
+
+.tab[aria-current='page'] {
+  color: var(--tab-active-color);
+  border-bottom-color: var(--ember-500);
+}
+
+.header-end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  height: 100%;
+}
+
+.drag {
+  flex: 1;
+  align-self: stretch;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: var(--account-chip-height);
+  padding: var(--account-chip-padding);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--account-chip-radius);
+  background: var(--ink-900);
+  color: var(--account-chip-color);
+  font-size: var(--type-label-size);
+  font-weight: 600;
+}
+
+.pill:hover {
+  background: var(--ink-850);
+}
+
+.pill-signed-out {
+  padding: 0 14px;
+  color: var(--gold-300);
+}
+
+.window-control {
+  width: var(--window-control-width);
+  height: var(--window-control-height);
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--rounded-control);
+  background: transparent;
+  color: var(--window-control-color);
+}
+
+.window-control:hover,
+.window-control[aria-current='page'] {
+  background: var(--ink-800);
+  color: var(--text);
+}
+
+/* Avatars: initials on a tinted ground. The host and the player sit on ember-tint with gold
+ * initials; others rotate through tinted grounds. */
+.avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: var(--avatar-radius);
+  background: var(--avatar-bg);
+  color: var(--avatar-color);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.avatar-small {
+  width: 28px;
+  height: 28px;
+  font-size: 11px;
+}
+
+/* The second and third tints come from the Play board (EmberSword.dc.html). */
+.avatar[data-tint='1'] {
+  background: var(--info-tint);
+  color: var(--info);
+}
+
+.avatar[data-tint='2'] {
+  background: #1d2416;
+  color: #b9d98f;
+}
+
+.avatar[data-tint='3'] {
+  background: var(--ink-800);
+  color: var(--text-2);
+}
+
+/* Type */
+.display {
+  max-width: 560px;
+  overflow: hidden;
+  font-family: var(--type-display-family);
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line-height);
+  letter-spacing: var(--type-display-tracking);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headline {
+  font-family: var(--type-headline-family);
+  font-size: var(--type-headline-size);
+  font-weight: var(--type-headline-weight);
+  line-height: var(--type-headline-line-height);
+  letter-spacing: var(--type-headline-tracking);
+}
+
+.prose {
+  max-width: 520px;
+  color: var(--text-prose);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line-height);
+}
+
+/* Status: a dot (or, for an error, an icon) and words, never one without the other. */
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-2);
+  font-size: var(--type-status-size);
+}
+
+.dot {
+  flex: none;
+  width: var(--status-dot-size);
+  height: var(--status-dot-size);
+  border-radius: var(--status-dot-radius);
+  background: var(--faint);
+}
+
+.dot-ok {
+  background: var(--ok);
+}
+
+.dot-warn {
+  background: var(--warn);
+}
+
+.status-icon {
+  flex: none;
+  color: var(--danger);
+}
+
+.notice strong {
+  color: var(--gold-300);
+  font-weight: 600;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-12);
+  height: var(--button-secondary-height);
+  padding: var(--button-secondary-padding);
+  border: 1px solid var(--outline);
+  border-radius: var(--button-secondary-radius);
+  background: transparent;
+  color: var(--button-secondary-color);
+  font-size: var(--type-button-secondary-size);
+  font-weight: var(--type-button-secondary-weight);
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--ink-800);
+}
+
+.btn-compact {
+  height: var(--button-secondary-compact-height);
+  padding: var(--button-secondary-compact-padding);
+}
+
+.btn-small {
+  height: var(--button-small-height);
+  padding: var(--button-small-padding);
+  font-size: var(--type-label-size);
+}
+
+/* The one primary action: ember, with the primary lift. */
+.btn.ember {
+  border: 0;
+  background: var(--ember-600);
+  color: var(--on-ember);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
+}
+
+.btn.ember:hover:not(:disabled) {
+  background: var(--ember-500);
+}
+
+.btn-primary {
+  min-width: 200px;
+  height: var(--button-primary-height);
+  padding: var(--button-primary-padding);
+  font-size: var(--type-button-primary-size);
+  font-weight: var(--type-button-primary-weight);
+  letter-spacing: var(--type-button-primary-tracking);
+}
+
+.btn-play {
+  width: var(--button-play-width);
+  height: var(--button-play-height);
+  padding: 0;
+  font-size: var(--type-play-size);
+  font-weight: var(--type-play-weight);
+  letter-spacing: var(--type-play-tracking);
+  text-transform: uppercase;
+}
+
+.btn-play:disabled {
+  border: 0;
+  background: var(--button-play-disabled-bg);
+  color: var(--button-play-disabled-color);
+  box-shadow: none;
+}
+
+.btn-link {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link-color);
+}
+
+.btn-link:hover:not(:disabled) {
+  background: none;
+  color: var(--gold-100);
+}
+
+/* Fields */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.field-label {
+  color: var(--text-2);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line-height);
+}
+
+.input {
+  width: 100%;
+  height: var(--input-height);
+  padding: var(--input-padding);
+  border: 1px solid var(--field-line);
+  border-radius: var(--input-radius);
+  background: var(--input-bg);
+  color: var(--input-color);
+  font-size: var(--type-body-size);
+}
+
+.input.mono {
+  font-size: 14px;
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--danger);
+  font-size: var(--type-secondary-size);
+  line-height: var(--type-secondary-line-height);
+}
+
+.field-error[hidden] {
+  display: none;
+}
+
+/* Cards */
+.card {
+  padding: var(--card-padding);
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  background: var(--card-bg);
+  color: var(--card-color);
+}
+
+.card-title {
+  margin-bottom: var(--space-12);
+  font-size: var(--type-title-size);
+  font-weight: var(--type-title-weight);
+  line-height: var(--type-title-line-height);
+}
+
+.tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--rounded-control);
+  background: var(--ink-800);
+  color: var(--gold-300);
+}
+
+.tag {
+  display: inline-block;
+  padding: var(--tag-padding);
+  border-radius: var(--tag-radius);
+  background: var(--tag-bg);
+  color: var(--tag-color);
+  font-size: var(--type-small-size);
+}
+
+/* The context column */
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-height: 0;
+  padding: var(--context-column-padding);
+  border-left: 1px solid var(--line);
+  background: var(--context-column-bg);
+  overflow-y: auto;
+}
+
+.column-heading {
+  margin: 0 0 var(--space-12);
+  font-size: var(--type-nav-size);
+  font-weight: var(--type-nav-weight);
+  line-height: 1.25;
+}
+
+.column-card {
+  padding: 16px 16px 4px;
+}
+
+.column-card .column-heading {
+  margin-bottom: 10px;
+}
+
+.column-foot {
+  margin-top: auto;
+  color: var(--faint);
+  font-size: var(--type-small-size);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-8) 14px;
+  margin: 0 0 var(--space-12);
+  font-size: var(--type-data-size);
+  line-height: 1.3;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* People */
+.people {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.person {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  line-height: 1.35;
+}
+
+.person-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.person-line {
+  color: var(--muted);
+  font-size: var(--type-small-size);
+}
+
+.people-empty {
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+}
+
+/* Dialogs */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  background: var(--scrim);
+}
+
+.dialog {
+  width: var(--dialog-width);
+  padding: var(--dialog-padding);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--dialog-radius);
+  background: var(--dialog-bg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.dialog-title {
+  font-size: var(--type-dialog-title-size);
+  font-weight: var(--type-dialog-title-weight);
+  line-height: var(--type-dialog-title-line-height);
+}
+
+.dialog-description {
+  margin-top: var(--space-8);
+  color: var(--text-prose);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line-height);
+}
+
+.dialog-body {
+  margin-top: var(--space-16);
+  padding-top: var(--space-16);
+  border-top: 1px solid var(--line);
+  color: var(--text-prose);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-12);
+  margin-top: var(--space-24);
+}
+
+/* The blade: the art fills the main area behind the text; the readout sits left of it. */
+.blade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.blade svg {
+  position: absolute;
+  inset: 0;
+}
+
+.readout {
+  position: absolute;
+  left: 16px;
+  width: 118px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.readout-value {
+  font-size: var(--type-title-size);
+  font-weight: var(--type-title-weight);
+  line-height: 24px;
+}
+
+.readout-label {
+  color: var(--muted);
+  font-size: var(--type-small-size);
+  line-height: 18px;
+}
+
+/* A screen that comes with a later task. */
+.placeholder {
+  position: relative;
+  padding: 120px 0 0 250px;
+}
+
+.placeholder-name {
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+}
