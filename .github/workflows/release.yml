@@ -3,8 +3,9 @@ name: Release
 # fenji-server's release archives (M4 hosting spec §3.7, H3): one for each target, from its own
 # runner, packed by scripts/package-server.sh. A v* tag attaches them, with SHA256SUMS, to the tag's
 # draft release, which the release steps in docs/development.md check and publish. A pull request
-# that changes this workflow, the packaging script or the start scripts builds them without
-# publishing (Ruling HP4), as does a run by hand; its archives stay with the run.
+# that changes this workflow, the packaging script, what it packs (deploy/start, deploy/archive) or
+# the pinned tools builds them without publishing (Ruling HP4), as does a run by hand; its archives
+# stay with the run.
 on:
   push:
     tags: ['v*']
@@ -13,7 +14,9 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/package-server.sh
+      - scripts/versions.env
       - deploy/start/**
+      - deploy/archive/**
   workflow_dispatch:
 
 permissions:
@@ -83,7 +86,12 @@ jobs:
       - name: Pack
         run: |
           bin=target/$TARGET/release/fenji-server
-          if [[ $TARGET == *-windows-* ]]; then bin=$bin.exe; fi
+          exe=fenji-server
+          script=start-server.sh
+          case $TARGET in
+            *-windows-*) bin=$bin.exe exe=fenji-server.exe script=start-server.bat ;;
+            *-apple-darwin) script=start-server.command ;;
+          esac
           # The archive carries the binary's own version, which a tag must match.
           version=$("$bin" --version | tr -d '\r')
           version=${version##* }
@@ -92,10 +100,31 @@ jobs:
             exit 1
           fi
           archive=$(scripts/package-server.sh "$version" "$TARGET" "$bin" dist)
+          # What the archive must hold, worked out here rather than taken from the script, against
+          # what this system's own tools find in it: GNU tar, bsdtar on macOS, 7-Zip on Windows.
+          name=fenji-server-$version-$TARGET
+          files=("$exe" "$script" fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)
+          deps=$(cargo tree --locked -p fenji-server --target "$TARGET" -e normal --prefix none)
+          if grep -q '^fenji-oodle v' <<< "$deps"; then
+            files+=(fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)
+          fi
+          want=$(for f in "" "${files[@]}"; do printf '%s/%s\n' "$name" "$f"; done | LC_ALL=C sort)
           case $archive in
-            *.zip) 7z l "$archive" ;;
-            *) tar -tvzf "$archive" ;;
+            # 7-Zip lists a block for each entry; a folder's Path has no slash at its end, and on
+            # Windows its separators are backslashes.
+            *.zip)
+              got=$(7z l -slt "$archive" | tr -d '\r' |
+                awk -F ' = ' '$1 == "Path" { p = $2; gsub(/\\/, "/", p) } $1 == "Folder" { print p ($2 == "+" ? "/" : "") }' |
+                LC_ALL=C sort) ;;
+            *) got=$(tar -tzf "$archive" | LC_ALL=C sort) ;;
           esac
+          if [[ $got != "$want" ]]; then
+            echo "::error::$archive doesn't hold exactly what it should."
+            diff <(echo "$want") <(echo "$got") || true
+            exit 1
+          fi
+          echo "$archive holds:"
+          echo "$got"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fenji-server-${{ matrix.target }}
@@ -127,6 +156,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          # A run started again after its tag moved still has the old commit's archives: they must
+          # never replace the draft's files.
+          tagged=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          if [[ $tagged != "$GITHUB_SHA" ]]; then
+            echo "::error::$TAG is now at $tagged, not at this run's commit, $GITHUB_SHA."
+            exit 1
+          fi
           # The tag's release, from the list of releases, which has the drafts: none yet, a draft
           # (a run again replaces its files), or a published one, which is never changed.
           draft=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
