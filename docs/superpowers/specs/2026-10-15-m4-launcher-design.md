@@ -158,7 +158,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
   - one game runs at a time;
   - closing the launcher leaves the game running.
 
-  When the game ends, Play opens again. A non-zero exit code is shown, with "Open the log folder".
+  When the game ends, Play opens again. A non-zero exit code is shown, with "Open the log folder". So is an end within 15 s of the start, whatever its code: umu-run 1.4 ends with 0 when it fails (#332).
 - **On Windows and macOS,** Play stays disabled with "Fenji can't start the client on this system yet" and the list of what still works there (the Unsupported board).
 
 ### 3.8 Updates (L5, L6)
@@ -231,6 +231,7 @@ Every error is a sentence in DESIGN.md's voice: what happened, and what to try.
 | Another game build | "Moonward expects a different build of the game than this launcher checks." |
 | A newer server | "Moonward runs a newer Fenji. Update the launcher." |
 | umu-run failing | "The game couldn't start: umu-run ended with \<code\>. The log folder has the details." |
+| umu-run ending with 0 within 15 s (#332) | "The game couldn't start: umu-run ended at once. The log folder has the details." |
 | DepotDownloader failing | "The download stopped: DepotDownloader ended with \<code\>. Try again." |
 | No terminal | "Fenji couldn't open a terminal for DepotDownloader. Run this in yours:", then the command |
 
