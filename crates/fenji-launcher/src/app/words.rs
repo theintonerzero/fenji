@@ -39,6 +39,11 @@ pub const NEEDS_REPAIR: &str = "Some game files need repair. The Client tab show
 pub const PREFIX_FAILED: &str =
     "Proton couldn't make the game's Wine prefix. The log folder has the details.";
 
+/// The game ended with 0 within its first seconds: umu-run 1.4 logs a failure and ends that way
+/// (#332).
+pub const ENDED_AT_ONCE: &str =
+    "The game couldn't start: umu-run ended at once. The log folder has the details.";
+
 /// The game ended with another code than 0 within its first seconds.
 pub fn couldnt_start(code: i32) -> String {
     format!("The game couldn't start: umu-run ended with {code}. The log folder has the details.")

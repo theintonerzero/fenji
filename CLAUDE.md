@@ -64,6 +64,7 @@ Source of truth: `scripts/versions.env` (bootstrap reads it). Keep this table id
 | tauri-cli | 2.12.2 | `cargo install --locked` |
 | git-cliff | 2.14.2 | changelog |
 | cargo-deny | 0.20.2 | licences/advisories |
+| cargo-about | 0.9.2 | third-party licence notices in the release archives; `--features cli` |
 | sqlx-cli | 0.9.0 | features `rustls,sqlite` |
 | bevy_brp_mcp | 0.23.0 | matches `bevy_brp_extras` 0.23 / Bevy 0.20 |
 | Node.js | 24 LTS | macOS: Homebrew `node@24`; Fedora: `nodejs24` |

@@ -1,0 +1,23 @@
+# cargo-about's configuration, for the THIRD-PARTY-NOTICES.txt that scripts/package-server.sh writes
+# into each release archive: the licence text of every crate the target's build links.
+
+# deny.toml's [licenses] allow list, in the same order: scripts/test-package-server.sh fails when the
+# two differ, so change both together. Where a crate offers a choice (MIT OR Apache-2.0), the first
+# accepted licence is the one whose text the notices carry.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# Only what the binary links: crates that only build scripts or tests use aren't in it.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Fenji's own crates aren't published, and are under Fenji's licence (LICENSE).
+private = { ignore = true }

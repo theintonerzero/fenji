@@ -1,0 +1,183 @@
+name: Release
+
+# fenji-server's release archives (M4 hosting spec §3.7, H3): one for each target, from its own
+# runner, packed by scripts/package-server.sh. A v* tag attaches them, with SHA256SUMS, to the tag's
+# draft release, which the release steps in docs/development.md check and publish. A pull request
+# that changes this workflow, the packaging script, what it packs (deploy/start, deploy/archive) or
+# the pinned tools builds them without publishing (Ruling HP4), as does a run by hand; its archives
+# stay with the run.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - .github/workflows/release.yml
+      - scripts/package-server.sh
+      - scripts/versions.env
+      - deploy/start/**
+      - deploy/archive/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      # The C runtime linked in, so the server runs on a Windows without the Visual C++
+      # Redistributable.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      # Windows runners check out with CR LF line ends, and the build embeds files: the example
+      # config, and the database's migrations, whose checksums a database is checked against. With
+      # the repository's LF everywhere, every system builds from the same bytes, and a data folder
+      # can move between them.
+      - name: Check out with the repository's line ends
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain from rust-toolchain.toml, and the target
+        run: |
+          rustup set profile minimal
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustc -vV
+      - name: Install cargo-about, for the archive's third-party notices
+        run: |
+          source scripts/versions.env
+          # Its program is behind the cli feature: without it, cargo install builds nothing.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
+      - name: Install musl-tools, for the static Linux builds' C code
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          # cc looks for aarch64-linux-musl-gcc for the ARM target, and Ubuntu's musl-tools has
+          # musl-gcc only.
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build --release --locked -p fenji-server --target "$TARGET"
+      - name: Pack
+        run: |
+          bin=target/$TARGET/release/fenji-server
+          exe=fenji-server
+          script=start-server.sh
+          case $TARGET in
+            *-windows-*) bin=$bin.exe exe=fenji-server.exe script=start-server.bat ;;
+            *-apple-darwin) script=start-server.command ;;
+          esac
+          # The archive carries the binary's own version, which a tag must match.
+          version=$("$bin" --version | tr -d '\r')
+          version=${version##* }
+          if [[ $GITHUB_REF_TYPE == tag && $GITHUB_REF_NAME != "v$version" ]]; then
+            echo "::error::The tag $GITHUB_REF_NAME doesn't match fenji-server's version, $version."
+            exit 1
+          fi
+          archive=$(scripts/package-server.sh "$version" "$TARGET" "$bin" dist)
+          # What the archive must hold, worked out here rather than taken from the script, against
+          # what this system's own tools find in it: GNU tar, bsdtar on macOS, 7-Zip on Windows.
+          name=fenji-server-$version-$TARGET
+          files=("$exe" "$script" fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)
+          deps=$(cargo tree --locked -p fenji-server --target "$TARGET" -e normal --prefix none)
+          if grep -q '^fenji-oodle v' <<< "$deps"; then
+            files+=(fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)
+          fi
+          want=$(for f in "" "${files[@]}"; do printf '%s/%s\n' "$name" "$f"; done | LC_ALL=C sort)
+          case $archive in
+            # 7-Zip lists a block for each entry; a folder's Path has no slash at its end, and on
+            # Windows its separators are backslashes.
+            *.zip)
+              got=$(7z l -slt "$archive" | tr -d '\r' |
+                awk -F ' = ' '$1 == "Path" { p = $2; gsub(/\\/, "/", p) } $1 == "Folder" { print p ($2 == "+" ? "/" : "") }' |
+                LC_ALL=C sort) ;;
+            *) got=$(tar -tzf "$archive" | LC_ALL=C sort) ;;
+          esac
+          if [[ $got != "$want" ]]; then
+            echo "::error::$archive doesn't hold exactly what it should."
+            diff <(echo "$want") <(echo "$got") || true
+            exit 1
+          fi
+          echo "$archive holds:"
+          echo "$got"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fenji-server-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Attach to the draft release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # makes the draft release and uploads its files
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-server-*
+          path: dist
+          merge-multiple: true
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- fenji-server-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Attach the archives and SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A run started again after its tag moved still has the old commit's archives: they must
+          # never replace the draft's files.
+          tagged=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          if [[ $tagged != "$GITHUB_SHA" ]]; then
+            echo "::error::$TAG is now at $tagged, not at this run's commit, $GITHUB_SHA."
+            exit 1
+          fi
+          # The tag's release, from the list of releases, which has the drafts: none yet, a draft
+          # (a run again replaces its files), or a published one, which is never changed.
+          draft=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | select(.tag_name == env.TAG) | .draft')
+          case $draft in
+            "")
+              prerelease=()
+              if [[ $TAG == *-* ]]; then prerelease=(--prerelease); fi
+              gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes "" "${prerelease[@]}" ;;
+            true) ;;
+            false)
+              echo "::error::$TAG's release is already published, so its files stay as they are."
+              exit 1 ;;
+            *)
+              echo "::error::$TAG has more than one release."
+              exit 1 ;;
+          esac
+          gh release upload "$TAG" dist/* --clobber
