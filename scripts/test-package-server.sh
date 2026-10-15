@@ -67,7 +67,26 @@ case "$1" in
 esac
 EOF
 chmod 0755 "$T/bin/cargo"
-printf 'Third-party notices, from a stand-in for cargo about\n  subtle 2.6.1: BSD-3-Clause\n' > "$T/notices"
+# The stand-in's notices, laid out as the archive's template lays them out. What a crate's own
+# licence text holds in brackets (an email address, Rust code from a source file's header, the
+# Apache License's appendix) isn't a placeholder, so every archive below packs with it.
+cat > "$T/notices" <<'EOF'
+Third-party notices, from a stand-in for cargo about
+
+==============================================================================
+MIT License (MIT), for:
+  rcgen 0.14.10
+
+Copyright (c) 2019-2026 Someone <someone@example.com> and contributors
+Copyright (c) 2020 Someone Else <someone at example dot com>
+
+==============================================================================
+Apache License 2.0 (Apache-2.0), for:
+  ring 0.17.14
+
+   Copyright [yyyy] [name of copyright owner]
+   impl<T: ?Sized> Owner<T> for Year<T> {}
+EOF
 PATH="$T/bin:$PATH"
 export PATH FAKE_CARGO_ARGS="$T/cargo-args" FAKE_NOTICES="$T/notices"
 unset FAKE_OODLE FAKE_ABOUT
@@ -163,7 +182,8 @@ holds "without fenji-oodle, README.txt names no other licence" lacks "$X/README.
 holds "README.txt names the third-party notices" grep -qF THIRD-PARTY-NOTICES.txt "$X/README.txt"
 # A musl build's notices: cargo about's, then musl's COPYRIGHT, whole, at the end.
 musl=$REPO/deploy/archive/musl-COPYRIGHT
-holds "the notices start with cargo about's" cmp -s "$T/notices" <(head -n 2 "$X/THIRD-PARTY-NOTICES.txt")
+holds "the notices start with cargo about's" \
+  cmp -s "$T/notices" <(head -n "$(wc -l < "$T/notices" | tr -d ' ')" "$X/THIRD-PARTY-NOTICES.txt")
 holds "a musl build's notices end with musl's COPYRIGHT" \
   cmp -s "$musl" <(tail -c "$(wc -c < "$musl" | tr -d ' ')" "$X/THIRD-PARTY-NOTICES.txt")
 holds "musl's notice says which musl" grep -qxF "musl 1.2.5, the C library the static Linux builds link in:" \
@@ -326,6 +346,47 @@ else
   bad "a failing cargo about stops it: exit $rc: $got: $(find "$T/out" -mindepth 1 2>&1)"
 fi
 unset FAKE_ABOUT
+
+# For a crate whose own licence text it can't find or read, cargo about puts in the licence's
+# standard text, and says so only in its debug log (#328). MIT's and BSD's leave the copyright
+# line a template ("Copyright (c) <year> <copyright holders>"), which must never ship.
+# placeheld WHAT TARGET HEADING LINE CRATE...: package-server.sh, when cargo about's notices end
+# with a section for the CRATEs that has HEADING and holds LINE, exits 1, shows LINE, names those
+# crates and none of the other sections', and leaves no archive and no staging folder.
+placeheld() {
+  local what=$1 target=$2 heading=$3 line=$4 got rc c wrong=
+  shift 4
+  {
+    cat "$T/notices"
+    printf '\n%s\n%s\n' ============================================================================== "$heading"
+    for c in "$@"; do printf '  %s\n' "$c"; done
+    printf '\n%s\n' "$line" "Permission is hereby granted, free of charge, to any person obtaining a copy"
+  } > "$T/placeheld"
+  rm -rf "$T/out"
+  got=$(cd "$T" && FAKE_NOTICES=$T/placeheld "$PACK" "$v" "$target" "in/with space/fake" out 2>&1 > /dev/null)
+  rc=$?
+  for c in "$@"; do grep -qxF -- "  $c" <<< "$got" || wrong="$wrong, $c not named"; done
+  for c in "rcgen 0.14.10" "ring 0.17.14"; do grep -qF -- "$c" <<< "$got" && wrong="$wrong, $c named"; done
+  grep -qF -- "$line" <<< "$got" || wrong="$wrong, the line not shown"
+  grep -q placeholder <<< "$got" || wrong="$wrong, no word of a placeholder"
+  if [ "$rc" = 1 ] && [ -z "$wrong" ] && [ -z "$(find "$T/out" -mindepth 1 2>/dev/null)" ]; then
+    ok "$what"
+  else
+    bad "$what: exit $rc$wrong: $got: $(find "$T/out" -mindepth 1 2>&1)"
+  fi
+}
+mit="MIT License (MIT), for:"
+placeheld "MIT's standard text, with <year> and <copyright holders>, stops a Linux pack, naming its crates" \
+  x86_64-unknown-linux-musl "$mit" "Copyright (c) <year> <copyright holders>" "mutants 0.0.3" "sqlx-core 0.9.0"
+placeheld "a <year> on its own stops a Windows pack" \
+  x86_64-pc-windows-msvc "$mit" "Copyright (c) <year> Someone" "windows-sys 0.61.2"
+placeheld "a <copyright holders> on its own stops it" \
+  x86_64-unknown-linux-musl "$mit" "Copyright (c) 2020 <copyright holders>" "some-crate 1.0.0"
+placeheld "BSD's <owner> stops a macOS pack" \
+  aarch64-apple-darwin 'BSD 3-Clause "New" or "Revised" License (BSD-3-Clause), for:' \
+  "Copyright (c) 2016 <owner>. All rights reserved." "some-crate 1.0.0"
+placeheld "a field in capitals and in the singular, as MIT-0 writes it, stops it" \
+  x86_64-unknown-linux-musl "MIT No Attribution (MIT-0), for:" "Copyright 2020 <COPYRIGHT HOLDER>" "some-crate 1.0.0"
 
 # toml_list FILE TABLE KEY: the strings in FILE's KEY = [ ... ] array, under [TABLE] (or before any
 # table when TABLE is empty), one a line, in order.

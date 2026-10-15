@@ -12,7 +12,7 @@
 #   - fenji.example.toml, README.txt (deploy/archive's, for this version), LICENSE, and SOURCE.txt,
 #     which says where the version's source code is (the AGPL's offer);
 #   - THIRD-PARTY-NOTICES.txt: the licences of the crates the target's build links, by cargo about,
-#     and musl's notice for a musl target;
+#     and musl's notice for a musl target, with no placeholder where a copyright line belongs;
 #   - fenji-oodle/COPYING and fenji-oodle/NOTICE when the target's build links fenji-oodle, which is
 #     GPL-3.0-or-later (Oodle Ruling O16), as `cargo tree` says.
 # The folders and the two programs are 0755 and the rest 0644, and a tarball's entries are root's.
@@ -100,6 +100,27 @@ case $target in
       cat -- "$root/deploy/archive/musl-COPYRIGHT"
     } >> "$dir/THIRD-PARTY-NOTICES.txt" ;;
 esac
+# For a crate whose own licence text it can't find or read, cargo about puts in the licence's
+# standard text, and says so only in its debug log: --fail lets it through (#328). MIT's and BSD's
+# standard texts leave the copyright line a template, "Copyright (c) <year> <copyright holders>",
+# so the notices would ship a placeholder where the crate's copyright notice belongs. These are the
+# fields of the copyright lines in the standard texts of the licences about.toml accepts, in any
+# case and number, as other licences write them (MIT-0's "<YEAR> <COPYRIGHT HOLDER>"). Nothing
+# broader: a crate's own text may have other things in angle brackets, such as an email address.
+# When the notices hold one, each section that does is shown, and nothing is packed.
+fields='<(year|owner|copyright holders?)>'
+if grep -q -i -E "$fields" "$dir/THIRD-PARTY-NOTICES.txt"; then
+  awk -v fields="$fields" '
+    /^=+$/ { heading = ""; in_heading = 1; shown = 0; next }
+    in_heading && /^$/ { in_heading = 0; next }
+    in_heading { heading = heading $0 "\n"; next }
+    tolower($0) ~ fields {
+      if (!shown) { printf "\n%s", heading; shown = 1 }
+      printf "  line %d: %s\n", NR, $0
+    }
+  ' "$dir/THIRD-PARTY-NOTICES.txt" >&2
+  fail "the third-party notices have a placeholder where a copyright line belongs, above, so give the crates listed with it a clarification in deploy/archive/about.toml"
+fi
 
 cp -- "$binary" "$dir/$exe"
 # A start script gets its system's line ends, whatever the checkout's: CR LF for cmd.exe, LF for sh.
