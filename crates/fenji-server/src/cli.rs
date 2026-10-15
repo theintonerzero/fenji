@@ -12,6 +12,9 @@ use crate::clock::{Clock, Utc};
 use crate::config::{Config, Tls};
 use crate::text::escape_hidden;
 
+/// `--expires`'s durations, which the console's `maintenance on` takes too.
+pub use crate::commands::parse_duration;
+
 /// Fenji's server: the game gate, the account API and the admin commands.
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -71,28 +74,6 @@ pub enum AccountCmd {
     List,
     /// Delete an account with its characters (PRIVACY.md, "Deleting your data")
     Delete { username: String },
-}
-
-/// `30m`, `12h` or `7d`.
-pub fn parse_duration(s: &str) -> Result<Duration, String> {
-    let bad = || format!("{s:?}: a number above 0, then m, h or d");
-    let (n, secs) = if let Some(n) = s.strip_suffix('m') {
-        (n, 60)
-    } else if let Some(n) = s.strip_suffix('h') {
-        (n, 3600)
-    } else if let Some(n) = s.strip_suffix('d') {
-        (n, 86_400)
-    } else {
-        return Err(bad());
-    };
-    let n: u64 = n
-        .bytes()
-        .all(|b| b.is_ascii_digit())
-        .then(|| n.parse().ok())
-        .flatten()
-        .filter(|&n| n > 0)
-        .ok_or_else(bad)?;
-    Ok(Duration::from_secs(n.saturating_mul(secs)))
 }
 
 /// `--keep`: a number above 0. Some tools take 0 to mean "keep them all"; here it would delete
@@ -259,11 +240,9 @@ pub async fn admin(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use clap::Parser;
 
-    use super::{Cli, Command, parse_duration, time};
+    use super::{Cli, Command, time};
 
     #[test]
     fn config_is_optional_and_goes_before_or_after_the_command() {
@@ -298,16 +277,6 @@ mod tests {
                 None,
                 "{bad:?}"
             );
-        }
-    }
-
-    #[test]
-    fn durations_take_minutes_hours_and_days_and_refuse_the_rest() {
-        assert_eq!(parse_duration("90m"), Ok(Duration::from_secs(5400)));
-        assert_eq!(parse_duration("2h"), Ok(Duration::from_secs(7200)));
-        assert_eq!(parse_duration("7d"), Ok(Duration::from_secs(604_800)));
-        for bad in ["7é", "é", "", "m", "0m", "0d", "-1h", "1w", "1.5h", "h1"] {
-            assert!(parse_duration(bad).is_err(), "{bad:?}");
         }
     }
 
