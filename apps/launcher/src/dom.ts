@@ -5,7 +5,10 @@
 
 export type Child = Node | string | number | null | undefined | false | Child[];
 
-/** Attributes by name; a function under `on…` is an event listener (`onclick` → `click`). */
+/**
+ * Attributes by name; a function under `on…` is an event listener (`onclick` → `click`), and
+ * `style` is set through CSSOM, which the shell's CSP allows.
+ */
 export type Attrs = Record<
   string,
   string | number | boolean | null | undefined | ((event: Event) => void)
@@ -18,6 +21,9 @@ function apply(el: Element, attrs: Attrs): void {
     }
     if (typeof value === "function") {
       el.addEventListener(name.slice(2).toLowerCase(), value);
+    } else if (name === "style") {
+      // Through CSSOM: the shell's CSP (default-src 'self') refuses a style attribute (#325).
+      (el as HTMLElement | SVGElement).style.cssText = String(value);
     } else {
       el.setAttribute(name, value === true ? "" : String(value));
     }
