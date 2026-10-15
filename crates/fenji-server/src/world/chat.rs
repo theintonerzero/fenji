@@ -4,6 +4,7 @@
 //! (world spec §2.4).
 use bevy_ecs::prelude::*;
 
+use super::admin::Caller;
 use super::ecs::{Account, Actor, Conn, Doomed, Index, Now, Pending, Stage, deliver, name_key};
 use super::interest::Sight;
 use super::types::*;
@@ -20,7 +21,7 @@ pub const BURST: f64 = 5.0;
 pub const PER_SEC: f64 = 1.0;
 
 /// The entities the client's input writes, for `&`, `<` and `>`; it writes no others.
-const ENTITIES: [&str; 3] = ["&amp;", "&lt;", "&gt;"];
+const ENTITIES: [(char, &str); 3] = [('&', "&amp;"), ('<', "&lt;"), ('>', "&gt;")];
 
 /// Whether `text` has anything a client might read as markup:
 /// - an `&` that doesn't start one of [`ENTITIES`], which might decode to a tag;
@@ -34,7 +35,7 @@ const ENTITIES: [&str; 3] = ["&amp;", "&lt;", "&gt;"];
 fn markup(text: &str) -> bool {
     let stray = text
         .match_indices('&')
-        .any(|(i, _)| !ENTITIES.iter().any(|e| text[i..].starts_with(e)));
+        .any(|(i, _)| !ENTITIES.iter().any(|(_, e)| text[i..].starts_with(e)));
     if stray || text.contains('\\') {
         return true;
     }
@@ -57,11 +58,40 @@ fn markup(text: &str) -> bool {
 /// A line's length as the client counts it: characters, with each entity its input writes for
 /// `&`, `<` and `>` counted as one.
 pub fn length(text: &str) -> usize {
-    text.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .chars()
-        .count()
+    decode(text).chars().count()
+}
+
+/// `text` as the player typed it: each of [`ENTITIES`] back as its character, in one pass, so
+/// that `&amp;lt;` is the `&lt;` the player typed. A command's arguments mean this text: a name to
+/// find and echo, an invite's label.
+pub(super) fn decode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let (c, len) = ENTITIES
+            .iter()
+            .find(|(_, entity)| tail.starts_with(entity))
+            .map_or(('&', 1), |(c, entity)| (*c, entity.len()));
+        out.push(c);
+        rest = &tail[len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `text` as the client's input would write it: `&`, `<` and `>` as [`ENTITIES`]. Text the server
+/// is given as typed, such as the console's announcements, goes out so, and [`check`] takes it.
+pub(super) fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match ENTITIES.iter().find(|(raw, _)| *raw == c) {
+            Some((_, entity)) => out.push_str(entity),
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 /// Whether the server takes a line's text. Its size in bytes comes first, so that nothing else
@@ -111,7 +141,7 @@ impl Bucket {
 
 /// Routes the tick's lines. Each spends a token of its speaker's [`Bucket`], an admin's command
 /// too, so commands keep the rate as chat does. An admin's `!` line then goes to the admin phase
-/// as a command.
+/// as a command, read as the admin typed it ([`decode`]).
 pub(super) fn system(
     now: Res<Now>,
     index: Res<Index>,
@@ -133,10 +163,10 @@ pub(super) fn system(
             continue;
         }
         if account.admin
-            && let Some(parsed) = from_chat(&line.text)
+            && let Some(parsed) = from_chat(&decode(&line.text))
         {
             match parsed {
-                Ok(order) => pending.orders.push((e, order)),
+                Ok(order) => pending.orders.push((Caller::Admin(e), order)),
                 Err(why) => {
                     let text = why.to_string();
                     deliver(
@@ -360,6 +390,29 @@ mod tests {
                 Err(ChatRefusal::TooLong),
                 "{entity}"
             );
+        }
+    }
+
+    #[test]
+    fn entities_read_back_as_typed_in_one_pass_and_escaping_writes_them_again() {
+        // The client's input writes only these three (chat.md 1.5), so a typed `&lt;` arrives as
+        // `&amp;lt;` and reads back as `&lt;`, and anything else with a `&` stays as it is.
+        for (wire, typed) in [
+            ("a &amp; b", "a & b"),
+            ("&lt;3 &gt;", "<3 >"),
+            ("&amp;lt;", "&lt;"),
+            ("&amp;&amp;", "&&"),
+            ("AT&T", "AT&T"),
+            ("&#60;", "&#60;"),
+            ("&amp", "&amp"),
+            ("&", "&"),
+            ("", ""),
+        ] {
+            assert_eq!(decode(wire), typed, "{wire:?}");
+        }
+        assert_eq!(escape("Fish & chips <3 >"), "Fish &amp; chips &lt;3 &gt;");
+        for typed in ["a & b", "<3 >", "&lt;", "é &amp; [1] \\"] {
+            assert_eq!(decode(&escape(typed)), typed, "{typed:?}");
         }
     }
 

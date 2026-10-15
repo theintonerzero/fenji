@@ -139,12 +139,16 @@ pub struct RunningWorld {
 }
 
 /// Starts the world's thread and its services task, on the current tokio runtime. `invite_base`
-/// and `clock` are for `!invite`.
+/// and `clock` are for `!invite` and the console's `invite`. The world sends the sorted names of
+/// its characters on `names` when one enters or leaves, and greets each player with the MOTD
+/// `motd` holds (`Status::names_sender` and `Status::watch_motd`; M4 hosting spec §3.8, §8 HA1).
 pub fn start(
     rules: Rules,
     store: Store,
     invite_base: Option<InviteBase>,
     clock: Arc<dyn Clock>,
+    names: watch::Sender<Arc<[String]>>,
+    motd: watch::Receiver<String>,
 ) -> anyhow::Result<RunningWorld> {
     let (tx, rx) = mpsc::unbounded_channel();
     let (services_tx, services_rx) = mpsc::unbounded_channel();
@@ -155,7 +159,7 @@ pub fn start(
         services_rx,
         tx.downgrade(),
     ));
-    launch(rules, (tx, rx), services_tx, services)
+    launch(rules, (tx, rx), services_tx, services, names, motd)
 }
 
 /// The world's channel: the handles' end, and the thread's.
@@ -164,17 +168,20 @@ type Inbox = (
     mpsc::UnboundedReceiver<WorldIn>,
 );
 
-/// Starts the world's thread on `inbox`, with `services` as the task that takes its work.
+/// Starts the world's thread on `inbox`, with `services` as the task that takes its work, `names`
+/// where it sends who is in it, and `motd` the MOTD it greets players with.
 fn launch(
     rules: Rules,
     (tx, rx): Inbox,
     services_tx: mpsc::UnboundedSender<Service>,
     services: tokio::task::JoinHandle<()>,
+    names: watch::Sender<Arc<[String]>>,
+    motd: watch::Receiver<String>,
 ) -> anyhow::Result<RunningWorld> {
     let hz = rules.tick_hz.max(1);
     let tick = Duration::from_secs(1) / hz;
     let stats = Arc::new(Mutex::new(Stats::new(hz as usize * 60)));
-    let core = WorldCore::new(rules, services_tx);
+    let core = WorldCore::new(rules, services_tx, names, motd);
     let (closes, ended) = watch::channel(());
     let thread = std::thread::Builder::new()
         .name("fenji-world".into())
@@ -400,7 +407,11 @@ impl Sent {
                 | WorldIn::Chat { conn, .. }
                 | WorldIn::Leave { conn } => sent.conns.push(*conn),
                 // Not from a client.
-                WorldIn::Tell { .. } | WorldIn::Shutdown => {}
+                WorldIn::Tell { .. }
+                | WorldIn::Console { .. }
+                | WorldIn::SetAdmin { .. }
+                | WorldIn::Ban { .. }
+                | WorldIn::Shutdown => {}
                 #[cfg(test)]
                 WorldIn::Panic(_) | WorldIn::Stall { .. } => {}
             }
@@ -489,7 +500,16 @@ mod tests {
     fn world(rules: Rules) -> RunningWorld {
         let (services_tx, mut jobs) = mpsc::unbounded_channel();
         let services = tokio::spawn(async move { while jobs.recv().await.is_some() {} });
-        launch(rules, mpsc::unbounded_channel(), services_tx, services).unwrap()
+        let channels = mpsc::unbounded_channel();
+        launch(
+            rules,
+            channels,
+            services_tx,
+            services,
+            unread_names(),
+            no_motd(),
+        )
+        .unwrap()
     }
 
     /// The next thing the world tells `link` (5 s at most).
@@ -549,7 +569,7 @@ mod tests {
         // shutdown's reason too, not as a world that let go without one.
         let (tx, rx) = mpsc::unbounded_channel();
         let (services, _saves) = mpsc::unbounded_channel();
-        let core = WorldCore::new(rules(), services);
+        let core = WorldCore::new(rules(), services, unread_names(), no_motd());
         let (out, mut late) = mpsc::channel(4);
         tx.send(WorldIn::Shutdown).unwrap();
         tx.send(WorldIn::Join {
@@ -568,7 +588,7 @@ mod tests {
         // ends with the message.
         let (tx, rx) = mpsc::unbounded_channel();
         let (services, mut saves) = mpsc::unbounded_channel();
-        let core = WorldCore::new(rules(), services);
+        let core = WorldCore::new(rules(), services, unread_names(), no_motd());
         let mut links = Vec::new();
         for (conn, name) in [(1, "Lin"), (2, "Mai")] {
             let (out, link) = mpsc::channel(8);
@@ -616,7 +636,7 @@ mod tests {
         }
         saved.sort_by_key(|s| match s {
             Service::SavePlace { pid, .. } => *pid,
-            Service::CreateInvite { .. } => 0,
+            Service::CreateInvite { .. } | Service::CreateInviteFor { .. } => 0,
         });
         assert_eq!(
             saved,
@@ -640,7 +660,7 @@ mod tests {
         // sends anything, and Lin (1) joins.
         let (tx, rx) = mpsc::unbounded_channel();
         let (services, _saves) = mpsc::unbounded_channel();
-        let mut core = WorldCore::new(rules(), services);
+        let mut core = WorldCore::new(rules(), services, unread_names(), no_motd());
         let (ren, _ren) = mpsc::channel(8);
         let (kai, _kai) = mpsc::channel(8);
         let earlier = vec![
@@ -734,7 +754,16 @@ mod tests {
             drop(jobs);
             panic!("a bug in the services");
         });
-        let world = launch(rules(), mpsc::unbounded_channel(), services_tx, services).unwrap();
+        let channels = mpsc::unbounded_channel();
+        let world = launch(
+            rules(),
+            channels,
+            services_tx,
+            services,
+            unread_names(),
+            no_motd(),
+        )
+        .unwrap();
         let (out, _rx) = mpsc::channel(4);
         world.handle().send(WorldIn::Join {
             player: player(1, "Lin", at(0.0, 0.0)),

@@ -1,8 +1,11 @@
 //! The world's events and values (M4 world spec §3.9). Connection tasks turn the client's messages
-//! into [`WorldIn`], and [`WorldOut`] back into messages, so the world never sees the wire.
+//! into [`WorldIn`], and [`WorldOut`] back into messages, so the world never sees the wire. The
+//! host's console speaks to it in the same events (M4 hosting spec §3.3; §8, HA5).
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+
+use crate::commands::Command;
 
 /// A connection's id: the gate's online id (`Online::join`).
 pub type ConnId = u64;
@@ -138,7 +141,7 @@ pub enum ChatRefusal {
 pub enum KickReason {
     /// The account entered again, on a newer connection.
     Replaced,
-    /// An admin's `!kick`.
+    /// An admin's `!kick`, the console's `kick`, or a ban.
     Kicked,
     /// The client stopped reading: its outbound channel filled.
     SlowReader,
@@ -166,6 +169,21 @@ pub enum WorldIn {
     Chat { conn: ConnId, line: ChatIn },
     /// A line for one player from outside the tick, such as `!invite`'s link.
     Tell { conn: ConnId, text: String },
+    /// One of the shared commands from the host's console, which has no character (M4 hosting
+    /// spec §3.3): the tick's admin phase runs it as an admin's, with its text as the host typed
+    /// it, and answers on `reply`. Its `tp` takes two names.
+    Console {
+        order: Command,
+        reply: oneshot::Sender<String>,
+    },
+    /// The account is an admin now, or no longer is (`op` and `deop`; M4 hosting spec §8, HA5):
+    /// its player in the world, if any, runs commands from this tick, or no longer does. `admin`
+    /// is what `accounts::is_admin` says after the change, so a `deop` leaves an account that
+    /// `[access].admins` names an admin.
+    SetAdmin { account: i64, admin: bool },
+    /// The host banned the account (HA5): its player in the world, if any, is let go as an
+    /// admin's kick lets one go.
+    Ban { account: i64 },
     /// The connection has ended.
     Leave { conn: ConnId },
     /// Save everyone and stop.
@@ -223,10 +241,36 @@ pub enum WorldOut {
 }
 
 /// Work the world hands to the services task, off the tick.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum Service {
     /// Save where a character stands.
     SavePlace { pid: ActorId, at: Location },
     /// Make an invite for `conn`'s `!invite`, and tell it the link.
     CreateInvite { conn: ConnId, label: Option<String> },
+    /// Make an invite for the console's `invite`, and answer on `reply` as `!invite` is answered.
+    CreateInviteFor {
+        reply: oneshot::Sender<String>,
+        label: Option<String>,
+    },
+}
+
+/// For the tests, which compare the work queued: a reply channel has no equality of its own, so
+/// two invites for the console are alike when their labels are.
+#[cfg(test)]
+impl PartialEq for Service {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::SavePlace { pid: a, at: x }, Self::SavePlace { pid: b, at: y }) => {
+                a == b && x == y
+            }
+            (
+                Self::CreateInvite { conn: a, label: x },
+                Self::CreateInvite { conn: b, label: y },
+            ) => a == b && x == y,
+            (Self::CreateInviteFor { label: x, .. }, Self::CreateInviteFor { label: y, .. }) => {
+                x == y
+            }
+            _ => false,
+        }
+    }
 }

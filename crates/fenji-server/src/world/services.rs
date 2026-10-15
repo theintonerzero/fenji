@@ -1,6 +1,6 @@
 //! Work off the tick (Fenji design spec §6.5, §6.7): the world's saves, and the invites `!invite`
-//! asks for, run on the tokio runtime, so a slow disk never holds a tick. Each save is one
-//! statement.
+//! and the console's `invite` ask for, run on the tokio runtime, so a slow disk never holds a tick.
+//! Each save is one statement.
 use std::sync::Arc;
 
 use fenji_store::{Place, Store};
@@ -47,31 +47,43 @@ pub(super) async fn run(
                 }
             }
             Service::CreateInvite { conn, label } => {
-                let made = crate::invite::create(
-                    &store,
-                    invite_base.as_ref(),
-                    label.as_deref(),
-                    clock.now_ms(),
-                    None,
-                )
-                .await;
-                let text = match made {
-                    Ok(made) => made.to_string(),
-                    Err(e) => {
-                        tracing::error!(error = %e, "making an invite for !invite");
-                        "the invite couldn't be made; the server's log says why".into()
-                    }
-                };
+                let base = invite_base.as_ref();
+                let text = invite(&store, base, label.as_deref(), &*clock, "!invite").await;
                 if let Some(world) = world.upgrade() {
                     let _ = world.send(WorldIn::Tell { conn, text });
                 }
             }
+            Service::CreateInviteFor { reply, label } => {
+                let base = invite_base.as_ref();
+                let text = invite(&store, base, label.as_deref(), &*clock, "console").await;
+                let _ = reply.send(text);
+            }
+        }
+    }
+}
+
+/// Makes an invite with `label` for `by` (`!invite` or the console), and says what came of it: its
+/// link or its code, or that it couldn't be made, with why in the log alone.
+async fn invite(
+    store: &Store,
+    base: Option<&InviteBase>,
+    label: Option<&str>,
+    clock: &dyn Clock,
+    by: &'static str,
+) -> String {
+    match crate::invite::create(store, base, label, clock.now_ms(), None).await {
+        Ok(made) => made.to_string(),
+        Err(e) => {
+            tracing::error!(error = %e, by, "making an invite");
+            "the invite couldn't be made; the server's log says why".into()
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::oneshot;
+
     use super::super::ecs::test_util::logged;
     use super::super::types::{Location, Pos};
     use super::*;
@@ -114,5 +126,46 @@ mod tests {
             lost[0].contains("scene=5 x=1.5 y=-2.0 z=3.0 yaw=90.0"),
             "{log}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_consoles_invite_is_made_and_answered_on_its_channel() {
+        // M4 hosting spec §3.3: the console's `invite` goes through here as `!invite` does, and
+        // its answer goes back on the console's channel, not to a player.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
+        let (jobs_tx, jobs) = mpsc::unbounded_channel();
+        let (world, mut inbox) = mpsc::unbounded_channel::<WorldIn>();
+        let (reply, made) = oneshot::channel();
+        let label = Some("for Lin".to_string());
+        jobs_tx
+            .send(Service::CreateInviteFor { reply, label })
+            .unwrap();
+        // A label `invite` refuses: nothing is stored, and the answer is the plain one.
+        let (reply, refused) = oneshot::channel();
+        let label = Some("a\u{202E}b".to_string());
+        jobs_tx
+            .send(Service::CreateInviteFor { reply, label })
+            .unwrap();
+        drop(jobs_tx);
+        let base = InviteBase {
+            origin: "https://play.example.net".into(),
+            pin: None,
+        };
+        let clock = Arc::new(TestClock::at(0));
+        run(store.clone(), Some(base), clock, jobs, world.downgrade()).await;
+        let made = made.await.unwrap();
+        assert!(
+            made.starts_with("invite link: https://play.example.net/#invite="),
+            "{made}"
+        );
+        assert_eq!(
+            refused.await.unwrap(),
+            "the invite couldn't be made; the server's log says why"
+        );
+        let invites = store.list_invites().await.unwrap();
+        assert_eq!(invites.len(), 1, "{invites:?}");
+        assert_eq!(invites[0].label.as_deref(), Some("for Lin"));
+        assert!(inbox.try_recv().is_err(), "no player was told");
     }
 }

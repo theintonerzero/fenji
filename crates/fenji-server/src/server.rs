@@ -200,6 +200,8 @@ pub async fn start(
         store.clone(),
         cfg.invite_base(pin.as_deref()),
         Arc::clone(&clock),
+        status.names_sender(),
+        status.watch_motd(),
     )?;
     // `[access].admins`, lower-cased: names are compared without regard to ASCII case.
     let admins: Vec<String> = cfg
