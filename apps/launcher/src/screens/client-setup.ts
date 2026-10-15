@@ -108,9 +108,9 @@ export function clientSetup(root: HTMLElement, ctx: Ctx): Screen {
     const linux = s.platform.canDownload;
     const build = s.client.build;
     renew(own, `${linux}\n${build}`, () => {
-      const choose = (linux ? button.secondary : button.primary)("Choose folder", () =>
-        void ctx.send({ type: "pickFolder", purpose: "game" }),
-      );
+      // The ClientSetup board's emphasis: Choose folder is the ember everywhere, since most players
+      // a host invites have the game installed already (the finish review's fix 2).
+      const choose = button.primary("Choose folder", () => void ctx.send({ type: "pickFolder", purpose: "game" }));
       return [
         choice(
           icons.folder(18),
@@ -152,7 +152,7 @@ export function clientSetup(root: HTMLElement, ctx: Ctx): Screen {
               h(
                 "div",
                 { class: "choice-foot" },
-                button.primary("Start download", () => void ctx.send({ type: "download", folder: s.client.defaultFolder })),
+                button.secondary("Start download", () => void ctx.send({ type: "download", folder: s.client.defaultFolder })),
               ),
             ]
           : h("p", { class: "choice-text choice-why" }, "Downloading with Steam works on Linux only for now."),

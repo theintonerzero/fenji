@@ -1408,8 +1408,15 @@
   margin-top: 28px;
 }
 
+/* Each card sits in the wrapper its screen renews: the wrapper takes the row's height and hands it
+   to the card, so both cards' feet sit on one baseline (the ClientSetup board). */
+.choices > * {
+  display: flex;
+}
+
 .choice {
   display: flex;
+  flex: 1;
   flex-direction: column;
 }
 
