@@ -21,7 +21,7 @@ use fenji_data::oodle_spool::OodleSpool;
 use fenji_data::{Codec, FIXED_LEN, cache, index};
 use sha1::{Digest, Sha1};
 
-/// The SoLO data archives, read without decompression. Writes only under re/.
+/// The SoLO data archives, read and decoded, Oodle included (fenji-oodle). Writes only under re/.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
