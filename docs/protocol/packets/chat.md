@@ -121,7 +121,7 @@ Task 16's runs (2026-10-15) ran two clients at once as Task 13's and Task 15's d
 
 **Unknown:**
 - **Where a far 20 starts.** No run sent a 20 between t16-c1's 1.9 m and t16-c3's 374 m, so the 200 m line itself wasn't tried.
-- **A `!tp` across scenes** (a 772 to a client already in the world, as the world sends for a target in another scene): no run had the two players in different scenes.
+- **A `!tp` across scenes** (a 772 to a client already in the world): no run had the two players in different scenes, so the world refuses one for now, moves no one and answers `<name> is in another scene` (#280).
 
 ## Evidence index
 
