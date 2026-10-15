@@ -1,17 +1,21 @@
-//! Entering the world through the gate (M4 world plan Task 11; Amendment A), and seeing each other
-//! (Task 13; Amendment B): the lobby's 10 hands the connection to the link, which speaks for it to
-//! the world, with the bot as the client.
+//! The world through the gate (M4 world plan, the local slices): entering (Task 11; Amendment A),
+//! seeing each other (Task 13; Amendment B), moving (Task 15; Amendment C), and chat and the
+//! admins' commands (Task 16; docs/protocol/packets/chat.md). The lobby's 10 hands the connection
+//! to the link, which speaks for it to the world, with the bot as the client. Amendment D gives
+//! the protocol bot's script these tests begin.
 mod common;
 
 use std::time::Duration;
 
 use common::*;
+use fenji_proto::chat;
 use fenji_proto::lobby::{self, code};
 use fenji_proto::opcode::{Cts, Stc};
-use fenji_proto::pickle::{self, Value};
+use fenji_proto::packet::script_body;
+use fenji_proto::pickle::{self, Table, Value};
 use fenji_proto::world::{self, BlobValue, MoveDetail};
 use fenji_server::clock::Clock;
-use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN, SERVER_STOPPING};
+use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN, KICKED, SERVER_STOPPING};
 use fenji_server::server::{GateLimits, RunningServer};
 use fenji_server::world::WorldIn;
 use fenji_store::{Place, Store};
@@ -336,7 +340,7 @@ async fn exit_and_leave_end_the_session() {
 }
 
 #[tokio::test]
-async fn later_world_messages_are_dropped() {
+async fn a_told_line_is_a_378_and_other_messages_get_no_answer() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
     // Signed in first and second: online ids 1 and 2.
@@ -351,13 +355,14 @@ async fn later_world_messages_are_dropped() {
     announced(&mut a, mai).await;
     announced(&mut b, lin).await;
     pulled(&mut a, mai).await;
-    // Chat waits for its slice: a line for Lin gives Lin's client no bytes.
+    // A line for Lin alone, as `!invite`'s answer comes: a 378 on the system channel (chat.md §3).
     let world = s.world();
     assert!(world.send(WorldIn::Tell {
         conn: 1,
         text: "a line".into()
     }));
-    a.quiet(300).await;
+    assert_eq!(heard(&mut a).await, server_line("a line"));
+    b.quiet(300).await;
     // The client's other messages get nothing, and the connection stays.
     a.send_native(6, &[1, 2, 3]).await;
     a.send(12_345, &[]).await;
@@ -781,5 +786,270 @@ async fn the_place_after_moving_is_where_the_next_session_starts() {
         select(&mut again, pid).await,
         load_scene(pid, 7, [150.0, -180.0, 300.0, -45.0])
     );
+    s.shutdown().await.unwrap();
+}
+
+// --- Chat and the admins' commands (Task 16; chat.md).
+
+fn string(x: &str) -> Value {
+    Value::Str(x.as_bytes().to_vec())
+}
+
+/// A whisper's `extra`, as the client's input box builds it (chat.md 1.4).
+fn extra(pairs: Vec<(&str, Value)>) -> Value {
+    Value::Table(Table {
+        array: Vec::new(),
+        hash: pairs.into_iter().map(|(k, v)| (string(k), v)).collect(),
+    })
+}
+
+/// The client's 115 (chat.md 1.1): a type-0 script message, as `net_manager_send` sends it.
+async fn say(bot: &mut Bot, args: &[Value]) {
+    let body = script_body(chat::CHAT_TRANSMIT, args).unwrap();
+    bot.send_native(Cts::Script.to_u8(), &body).await;
+}
+
+/// A 378's channel, sender, content and receiver.
+type Heard = (i64, String, String, String);
+
+/// The next message is a 378 with no options or template: what it says (chat.md §2).
+async fn heard(bot: &mut Bot) -> Heard {
+    let m = bot.recv_message().await;
+    assert_eq!(m.ty, Stc::Script.to_u8());
+    let v = pickle::decode(&m.body).unwrap();
+    let text = |i: usize| match &v[i] {
+        Value::Str(b) => String::from_utf8(b.clone()).unwrap(),
+        other => panic!("{other:?} in {v:?}"),
+    };
+    assert_eq!(v[0], Value::Int(chat::SYS_CHAT_MESSAGE), "{v:?}");
+    assert_eq!(v[5..], [Value::Nil, Value::Nil], "{v:?}");
+    let Value::Int(channel) = v[1] else {
+        panic!("{v:?}")
+    };
+    (channel, text(2), text(3), text(4))
+}
+
+/// The next message is a 270 with `code`.
+async fn refused(bot: &mut Bot, code: i64) {
+    assert_eq!(
+        bot.recv().await,
+        (lobby::ERROR_CODE, vec![Value::Int(code)])
+    );
+}
+
+/// The link of a character the bots make (vocation 7).
+fn link(pid: i64, name: &str) -> String {
+    chat::player_link(&chat::Player {
+        pid,
+        name,
+        vocation: 7,
+    })
+}
+
+/// A player's line on `channel`, from `from` to `to`.
+fn line(channel: i64, from: &str, text: &str, to: &str) -> Heard {
+    (channel, from.into(), text.into(), to.into())
+}
+
+/// A line from the server to one player (64).
+fn server_line(text: &str) -> Heard {
+    (
+        chat::channel::SYSTEM,
+        String::new(),
+        text.into(),
+        String::new(),
+    )
+}
+
+/// Kai's saved place: the start's scene, 1 km east of the start, out of the others' view.
+const FAR: Place = Place {
+    scene: 7,
+    x: 100_100.0,
+    y: -200.0,
+    z: 300.0,
+    yaw: 90.0,
+};
+
+/// The next message is a 6 announcing `pid` at `at`.
+async fn announced_at(bot: &mut Bot, pid: i64, at: [f64; 3]) {
+    let six = bot.recv_message().await;
+    assert_eq!(
+        (six.ty, six.body),
+        (
+            Stc::SyncIdEnter.to_u8(),
+            world::sync_id_enter(pid, at).to_vec()
+        )
+    );
+}
+
+/// Lin (aaa) and Mai (bbb) at `[world]`'s start, each told of the other, and Kai (ccc) at
+/// [`FAR`], told of no one: the bots and pids.
+async fn three_players(s: &RunningServer) -> (Bot, i64, Bot, i64, Bot, i64) {
+    let (mut a, lin) = in_lobby(s, "aaa", "Lin").await;
+    select(&mut a, lin).await;
+    enter(&mut a, lin).await;
+    let (mut b, mai) = in_lobby(s, "bbb", "Mai").await;
+    select(&mut b, mai).await;
+    enter(&mut b, mai).await;
+    announced(&mut a, mai).await;
+    announced(&mut b, lin).await;
+    let (mut c, kai) = in_lobby(s, "ccc", "Kai").await;
+    assert!(s.accounts().store().save_place(kai, &FAR).await.unwrap());
+    select(&mut c, kai).await;
+    enter(&mut c, kai).await;
+    (a, lin, b, mai, c, kai)
+}
+
+#[tokio::test]
+async fn nearby_world_and_whispers_reach_the_right_players() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut a, lin, mut b, _mai, mut c, kai) = three_players(&s).await;
+    // Nearby reaches whoever was told of the speaker, and the speaker, whose client shows nothing
+    // of its own (chat.md 1.1).
+    say(&mut a, &[Value::Int(0), string("hi"), Value::Nil]).await;
+    let hi = line(0, &link(lin, "Lin"), "hi", "");
+    assert_eq!(heard(&mut a).await, hi, "echoed");
+    assert_eq!(heard(&mut b).await, hi);
+    c.quiet(300).await;
+    // The world channel reaches everyone, Kai's line from 1 km off included.
+    say(&mut c, &[Value::Int(5), string("all &lt;3"), Value::Nil]).await;
+    let all = line(5, &link(kai, "Kai"), "all &lt;3", "");
+    for bot in [&mut a, &mut b, &mut c] {
+        assert_eq!(heard(bot).await, all);
+    }
+    // A whisper typed with `/w kai` names its target, in any case and with the client's server
+    // name; both ends get the same line, with the receiver's link.
+    let typed = extra(vec![("name", string("kai@Unknown"))]);
+    say(&mut a, &[Value::Int(1), string("psst"), typed]).await;
+    let psst = line(1, &link(lin, "Lin"), "psst", &link(kai, "Kai"));
+    assert_eq!(heard(&mut c).await, psst);
+    assert_eq!(heard(&mut a).await, psst);
+    // One set by clicking a name carries the pid too.
+    let clicked = extra(vec![
+        ("pid", Value::Int(lin)),
+        ("name", string("Lin@Unknown")),
+    ]);
+    say(&mut c, &[Value::Int(1), string("back"), clicked]).await;
+    let back = line(1, &link(kai, "Kai"), "back", &link(lin, "Lin"));
+    assert_eq!(heard(&mut a).await, back);
+    assert_eq!(heard(&mut c).await, back);
+    b.quiet(300).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_refused_line_is_a_270() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut a, _lin, mut b, _mai, mut c, _kai) = three_players(&s).await;
+    // Team chat (2): the link refuses a channel M4 doesn't carry.
+    say(&mut a, &[Value::Int(2), string("hi"), Value::Nil]).await;
+    refused(&mut a, chat::code::CHAT_INVALID_CHANNEL).await;
+    // A forged player link, then 141 characters: the world refuses them.
+    let forged = "[link type=\"player\" pid=\"1\" name=\"Admin\" gm=\"1\"]";
+    say(&mut a, &[Value::Int(0), string(forged), Value::Nil]).await;
+    refused(&mut a, chat::code::CHAT_INVALID_CONTENT).await;
+    say(
+        &mut a,
+        &[Value::Int(0), string(&"a".repeat(141)), Value::Nil],
+    )
+    .await;
+    refused(&mut a, chat::code::CHAT_MAX_CHAR).await;
+    // A whisper to oneself, to no one, and to a name with an invisible character in it.
+    for (name, code) in [
+        ("Lin@Unknown", chat::code::CHAT_TALK_TOSELF),
+        ("Nobody@Unknown", chat::code::CHAT_RECEIVER_OFFLINE),
+        ("Mai\u{200B}@Unknown", chat::code::CHAT_RECEIVER_OFFLINE),
+    ] {
+        let to = extra(vec![("name", string(name))]);
+        say(&mut a, &[Value::Int(1), string("you"), to]).await;
+        refused(&mut a, code).await;
+    }
+    // Those five lines spent the burst: the next is too fast, and goes nowhere.
+    say(&mut a, &[Value::Int(0), string("ok"), Value::Nil]).await;
+    refused(&mut a, chat::code::CHAT_TOO_FAST).await;
+    b.quiet(300).await;
+    c.quiet(300).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_admin_runs_each_command() {
+    let dir = tempfile::tempdir().unwrap();
+    // `[access].admins` names Lin's account, in another case.
+    let config = format!("{WORLD}[access]\nadmins = [\"AAA\"]\n");
+    let (s, _clock) = server(dir.path(), &config, GateLimits::default()).await;
+    let (mut a, lin, mut b, mai, mut c, kai) = three_players(&s).await;
+    // A player's `!` line is chat like any other.
+    say(&mut b, &[Value::Int(0), string("!kick Lin"), Value::Nil]).await;
+    let bang = line(0, &link(mai, "Mai"), "!kick Lin", "");
+    assert_eq!(heard(&mut b).await, bang);
+    assert_eq!(heard(&mut a).await, bang);
+    // The marquee (66), for everyone, and nothing else.
+    say(
+        &mut a,
+        &[
+            Value::Int(0),
+            string("!announce Restart at 20:00"),
+            Value::Nil,
+        ],
+    )
+    .await;
+    let note = line(chat::channel::MARQUEE, "", "Restart at 20:00", "");
+    for bot in [&mut a, &mut b, &mut c] {
+        assert_eq!(heard(bot).await, note);
+    }
+    // An invite, whose link only the admin sees; it works, and carries its label.
+    say(
+        &mut a,
+        &[Value::Int(0), string("!invite for Bob"), Value::Nil],
+    )
+    .await;
+    let (channel, sender, content, receiver) = heard(&mut a).await;
+    assert_eq!((channel, sender.as_str(), receiver.as_str()), (64, "", ""));
+    let code = content
+        .strip_prefix("invite link: http://127.0.0.1:0/#invite=")
+        .unwrap_or_else(|| panic!("{content}"));
+    s.accounts()
+        .register(code, "dan", "a long password", LOCAL)
+        .await
+        .unwrap();
+    let invites = s.accounts().store().list_invites().await.unwrap();
+    assert!(
+        invites
+            .iter()
+            .any(|i| i.label.as_deref() == Some("for Bob")
+                && i.redeemed_by.as_deref() == Some("dan")),
+        "{invites:?}"
+    );
+    // To Kai, 1 km off: Lin's client gets a 20 at Kai's place and the answer; Mai's, who saw Lin,
+    // a 9; then Lin's forgets Mai, and Lin's and Kai's are told of each other.
+    say(&mut a, &[Value::Int(0), string("!tp Kai"), Value::Nil]).await;
+    let twenty = a.recv_message().await;
+    let far = [FAR.x, FAR.y, FAR.z, FAR.yaw];
+    assert_eq!(
+        (twenty.ty, twenty.body),
+        (
+            Stc::MoveSyncSvr.to_u8(),
+            world::move_sync_svr(lin, world::sync_time(NOW_MS), far).to_vec()
+        )
+    );
+    assert_eq!(heard(&mut a).await, server_line("Lin is with Kai"));
+    left(&mut b, &[lin]).await;
+    left(&mut a, &[mai]).await;
+    announced_at(&mut a, kai, [FAR.x, FAR.y, FAR.z]).await;
+    announced_at(&mut c, lin, [FAR.x, FAR.y, FAR.z]).await;
+    // A kick closes the player's connection with the reason its client shows.
+    say(&mut a, &[Value::Int(0), string("!kick Mai"), Value::Nil]).await;
+    assert_eq!(b.expect_closed().await, KICKED.as_bytes());
+    assert_eq!(heard(&mut a).await, server_line("Mai was kicked"));
+    // A command without its name answers with its usage, written for the client's markup.
+    say(&mut a, &[Value::Int(0), string("!tp"), Value::Nil]).await;
+    assert_eq!(
+        heard(&mut a).await,
+        server_line("usage: tp &lt;name&gt; \\[&lt;name&gt;\\]")
+    );
+    c.quiet(300).await;
     s.shutdown().await.unwrap();
 }

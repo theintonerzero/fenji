@@ -25,6 +25,8 @@ Those requests come from umu, not from Fenji. They carry nothing about your acco
 
 It also handles short-lived tokens: a session token after you sign in, and a single-use game token, valid for 60 seconds by default, when you press Play.
 
+In the game world it passes each chat line on to the players it is for and keeps no copy. Its logs say that a line came or went, and on which channel, but not what it said or whom a whisper was for. The exception is an admin's command (`!tp`, `!kick`, `!announce` or `!invite`): the server logs each one with the admin's account and the command's arguments, so the operator can see what their admins did.
+
 Like any server, it sees the IP address you connect from, and its logs may record it. The operator decides how long logs and backups are kept.
 
 ## The game connection
