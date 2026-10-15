@@ -20,6 +20,7 @@ use crate::probe::{Incompatible, Status};
 use crate::servers::SavedServer;
 use crate::settings::{Os, Settings};
 
+mod client;
 #[cfg(test)]
 mod golden;
 mod intent;
@@ -93,6 +94,7 @@ struct State {
     live: HashMap<u32, Live>,
     tab: Tab,
     need_sign_in: bool,
+    client: client::Client,
     pending_invite: Option<(u32, InviteCode)>,
     key_change: Option<KeyChange>,
     notice: Option<Notice>,
@@ -162,6 +164,7 @@ impl App {
             live: HashMap::new(),
             tab: Tab::Play,
             need_sign_in: false,
+            client: client::Client::default(),
             pending_invite: None,
             key_change: None,
             notice: problem.map(|text| Notice { text, error: true }),
@@ -177,6 +180,7 @@ impl App {
             }),
         };
         app.inner.rt.spawn(servers::run(Arc::downgrade(&app.inner)));
+        app.check_at_start();
         app
     }
 
@@ -239,14 +243,19 @@ impl App {
                 self.change(|st| st.key_change = None);
                 Ok(())
             }
-            Intent::ChooseFolder { .. }
-            | Intent::Check { .. }
-            | Intent::StopCheck
-            | Intent::Download { .. }
-            | Intent::CancelDownload
-            | Intent::Repair
-            | Intent::Play
-            | Intent::PlayOn { .. } => Err(IntentError::NotYet),
+            Intent::ChooseFolder { path } => self.choose_folder(path),
+            Intent::Check { level } => self.check(level),
+            Intent::StopCheck => {
+                self.stop_check();
+                Ok(())
+            }
+            Intent::Download { folder } => self.download(folder),
+            Intent::CancelDownload => {
+                self.cancel_download();
+                Ok(())
+            }
+            Intent::Repair => self.repair(),
+            Intent::Play | Intent::PlayOn { .. } => Err(IntentError::NotYet),
             Intent::DismissNotice => {
                 self.change(|st| st.notice = None);
                 Ok(())
@@ -352,9 +361,20 @@ impl App {
 impl State {
     fn snapshot(&self, cfg: &AppConfig) -> Snapshot {
         let active = self.settings.active.and_then(|id| self.live.get(&id));
+        let platform = platform(cfg.os);
+        let default_folder = cfg
+            .home
+            .as_ref()
+            .map(|h| h.join("Games").join("SoLO"))
+            .unwrap_or_default();
+        let folder = self.settings.client.as_ref();
+        // For a player without a terminal Fenji can open (spec §3.12), wherever a download works.
+        let manual_command = platform
+            .can_download
+            .then(|| crate::depot::manual_command(folder.unwrap_or(&default_folder), None));
         Snapshot {
             launcher_version: cfg.version.clone(),
-            platform: platform(cfg.os),
+            platform,
             servers: self
                 .settings
                 .servers
@@ -379,22 +399,14 @@ impl State {
                 had_key: k.had_key,
             }),
             client: ClientView {
-                folder: self
-                    .settings
-                    .client
-                    .as_ref()
-                    .map(|p| p.display().to_string()),
-                default_folder: cfg
-                    .home
-                    .as_ref()
-                    .map(|h| h.join("Games").join("SoLO").display().to_string())
-                    .unwrap_or_default(),
+                folder: folder.map(|p| p.display().to_string()),
+                default_folder: default_folder.display().to_string(),
                 build: cfg.pinned_build.clone(),
                 files: cfg.manifest.entries.len(),
-                check: CheckView::None,
-                manual_command: None,
+                check: self.client.check.clone(),
+                manual_command,
             },
-            job: None,
+            job: self.client.job.clone(),
             game: GameView::Idle,
             update: UpdateView {
                 auto: self.settings.auto_update,
@@ -479,6 +491,17 @@ impl State {
     }
 }
 
+fn refused(text: &str) -> IntentError {
+    IntentError::Refused(text.to_string())
+}
+
+/// Now, in Unix milliseconds.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 fn status_view(status: &Status) -> StatusView {
     match status {
         Status::Online => StatusView::Online,
@@ -534,6 +557,7 @@ mod tests {
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 
     use super::*;
+    use crate::test_support::until;
 
     fn config(dir: &Path) -> AppConfig {
         AppConfig {
@@ -557,20 +581,6 @@ mod tests {
 
     const OLD: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     const NEW: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA";
-
-    async fn until(app: &App, what: impl Fn(&Snapshot) -> bool) -> Snapshot {
-        let mut rx = app.subscribe();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if what(&rx.borrow_and_update()) {
-                    return rx.borrow().clone();
-                }
-                rx.changed().await.unwrap();
-            }
-        })
-        .await
-        .expect("the state never came")
-    }
 
     const INFO: &str = r#"{"name":"Moonward","version":"0.5.0","pinned_build":"10015727","gate_host":"127.0.0.1","gate_port":7800,"server_id":1,"api_version":1}"#;
     const SESSION: &str = r#"{"token":"fenji1-0000000000000000000000000000000000000000000000000000000000000000","expires_at":1792059600000}"#;

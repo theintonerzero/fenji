@@ -2,13 +2,15 @@
 //! who's online (launcher spec §3.3, §3.4; L8, L10; plan LP7). Every request runs with the lock
 //! released, each probe in its own task, so one silent server holds up nothing else.
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use fenji_auth::invite::InviteCode;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, info};
 
-use super::{App, Inner, IntentError, KeyChange, Live, Notice, Secret, State, Tab, words};
+use super::{
+    App, Inner, IntentError, KeyChange, Live, Notice, Secret, State, Tab, now_ms, refused, words,
+};
 use crate::api::{ApiClient, ApiError, Session};
 use crate::probe::{self, Probe, Status};
 use crate::servers::{Added, parse_added};
@@ -34,16 +36,6 @@ pub(super) async fn run(inner: Weak<Inner>) {
         };
         App { inner }.tick();
     }
-}
-
-fn refused(text: &str) -> IntentError {
-    IntentError::Refused(text.to_string())
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// Whether an answer means the session is over: it ended, or the host banned the account.

@@ -83,7 +83,7 @@ pub fn linux_platform(
 
 /// The first executable file named `name` in the directories of `path`. Empty and relative
 /// entries are skipped: they would name whatever folder the launcher was started from.
-fn on_path(name: &OsStr, path: Option<&OsStr>) -> Option<PathBuf> {
+pub(crate) fn on_path(name: &OsStr, path: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(path?)
         .filter(|d| d.is_absolute())
         .map(|d| d.join(name))
