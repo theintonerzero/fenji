@@ -24,7 +24,7 @@
 | [`re/spike-0.md`](re/spike-0.md) | M0 spike: static triage of the pinned client, runtime observation, conclusions. |
 | [`re/m1-script-format.md`](re/m1-script-format.md) | M1: the client's embedded file system, blob format, Lua 5.3 dialect and extra opcodes. |
 | [`re/m1-script-census.md`](re/m1-script-census.md) | M1: how much server-side logic the client's embedded scripts carry. |
-| [`re/m1-archives.md`](re/m1-archives.md) | M1: the data archives' structure, read without decompressing Oodle data. |
+| [`re/m1-archives.md`](re/m1-archives.md) | M1: the data archives' structure, `_index` and the stored files; since then, the Oodle census, and the check that Fenji's own decoder reads every Oodle block as the client's DLL does. |
 | [`re/m1-summary.md`](re/m1-summary.md) | M1 summary: spike-0's questions answered, deviations, Done-when status. |
 | [`re/m2-tables.md`](re/m2-tables.md) | M2: the client's table format, and where items, skills, monsters, the XP curve and maps live. |
 | [`re/m2-summary.md`](re/m2-summary.md) | M2 summary: the transport answered, deviations, Done-when status. |

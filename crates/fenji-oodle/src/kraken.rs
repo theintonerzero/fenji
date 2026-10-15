@@ -87,7 +87,8 @@ fn decode_chunk(
     if chunkhdr & 0x80_0000 == 0 {
         // Entropy-coded, with no matches. A stored block here, ooz leaves where it is: its local
         // `out` points at the input, and the output is never written (kraken.cpp:2692–2693 and
-        // 2149). The port copies it into the output, which is what the chunk says (Ruling O14).
+        // 2149). The port copies it into the output, which is what the chunk says (Ruling O13),
+        // and counts it (Ruling O14).
         let (used, written) = decode_bytes(src, &mut dst[pos..], scratch)?;
         if written != dst_count {
             return Err(Error::corrupt("a chunk decodes to a different length"));

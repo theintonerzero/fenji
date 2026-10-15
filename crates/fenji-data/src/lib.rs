@@ -16,7 +16,7 @@ pub mod test_util;
 pub use blob::{BlobHeader, Block, Codec, FIXED_LEN, blocks, decode as decode_blob};
 #[cfg(feature = "oodle")]
 pub use codec::decode_oodle_block;
-pub use codec::{BuiltinCodecs, Decompressor, MAX_OODLE_BLOCK, oodle_payload};
+pub use codec::{BuiltinCodecs, Decompressor, MAX_OODLE_BLOCK, OODLE_DECODER, oodle_payload};
 pub use error::{Error, Result};
 pub use exe_fs::{ExeEntry, ExeFs, PIECE_LEN};
 pub use pe::{PeImage, Section};
