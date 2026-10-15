@@ -182,17 +182,23 @@ mod tests {
     }
 
     #[test]
-    fn the_robot_command_and_the_remote_invoke_are_never_sent() {
-        // 68 writes files where the server says, then runs a script from disk; 714 calls any
-        // function a module or add-on exports (M4 world spec §2.6). Reading the client's other
-        // handlers found three more (lobby.md 2.3): 374 opens a URL, 50 writes a replay file to
-        // the player's disk, and 616 runs Lua source the server sends.
-        for id in [68, 714, 374, 50, 616] {
+    fn the_twelve_ids_the_docs_name_are_never_sent() {
+        // The never-send list as lobby.md 2.3 and the M4 world plan's Global Constraints give it,
+        // written out here rather than read from NEVER_SEND, so that a change to the constant
+        // fails until the docs and this list change with it: M3's seven (2.3 items 1–5), then
+        // M4's five (items 6–10): 68 and 714 from the M4 world spec §2.6, and 374, 50 and 616
+        // from reading the client's other handlers.
+        let pinned = [556, 243, 216, 627, 729, 720, 598, 68, 714, 374, 50, 616];
+        for id in pinned {
             assert!(
                 matches!(script_body(id, &[]), Err(Error::NeverSend(i)) if i == id),
                 "{id}"
             );
         }
+        let (mut list, mut want) = (NEVER_SEND, pinned);
+        list.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(list, want, "NEVER_SEND holds the twelve and nothing else");
     }
 
     #[test]
