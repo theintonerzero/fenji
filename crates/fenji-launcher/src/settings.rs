@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::pin::ServerAddr;
+use crate::pin::{Pin, ServerAddr};
 use crate::servers::SavedServer;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +53,31 @@ impl Default for Settings {
             server: None,
             username: None,
             pin: None,
+        }
+    }
+}
+
+/// What adding a server did to the list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddOutcome {
+    /// A new server, with the address's pin if it had one.
+    New(u32),
+    /// A server already in the list; its key is unchanged.
+    Known(u32),
+    /// A server already in the list whose saved key isn't the one the link offers. Nothing changed:
+    /// [`Settings::set_pin`] replaces it once the player confirms.
+    KeyDiffers {
+        id: u32,
+        saved: Option<String>,
+        offered: String,
+    },
+}
+
+impl AddOutcome {
+    /// The server's id, whatever happened.
+    pub fn id(&self) -> u32 {
+        match *self {
+            AddOutcome::New(id) | AddOutcome::Known(id) | AddOutcome::KeyDiffers { id, .. } => id,
         }
     }
 }
@@ -129,14 +154,21 @@ impl Settings {
         Ok(())
     }
 
-    /// Adds a server, or finds it by its origin, taking the new address's pin when it has one (a
-    /// new link after a key change). Returns its id.
-    pub fn add_server(&mut self, addr: &ServerAddr) -> u32 {
-        if let Some(found) = self.servers.iter_mut().find(|s| s.origin == addr.origin) {
-            if let Some(pin) = addr.pin {
-                found.pin = Some(pin.to_string());
-            }
-            return found.id;
+    /// Adds a server, or finds it by its origin. A saved key never changes here: a link whose key
+    /// differs from the saved one (or that brings one to a server saved without) changes nothing
+    /// and says so, since a pasted link could come from anyone; the player confirms first, and
+    /// [`Settings::set_pin`] makes the change. An address without a pin keeps the saved one.
+    pub fn add_server(&mut self, addr: &ServerAddr) -> AddOutcome {
+        if let Some(found) = self.servers.iter().find(|s| s.origin == addr.origin) {
+            let offered = addr.pin.map(|p| p.to_string());
+            return match offered {
+                Some(offered) if found.pin.as_ref() != Some(&offered) => AddOutcome::KeyDiffers {
+                    id: found.id,
+                    saved: found.pin.clone(),
+                    offered,
+                },
+                _ => AddOutcome::Known(found.id),
+            };
         }
         let id = self.next_id.max(1);
         self.next_id = id + 1;
@@ -148,7 +180,18 @@ impl Settings {
             username: None,
             last_seen_ms: None,
         });
-        id
+        AddOutcome::New(id)
+    }
+
+    /// Sets a server's key, once the player has confirmed the change.
+    pub fn set_pin(&mut self, id: u32, pin: Option<Pin>) -> bool {
+        match self.server_mut(id) {
+            Some(server) => {
+                server.pin = pin.map(|p| p.to_string());
+                true
+            }
+            None => false,
+        }
     }
 
     /// Forgets a server. The active server falls back to the first one left, or none.
@@ -326,9 +369,11 @@ mod tests {
             client: Some("/games/solo".into()),
             ..Settings::default()
         };
-        let id = s.add_server(
-            &ServerAddr::parse(&format!("https://play.example.net/#pin={PIN}")).unwrap(),
-        );
+        let id = s
+            .add_server(
+                &ServerAddr::parse(&format!("https://play.example.net/#pin={PIN}")).unwrap(),
+            )
+            .id();
         s.server_mut(id).unwrap().username = Some("tester".into());
         s.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir).unwrap(), s);
@@ -371,18 +416,60 @@ mod tests {
         assert_eq!(Settings::load(dir.path()).unwrap(), s);
     }
 
+    /// A link never changes a saved key on its own (a pasted link could come from anyone): the
+    /// player confirms first, and `set_pin` does it.
     #[test]
-    fn adding_finds_a_server_by_origin_and_a_new_link_replaces_its_pin() {
+    fn a_link_never_changes_a_saved_key_without_the_player_saying_so() {
+        let mut s = Settings::default();
+        let plain = ServerAddr::parse("https://203.0.113.5:7801").unwrap();
+        let AddOutcome::New(id) = s.add_server(&plain) else {
+            panic!("a new server")
+        };
+        assert_eq!(s.add_server(&plain), AddOutcome::Known(id));
+        let pinned = ServerAddr::parse(&format!("https://203.0.113.5:7801/#pin={PIN}")).unwrap();
+        assert_eq!(
+            s.add_server(&pinned),
+            AddOutcome::KeyDiffers {
+                id,
+                saved: None,
+                offered: PIN.into()
+            }
+        );
+        assert_eq!(s.server(id).unwrap().pin, None, "nothing changed yet");
+        assert!(s.set_pin(id, pinned.pin));
+        assert_eq!(s.server(id).unwrap().pin.as_deref(), Some(PIN));
+        assert_eq!(s.add_server(&pinned), AddOutcome::Known(id));
+        assert_eq!(
+            s.add_server(&plain),
+            AddOutcome::Known(id),
+            "an address without a pin keeps the saved one"
+        );
+        let other = format!("{}A", "B".repeat(42));
+        let changed = ServerAddr::parse(&format!("https://203.0.113.5:7801/#pin={other}")).unwrap();
+        assert_eq!(
+            s.add_server(&changed),
+            AddOutcome::KeyDiffers {
+                id,
+                saved: Some(PIN.into()),
+                offered: other
+            }
+        );
+        assert_eq!(
+            s.server(id).unwrap().pin.as_deref(),
+            Some(PIN),
+            "still the saved key"
+        );
+        assert_eq!(s.servers.len(), 1);
+    }
+
+    #[test]
+    fn ids_are_never_reused_and_removing_the_active_server_moves_it_on() {
         let mut s = Settings::default();
         let a = ServerAddr::parse("https://203.0.113.5:7801").unwrap();
-        let id = s.add_server(&a);
-        let pinned = ServerAddr::parse(&format!("https://203.0.113.5:7801/#pin={PIN}")).unwrap();
-        assert_eq!(s.add_server(&pinned), id);
-        assert_eq!(
-            (s.servers.len(), s.server(id).unwrap().pin.as_deref()),
-            (1, Some(PIN))
-        );
-        let other = s.add_server(&ServerAddr::parse("https://play.example.net").unwrap());
+        let id = s.add_server(&a).id();
+        let other = s
+            .add_server(&ServerAddr::parse("https://play.example.net").unwrap())
+            .id();
         assert_ne!(other, id);
         assert!(s.set_active(other));
         assert!(s.remove_server(other));
@@ -394,7 +481,8 @@ mod tests {
         assert!(s.remove_server(id));
         assert_eq!((s.active, s.servers.len()), (None, 0));
         assert!(!s.remove_server(id));
-        assert!(s.add_server(&a) > other, "ids are never reused");
+        assert!(!s.set_active(id) && !s.set_pin(id, None));
+        assert!(s.add_server(&a).id() > other, "ids are never reused");
     }
 
     #[test]
