@@ -12,12 +12,22 @@ import { contextColumn } from "./parts";
 export const GAME = "Swords of Legends Online";
 
 /** A folder in Geist Mono, as DESIGN.md writes paths. */
-export function path(text: string): HTMLElement {
-  return h("span", { class: "mono path" }, text);
+/** A path as the player knows it, the home folder as `~` (the boards' "~/Games/SoLO"), so a
+ * screenshot doesn't carry the player's name. For display only: intents carry the whole path. */
+export function shown(text: string, home: string | null): string {
+  if (home === null || home === "" || !(text === home || text.startsWith(`${home}/`))) {
+    return text;
+  }
+  return `~${text.slice(home.length)}`;
+}
+
+export function path(text: string, home: string | null = null): HTMLElement {
+  return h("span", { class: "mono path" }, shown(text, home));
 }
 
 /** A path's last folders ("…/Games/SoLO") where a narrow place would cut it, the whole in its title. */
-export function pathEnd(text: string, max: number): HTMLElement {
+export function pathEnd(whole: string, max: number, home: string | null = null): HTMLElement {
+  const text = shown(whole, home);
   if (text.length <= max) {
     return path(text);
   }
@@ -58,7 +68,7 @@ export function clientColumn(): { el: HTMLElement; update(s: Snapshot): void } {
           const rows: [string, Child][] = [
             ["Game", GAME],
             ["Build", `${s.client.build} · ${s.client.files} files`],
-            ["Folder", s.client.folder === null ? "Not chosen yet" : path(s.client.folder)],
+            ["Folder", s.client.folder === null ? "Not chosen yet" : path(s.client.folder, s.platform.home)],
           ];
           if (source !== null) {
             rows.push(["Source", source]);

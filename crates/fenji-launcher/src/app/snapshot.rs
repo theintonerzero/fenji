@@ -36,6 +36,9 @@ pub struct PlatformView {
     pub os: String,
     pub can_play: bool,
     pub can_download: bool,
+    /// The player's home folder, which the view shows paths under as `~`, for display only:
+    /// intents carry whole paths. None on Windows, where `~` means nothing to a player.
+    pub home: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

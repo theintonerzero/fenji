@@ -93,7 +93,7 @@ export function clientWorking(root: HTMLElement, ctx: Ctx): Screen {
               "p",
               { class: "meta" },
               icons.folder(16),
-              h("span", {}, "Saving to ", path(folder), ". Fenji checks every file when the download finishes."),
+              h("span", {}, "Saving to ", path(folder, s.platform.home), ". Fenji checks every file when the download finishes."),
             )
           : null,
         file === null ? null : h("p", { class: "meta" }, icons.download(16), path(file)),

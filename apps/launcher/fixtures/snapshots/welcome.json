@@ -3,7 +3,8 @@
   "platform": {
     "os": "linux",
     "canPlay": true,
-    "canDownload": true
+    "canDownload": true,
+    "home": "/home/player"
   },
   "servers": [],
   "active": null,

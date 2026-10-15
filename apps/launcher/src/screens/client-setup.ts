@@ -137,7 +137,7 @@ export function clientSetup(root: HTMLElement, ctx: Ctx): Screen {
                 "div",
                 { class: "choice-folder" },
                 icons.folder(16),
-                pathEnd(s.client.defaultFolder, 18),
+                pathEnd(s.client.defaultFolder, 18, s.platform.home),
                 h(
                   "button",
                   {

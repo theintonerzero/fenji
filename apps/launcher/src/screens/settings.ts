@@ -158,7 +158,7 @@ export function settings(root: HTMLElement, ctx: Ctx): Screen {
         card(
           "Logs",
           h("p", { class: "settings-lede" }, "The launcher's and the game's logs, for when something goes wrong."),
-          h("p", { class: "settings-path" }, path(s.settings.logFolder)),
+          h("p", { class: "settings-path" }, path(s.settings.logFolder, s.platform.home)),
           button.secondary("Open the log folder", () => void ctx.send({ type: "openLogFolder" }), "compact"),
         ),
       ]);

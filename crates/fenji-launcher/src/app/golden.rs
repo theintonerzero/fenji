@@ -103,6 +103,7 @@ fn base() -> Snapshot {
             os: "linux".into(),
             can_play: true,
             can_download: true,
+            home: Some("/home/player".into()),
         },
         servers: vec![moonward()],
         active: Some(1),
@@ -270,6 +271,7 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
                     os: "windows".into(),
                     can_play: false,
                     can_download: false,
+                    home: None,
                 };
             }),
         ),

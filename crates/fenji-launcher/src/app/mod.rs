@@ -369,7 +369,7 @@ impl App {
 impl State {
     fn snapshot(&self, cfg: &AppConfig) -> Snapshot {
         let active = self.settings.active.and_then(|id| self.live.get(&id));
-        let platform = platform(cfg.os);
+        let platform = platform(cfg.os, cfg.home.as_deref());
         let default_folder = cfg
             .home
             .as_ref()
@@ -526,7 +526,7 @@ fn status_view(status: &Status) -> StatusView {
     }
 }
 
-fn platform(os: Os) -> PlatformView {
+fn platform(os: Os, home: Option<&std::path::Path>) -> PlatformView {
     let (name, linux) = match os {
         Os::Linux => ("linux", true),
         Os::Windows => ("windows", false),
@@ -538,6 +538,9 @@ fn platform(os: Os) -> PlatformView {
         // Play and Steam downloads are Linux's alone in M4 (spec L2).
         can_play: linux,
         can_download: linux,
+        home: home
+            .filter(|_| os != Os::Windows)
+            .map(|h| h.display().to_string()),
     }
 }
 

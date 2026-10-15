@@ -45,6 +45,7 @@ test("About: the version, the licence, the contributors, no telemetry, and two l
     expect(root.textContent).toContain(words);
   }
   // The Settings board's About: "0.4.0 · up to date", with an ok dot (the finish review's fix 6).
+  expect(root.textContent).toContain("~/.local/share/fenji-launcher/logs");
   const version = root.querySelector(".about-version")!;
   expect(version.textContent).toContain("up to date");
   expect(version.querySelector(".dot-ok")).not.toBeNull();
@@ -58,7 +59,7 @@ test("About: the version, the licence, the contributors, no telemetry, and two l
 
 test("off Linux there is no umu-run card", () => {
   const s = golden("settings");
-  s.platform = { os: "windows", canPlay: false, canDownload: false };
+  s.platform = { os: "windows", canPlay: false, canDownload: false, home: null };
   const { root } = mount(settings, s, undefined, "settings");
   expect(root.querySelector("#settings-umu-run")).toBeNull();
 });

@@ -42,7 +42,7 @@ export function clientReady(root: HTMLElement, ctx: Ctx): Screen {
   return {
     update(s) {
       art.update(bladeFor(s), groundFor(s));
-      renew(folder, s.client.folder ?? "", () => [path(s.client.folder ?? "")]);
+      renew(folder, `${s.client.folder}\n${s.platform.home}`, () => [path(s.client.folder ?? "", s.platform.home)]);
       const check = s.client.check;
       const when =
         check.kind === "verified"
@@ -54,6 +54,8 @@ export function clientReady(root: HTMLElement, ctx: Ctx): Screen {
         return [
           h("p", { class: "meta" }, ok, clientLine(s, true)),
           when === null ? null : h("p", { class: "meta" }, icons.clock(14), when),
+          // A ready copy leads on to Play, in gold: the screen's buttons stay outlines.
+          h("p", { class: "meta" }, button.link(["Go to Play", icons.chevron(14)], () => ctx.setTab("play"))),
         ];
       });
       slot.update(s);

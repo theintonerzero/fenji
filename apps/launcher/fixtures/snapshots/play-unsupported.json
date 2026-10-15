@@ -3,7 +3,8 @@
   "platform": {
     "os": "windows",
     "canPlay": false,
-    "canDownload": false
+    "canDownload": false,
+    "home": null
   },
   "servers": [
     {
