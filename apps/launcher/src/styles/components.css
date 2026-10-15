@@ -522,8 +522,14 @@
 
 .dialog-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 14px;
+}
+
+/* The title and its description, beside the tile, whose top they share. */
+.dialog-heading {
+  min-width: 0;
+  padding-top: 6px;
 }
 
 .dialog-title {
