@@ -76,3 +76,5 @@ Fenji is an independent project. It is not affiliated with, endorsed by or spons
 The game's terms likely forbid reverse engineering it or running it against unofficial servers. The game is still operated in China, and its publishers do pursue private servers, so hosting or joining one is at your own risk. The law differs from place to place, and you are responsible for how you use this software.
 
 Copyright © 2026 The Fenji contributors. Fenji is free software: you can redistribute it and/or modify it under the terms of the [GNU Affero General Public License](LICENSE), version 3 or (at your option) any later version. It comes with no warranty. If you host a modified version for other people, the AGPL requires you to offer those players its source code.
+
+The `archive` and `luatool` programs contain GPL-3.0-or-later code from `crates/fenji-oodle`, a port of [ooz](https://github.com/powzix/ooz)'s Oodle decoder, so its [COPYING](crates/fenji-oodle/COPYING) and [NOTICE](crates/fenji-oodle/NOTICE) go with any copy of them.
