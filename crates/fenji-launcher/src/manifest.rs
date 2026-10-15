@@ -2,7 +2,7 @@
 //! tab-separated lines sorted by path, with `#` comments. Hashes only, no game content.
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
@@ -142,17 +142,30 @@ pub(crate) type Hashed = std::io::Result<(u64, [u8; 32])>;
 
 /// Each file's size and SHA-256, in the given order, hashed on every core.
 pub(crate) fn hash_files(files: &[PathBuf]) -> Vec<Hashed> {
+    hash_files_with(files, &|_, _| {}, &AtomicBool::new(false))
+}
+
+/// [`hash_files`], calling `each(index, size)` as each file is done (a size of 0 when it couldn't
+/// be read) and taking no new file once `stop` is set. A file no worker took comes back as an
+/// [`std::io::ErrorKind::Interrupted`] error.
+pub(crate) fn hash_files_with(
+    files: &[PathBuf],
+    each: &(dyn Fn(usize, u64) + Sync),
+    stop: &AtomicBool,
+) -> Vec<Hashed> {
     let next = AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let mut done: Vec<(usize, Hashed)> = std::thread::scope(|s| {
+    let done: Vec<(usize, Hashed)> = std::thread::scope(|s| {
         let workers: Vec<_> = (0..threads.min(files.len().max(1)))
             .map(|_| {
                 s.spawn(|| {
                     let mut mine = Vec::new();
-                    loop {
+                    while !stop.load(Ordering::Relaxed) {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(f) = files.get(i) else { break };
-                        mine.push((i, hash_file(f)));
+                        let hashed = hash_file(f);
+                        each(i, hashed.as_ref().map_or(0, |(size, _)| *size));
+                        mine.push((i, hashed));
                     }
                     mine
                 })
@@ -163,8 +176,14 @@ pub(crate) fn hash_files(files: &[PathBuf]) -> Vec<Hashed> {
             .flat_map(|w| w.join().expect("a hashing thread panicked"))
             .collect()
     });
-    done.sort_by_key(|(i, _)| *i);
-    done.into_iter().map(|(_, r)| r).collect()
+    let mut out: Vec<Hashed> = files
+        .iter()
+        .map(|_| Err(std::io::ErrorKind::Interrupted.into()))
+        .collect();
+    for (i, hashed) in done {
+        out[i] = hashed;
+    }
+    out
 }
 
 fn hash_file(path: &Path) -> Hashed {
