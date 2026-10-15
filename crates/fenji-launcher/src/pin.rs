@@ -203,11 +203,8 @@ impl ServerCertVerifier for PinnedVerifier {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use rustls::pki_types::pem::PemObject;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-    use tokio::io::AsyncWriteExt;
 
     use super::*;
     use crate::api::{ApiClient, ApiError};
@@ -298,49 +295,12 @@ mod tests {
         }
     }
 
-    /// A TLS server on loopback presenting `cert` and proving it with `key`, answering one
-    /// server-info request on each connection. Returns its port.
+    const INFO: &str = r#"{"name":"P","version":"0.5.0","pinned_build":"10015727","gate_host":"127.0.0.1","gate_port":7800,"server_id":1,"api_version":1}"#;
+
+    /// A TLS server presenting `cert`, proving it with `key`, and answering every request with
+    /// its facts.
     async fn tls_server(cert: CertificateDer<'static>, key: PrivateKeyDer<'static>) -> u16 {
-        #[derive(Debug)]
-        struct Fixed(Arc<rustls::sign::CertifiedKey>);
-        impl rustls::server::ResolvesServerCert for Fixed {
-            fn resolve(
-                &self,
-                _: rustls::server::ClientHello<'_>,
-            ) -> Option<Arc<rustls::sign::CertifiedKey>> {
-                Some(self.0.clone())
-            }
-        }
-        let signing = rustls::crypto::ring::sign::any_supported_type(&key).unwrap();
-        let certified = Arc::new(rustls::sign::CertifiedKey::new(vec![cert], signing));
-        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_cert_resolver(Arc::new(Fixed(certified)));
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            while let Ok((tcp, _)) = listener.accept().await {
-                let acceptor = acceptor.clone();
-                tokio::spawn(async move {
-                    let Ok(mut tls) = acceptor.accept(tcp).await else {
-                        return;
-                    };
-                    let body = r#"{"name":"P","version":"0.5.0","pinned_build":"10015727","gate_host":"127.0.0.1","gate_port":7800,"server_id":1,"api_version":1}"#;
-                    let answer = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = tls.write_all(answer.as_bytes()).await;
-                    let _ = tls.shutdown().await;
-                });
-            }
-        });
-        port
+        crate::test_support::tls_server(cert, key, |_| (std::time::Duration::ZERO, INFO)).await
     }
 
     fn pkcs8(key: &rcgen::KeyPair) -> PrivateKeyDer<'static> {

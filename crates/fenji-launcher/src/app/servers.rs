@@ -381,9 +381,10 @@ impl App {
             return Err(self.refusal(id, &e, Some(&username)));
         }
         info!(server = id, %username, "made an account with an invite");
-        // The invite is spent and the account exists, whatever the sign-in says.
+        // The invite is spent and the account exists, whatever the sign-in says. Only that
+        // invite: one pasted while it ran still waits.
         self.change(|st| {
-            if st.pending_invite.as_ref().is_some_and(|(p, _)| *p == id) {
+            if st.pending_invite.as_ref() == Some(&(id, code)) {
                 st.pending_invite = None;
             }
             if let Some(saved) = st.settings.server_mut(id) {
@@ -392,7 +393,8 @@ impl App {
             st.transient.remove(&id);
             self.save(st);
         });
-        self.session_on(id, api, username, password, true).await
+        self.session_on(id, api, username, password, true, None)
+            .await
     }
 
     /// Signs in on the active server (spec §3.4). With `remember`, the username is saved; without,
@@ -403,22 +405,31 @@ impl App {
         password: Secret,
         remember: bool,
     ) -> Result<(), IntentError> {
-        let (id, api) = {
+        let (id, api, waiting) = {
             let mut st = self.inner.lock();
             let id = st
                 .settings
                 .active
                 .ok_or_else(|| refused(words::NO_SERVER))?;
-            match st.api(id) {
-                Some(Ok(api)) => (id, api),
+            let api = match st.api(id) {
+                Some(Ok(api)) => api,
                 Some(Err(e)) => return Err(st.refusal(id, &e, Some(&username))),
                 None => return Err(refused(words::NO_SERVER)),
-            }
+            };
+            let waiting = st
+                .pending_invite
+                .as_ref()
+                .filter(|(p, _)| *p == id)
+                .map(|(_, code)| code.clone());
+            (id, api, waiting)
         };
-        self.session_on(id, api, username, password, remember).await
+        self.session_on(id, api, username, password, remember, waiting)
+            .await
     }
 
-    /// Signs in and keeps the session in memory only; the password goes with this call.
+    /// Signs in and keeps the session in memory only; the password goes with this call. A sign-in
+    /// with an account the player had drops `waiting`, the invite that was waiting there when it
+    /// began.
     async fn session_on(
         &self,
         id: u32,
@@ -426,6 +437,7 @@ impl App {
         username: String,
         password: Secret,
         remember: bool,
+        waiting: Option<InviteCode>,
     ) -> Result<(), IntentError> {
         let answer = api.sign_in(&username, &password.0).await;
         drop(password);
@@ -437,10 +449,16 @@ impl App {
                 return Err(self.refusal(id, &e, Some(&username)));
             }
         };
-        let orphan = self.change(|st| {
+        let unkept = self.change(|st| {
             // Removed while it signed in: the session has nowhere to live.
             if st.settings.server(id).is_none() {
-                return Some(session);
+                return Some((session, None));
+            }
+            // The player took a new key meanwhile: a token from the old key never meets the new.
+            let current = st.live.get(&id).and_then(|l| l.api.as_ref());
+            if !current.is_some_and(|c| Arc::ptr_eq(c, &api)) {
+                let words = words::key_changed_meanwhile(&st.name(id));
+                return Some((session, Some(IntentError::Refused(words))));
             }
             if remember {
                 st.transient.remove(&id);
@@ -455,16 +473,18 @@ impl App {
             live.username = Some(username.clone());
             live.lobby = None;
             st.need_sign_in = false;
-            // Signed in with an account they had: an invite waiting there isn't needed.
-            if st.pending_invite.as_ref().is_some_and(|(p, _)| *p == id) {
+            // Signed in with an account they had: the invite waiting there isn't needed.
+            if let Some(code) = waiting
+                && st.pending_invite == Some((id, code))
+            {
                 st.pending_invite = None;
             }
             self.save(st);
             None
         });
-        if let Some(session) = orphan {
+        if let Some((session, refusal)) = unkept {
             let _ = api.sign_out(session).await;
-            return Ok(());
+            return refusal.map_or(Ok(()), Err);
         }
         info!(server = id, %username, "signed in");
         self.list_players(true);

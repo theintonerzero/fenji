@@ -70,6 +70,12 @@ pub fn key_first(server: &str) -> String {
     format!("Choose which key to trust for {server} first.")
 }
 
+/// The player took a new key for a server while signing in to it: the session from the old key
+/// isn't kept.
+pub fn key_changed_meanwhile(server: &str) -> String {
+    format!("{server}'s key changed while you signed in. Sign in again.")
+}
+
 /// The settings couldn't be written.
 pub fn cant_save(dir: &Path) -> String {
     format!(

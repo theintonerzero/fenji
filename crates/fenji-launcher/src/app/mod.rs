@@ -529,6 +529,9 @@ fn repository_page(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::Duration;
+
+    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 
     use super::*;
 
@@ -554,6 +557,127 @@ mod tests {
 
     const OLD: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     const NEW: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA";
+
+    async fn until(app: &App, what: impl Fn(&Snapshot) -> bool) -> Snapshot {
+        let mut rx = app.subscribe();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if what(&rx.borrow_and_update()) {
+                    return rx.borrow().clone();
+                }
+                rx.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the state never came")
+    }
+
+    const INFO: &str = r#"{"name":"Moonward","version":"0.5.0","pinned_build":"10015727","gate_host":"127.0.0.1","gate_port":7800,"server_id":1,"api_version":1}"#;
+    const SESSION: &str = r#"{"token":"fenji1-0000000000000000000000000000000000000000000000000000000000000000","expires_at":1792059600000}"#;
+
+    /// A server with its own key, whose sign-ins and redemptions take half a second: time for the
+    /// player to do something else meanwhile. Its port and its pin.
+    async fn slow_server() -> (u16, Pin) {
+        let made = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert = made.cert.der().clone();
+        let pin = Pin::of_cert(&cert).unwrap();
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(made.signing_key.serialize_der()));
+        let port = crate::test_support::tls_server(cert, key, |line| {
+            let slow = Duration::from_millis(500);
+            if line.starts_with("POST /api/v1/sessions ") {
+                (slow, SESSION)
+            } else if line.starts_with("POST /api/v1/accounts ") {
+                (slow, "{}")
+            } else {
+                (Duration::ZERO, INFO)
+            }
+        })
+        .await;
+        (port, pin)
+    }
+
+    fn sign_in() -> Intent {
+        Intent::SignIn {
+            username: "lin".into(),
+            password: Secret("a long password".into()),
+            remember: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_signed_in_under_a_replaced_key_is_never_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        let (port, pin) = slow_server().await;
+        app.intent(add(&format!("https://127.0.0.1:{port}/#pin={pin}")))
+            .await
+            .unwrap();
+        until(&app, |s| matches!(s.servers[0].status, StatusView::Online)).await;
+        let id = app.snapshot().servers[0].id;
+        let signing = tokio::spawn({
+            let app = app.clone();
+            async move { app.intent(sign_in()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // While the sign-in waits, the player takes another key for the server.
+        app.intent(add(&format!("https://127.0.0.1:{port}/#pin={NEW}")))
+            .await
+            .unwrap();
+        app.intent(Intent::UseNewKey { id }).await.unwrap();
+        let refused = signing.await.unwrap().unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            words::key_changed_meanwhile("Moonward")
+        );
+        assert!(!app.snapshot().servers[0].signed_in);
+    }
+
+    #[tokio::test]
+    async fn an_invite_pasted_while_a_request_runs_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        let (port, pin) = slow_server().await;
+        let link = |code: &str| {
+            add(&format!(
+                "https://127.0.0.1:{port}/#invite={code}&pin={pin}"
+            ))
+        };
+        let pending = |app: &App| app.snapshot().pending_invite.map(|p| p.code);
+        app.intent(link("ABCD-EFGH-JKMN-PQRS")).await.unwrap();
+        until(&app, |s| matches!(s.servers[0].status, StatusView::Online)).await;
+        // A redemption spends its own invite, not one pasted while it ran.
+        let redeeming = tokio::spawn({
+            let app = app.clone();
+            async move {
+                app.intent(Intent::Redeem {
+                    code: None,
+                    username: "lin".into(),
+                    password: Secret("a long password".into()),
+                })
+                .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        app.intent(link("K7QM-3XRD-VN2P-HT8B")).await.unwrap();
+        redeeming.await.unwrap().unwrap();
+        assert!(app.snapshot().servers[0].signed_in);
+        assert_eq!(pending(&app).as_deref(), Some("K7QM-3XRD-VN2P-HT8B"));
+        // Nor does a sign-in drop an invite pasted while it ran.
+        app.intent(Intent::SignOut).await.unwrap();
+        app.intent(link("ABCD-EFGH-JKMN-PQRS")).await.unwrap();
+        let signing = tokio::spawn({
+            let app = app.clone();
+            async move { app.intent(sign_in()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        app.intent(link("K7QM-3XRD-VN2P-HT8B")).await.unwrap();
+        signing.await.unwrap().unwrap();
+        assert_eq!(pending(&app).as_deref(), Some("K7QM-3XRD-VN2P-HT8B"));
+        // A sign-in with nothing pasted meanwhile drops the invite waiting there.
+        app.intent(Intent::SignOut).await.unwrap();
+        app.intent(sign_in()).await.unwrap();
+        assert_eq!(pending(&app), None);
+    }
 
     #[tokio::test]
     async fn a_code_alone_waits_on_the_active_server_and_needs_one() {
