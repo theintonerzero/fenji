@@ -85,16 +85,6 @@ async fn enter(bot: &mut Bot, pid: i64) -> Vec<u8> {
     seven.body
 }
 
-/// The client's pull of `pid` (type 5 with 0; world.md 14.3, 14.4): the actor, the value, a byte 1,
-/// a zero `u32` and the machine byte, 0 here.
-fn pull(pid: i64) -> Vec<u8> {
-    let mut b = pid.to_le_bytes().to_vec();
-    b.extend(world::PULL.to_le_bytes());
-    b.push(1);
-    b.extend([0; 5]);
-    b
-}
-
 /// The next message is a 6 announcing `pid` at `[world]`'s start (world.md 14.1).
 async fn announced(bot: &mut Bot, pid: i64) {
     let six = bot.recv_message().await;
@@ -636,30 +626,7 @@ async fn a_silent_client_in_the_world_is_closed_after_the_idle_time() {
     s.shutdown().await.unwrap();
 }
 
-// --- Slice 3 (Amendment C): moving.
-
-/// A 200-byte type 8 as the client builds it (world.md §16, the plan's V11 layout): the time, x,
-/// y and z, the yaw, then the direction part with the direction, the yaw again, the yaw offset 0,
-/// the rate and the pitches 0. The state blocks and the 24 bytes after the part are 0.
-fn move_body(time: u64, at: [i32; 3], yaw: i16, dir: u8, rate: u16) -> Vec<u8> {
-    let mut b = time.to_le_bytes().to_vec();
-    for c in at {
-        b.extend(c.to_le_bytes());
-    }
-    b.extend([0; 5]);
-    b.extend(yaw.to_le_bytes());
-    b.extend([0; 138]);
-    b.push(dir);
-    b.extend(yaw.to_le_bytes());
-    b.extend([0, 0]);
-    b.extend(rate.to_le_bytes());
-    b.extend([0; 28]);
-    assert_eq!(b.len(), world::MOVE_DIR_LEN);
-    b
-}
-
-/// The test server's clock, which no test here moves: a multiple of 16.
-const NOW_MS: u64 = NOW as u64;
+// --- Slice 3 (Amendment C): moving. `common`'s `move_body` lays out the client's type 8.
 
 /// Lin and Mai, each in the world at `[world]`'s start and each holding the other (6, 5, 7, 8):
 /// their bots and pids, after the world's budget for moving has had time to fill.
