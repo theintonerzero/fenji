@@ -2,13 +2,14 @@ name: Release
 
 # fenji-server's release archives (M4 hosting spec §3.7, H3): one for each target, from its own
 # runner, packed by scripts/package-server.sh. And the desktop launcher's bundles (launcher spec
-# §3.8): the AppImage, the Windows installer and the macOS app, each from its own runner and, on a
-# tag, signed for the updater with Fenji's release key, with the updater's latest.json. A v* tag
-# attaches them all, with SHA256SUMS, to the tag's draft release, which the release steps in
-# docs/development.md check and publish. A pull request that changes this workflow, the packaging
-# scripts, what they pack (deploy/start, deploy/archive, the launcher's bundle settings) or the
-# pinned tools builds everything without signing or publishing (Ruling HP4), as does a run by hand;
-# its files stay with the run.
+# §3.8): the AppImage, the Windows installer and the macOS app, each from its own runner, with its
+# third-party notices (scripts/launcher-notices.sh, #341) and, on a tag, signed for the updater with
+# Fenji's release key, with the updater's latest.json. A v* tag attaches them all, with SHA256SUMS,
+# to the tag's draft release, which the release steps in docs/development.md check and publish. A
+# pull request that changes this workflow, the packaging scripts, what they pack (deploy/start,
+# deploy/archive, deploy/launcher, the launcher's bundle settings) or the pinned tools builds
+# everything without signing or publishing (Ruling HP4), as does a run by hand; its files stay with
+# the run.
 on:
   push:
     tags: ['v*']
@@ -17,11 +18,14 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/package-server.sh
+      - scripts/launcher-notices.sh
+      - scripts/check-notices.sh
       - scripts/launcher-latest-json.sh
       - scripts/versions.env
       - apps/launcher/src-tauri/tauri.conf.json
       - deploy/start/**
       - deploy/archive/**
+      - deploy/launcher/**
   workflow_dispatch:
 
 permissions:
@@ -143,12 +147,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The triple is the bundle's Rust target, which its third-party notices are for.
           - bundle: appimage
             runner: ubuntu-24.04
+            triple: x86_64-unknown-linux-gnu
           - bundle: nsis
             runner: windows-2025
+            triple: x86_64-pc-windows-msvc
           - bundle: app
             runner: macos-15
+            triple: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
@@ -156,6 +164,7 @@ jobs:
         shell: bash
     env:
       BUNDLE: ${{ matrix.bundle }}
+      TRIPLE: ${{ matrix.triple }}
     steps:
       - name: Check out with the repository's line ends
         run: git config --global core.autocrlf false
@@ -182,15 +191,21 @@ jobs:
         with:
           workspaces: apps/launcher/src-tauri
           key: ${{ matrix.bundle }}
-      - name: pnpm and tauri-cli, at the versions scripts/versions.env pins
+      - name: pnpm, tauri-cli and cargo-about, at the versions scripts/versions.env pins
         run: |
           source scripts/versions.env
           npm install -g "pnpm@$PNPM_VERSION"
           cargo install --locked tauri-cli --version "$TAURI_CLI_VERSION"
           cargo tauri --version
+          # Its program is behind the cli feature: without it, cargo install builds nothing.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
       - name: The view's packages
         working-directory: apps/launcher
         run: pnpm install --frozen-lockfile
+      # After the view's packages, whose licences they carry too (#341).
+      - name: The bundle's third-party notices
+        run: scripts/launcher-notices.sh "$TRIPLE" "$RUNNER_TEMP/notices/THIRD-PARTY-NOTICES.txt"
       - name: Build the bundle
         working-directory: apps/launcher/src-tauri
         env:
@@ -200,6 +215,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          updater=false
           if [[ $GITHUB_REF_TYPE == tag ]]; then
             if [[ $GITHUB_REF_NAME != "v$version" ]]; then
               echo "::error::The tag $GITHUB_REF_NAME doesn't match the launcher's version, $version."
@@ -209,10 +225,21 @@ jobs:
               echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret isn't set, so the update can't be signed."
               exit 1
             fi
-            cargo tauri build --bundles "$BUNDLE" --ci
-          else
-            cargo tauri build --bundles "$BUNDLE" --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
+            updater=true
           fi
+          # Every bundle carries the notices at the root of its resources, as THIRD-PARTY-NOTICES.txt,
+          # where the launcher's Settings › About finds them (Tauri's map form: the file, then its
+          # place). Git Bash's backslashes become slashes; Tauri drops a Windows path's drive letter,
+          # so the file must be on the checkout's drive, as RUNNER_TEMP is.
+          notices=${RUNNER_TEMP//\\//}/notices/THIRD-PARTY-NOTICES.txt
+          config=$(node -e '
+            const [notices, updater] = process.argv.slice(1);
+            const bundle = { resources: { [notices]: "THIRD-PARTY-NOTICES.txt" } };
+            if (updater !== "true") bundle.createUpdaterArtifacts = false;
+            process.stdout.write(JSON.stringify({ bundle }));
+          ' "$notices" "$updater")
+          echo "The bundle's configuration, over tauri.conf.json: $config"
+          cargo tauri build --bundles "$BUNDLE" --ci --config "$config"
       - name: Collect the bundle
         working-directory: apps/launcher/src-tauri/target/release/bundle
         run: |
