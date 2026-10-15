@@ -20,6 +20,12 @@ pub const CHATBOX_SETTINGS_CHANGE: i64 = 422;
 /// `prop_base_group_id` (31), which Fenji never sets, reads 0, so names show without the "※" that
 /// marks a player from another server.
 pub const GROUP_ID: i64 = 0;
+/// The most bytes in a line's text: the client's own limit, after its escaping (chat.md 1.5).
+pub const MAX_TEXT_BYTES: usize = 2_048;
+/// The most bytes in a whisper target's name. A character's name is at most 24 bytes
+/// ([`lobby::NAME_BYTES`]), and a typed target carries `@` and a server's name after it,
+/// `@Unknown` in M4 (chat.md 1.4).
+pub const MAX_NAME_BYTES: usize = 64;
 
 /// The client's channel numbers (`enum_base.luac`; chat.md §3).
 pub mod channel {
@@ -147,36 +153,44 @@ fn get<'a>(t: &'a Table, key: &str) -> Option<&'a Value> {
 
 /// A whisper's target from its `extra` (chat.md 1.4): the pid when it is a whole number, which the
 /// client has when the target was clicked, else the name. `None` when neither is usable: the world
-/// refuses that as not online.
-fn target(extra: Option<&Value>) -> Option<Target> {
+/// refuses that as not online. A name over [`MAX_NAME_BYTES`] is [`Refusal::TooLong`], before it is
+/// read or copied.
+fn target(extra: Option<&Value>) -> Result<Option<Target>, Refusal> {
     let Some(Value::Table(t)) = extra else {
-        return None;
+        return Ok(None);
     };
     if let Some(pid) = get(t, "pid").and_then(whole) {
-        return Some(Target::Pid(pid));
+        return Ok(Some(Target::Pid(pid)));
     }
     match get(t, "name") {
-        Some(Value::Str(b)) => String::from_utf8(b.clone()).ok().map(Target::Name),
-        _ => None,
+        Some(Value::Str(b)) if b.len() > MAX_NAME_BYTES => Err(Refusal::TooLong),
+        Some(Value::Str(b)) => Ok(std::str::from_utf8(b)
+            .ok()
+            .map(|name| Target::Name(name.to_owned()))),
+        _ => Ok(None),
     }
 }
 
 /// 115's arguments, after its id (chat.md §1): the channel, which must be the integer 0, 1 or 5,
-/// else [`Refusal::Channel`]; the text, which must be a string of UTF-8, else
-/// [`Refusal::Invalid`]; and for a whisper, `extra`'s target. A trailing nil, or nothing, after the
-/// text are the same, and values after `extra` are ignored. The text is passed on as it came: the
-/// world checks it.
+/// else [`Refusal::Channel`]; the text, which must be a string of at most [`MAX_TEXT_BYTES`], else
+/// [`Refusal::TooLong`], and of UTF-8, else [`Refusal::Invalid`]; and for a whisper, `extra`'s
+/// target, whose name may have at most [`MAX_NAME_BYTES`]. Each size is checked before the bytes
+/// are read or copied (#280). A trailing nil, or nothing, after the text are the same, and values
+/// after `extra` are ignored. The text is passed on as it came: the world checks it.
 pub fn parse_transmit(args: &[Value]) -> Result<Transmit, Refusal> {
     let channel = match args.first() {
         Some(Value::Int(n)) => Channel::from_number(*n).ok_or(Refusal::Channel)?,
         _ => return Err(Refusal::Channel),
     };
     let text = match args.get(1) {
-        Some(Value::Str(b)) => String::from_utf8(b.clone()).map_err(|_| Refusal::Invalid)?,
+        Some(Value::Str(b)) if b.len() > MAX_TEXT_BYTES => return Err(Refusal::TooLong),
+        Some(Value::Str(b)) => std::str::from_utf8(b)
+            .map_err(|_| Refusal::Invalid)?
+            .to_owned(),
         _ => return Err(Refusal::Invalid),
     };
     let to = match channel {
-        Channel::Whisper => target(args.get(2)),
+        Channel::Whisper => target(args.get(2))?,
         Channel::Nearby | Channel::World => None,
     };
     Ok(Transmit { channel, text, to })

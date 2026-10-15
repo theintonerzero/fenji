@@ -18,7 +18,7 @@ A design-time survey (L4, its chat part) gave the leads, and each finding here w
 | 1.3 | **The channels the input sends.** The input starts on 0 (Normal). A `/` word and a space switch it (S3 `0.7`): `/s` Normal (0), `/w` Whisper (1), `/p` Team (2), `/c` Area (4), `/y` World (5), `/g` Alliance (6) and the rest of the client's channel table (S10 `0`). M4 carries 0, 1 and 5. | **Observed** (bytecode, the table) | S3 `0.7`; S10 `0`; S16 |
 | 1.4 | **A whisper's target, `extra`.** For channel 1, `extra` is the input's whisper target, a table with `pid` and `name` (S3 `0.18`); for any other channel, nil. The target's setter (S3 `0.4`) appends `@` and a server name to a name without one, `NET.GetServerNameByID` of the player's own group, and stores both fields. Typed with `/w Name ` (S3 `0.7` [48]–[56]), the pid is nil, so the table holds `name` alone. Set by clicking another player's name in a line (a left click, S6 `0.14` [29]–[33]; a right click opens the player menu instead [38]–[41], whose Whisper does the same, `0.9`, `0.9.1`) or a whisper line's label (S6 `0.7`), `SetPersonalChannel` (S3 `0.10`) takes the pid and the group from the link through `tonumber`, so the table holds the pid as an integer and the name with the group's server name (`"{1}@{2}"` [23]). The server-name map comes from 495, which Fenji doesn't send, so the name of the server is `Unknown` (`_L("未知")`, S9 `0.17`): `Mai@Unknown`. A table makes the packet's header `0x80` OR the count, then a three-byte table count ([`../payloads.md`](../payloads.md) P.7). t16-c1's two whispers carried exactly these (§7). | **Observed** (bytecode; runs) | S3; S6; S9 `0.17`; D4; §7 (T16C1) |
 | 1.5 | **The text's form.** `CheckTransformChatMsg` (S1 `0.7`) removes control characters, refuses over 140 characters as the client counts them (`UI_PARSE.GetTextActualLength`: characters, and 10 for each link), more than 10 links and an emoji the player hasn't unlocked (S1 `0.6`, §4), turns the input's links into `[link …]` markup, writes `&`, `<` and `>` as `&amp;`, `&lt;` and `&gt;` (`EscapeHtmlChar`, S15 `0` [55]–[59]), masks words from its lists, and refuses over 2,048 bytes. A `[` the player types stays as it is. The server takes none of this on trust: the world checks every line again (the world spec §3.5; the Global Constraints' chat rule). | **Observed** (bytecode) | S1 `0.7`, `0.6`; S15 |
-| 1.6 | **What Fenji takes from a 115** (`chat::parse_transmit`): the channel, which must be the integer 0, 1 or 5, else `ERR_CHAT_INVALID_CHANNEL`; the text, which must be a string of UTF-8, else `ERR_CHAT_INVALID_CONTENT`; and for a whisper, `extra`'s pid when it is a whole number, else its name. A nil after the text and no value at all are the same, and values after `extra` are ignored. The link answers those two refusals at once, as it answers a time sync; the rest goes to the world, which applies the rate, the length and the text rule. | the choices are Fenji's | 1.2–1.5 |
+| 1.6 | **What Fenji takes from a 115** (`chat::parse_transmit`): the channel, which must be the integer 0, 1 or 5, else `ERR_CHAT_INVALID_CHANNEL`; the text, which must be a string of at most the client's own 2,048 bytes (1.5), else `ERR_CHAT_MAX_CHAR`, and of UTF-8, else `ERR_CHAT_INVALID_CONTENT`; and for a whisper, `extra`'s pid when it is a whole number, else its name, of at most 64 bytes, else `ERR_CHAT_MAX_CHAR`. Each size is checked before the bytes are read or copied (#280). A nil after the text and no value at all are the same, and values after `extra` are ignored. The link answers those refusals at once, as it answers a time sync, so none of those lines reaches the world. The rest goes to the world, which applies the rate, the length and the text rule. | the choices are Fenji's | 1.2–1.5 |
 
 ## 2. Hearing it: 378 `PROTOS2C_SYS_CHAT_MESSAGE`
 
@@ -72,7 +72,7 @@ A design-time survey (L4, its chat part) gave the leads, and each finding here w
 | Refusal | `literal` | `ID` | English text | Voice | Who refuses |
 |---|---|---|---|---|---|
 | `Invalid` | `ERR_CHAT_INVALID_CONTENT` | 8639093037559110139 | "The message cannot be sent" | no | the world (markup, hidden characters, an empty line); the link (no text) |
-| `TooLong` | `ERR_CHAT_MAX_CHAR` | -6664778746412662761 | "The number of words in the chat exceeds the limit" | no | the world |
+| `TooLong` | `ERR_CHAT_MAX_CHAR` | -6664778746412662761 | "The number of words in the chat exceeds the limit" | no | the world (over 140 characters); the link (over 2,048 bytes, or a whisper's name over 64) |
 | `TooFast` | `ERR_CHAT_TOO_FAST` | -7815789390081211457 | "You're typing too fast!" | yes | the world |
 | `NotOnline` | `ERR_CHAT_RECEIVER_OFFLINE` | 2418279538352872837 | "The person you are whispering to is not online" | yes | the world |
 | `ToSelf` | `ERR_CHAT_TALK_TOSELF` | 437753046416001599 | "You cannot whisper to yourself" | no | the world |
@@ -87,6 +87,7 @@ A design-time survey (L4, its chat part) gave the leads, and each finding here w
 | 115 from an admin, `!` and a letter | the command's effect, and its answer as 378 on 64 | `(378, 64, "", the answer, "", nil, nil)`, the answer made to show as written (2.5) |
 | `!announce text` from an admin | 378 on 66 to everyone | `(378, 66, "", text, "", nil, nil)` |
 | 115 on another channel, or without text | 270 at once, from the link | `(270, ERR_CHAT_INVALID_CHANNEL)` or `(270, ERR_CHAT_INVALID_CONTENT)` |
+| 115 whose text is over 2,048 bytes, or a whisper to a name over 64 bytes | 270 at once, from the link | `(270, ERR_CHAT_MAX_CHAR)` |
 | a line the world refuses | 270 to the speaker | §5's codes |
 | 422 | nothing | 4.2 |
 
@@ -121,7 +122,7 @@ Task 16's runs (2026-10-15) ran two clients at once as Task 13's and Task 15's d
 
 **Unknown:**
 - **Where a far 20 starts.** No run sent a 20 between t16-c1's 1.9 m and t16-c3's 374 m, so the 200 m line itself wasn't tried.
-- **A `!tp` across scenes** (a 772 to a client already in the world, as the world sends for a target in another scene): no run had the two players in different scenes.
+- **A `!tp` across scenes** (a 772 to a client already in the world): no run had the two players in different scenes, so the world refuses one for now, moves no one and answers `<name> is in another scene`, or for two names `<name> and <name> are in different scenes` (#280).
 
 ## Evidence index
 
