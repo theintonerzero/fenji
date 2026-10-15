@@ -40,6 +40,23 @@
 #       [--type T:TEXT]... [--click T:X,Y]...
 #       [--clients 2 --rehearsed --username2 USER --password-file2 FILE
 #        (--display2 M | with --desktop) [--second-after S] [--timeout2 S]]
+#       [--launcher-app APPIMAGE] [--print]
+#
+# --launcher-app APPIMAGE (launcher plan Task 16) runs the desktop launcher in place of fenji-launch,
+# under the same guards: its AppImage, unpacked into the run (RUN/launcher), starts with its data,
+# config and cache folders inside the run, so with no settings file; PROTONPATH names the pinned
+# GE-Proton and umu-run's folder comes first on PATH; the dedicated prefix is bound where the
+# launcher keeps its own (RUN/data/fenji-launcher/prefix), so the launcher's Wine prefix is this one,
+# primed and watched; and umu's runtime is bound where the launcher's umu-run looks for it with the
+# run's XDG_DATA_HOME (RUN/data/umu), as fenji-launch's runs use it in place. GTK's folder dialog lists the run's client copy as a bookmark, "SoLO (this
+# run)". The player's steps are --key, --type and --click on --display: --type
+# T:@password types --password-file's first line through xkey.py --type-file, so the password is
+# never on a command line or in a file of the run, and every input is followed by a screenshot
+# (step-Ts-KIND.png). --username is optional there: the launcher's own form takes the name. The
+# launcher's log says when the game runs and when it ends; the run ends when the game does, or at
+# the timeout. Not with --clients 2.
+# --print prints a run's plan (the namespace, its environment, and fenji-launch's arguments or the
+# launcher's command) once the arguments have passed their checks, and starts nothing.
 #
 # --clients 2 (M4 world plan, Amendment B) adds a second client: a second reflink copy
 # (RUN/client2), its own fenji-launch on the one prefix with its own account (--username2,
@@ -104,6 +121,8 @@ BARE_HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 WORK="$REPO/re/bare-metal"
 PINNED_COPY="${FENJI_CLIENT_PATH:-}"
 UMU="${FENJI_UMU_RUN:-$HOME/.local/bin/umu-run}"
+# umu's runtime, where umu-run keeps it: XDG_DATA_HOME/umu.
+UMU_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/umu"
 GAMEID=umu-1418100
 # Where the display checks look: X lock files, the X socket directory, /proc (tests move all three).
 X_LOCKS=/tmp
@@ -157,9 +176,12 @@ host_guards() {
 # namespace (where the watchdog arms); the seccomp filter on fd 7; and nothing left when its parent
 # goes. A second argument is a desktop run's X authority file, brought in read-only after the tmpfs
 # mounts, which would hide it; a third, a two-client run's second nested display, whose socket is
-# bound back beside the first.
+# bound back beside the first; a fourth, where the desktop launcher keeps its prefix, which the
+# dedicated prefix is bound over, and a fifth, where its umu-run looks for umu's runtime, which the
+# host's is bound over (both --launcher-app).
 namespace_cmd() {
-  local display=$1 xauth=${2:-} display2=${3:-} rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
+  local display=$1 xauth=${2:-} display2=${3:-} prefix_at=${4:-} umu_at=${5:-}
+  local rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
   local cache=${XDG_CACHE_HOME:-$HOME/.cache}
   printf '%s\n' bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$rt"
   for s in pipewire-0 pulse; do
@@ -172,7 +194,32 @@ namespace_cmd() {
   if [ -d "$HOME/.cache/ibus" ]; then printf '%s\n' --tmpfs "$HOME/.cache/ibus"; fi
   if [ "$cache" != "$HOME/.cache" ] && [ -d "$cache/ibus" ]; then printf '%s\n' --tmpfs "$cache/ibus"; fi
   if [ -n "$xauth" ]; then printf '%s\n' --ro-bind "$xauth" "$xauth"; fi
+  if [ -n "$prefix_at" ]; then printf '%s\n' --bind "$WORK/compat" "$prefix_at"; fi
+  if [ -n "$umu_at" ]; then printf '%s\n' --bind "$UMU_DATA" "$umu_at"; fi
   printf '%s\n' --unshare-net --unshare-pid --die-with-parent --seccomp 7 --
+}
+
+# Where the desktop launcher keeps its Wine prefix in run folder RUN: XDG_DATA_HOME/fenji-launcher.
+app_prefix() { echo "$1/data/fenji-launcher/prefix"; }
+
+# Where the desktop launcher's umu-run looks for umu's runtime in run folder RUN: XDG_DATA_HOME/umu.
+# Without the host's there, umu-run wants to download it, and the namespace has no network (r6).
+app_umu() { echo "$1/data/umu"; }
+
+# The bookmark that lists run folder RUN's client copy in GTK's folder dialog (--launcher-app), as
+# GTK reads it from XDG_CONFIG_HOME/gtk-3.0/bookmarks: a file URI and a label. Choosing the folder is
+# then two clicks: a typed path is mangled by the dialog's completion (rehearsal r4).
+app_bookmark() {
+  python3 -I -c 'import sys, urllib.parse; print("file://" + urllib.parse.quote(sys.argv[1]) + " SoLO (this run)")' \
+    "$1/client"
+}
+
+# The desktop launcher's command in run folder RUN (--launcher-app): its unpacked AppImage, with its
+# data, config and cache folders in the run, the pinned GE-Proton and umu-run's folder first on PATH.
+app_cmd() {
+  local dir=$1
+  printf '%s\n' env "XDG_DATA_HOME=$dir/data" "XDG_CONFIG_HOME=$dir/config" "XDG_CACHE_HOME=$dir/cache" \
+    "PROTONPATH=$PROTON" "PATH=$(dirname -- "$UMU"):$PATH" "$dir/launcher/AppRun"
 }
 
 # The environment inside: no session bus, no agents, no Wayland (the client draws on X11 display N),
@@ -547,8 +594,11 @@ cmd_bare_run() {
   local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 stub_args=()
   local clients=1 user2="" pwfile2="" display2="" second_after=30 second_after_given=0 tmo2="" tmo2_given=0
   local keys2=() types2=() clicks2=() rehearsed=0
+  local app="" print=0 type_secret="" shot_after_inputs="" prefix_at="" umu_at=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --launcher-app) [ $# -ge 2 ] || usage; app=$2; shift 2 ;;
+      --print) print=1; shift ;;
       --server) [ $# -ge 2 ] || usage; server_cfg=$2; shift 2 ;;
       --server-data) [ $# -ge 2 ] || usage; server_data=$2; shift 2 ;;
       --username) [ $# -ge 2 ] || usage; user=$2; shift 2 ;;
@@ -587,6 +637,15 @@ cmd_bare_run() {
   case "$run" in '' | */* | .* | *[!A-Za-z0-9._-]*) die "bad run name: '$run'" ;; esac
   case "$tmo" in '' | *[!0123456789]*) die "--timeout takes whole seconds" ;; esac
   case "$clients" in 1 | 2) ;; *) misuse "--clients takes 1 or 2, not '$clients'" ;; esac
+  if [ -n "$app" ]; then
+    [ "$clients" = 1 ] || misuse "--launcher-app runs one desktop launcher: no --clients 2"
+    { [ -f "$app" ] && [ -x "$app" ]; } ||
+      misuse "--launcher-app: no AppImage to run at '$app' (build one: cd apps/launcher && cargo tauri build --bundles appimage)"
+    app=$(realpath -- "$app")
+    local app_hidden
+    if app_hidden=$(ns_hides "$app"); then misuse "--launcher-app is under $app_hidden, which the namespace replaces with an empty tmpfs: $app"; fi
+    shot_after_inputs=1
+  fi
   # Ruling R14, in code by Ruling R25 (#280): checked first, so nothing else about client 2 matters.
   if [ "$clients" = 2 ] && [ "$rehearsed" = 0 ]; then
     misuse "--clients 2 waits for its own umu-run rehearsal and the owner's go-ahead (Ruling R14); add --rehearsed only once it has both"
@@ -603,11 +662,16 @@ cmd_bare_run() {
   fi
   [ -n "$server_cfg" ] || misuse "--server is required: the client plays against a local fenji-server"
   [ -n "$server_data" ] || misuse "--server-data is required: the server's store lives there"
-  [[ "$user" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || misuse "--username takes the account's name"
+  # The desktop launcher's own form takes the name, so a launcher run needs none.
+  if [ -z "$app" ] || [ -n "$user" ]; then
+    [[ "$user" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || misuse "--username takes the account's name"
+  fi
   if [ -z "$pwfile" ] || [ ! -f "$pwfile" ] || [ ! -r "$pwfile" ]; then
     misuse "--password-file: can't read '$pwfile'"
   fi
   pwfile=$(realpath -- "$pwfile")
+  # --type T:@password types this file's first line (start_inputs).
+  type_secret=$pwfile
   local hidden
   if hidden=$(ns_hides "$pwfile"); then
     misuse "--password-file is under $hidden, which the namespace replaces with an empty tmpfs: $pwfile"
@@ -636,6 +700,18 @@ PY
     d2=$display2
     (display=$display2 choose_display 0 1) || exit $?
   fi
+  if [ -n "$app" ]; then prefix_at=$(app_prefix "$WORK/runs/$run") umu_at=$(app_umu "$WORK/runs/$run"); fi
+  if [ "$print" = 1 ]; then
+    namespace_cmd "$display" "$xauth" "$d2" "$prefix_at" "$umu_at"
+    namespace_env "$display" "$xauth"
+    if [ -n "$app" ]; then
+      app_cmd "$WORK/runs/$run"
+    else
+      printf '%s\n' "$STUBBIN/fenji-launch"
+      launch_args "$api_port" "$user" "$pwfile" "$WORK/runs/$run/client"
+    fi
+    exit 0
+  fi
   host_guards
   check_unmarked
   prefix_ready || die "no prefix; run: $0 setup"
@@ -651,12 +727,21 @@ PY
   fi
   check_pinned_copy
   [ -x "$STUBBIN/fenji-server" ] || die "build the server first: cargo build --release -p fenji-server"
-  [ -x "$STUBBIN/fenji-launch" ] || die "build the launcher first: cargo build --release -p fenji-launcher"
+  [ -n "$app" ] || [ -x "$STUBBIN/fenji-launch" ] || die "build the launcher first: cargo build --release -p fenji-launcher"
   local OUT="$WORK/out/$run" IO="$WORK/io/$run" RUN="$WORK/runs/$run" PFX="$WORK/compat"
   if [ -e "$OUT" ] || [ -e "$IO" ] || [ -e "$RUN" ]; then die "run $run exists already; pick a new name"; fi
   mkdir -p "$OUT" "$IO/tmp" "$IO/server" "$RUN/client"
   cp -a --reflink=always -- "$PINNED_COPY/." "$RUN/client/" ||
     die "the client copy needs a filesystem with reflinks (btrfs, XFS); nothing was started"
+  if [ -n "$app" ]; then
+    # The launcher's own folders start empty, bar GTK's bookmark of the client copy, and its
+    # prefix's mount point waits for the bind.
+    mkdir -p "$prefix_at" "$RUN/config/gtk-3.0" "$RUN/cache"
+    app_bookmark "$RUN" > "$RUN/config/gtk-3.0/bookmarks"
+    if ! (cd "$RUN" && "$app" --appimage-extract > "$IO/extract.log" 2>&1) || ! mv -- "$RUN/squashfs-root" "$RUN/launcher"; then
+      die "couldn't unpack $app (see $IO/extract.log); nothing was started"
+    fi
+  fi
   if [ "$clients" = 2 ]; then
     mkdir -p "$IO/1" "$IO/2" "$RUN/client2"
     cp -a --reflink=always -- "$PINNED_COPY/." "$RUN/client2/" ||
@@ -670,8 +755,12 @@ PY
   {
     echo "run $run (bare metal), $(date -Is)"
     echo "guards: Linux x86_64; Steam not running (and watched); no Wine running; reflink copy of $PINNED_COPY; prefix $PFX"
-    echo "namespace: $(namespace_cmd "$display" "$xauth" "$d2" | tr '\n' ' ')$(namespace_env "$display" "$xauth" | tr '\n' ' ')"
-    echo "launch: fenji-launch $(launch_args "$api_port" "$user" "<password file>" "$RUN/client" | tr '\n' ' ')"
+    echo "namespace: $(namespace_cmd "$display" "$xauth" "$d2" "$prefix_at" "$umu_at" | tr '\n' ' ')$(namespace_env "$display" "$xauth" | tr '\n' ' ')"
+    if [ -n "$app" ]; then
+      echo "launch: the desktop launcher $app, unpacked in $RUN/launcher: $(app_cmd "$RUN" | tr '\n' ' '); the prefix $PFX bound at $prefix_at, umu's runtime $UMU_DATA at $umu_at; the player's client folder $RUN/client"
+    else
+      echo "launch: fenji-launch $(launch_args "$api_port" "$user" "<password file>" "$RUN/client" | tr '\n' ' ')"
+    fi
     if [ "$clients" = 2 ]; then
       echo "client 2: fenji-launch $(launch_args "$api_port" "$user2" "<password file 2>" "$RUN/client2" | tr '\n' ' ')"
       echo "client 2: ${d2:+display :$d2, }started $second_after s after client 1, timeout $tmo2 s; Proton logs in $IO/1 and $IO/2; backstop: one wineserver at most once client 2 has started"
@@ -701,9 +790,13 @@ PY
   # --- the run: fenji-server and fenji-launch (one per client) in one namespace, started once the
   # watchdog has armed
   local ns ne la la2=() bpf
-  mapfile -t ns < <(namespace_cmd "$display" "$xauth" "$d2")
+  mapfile -t ns < <(namespace_cmd "$display" "$xauth" "$d2" "$prefix_at" "$umu_at")
   mapfile -t ne < <(namespace_env "$display" "$xauth")
-  mapfile -t la < <(launch_args "$api_port" "$user" "$pwfile" "$RUN/client")
+  if [ -n "$app" ]; then
+    mapfile -t la < <(app_cmd "$RUN")
+  else
+    mapfile -t la < <(launch_args "$api_port" "$user" "$pwfile" "$RUN/client")
+  fi
   if [ "$clients" = 2 ]; then mapfile -t la2 < <(launch_args "$api_port" "$user2" "$pwfile2" "$RUN/client2"); fi
   bpf=$(seccomp_filter)
   set +e
@@ -712,8 +805,8 @@ PY
     PROTON_LOG_DIR="$IO" PROTON_USE_XALIA=0 WINEDEBUG="$channels" UMU_RUNTIME_UPDATE=0 \
     bash -c "$(declare -f end_client)"'
       W=$1 IO=$2 BIN=$3 SERVER=$4 LPORT=$5 APORT=$6 TMO=$7 PROTON=$8 CLIENTS=$9 AFTER=${10}
-      TMO2=${11} D2=${12} N1=${13} EXE2=${14}
-      shift 14
+      TMO2=${11} D2=${12} N1=${13} EXE2=${14} APPLOG=${15}
+      shift 15
       LA1=("${@:1:$N1}") LA2=("${@:$((N1 + 1))}")
       exec < /dev/null
       for _ in $(seq 200); do [ -e "$IO/.go" ] && break; sleep 0.05; done
@@ -730,6 +823,27 @@ PY
       # Each client is a fenji-launch of its own; in a two-client run each has its own Proton log.
       (
         if [ "$CLIENTS" = 2 ]; then export PROTON_LOG_DIR="$IO/1"; fi
+        if [ -n "$APPLOG" ]; then
+          # The desktop launcher stays open after the game; its log says when the game runs and
+          # when it ends, with its code. The run ends with the game, or at the timeout.
+          timeout -k 10 "$TMO" "${LA1[@]}" > "$IO/launcher.out" 2> "$IO/launcher.err" &
+          app=$!
+          while kill -0 "$app" 2>/dev/null; do
+            if grep -qs "the game ended" "$APPLOG"/launcher*.log; then
+              sleep 2
+              kill "$app" 2>/dev/null
+              break
+            fi
+            sleep 1
+          done
+          wait "$app"
+          rc=$?
+          if grep -qs "the game is running" "$APPLOG"/launcher*.log; then
+            code=$(grep -hs "the game ended" "$APPLOG"/launcher*.log | sed -n "s/.*code=\(-\{0,1\}[0-9]*\).*/\1/p" | tail -n 1)
+            echo "${code:-$rc}" > "$IO/exit-code"
+          fi
+          exit "$rc"
+        fi
         timeout -k 10 "$TMO" "$BIN/fenji-launch" "${LA1[@]}" > "$IO/launch.out" 2> "$IO/launch.err"
         rc=$?
         # fenji-launch says so right before it starts the client; without that line, it never did.
@@ -767,6 +881,7 @@ PY
       exit "$rc"
     ' _ "$WORK" "$IO" "$STUBBIN" "$server_copy" "$login_port" "$api_port" "$tmo" "$PROTON" \
     "$clients" "$second_after" "$tmo2" "$d2" "${#la[@]}" "$RUN/client2/bin64/gujianol.exe" \
+    "${app:+$RUN/data/fenji-launcher/logs}" \
     "${la[@]}" "${la2[@]}" > "$OUT/namespace.out" 2>&1 7< <(printf '%b' "$bpf") &
   local spid=$! wc
   # Steam starting during the run stops it (the watchdog reads the host's /proc too), and so does a
@@ -827,7 +942,9 @@ PY
   collect_bare_evidence || echo "run-bare: collecting the evidence failed (exit $?); the verdict stands" >&2
   local two=""
   if [ "$clients" = 2 ]; then two=", client 2's fenji-launch exit $(cat "$IO/exit-code-2" 2>/dev/null || echo '?')"; fi
-  echo "run $run done: fenji-launch exit $(cat "$IO/exit-code" 2>/dev/null || echo '?')$two, namespace exit $wrc, watchdog exit $wdrc"
+  local what="fenji-launch exit"
+  if [ -n "$app" ]; then what="game exit"; fi
+  echo "run $run done: $what $(cat "$IO/exit-code" 2>/dev/null || echo '?')$two, namespace exit $wrc, watchdog exit $wdrc"
   local v=0
   bare_verdict "$wdrc" "$wrc" "$ran" "$OUT" || v=$?
   exit "$v"
@@ -853,7 +970,13 @@ bare_verdict() {
   fi
   if [ "$wdrc" = 0 ] && [ "$ran" != 1 ]; then
     case "$wrc" in
-      95) echo "fenji-launch didn't start the client (see $out/io/launch.err)" >&2; return 7 ;;
+      95)
+        if [ -n "${app:-}" ]; then
+          echo "the desktop launcher didn't start the game (see its logs in $out/launcher and $out/io/launcher.err)" >&2
+        else
+          echo "fenji-launch didn't start the client (see $out/io/launch.err)" >&2
+        fi
+        return 7 ;;
       96) echo "fenji-server wasn't ready (see $out/server.log); the client was not started" >&2; return 7 ;;
       98) echo "the watchdog never armed; the client was not started" >&2; return 5 ;;
       *) echo "the namespace ended before the client ran (exit $wrc); see $out/namespace.out" >&2; return 6 ;;
@@ -877,6 +1000,13 @@ collect_bare_evidence() {
     mv "$OUT/io/steam-1418100.log" "$OUT/wine.log" || bad=1
   fi
   if [ -f "$OUT/io/server.log" ]; then mv "$OUT/io/server.log" "$OUT/server.log" || bad=1; fi
+  # The desktop launcher's own files (--launcher-app): its logs (the game's output in game.log) and
+  # its settings, which hold no password, token or ticket.
+  if [ -n "${app:-}" ]; then
+    mkdir -p "$OUT/launcher" || bad=1
+    if [ -d "$RUN/data/fenji-launcher/logs" ]; then cp -r -- "$RUN/data/fenji-launcher/logs" "$OUT/launcher/" || bad=1; fi
+    if [ -f "$RUN/config/fenji-launcher/settings.json" ]; then cp -- "$RUN/config/fenji-launcher/settings.json" "$OUT/launcher/" || bad=1; fi
+  fi
   python3 -I "$WATCHDOG" collect --src "$RUN/client/bin64" --dest "$OUT" \
     --name gujianol.log --name Log_gujianol.htm || bad=1
   find "$PFX" -iname '*.sys' -printf '%P\t%y\t%l\t%s\t%T@\n' | sort > "$OUT/sys-after.tsv" || bad=1
@@ -890,7 +1020,7 @@ collect_bare_evidence() {
   find "${copies[@]}" "$PFX/drive_c" -newer "$OUT/.start" -type f -not -path '*/mesa_shader_cache/*' \
     -printf '%TT\t%s\t%p\n' 2>/dev/null | sort > "$OUT/new-files.txt"
   # Outside the watched root, where Wine's Z: or umu's container could put a file: new *.sys only.
-  find "$HOME/.local/share/umu" /var/tmp -newer "$OUT/.start" -iname '*.sys' -printf '%TT\t%s\t%p\n' \
+  find "$UMU_DATA" /var/tmp -newer "$OUT/.start" -iname '*.sys' -printf '%TT\t%s\t%p\n' \
     2>/dev/null | sort > "$OUT/sys-elsewhere.txt"
   redact_tickets "$OUT" || bad=1
   return "$bad"
