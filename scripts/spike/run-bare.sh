@@ -45,9 +45,10 @@
 # --launcher-app APPIMAGE (launcher plan Task 16) runs the desktop launcher in place of fenji-launch,
 # under the same guards: its AppImage, unpacked into the run (RUN/launcher), starts with its data,
 # config and cache folders inside the run, so with no settings file; PROTONPATH names the pinned
-# GE-Proton and umu-run's folder comes first on PATH; and the dedicated prefix is bound where the
+# GE-Proton and umu-run's folder comes first on PATH; the dedicated prefix is bound where the
 # launcher keeps its own (RUN/data/fenji-launcher/prefix), so the launcher's Wine prefix is this one,
-# primed and watched. GTK's folder dialog lists the run's client copy as a bookmark, "SoLO (this
+# primed and watched; and umu's runtime is bound where the launcher's umu-run looks for it with the
+# run's XDG_DATA_HOME (RUN/data/umu), as fenji-launch's runs use it in place. GTK's folder dialog lists the run's client copy as a bookmark, "SoLO (this
 # run)". The player's steps are --key, --type and --click on --display: --type
 # T:@password types --password-file's first line through xkey.py --type-file, so the password is
 # never on a command line or in a file of the run, and every input is followed by a screenshot
@@ -120,6 +121,8 @@ BARE_HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 WORK="$REPO/re/bare-metal"
 PINNED_COPY="${FENJI_CLIENT_PATH:-}"
 UMU="${FENJI_UMU_RUN:-$HOME/.local/bin/umu-run}"
+# umu's runtime, where umu-run keeps it: XDG_DATA_HOME/umu.
+UMU_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/umu"
 GAMEID=umu-1418100
 # Where the display checks look: X lock files, the X socket directory, /proc (tests move all three).
 X_LOCKS=/tmp
@@ -174,9 +177,11 @@ host_guards() {
 # goes. A second argument is a desktop run's X authority file, brought in read-only after the tmpfs
 # mounts, which would hide it; a third, a two-client run's second nested display, whose socket is
 # bound back beside the first; a fourth, where the desktop launcher keeps its prefix, which the
-# dedicated prefix is bound over (--launcher-app).
+# dedicated prefix is bound over, and a fifth, where its umu-run looks for umu's runtime, which the
+# host's is bound over (both --launcher-app).
 namespace_cmd() {
-  local display=$1 xauth=${2:-} display2=${3:-} prefix_at=${4:-} rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
+  local display=$1 xauth=${2:-} display2=${3:-} prefix_at=${4:-} umu_at=${5:-}
+  local rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} s
   local cache=${XDG_CACHE_HOME:-$HOME/.cache}
   printf '%s\n' bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$rt"
   for s in pipewire-0 pulse; do
@@ -190,11 +195,16 @@ namespace_cmd() {
   if [ "$cache" != "$HOME/.cache" ] && [ -d "$cache/ibus" ]; then printf '%s\n' --tmpfs "$cache/ibus"; fi
   if [ -n "$xauth" ]; then printf '%s\n' --ro-bind "$xauth" "$xauth"; fi
   if [ -n "$prefix_at" ]; then printf '%s\n' --bind "$WORK/compat" "$prefix_at"; fi
+  if [ -n "$umu_at" ]; then printf '%s\n' --bind "$UMU_DATA" "$umu_at"; fi
   printf '%s\n' --unshare-net --unshare-pid --die-with-parent --seccomp 7 --
 }
 
 # Where the desktop launcher keeps its Wine prefix in run folder RUN: XDG_DATA_HOME/fenji-launcher.
 app_prefix() { echo "$1/data/fenji-launcher/prefix"; }
+
+# Where the desktop launcher's umu-run looks for umu's runtime in run folder RUN: XDG_DATA_HOME/umu.
+# Without the host's there, umu-run wants to download it, and the namespace has no network (r6).
+app_umu() { echo "$1/data/umu"; }
 
 # The bookmark that lists run folder RUN's client copy in GTK's folder dialog (--launcher-app), as
 # GTK reads it from XDG_CONFIG_HOME/gtk-3.0/bookmarks: a file URI and a label. Choosing the folder is
@@ -584,7 +594,7 @@ cmd_bare_run() {
   local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 stub_args=()
   local clients=1 user2="" pwfile2="" display2="" second_after=30 second_after_given=0 tmo2="" tmo2_given=0
   local keys2=() types2=() clicks2=() rehearsed=0
-  local app="" print=0 type_secret="" shot_after_inputs="" prefix_at=""
+  local app="" print=0 type_secret="" shot_after_inputs="" prefix_at="" umu_at=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --launcher-app) [ $# -ge 2 ] || usage; app=$2; shift 2 ;;
@@ -690,9 +700,9 @@ PY
     d2=$display2
     (display=$display2 choose_display 0 1) || exit $?
   fi
-  if [ -n "$app" ]; then prefix_at=$(app_prefix "$WORK/runs/$run"); fi
+  if [ -n "$app" ]; then prefix_at=$(app_prefix "$WORK/runs/$run") umu_at=$(app_umu "$WORK/runs/$run"); fi
   if [ "$print" = 1 ]; then
-    namespace_cmd "$display" "$xauth" "$d2" "$prefix_at"
+    namespace_cmd "$display" "$xauth" "$d2" "$prefix_at" "$umu_at"
     namespace_env "$display" "$xauth"
     if [ -n "$app" ]; then
       app_cmd "$WORK/runs/$run"
@@ -745,9 +755,9 @@ PY
   {
     echo "run $run (bare metal), $(date -Is)"
     echo "guards: Linux x86_64; Steam not running (and watched); no Wine running; reflink copy of $PINNED_COPY; prefix $PFX"
-    echo "namespace: $(namespace_cmd "$display" "$xauth" "$d2" "$prefix_at" | tr '\n' ' ')$(namespace_env "$display" "$xauth" | tr '\n' ' ')"
+    echo "namespace: $(namespace_cmd "$display" "$xauth" "$d2" "$prefix_at" "$umu_at" | tr '\n' ' ')$(namespace_env "$display" "$xauth" | tr '\n' ' ')"
     if [ -n "$app" ]; then
-      echo "launch: the desktop launcher $app, unpacked in $RUN/launcher: $(app_cmd "$RUN" | tr '\n' ' '); the prefix $PFX bound at $prefix_at; the player's client folder $RUN/client"
+      echo "launch: the desktop launcher $app, unpacked in $RUN/launcher: $(app_cmd "$RUN" | tr '\n' ' '); the prefix $PFX bound at $prefix_at, umu's runtime $UMU_DATA at $umu_at; the player's client folder $RUN/client"
     else
       echo "launch: fenji-launch $(launch_args "$api_port" "$user" "<password file>" "$RUN/client" | tr '\n' ' ')"
     fi
@@ -780,7 +790,7 @@ PY
   # --- the run: fenji-server and fenji-launch (one per client) in one namespace, started once the
   # watchdog has armed
   local ns ne la la2=() bpf
-  mapfile -t ns < <(namespace_cmd "$display" "$xauth" "$d2" "$prefix_at")
+  mapfile -t ns < <(namespace_cmd "$display" "$xauth" "$d2" "$prefix_at" "$umu_at")
   mapfile -t ne < <(namespace_env "$display" "$xauth")
   if [ -n "$app" ]; then
     mapfile -t la < <(app_cmd "$RUN")
@@ -1010,7 +1020,7 @@ collect_bare_evidence() {
   find "${copies[@]}" "$PFX/drive_c" -newer "$OUT/.start" -type f -not -path '*/mesa_shader_cache/*' \
     -printf '%TT\t%s\t%p\n' 2>/dev/null | sort > "$OUT/new-files.txt"
   # Outside the watched root, where Wine's Z: or umu's container could put a file: new *.sys only.
-  find "$HOME/.local/share/umu" /var/tmp -newer "$OUT/.start" -iname '*.sys' -printf '%TT\t%s\t%p\n' \
+  find "$UMU_DATA" /var/tmp -newer "$OUT/.start" -iname '*.sys' -printf '%TT\t%s\t%p\n' \
     2>/dev/null | sort > "$OUT/sys-elsewhere.txt"
   redact_tickets "$OUT" || bad=1
   return "$bad"

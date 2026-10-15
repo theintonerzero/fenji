@@ -134,10 +134,20 @@ binds_prefix() {
   done
   return 1
 }
+# The launcher's umu-run looks for its runtime in XDG_DATA_HOME/umu, which is the run's: the host's
+# is bound there, or umu-run wants to download it, and the namespace has no network (rehearsal r6).
+binds_umu() {
+  local i
+  for ((i = 0; i + 2 < ${#got[@]}; i++)); do
+    [ "${got[i]}" = --bind ] && [ "${got[i + 1]}" = "${XDG_DATA_HOME:-$HOME/.local/share}/umu" ] &&
+      [ "${got[i + 2]}" = "$WORK/runs/t/data/umu" ] && return 0
+  done
+  return 1
+}
 if [ "$rc" = 0 ] && has_line "XDG_DATA_HOME=$WORK/runs/t/data" && has_line "XDG_CONFIG_HOME=$WORK/runs/t/config" &&
-  has_line "PROTONPATH=$PROTON" && has_line "$WORK/runs/t/launcher/AppRun" && binds_prefix &&
+  has_line "PROTONPATH=$PROTON" && has_line "$WORK/runs/t/launcher/AppRun" && binds_prefix && binds_umu &&
   ! grep -q "a long password" <<< "$plan"; then
-  ok "--print plans the launcher in the run's own data folder, on the dedicated prefix, with GE-Proton, and no password"
+  ok "--print plans the launcher in the run's own data folder, on the dedicated prefix and umu's runtime, with GE-Proton, and no password"
 else
   bad "--print's launcher plan (exit $rc): $plan"
 fi
