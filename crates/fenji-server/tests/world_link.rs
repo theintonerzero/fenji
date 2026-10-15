@@ -1053,3 +1053,27 @@ async fn an_admin_runs_each_command() {
     c.quiet(300).await;
     s.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn an_op_in_the_database_enters_the_world_as_an_admin() {
+    // M4 hosting spec §8, HA5: an admin is in [access].admins or in ops, and this config names
+    // none.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut a, lin) = in_lobby(&s, "aaa", "Lin").await;
+    let store = s.accounts().store().clone();
+    let id = store.account_by_username("aaa").await.unwrap().unwrap().id;
+    assert!(store.op(id).await.unwrap());
+    select(&mut a, lin).await;
+    enter(&mut a, lin).await;
+    say(
+        &mut a,
+        &[Value::Int(0), string("!announce Doors open"), Value::Nil],
+    )
+    .await;
+    assert_eq!(
+        heard(&mut a).await,
+        line(chat::channel::MARQUEE, "", "Doors open", "")
+    );
+    s.shutdown().await.unwrap();
+}

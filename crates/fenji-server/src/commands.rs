@@ -30,6 +30,9 @@ pub const TP: &str = "tp <name> [<name>]";
 pub const KICK: &str = "kick <name>";
 pub const ANNOUNCE: &str = "announce <text>";
 pub const INVITE: &str = "invite [label of at most 64 characters]";
+/// The host console's `maintenance` (M4 hosting spec §3.9), whose message
+/// [`crate::status::check_message`] checks.
+pub const MAINTENANCE: &str = "maintenance [on [<duration>] [<message>] | off]";
 
 /// The longest invite label.
 pub const LABEL_MAX: usize = 64;

@@ -66,11 +66,15 @@ impl Store {
     }
 
     /// Spends a game token and returns its account. It is one statement, so two connections that
-    /// present the same token can't both get the account (M3 spec D3).
+    /// present the same token can't both get the account (M3 spec D3). A banned account's token is
+    /// left unspent, so one issued just before the ban (M4 hosting spec §8, HA5) doesn't let the
+    /// account in after it.
     pub async fn consume_game_token(&self, token_hash: &[u8; 32], now: i64) -> Result<Option<i64>> {
         let r: Option<(i64,)> = sqlx::query_as(
             "UPDATE game_tokens SET used_at = ? \
-             WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING account_id",
+             WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? \
+             AND NOT EXISTS (SELECT 1 FROM bans WHERE bans.account_id = game_tokens.account_id) \
+             RETURNING account_id",
         )
         .bind(now)
         .bind(&token_hash[..])

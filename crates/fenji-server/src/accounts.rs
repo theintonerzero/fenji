@@ -2,6 +2,12 @@
 //! and issuing and spending game tokens. Every attempt goes through the limiter first; password
 //! hashing runs on the blocking pool, at most four at a time, and never for an invite that can't
 //! be redeemed. Nothing here logs or shows a password, token, ticket or invite code.
+//!
+//! The server's door (M4 hosting spec §3.9; §8, HA5): a banned account's sign-ins and game tickets
+//! are refused with the host's reason, and while the server is in maintenance, registrations, and
+//! the sign-ins and game tickets of every account that isn't an admin, are held. Both are decided
+//! for the account that signed in, after its password or session, never for a name a request
+//! gives.
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,6 +23,7 @@ use tokio::sync::Semaphore;
 
 use crate::clock::Clock;
 use crate::config::AuthConfig;
+use crate::status::{Maintenance, Status};
 
 /// The limiter's name for a registration: the username asked for, behind a prefix no username can
 /// have (a NUL), so registrations and sign-ins keep separate counts per name. Failed registrations
@@ -40,8 +47,38 @@ pub enum AccountsError {
     TryLater(Duration),
     #[error("not signed in")]
     BadSession,
+    /// The server is in maintenance, and the account isn't an admin's.
+    #[error("the server is in maintenance: {}", .0.message)]
+    Maintenance(Maintenance),
+    /// The host banned the account, for this reason.
+    #[error("the account is banned: {0}")]
+    Banned(String),
     #[error("internal error")]
     Internal(String),
+}
+
+/// Whether `account` is an admin's (M4 hosting spec §8, HA5): one `admins` (`[access].admins`)
+/// names, whatever the case, or an op in the store. The gate asks it as a character enters the
+/// world, and the door as an account signs in or asks for a ticket.
+pub async fn is_admin(
+    store: &Store,
+    admins: &[String],
+    account: &Account,
+) -> fenji_store::Result<bool> {
+    if admins
+        .iter()
+        .any(|a| a.eq_ignore_ascii_case(&account.username))
+    {
+        return Ok(true);
+    }
+    store.is_op(account.id).await
+}
+
+/// What holds players out during maintenance, and whom it lets through.
+struct Door {
+    status: Arc<Status>,
+    /// `[access].admins`, in any case.
+    admins: Vec<String>,
 }
 
 impl From<fenji_store::Error> for AccountsError {
@@ -97,9 +134,11 @@ pub struct Accounts {
     hashes: AtomicU64,
     cfg: AuthConfig,
     clock: Arc<dyn Clock>,
+    door: Option<Door>,
 }
 
 impl Accounts {
+    /// Accounts without the door: maintenance holds nothing (bans still refuse).
     pub fn new(store: Store, cfg: AuthConfig, clock: Arc<dyn Clock>) -> Self {
         Self {
             store,
@@ -108,11 +147,47 @@ impl Accounts {
             hashes: AtomicU64::new(0),
             cfg,
             clock,
+            door: None,
         }
+    }
+
+    /// The door (M4 hosting spec §3.9): while `status` says the server is in maintenance it holds
+    /// registrations, and the sign-ins and game tickets of every account that isn't an admin's
+    /// ([`is_admin`], with `admins` as `[access].admins`).
+    pub fn with_door(mut self, status: Arc<Status>, admins: Vec<String>) -> Self {
+        self.door = Some(Door { status, admins });
+        self
     }
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// The maintenance the door holds everyone out for, if any.
+    fn held(&self) -> Option<Maintenance> {
+        self.door.as_ref()?.status.maintenance()
+    }
+
+    /// Refuses `account` while the door holds the server in maintenance, unless it's an admin's.
+    async fn through_the_door(&self, account: &Account) -> Result<(), AccountsError> {
+        let Some(door) = &self.door else {
+            return Ok(());
+        };
+        let Some(m) = door.status.maintenance() else {
+            return Ok(());
+        };
+        if is_admin(&self.store, &door.admins, account).await? {
+            return Ok(());
+        }
+        Err(AccountsError::Maintenance(m))
+    }
+
+    /// Refuses a banned account, with the host's reason (M4 hosting spec §8, HA5).
+    pub async fn check_ban(&self, account_id: i64) -> Result<(), AccountsError> {
+        match self.store.ban_of(account_id).await? {
+            Some(ban) => Err(AccountsError::Banned(ban.reason)),
+            None => Ok(()),
+        }
     }
 
     /// How many argon2 hashes and checks have run (for tests).
@@ -162,6 +237,8 @@ impl Accounts {
 
     /// Creates an account with an invite. The invite is checked before the username, and before
     /// any hashing, so a fake code costs little and teaches nothing about usernames (M3 spec D12).
+    /// Maintenance refuses it first, before anything is spent: an attempt, the invite or a hash, so
+    /// no invite goes to an account that couldn't sign in (M4 hosting spec §3.9).
     pub async fn register(
         &self,
         invite: &str,
@@ -169,6 +246,9 @@ impl Accounts {
         password_: &str,
         addr: IpAddr,
     ) -> Result<i64, AccountsError> {
+        if let Some(m) = self.held() {
+            return Err(AccountsError::Maintenance(m));
+        }
         let attempt = self.begin(&register_key(username), addr)?;
         let code = InviteCode::parse(invite).ok_or(AccountsError::InvalidInvite)?;
         let now = self.clock.now_ms();
@@ -195,7 +275,8 @@ impl Accounts {
     }
 
     /// Signs in: a session token on success, and the same error for a wrong password and an unknown
-    /// username, which takes as long to decide.
+    /// username, which takes as long to decide. Only once the password checks out may a ban, then
+    /// maintenance, refuse it; a right password refused so isn't a failed attempt.
     pub async fn sign_in(
         &self,
         username: &str,
@@ -219,6 +300,8 @@ impl Accounts {
             return Err(AccountsError::BadCredentials);
         };
         self.succeed(attempt);
+        self.check_ban(account.id).await?;
+        self.through_the_door(&account).await?;
         let now = self.clock.now_ms();
         self.store.record_sign_in(account.id, now).await?;
         let token = Token::generate().map_err(|e| AccountsError::Internal(e.to_string()))?;
@@ -233,13 +316,17 @@ impl Accounts {
         })
     }
 
-    async fn session(&self, session: &str) -> Result<Account, AccountsError> {
+    /// The account a live session belongs to.
+    pub async fn session_account(&self, session: &str) -> Result<i64, AccountsError> {
         let t = Token::parse(session).ok_or(AccountsError::BadSession)?;
-        let id = self
-            .store
+        self.store
             .session_account(&t.hash(), self.clock.now_ms())
             .await?
-            .ok_or(AccountsError::BadSession)?;
+            .ok_or(AccountsError::BadSession)
+    }
+
+    async fn session(&self, session: &str) -> Result<Account, AccountsError> {
+        let id = self.session_account(session).await?;
         self.store
             .account_by_id(id)
             .await?
@@ -252,9 +339,12 @@ impl Accounts {
         Ok(())
     }
 
-    /// A single-use game token for the session's account, valid for `game_token_ttl_secs`.
+    /// A single-use game token for the session's account, valid for `game_token_ttl_secs`. Once
+    /// the session resolves, a ban, then maintenance, may refuse it, as they do a sign-in.
     pub async fn issue_game_token(&self, session: &str) -> Result<GameGrant, AccountsError> {
         let account = self.session(session).await?;
+        self.check_ban(account.id).await?;
+        self.through_the_door(&account).await?;
         let token = Token::generate().map_err(|e| AccountsError::Internal(e.to_string()))?;
         let ttl = self.cfg.game_token_ttl_secs;
         let expires_at = self
@@ -305,6 +395,7 @@ mod tests {
     use super::*;
     use crate::clock::{Clock, TestClock};
     use crate::config::AuthConfig;
+    use crate::status::{Maintenance, Status};
 
     const ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3));
 
@@ -539,6 +630,115 @@ mod tests {
         let (_d, a, _c, _) = setup().await;
         for t in ["", "fenji-dev", "{\"auth_type\":\"mocked\"}", "fenji1-zz"] {
             assert!(a.consume_game_token(t).await.unwrap().is_none());
+        }
+    }
+
+    /// [`setup`], with the door, no admins, and maintenance on.
+    async fn in_maintenance() -> (tempfile::TempDir, Accounts, Arc<Status>, String) {
+        let (dir, a, clock, code) = setup().await;
+        let status = Status::load(a.store(), clock.now_ms(), "").await.unwrap();
+        let m = Maintenance {
+            message: "Updating".into(),
+            since_ms: clock.now_ms(),
+            until_ms: None,
+        };
+        status.set_maintenance(a.store(), Some(m)).await.unwrap();
+        let a = a.with_door(Arc::clone(&status), Vec::new());
+        (dir, a, status, code)
+    }
+
+    #[tokio::test]
+    async fn maintenance_refuses_a_registration_before_anything_is_spent() {
+        let (_d, a, status, code) = in_maintenance().await;
+        for _ in 0..30 {
+            assert!(matches!(
+                a.register(&code, "tester", "a long password", ADDR).await,
+                Err(AccountsError::Maintenance(_))
+            ));
+        }
+        assert_eq!(a.hashes(), 0, "no argon2 work");
+        // Neither the invite nor the limiter's attempts were spent.
+        status.set_maintenance(a.store(), None).await.unwrap();
+        a.register(&code, "tester", "a long password", ADDR)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_right_password_held_by_maintenance_isnt_a_failed_attempt() {
+        let (_d, a, status, code) = in_maintenance().await;
+        status.set_maintenance(a.store(), None).await.unwrap();
+        a.register(&code, "tester", "a long password", ADDR)
+            .await
+            .unwrap();
+        let m = Maintenance {
+            message: "Updating".into(),
+            since_ms: 0,
+            until_ms: None,
+        };
+        status.set_maintenance(a.store(), Some(m)).await.unwrap();
+        // Five failures would lock the pair; these aren't failures.
+        for _ in 0..8 {
+            assert!(matches!(
+                a.sign_in("tester", "a long password", ADDR).await,
+                Err(AccountsError::Maintenance(_))
+            ));
+        }
+        status.set_maintenance(a.store(), None).await.unwrap();
+        a.sign_in("tester", "a long password", ADDR).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn without_a_door_maintenance_holds_nothing() {
+        let (_d, a, clock, code) = setup().await;
+        let status = Status::load(a.store(), clock.now_ms(), "").await.unwrap();
+        let m = Maintenance {
+            message: "Updating".into(),
+            since_ms: 0,
+            until_ms: None,
+        };
+        status.set_maintenance(a.store(), Some(m)).await.unwrap();
+        a.register(&code, "tester", "a long password", ADDR)
+            .await
+            .unwrap();
+        let s = a.sign_in("tester", "a long password", ADDR).await.unwrap();
+        a.issue_game_token(&s.token).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_admin_is_named_in_the_config_whatever_the_case_or_an_op() {
+        let (_d, a, _c, code) = setup().await;
+        a.register(&code, "Boss", "a long password", ADDR)
+            .await
+            .unwrap();
+        let boss = a
+            .store()
+            .account_by_username("boss")
+            .await
+            .unwrap()
+            .unwrap();
+        let admins = ["BOSS".to_string()];
+        assert!(is_admin(a.store(), &admins, &boss).await.unwrap());
+        assert!(!is_admin(a.store(), &[], &boss).await.unwrap());
+        a.store().op(boss.id).await.unwrap();
+        assert!(is_admin(a.store(), &[], &boss).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_session_names_its_account_until_it_ends() {
+        let (_d, a, _c, code) = setup().await;
+        let id = a
+            .register(&code, "tester", "a long password", ADDR)
+            .await
+            .unwrap();
+        let s = a.sign_in("tester", "a long password", ADDR).await.unwrap();
+        assert_eq!(a.session_account(&s.token).await.unwrap(), id);
+        a.sign_out(&s.token).await.unwrap();
+        for token in [s.token.as_str(), "", "fenji1-00"] {
+            assert!(matches!(
+                a.session_account(token).await,
+                Err(AccountsError::BadSession)
+            ));
         }
     }
 
