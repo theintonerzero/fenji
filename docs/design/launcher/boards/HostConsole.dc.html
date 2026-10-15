@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fenji launcher, Host console</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0b0e}
+a{color:#f2b365}a:hover{color:#ffd9ad}
+button{font:inherit;color:inherit;cursor:pointer}
+::selection{background:#e4572e;color:#fff}
+</style>
+</helmet>
+<div style="width: 1200px; height: 720px; display: flex; flex-direction: column; overflow: hidden; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; font-variant-numeric: tabular-nums; color: #f2efe9; background: #0c0c0f">
+
+<h1 style="flex: none; height: 32px; margin: 0; padding: 0 24px; line-height: 32px; background: #111115; border-bottom: 1px solid rgba(255, 255, 255, 0.07); font-size: 13px; font-weight: 500; color: #c9c2b7; white-space: nowrap">fenji-server — Moonward</h1>
+
+<div role="status" style="height: 40px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 24px; background: #16161b; border-bottom: 1px solid rgba(255, 255, 255, 0.07); font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; color: #c9c2b7; font-variant-numeric: tabular-nums; white-space: nowrap">
+<span style="color: #7fd38f; font-weight: 500">online</span>
+<span style="color: #f2b365; font-weight: 500">Moonward</span>
+<span aria-hidden="true" style="color: #8c867c">·</span><span>Fenji 0.4.0</span>
+<span aria-hidden="true" style="color: #8c867c">·</span><span>up 2 h 14 min</span>
+<span aria-hidden="true" style="color: #8c867c">·</span><span><span style="color: #f2efe9">3</span> of 10 online</span>
+<span aria-hidden="true" style="color: #8c867c">·</span><span>maintenance off</span>
+<span aria-hidden="true" style="color: #8c867c">·</span><span>account API :7801</span>
+<span aria-hidden="true" style="color: #8c867c">·</span><span>gate :7800</span>
+</div>
+
+<div role="log" aria-label="Server log" style="flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 14px 24px 12px; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; line-height: 1.75; color: #c9c2b7; font-variant-numeric: tabular-nums">
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">18:31:07</span><span style="color: #a8a196">INFO</span><span>fenji-server 0.4.0 starting · world <span style="color: #f2b365">Moonward</span></span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">18:31:07</span><span style="color: #a8a196">INFO</span><span>database ready</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">18:31:08</span><span style="color: #a8a196">INFO</span><span>account API listening on 0.0.0.0:7801</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">18:31:08</span><span style="color: #a8a196">INFO</span><span>gate listening on 0.0.0.0:7800</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">18:31:08</span><span style="color: #a8a196">INFO</span><span>maintenance off · lobby open · 10 slots</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">18:40:12</span><span style="color: #a8a196">INFO</span><span><span style="color: #f2b365">Wen</span> signed in · 127.0.0.1</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">18:52:40</span><span style="color: #a8a196">INFO</span><span><span style="color: #f2b365">Shu</span> signed in · 192.0.2.44</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">19:05:13</span><span style="color: #a8a196">INFO</span><span>invite created for <span style="color: #f2b365">Kai</span> · single use · K7QM-…</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">20:02:31</span><span style="color: #e8b04a; font-weight: 500">WARN</span><span style="color: #f2efe9">sign-in failed for <span style="color: #f2b365">lin</span>: wrong password</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">20:02:47</span><span style="color: #f26d7d; font-weight: 500">ERROR</span><span style="color: #f2efe9">gate: dropped 203.0.113.9:51544 · handshake failed</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">20:38:19</span><span style="color: #a8a196">INFO</span><span><span style="color: #f2b365">lin_yue</span> signed in · 198.51.100.24</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">20:38:52</span><span style="color: #a8a196">INFO</span><span>ticket issued for <span style="color: #f2b365">lin_yue</span> · works once, 60 s</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">20:38:58</span><span style="color: #a8a196">INFO</span><span>ticket redeemed for <span style="color: #f2b365">lin_yue</span></span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">20:39:04</span><span style="color: #a8a196">INFO</span><span><span style="color: #f2b365">lin_yue</span> in the lobby</span></div>
+<div style="display: grid; grid-template-columns: 64px 48px minmax(0, 1fr); column-gap: 12px; align-items: center"><span style="color: #8c867c">20:41:57</span><span style="color: #a8a196">INFO</span><span>character created: <span style="color: #f2b365">Lin</span> (<span style="color: #f2b365">lin_yue</span>)</span></div>
+</div>
+
+<div style="flex: none; padding: 0 24px 10px 41px">
+<div id="hc-commands" role="listbox" aria-label="Commands" style="width: 680px; box-sizing: border-box; padding: 6px; border-radius: 0; box-shadow: none; border: 0; background: #16161b">
+<div role="option" aria-selected="false" style="display: grid; grid-template-columns: 264px minmax(0, 1fr); align-items: center; height: 26px; padding: 0 10px; color: #a8a196"><span style="color: #f2efe9">help</span><span>Show the commands and how to use them</span></div>
+<div id="hc-opt-invite" role="option" aria-selected="true" style="display: grid; grid-template-columns: 264px minmax(0, 1fr); align-items: center; height: 26px; padding: 0 10px; background: #1c1c22; color: #c9c2b7"><span style="font-weight: 500; color: #f2efe9">invite create | list | revoke</span><span>Create, list and revoke invites</span></div>
+<div role="option" aria-selected="false" style="display: grid; grid-template-columns: 264px minmax(0, 1fr); align-items: center; height: 26px; padding: 0 10px; color: #a8a196"><span style="color: #f2efe9">online</span><span>List who is online right now</span></div>
+<div role="option" aria-selected="false" style="display: grid; grid-template-columns: 264px minmax(0, 1fr); align-items: center; height: 26px; padding: 0 10px; color: #a8a196"><span style="color: #f2efe9">kick</span><span>Disconnect a player</span></div>
+<div role="option" aria-selected="false" style="display: grid; grid-template-columns: 264px minmax(0, 1fr); align-items: center; height: 26px; padding: 0 10px; color: #a8a196"><span style="color: #f2efe9">maintenance on &lt;message&gt; | off</span><span>Start maintenance with a message, or end it</span></div>
+<div role="option" aria-selected="false" style="display: grid; grid-template-columns: 264px minmax(0, 1fr); align-items: center; height: 26px; padding: 0 10px; color: #a8a196"><span style="color: #f2efe9">stop</span><span>Shut the server down</span></div>
+</div>
+</div>
+
+<div style="position: relative; height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 24px; background: #111115; border-top: 1px solid rgba(255, 255, 255, 0.07); font-family: 'Geist Mono', ui-monospace, monospace; font-size: 14px">
+<span aria-hidden="true" style="color: #f2b365; font-weight: 500">&gt;</span>
+<label for="hc-cmd" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap">Command</label>
+<span style="display: flex; align-items: center">
+<input id="hc-cmd" type="text" value="invite create --label Kai" spellcheck="false" autocomplete="off" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="hc-commands" aria-activedescendant="hc-opt-invite" style="box-sizing: content-box; width: 25ch; height: 20px; margin: 0; padding: 0; border: 0; outline: none; background: transparent; color: #f2efe9; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 14px; caret-color: transparent">
+<span aria-hidden="true" style="width: 1ch; height: 18px; background: #f2efe9"></span>
+</span>
+<span style="margin-left: auto; font-size: 13px; color: #8c867c">Tab completes · ↑ ↓ choose · Enter runs</span>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1200,"height":720}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

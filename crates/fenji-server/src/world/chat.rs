@@ -25,9 +25,9 @@ const ENTITIES: [&str; 3] = ["&amp;", "&lt;", "&gt;"];
 /// Whether `text` has anything a client might read as markup:
 /// - an `&` that doesn't start one of [`ENTITIES`], which might decode to a tag;
 /// - a `\\`, which link escapes start with;
-/// - a `[` whose next character, past any spaces, isn't a digit or `]`: the client renders
-///   `[link …]`, `[q_sound …]`, `[duration …]` and `[teamshout]`, which could forge a sender, a
-///   link or a sound in other players' clients.
+/// - a `[` whose next character, past any spaces, isn't a digit or `]`, or that has none: the
+///   client renders `[link …]`, `[q_sound …]`, `[duration …]` and `[teamshout]`, which could
+///   forge a sender, a link or a sound in other players' clients.
 ///
 /// The client's own input escapes `&`, `<` and `>` and builds links itself, so a player typing
 /// loses only words in square brackets and backslashes.
@@ -50,7 +50,8 @@ fn markup(text: &str) -> bool {
             open = true;
         }
     }
-    false
+    // A `[` that ends the line, spaces aside, has no digit or `]` after it.
+    open
 }
 
 /// A line's length as the client counts it: characters, with each entity its input writes for
@@ -63,12 +64,16 @@ pub fn length(text: &str) -> usize {
         .count()
 }
 
-/// Whether the server takes a line's text.
+/// Whether the server takes a line's text. Its size in bytes comes first, so that nothing else
+/// walks a line longer than the client could send (#280).
 pub fn check(text: &str) -> Result<(), ChatRefusal> {
+    if text.len() > MAX_BYTES {
+        return Err(ChatRefusal::TooLong);
+    }
     if text.trim().is_empty() || !plain(text) || text.contains(['<', '>']) || markup(text) {
         return Err(ChatRefusal::Invalid);
     }
-    if length(text) > MAX_CHARS || text.len() > MAX_BYTES {
+    if length(text) > MAX_CHARS {
         return Err(ChatRefusal::TooLong);
     }
     Ok(())
@@ -311,6 +316,38 @@ mod tests {
             "AT&T",
         ] {
             assert_eq!(check(bad), Err(ChatRefusal::Invalid), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_line_over_the_byte_limit_is_too_long_whatever_else_it_holds() {
+        // #280: the length in bytes comes first, so nothing else walks a line longer than the
+        // client could send; one that also holds markup or a control character is too long.
+        for long in [
+            "a".repeat(MAX_BYTES + 1),
+            "é".repeat(MAX_BYTES / 2 + 1),
+            "\\".repeat(MAX_BYTES + 1),
+            format!("{}\u{0}", "a".repeat(MAX_BYTES)),
+            format!("[link {}", "a".repeat(MAX_BYTES)),
+        ] {
+            assert_eq!(
+                check(&long),
+                Err(ChatRefusal::TooLong),
+                "{} bytes",
+                long.len()
+            );
+        }
+    }
+
+    #[test]
+    fn a_bracket_with_nothing_after_it_is_refused() {
+        // Task 7's rule: a `[` only before a digit or `]`, past any spaces. At the end of a line
+        // there is neither.
+        for bad in ["[", "hi [", "hi [  ", "[1] and ["] {
+            assert_eq!(check(bad), Err(ChatRefusal::Invalid), "{bad:?}");
+        }
+        for good in ["[1]", "[]", "hi [ 2 ] ok"] {
+            assert_eq!(check(good), Ok(()), "{good:?}");
         }
     }
 

@@ -296,13 +296,7 @@ mod tests {
 
     const REFUSAL: &str = "Fenji can't start the client on this system yet";
 
-    /// Held by every test that starts a process. A child forked while another test still has its
-    /// fresh script open for writing would make that script "Text file busy" (ETXTBSY) to exec.
-    static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn spawning() -> std::sync::MutexGuard<'static, ()> {
-        SPAWN.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    use crate::test_support::spawning;
 
     #[test]
     fn only_linux_may_start_the_client_and_the_refusal_says_nothing_more() {
