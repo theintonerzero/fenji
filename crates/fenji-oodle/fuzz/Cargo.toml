@@ -1,5 +1,5 @@
-# fenji-oodle's cargo-fuzz target (README.md): outside the workspace (the root Cargo.toml's
-# `exclude`), run locally on nightly Rust, never in CI.
+# fenji-oodle's cargo-fuzz target (README.md): a workspace of its own, outside Fenji's, run
+# locally on nightly Rust and never in CI.
 [package]
 name = "fenji-oodle-fuzz"
 version = "0.0.0"
