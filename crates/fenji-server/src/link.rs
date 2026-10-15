@@ -540,7 +540,7 @@ fn encode(
 /// A 115 the world can take, for its size (#280): a text of at most [`MAX_LINE_BYTES`], the
 /// client's own limit (chat.md 1.5), and a whisper to a name of at most
 /// [`MAX_TARGET_NAME_BYTES`]. A longer one is refused at once as too long, before it reaches the
-/// world. A whisper whose target has a pid carries no name to the world (chat.md 1.4).
+/// world. A whisper whose target has a pid carries no name to the world (chat.md 1.6).
 fn bounded(t: chat::Transmit) -> Result<chat::Transmit, chat::Refusal> {
     let long_name =
         matches!(&t.to, Some(chat::Target::Name(name)) if name.len() > MAX_TARGET_NAME_BYTES);
