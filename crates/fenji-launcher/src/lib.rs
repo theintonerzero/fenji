@@ -9,5 +9,7 @@ pub mod login_path;
 pub mod manifest;
 pub mod settings;
 pub mod start;
+#[cfg(test)]
+mod test_support;
 pub mod tools;
 pub mod verify;

@@ -271,6 +271,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+    use crate::test_support::spawning;
 
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let p = dir.join(name);
@@ -321,6 +322,7 @@ mod tests {
 
     #[test]
     fn a_download_runs_in_its_terminal_then_reports_its_status() {
+        let spawn = spawning();
         let dir = tempfile::tempdir().unwrap();
         let dd = script(
             dir.path(),
@@ -334,6 +336,7 @@ mod tests {
         };
         let run =
             DepotRun::start(&fake_terminal(dir.path()), &job, &dir.path().join("run")).unwrap();
+        drop(spawn);
         assert_eq!(
             wait_for(&run, |s| matches!(s, RunState::Ended { .. })),
             RunState::Ended { code: 0 }
@@ -344,6 +347,7 @@ mod tests {
 
     #[test]
     fn a_repair_passes_the_failing_files_and_validate_and_never_a_login() {
+        let spawn = spawning();
         let dir = tempfile::tempdir().unwrap();
         let args = dir.path().join("args");
         let dd = script(
@@ -362,6 +366,7 @@ mod tests {
         };
         let run =
             DepotRun::start(&fake_terminal(dir.path()), &job, &dir.path().join("run")).unwrap();
+        drop(spawn);
         assert_eq!(
             wait_for(&run, |s| matches!(s, RunState::Ended { .. })),
             RunState::Ended { code: 3 }
@@ -388,6 +393,7 @@ mod tests {
 
     #[test]
     fn a_window_closed_mid_download_ends_as_lost() {
+        let spawn = spawning();
         let dir = tempfile::tempdir().unwrap();
         let dd = script(dir.path(), "dd", "echo ' 10.00% a.bin'; sleep 30");
         let job = Job {
@@ -397,6 +403,7 @@ mod tests {
         };
         let run =
             DepotRun::start(&fake_terminal(dir.path()), &job, &dir.path().join("run")).unwrap();
+        drop(spawn);
         assert!(matches!(
             wait_for(&run, |s| matches!(s, RunState::Running { .. })),
             RunState::Running { .. }
@@ -417,6 +424,7 @@ mod tests {
 
     #[test]
     fn cancel_ends_the_download_and_a_terminal_that_never_starts_is_lost() {
+        let spawn = spawning();
         let dir = tempfile::tempdir().unwrap();
         let dd = script(dir.path(), "dd", "sleep 30");
         let job = Job {
@@ -440,6 +448,7 @@ mod tests {
             before: vec![],
         };
         let mut never = DepotRun::start(&dud, &job, &dir.path().join("run2")).unwrap();
+        drop(spawn);
         never.start_limit = std::time::Duration::from_millis(300);
         assert_eq!(wait_for(&never, |s| *s == RunState::Lost), RunState::Lost);
     }
