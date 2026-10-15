@@ -12,14 +12,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("setup: a folder, or a download into the default folder, which is the one ember action", () => {
+test("setup: a folder, the one ember action as on the ClientSetup board, or a download into the default folder", () => {
   const { root, sent } = mount(clientSetup, golden("client-setup"), undefined, "client");
   // The card is narrow: the folder's end shows, and the whole path is its title.
   const folder = root.querySelector<HTMLElement>(".choice-folder .path")!;
   expect(folder.textContent).toBe("…/Games/SoLO");
   expect(folder.title).toBe("/home/player/Games/SoLO");
   expect(embers(root)).toBe(1);
-  expect(root.querySelector(".ember")!.textContent).toBe("Start download");
+  // The board's emphasis (the finish review's fix 2): most invited players have the game already.
+  expect(root.querySelector(".ember")!.textContent).toBe("Choose folder");
   press(root, "Choose folder");
   press(root, "Change");
   press(root, "Start download");
@@ -68,6 +69,9 @@ test("working: fetching the tool, waiting for Steam, and downloading, each in wo
   const fetching = mount(clientWorking, golden("client-fetching"), undefined, "client").root;
   expect(fetching.textContent).toContain("Getting DepotDownloader…");
   expect(fetching.textContent).toContain("40%");
+  // The blade shows the player's copy (DESIGN.md, The Blade And Ground Rule), not the tool's
+  // download: it stays unlit while DepotDownloader comes (the finish review's fix 3).
+  expect(fetching.querySelector('[role="progressbar"]')).toBeNull();
   const waiting = mount(clientWorking, golden("client-waiting-for-steam"), undefined, "client").root;
   expect(waiting.textContent).toContain("Sign in to Steam in DepotDownloader's window: scan its QR code with the Steam app.");
   const { root, sent } = mount(clientWorking, golden("client-downloading"), undefined, "client");
