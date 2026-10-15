@@ -298,6 +298,17 @@ for out in 'printf "gj_ticket=fenji1-aa\000bb\n"' 'printf "gj_ticket=fenji1-aa\n
   fi
 done
 
+# The screenshots' times: the first five minutes' fixed ones; a run that asks for a shot after every
+# input (run-bare.sh's --launcher-app, whose game starts minutes in) adds one every 30 s to the end.
+got=$(shot_times 400 | tr '\n' ' ')
+if [ "$got" = "5 10 30 60 90 120 150 180 210 240 270 295 " ]; then ok "a run's screenshots: the fixed five minutes"; else bad "shot_times: $got"; fi
+got=$(shot_after_inputs=1 shot_times 400 | tr '\n' ' ')
+if [ "$got" = "5 10 30 60 90 120 150 180 210 240 270 295 330 360 390 " ]; then
+  ok "a launcher run's screenshots go on every 30 s to its end"
+else
+  bad "shot_times with shot_after_inputs: $got"
+fi
+
 # xkey.py refuses bad input before it opens any display; a display that can't exist proves it never types.
 XK=$HERE/xkey.py
 for a in "--type=$(printf 'a\tb')" "--type=é" "--key=NoSuchKeysym"; do

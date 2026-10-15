@@ -782,13 +782,24 @@ cmd_run() {
 # (run-client.sh's cmd_run, run-bare.sh). Uses the caller's clicks, clicks2, presses, display2,
 # second_after and tmo2. Sets shots, clicker and typist to their PIDs; each stops once OUT/.running
 # is gone, or when killed.
+# The times of a run's screenshots, up to LAST seconds: the first five minutes' fixed ones, then,
+# when the run asks for a shot after every input (run-bare.sh's --launcher-app, whose game starts
+# minutes in), one every 30 s to the end.
+shot_times() {
+  local last=$1 t
+  printf '%s\n' 5 10 30 60 90 120 150 180 210 240 270 295
+  if [ -n "${shot_after_inputs:-}" ]; then
+    for ((t = 330; t <= last; t += 30)); do echo "$t"; done
+  fi
+}
+
 start_inputs() {
   local out=$1 display=$2 tmo=$3 end2=$((${second_after:-0} + ${tmo2:-0})) last=$3
   if [ -n "${display2:-}" ] && [ "$end2" -gt "$last" ]; then last=$end2; fi
   # --- host-side screenshots while the run is active
   (
     start=$(date +%s)
-    for t in 5 10 30 60 90 120 150 180 210 240 270 295; do
+    for t in $(shot_times "$last"); do
       [ "$t" -le "$last" ] || break
       now=$(date +%s)
       sl=$((start + t - now))
