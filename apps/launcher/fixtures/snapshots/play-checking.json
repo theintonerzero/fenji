@@ -1,0 +1,75 @@
+{
+  "launcherVersion": "0.5.0",
+  "platform": {
+    "os": "linux",
+    "canPlay": true,
+    "canDownload": true
+  },
+  "servers": [
+    {
+      "id": 1,
+      "name": "Moonward",
+      "address": "moonward.example.net",
+      "pinned": false,
+      "host": "Wen",
+      "status": {
+        "kind": "online"
+      },
+      "players": {
+        "online": 3,
+        "max": 10
+      },
+      "motd": "the lobby is open. Make your characters now; the world opens with Fenji 0.5.",
+      "pingMs": 24,
+      "lastSeenMs": 1792055640000,
+      "version": "0.5.0",
+      "source": "https://github.com/theintonerzero/fenji",
+      "username": "lin_yue",
+      "signedIn": true
+    }
+  ],
+  "active": 1,
+  "lobby": [
+    "Wen",
+    "Shu",
+    "Kai"
+  ],
+  "needSignIn": false,
+  "pendingInvite": null,
+  "keyChange": null,
+  "client": {
+    "folder": "/home/player/Games/SoLO",
+    "defaultFolder": "/home/player/Games/SoLO",
+    "build": "10015727",
+    "files": 210,
+    "check": {
+      "kind": "none"
+    },
+    "manualCommand": null
+  },
+  "job": {
+    "kind": "checking",
+    "level": "quick",
+    "filesDone": 164,
+    "filesTotal": 210,
+    "percent": 78.0
+  },
+  "game": {
+    "kind": "idle"
+  },
+  "update": {
+    "current": "0.5.0",
+    "auto": true,
+    "checking": false,
+    "available": null,
+    "ready": false,
+    "notes": null,
+    "showDialog": false
+  },
+  "settings": {
+    "autoUpdate": true,
+    "umuRun": null,
+    "logFolder": "/home/player/.local/share/fenji-launcher/logs"
+  },
+  "notice": null
+}

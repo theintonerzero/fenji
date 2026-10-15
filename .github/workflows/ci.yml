@@ -38,6 +38,17 @@ jobs:
             exit 1
           fi
       - run: cargo test --workspace --locked
+      # The tests write the launcher's golden snapshots' types (ts-rs) and read its snapshots: the
+      # committed files must be what they write (launcher plan LP2, LP13).
+      - name: The launcher's golden snapshots and generated types are current
+        run: |
+          stale=$(git status --porcelain -- apps/launcher/fixtures apps/launcher/src/gen)
+          if [ -n "$stale" ]; then
+            echo "Run fenji-launcher's tests (FENJI_BLESS=1 for the snapshots) and commit:" >&2
+            echo "$stale" >&2
+            git diff -- apps/launcher/fixtures apps/launcher/src/gen >&2
+            exit 1
+          fi
 
   deny:
     runs-on: ubuntu-24.04
