@@ -19,7 +19,9 @@ targets = [
 ignore = []
 
 [licenses]
-# Permissive licences only. Adding one is a deliberate `chore(deps)` change.
+# Permissive licences only. Adding one is a deliberate `chore(deps)` change, and goes into
+# deploy/archive/about.toml's `accepted` list too (the release archives' third-party notices):
+# scripts/test-package-server.sh fails while the two lists differ.
 allow = [
     "MIT",
     "Apache-2.0",

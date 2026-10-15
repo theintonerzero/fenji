@@ -11,14 +11,16 @@
 #     for macOS, or start-server.bat, with CR LF line ends, for Windows;
 #   - fenji.example.toml, README.txt (deploy/archive's, for this version), LICENSE, and SOURCE.txt,
 #     which says where the version's source code is (the AGPL's offer);
+#   - THIRD-PARTY-NOTICES.txt: the licences of the crates the target's build links, by cargo about,
+#     and musl's notice for a musl target;
 #   - fenji-oodle/COPYING and fenji-oodle/NOTICE when the target's build links fenji-oodle, which is
 #     GPL-3.0-or-later (Oodle Ruling O16), as `cargo tree` says.
 # The folders and the two programs are 0755 and the rest 0644, and a tarball's entries are root's.
 # The archive is made in a staging folder inside the out-dir and renamed into place, so no archive
 # appears there until it's whole.
 #
-# Needs cargo, tar and gzip, and zip or 7-Zip for a Windows target (GitHub's Windows runners have
-# 7-Zip and no zip). Compatible with macOS's bash 3.2.
+# Needs cargo and cargo-about, tar and gzip, and zip or 7-Zip for a Windows target (GitHub's Windows
+# runners have 7-Zip and no zip). Compatible with macOS's bash 3.2.
 set -euo pipefail
 export LC_ALL=C
 # A cd to a relative path goes where it says, not to a folder an exported CDPATH names.
@@ -80,6 +82,25 @@ trap 'rm -rf -- "$stage"' EXIT
 dir=$stage/$name
 mkdir -- "$dir"
 
+# The third-party notices: every crate the target's build links, with its licence's text, from the
+# locked dependency graph. cargo-about makes them (pinned in scripts/versions.env), and
+# deploy/archive/about.toml accepts exactly deny.toml's licences. When it can't, nothing is packed.
+(cd -- "$root" && cargo about generate --locked --fail -m crates/fenji-server/Cargo.toml \
+  --target "$target" -c deploy/archive/about.toml -o "$dir/THIRD-PARTY-NOTICES.txt" \
+  deploy/archive/THIRD-PARTY-NOTICES.hbs) ||
+  fail "cargo about failed (scripts/bootstrap.sh installs cargo-about), so the third-party notices can't be made"
+# A musl target's build also links musl, the C library. Rust 1.97's musl targets link musl 1.2.5
+# (rust-lang/rust, src/ci/docker/scripts/musl.sh), and deploy/archive/musl-COPYRIGHT is its
+# COPYRIGHT, verbatim: replace both when the toolchain's musl changes.
+case $target in
+  *-linux-musl*)
+    {
+      printf '\n%s\n' ==============================================================================
+      printf '%s\n\n' "musl 1.2.5, the C library the static Linux builds link in:"
+      cat -- "$root/deploy/archive/musl-COPYRIGHT"
+    } >> "$dir/THIRD-PARTY-NOTICES.txt" ;;
+esac
+
 cp -- "$binary" "$dir/$exe"
 # A start script gets its system's line ends, whatever the checkout's: CR LF for cmd.exe, LF for sh.
 case $start in
@@ -100,8 +121,8 @@ offer them your version's source code: [server] source_url in fenji.toml
 tells their launchers where it is.
 EOF
 chmod 0755 "$dir" "$dir/$exe" "$dir/$start"
-chmod 0644 "$dir/fenji.example.toml" "$dir/README.txt" "$dir/LICENSE" "$dir/SOURCE.txt"
-files=("$exe" "$start" fenji.example.toml README.txt LICENSE SOURCE.txt)
+chmod 0644 "$dir/fenji.example.toml" "$dir/README.txt" "$dir/LICENSE" "$dir/SOURCE.txt" "$dir/THIRD-PARTY-NOTICES.txt"
+files=("$exe" "$start" fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)
 if [ "$gpl" = yes ]; then
   mkdir -- "$dir/fenji-oodle"
   cp -- "$root/crates/fenji-oodle/COPYING" "$root/crates/fenji-oodle/NOTICE" "$dir/fenji-oodle/"

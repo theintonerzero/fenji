@@ -22,28 +22,55 @@ T=$(cd -- "$T" && pwd -P) || exit 2
 trap 'rm -rf -- "$T"' EXIT
 case "$T" in /?*) ;; *) echo "FATAL: no temporary directory" >&2; exit 2 ;; esac
 
-# A stand-in for cargo, first on PATH. It writes the directory it ran in and its arguments, one a
-# line, to $T/cargo-args, and prints fenji-server's dependency tree: with fenji-oodle in it when
-# FAKE_OODLE=yes, with only a crate whose name starts the same when FAKE_OODLE=prefix, and failing
-# as cargo does when FAKE_OODLE=fail.
+# A stand-in for cargo, first on PATH, for its two subcommands here. It writes the directory it ran
+# in and its arguments, one a line, to $T/cargo-args.<subcommand>, with the file after -o as OUT.
+# - `cargo tree` prints fenji-server's dependency tree: with fenji-oodle in it when FAKE_OODLE=yes,
+#   with only a crate whose name starts the same when FAKE_OODLE=prefix, and failing as cargo does
+#   when FAKE_OODLE=fail.
+# - `cargo about` writes $T/notices to the file after -o, or fails as cargo-about does when
+#   FAKE_ABOUT=fail.
 mkdir "$T/bin"
 cat > "$T/bin/cargo" <<'EOF'
 #!/bin/sh
-{ pwd -P; printf '%s\n' "$@"; } > "$FAKE_CARGO_ARGS"
-case "${FAKE_OODLE:-no}" in
-  fail) echo "error: failed to download from \`https://index.crates.io/\`" >&2; exit 101 ;;
-esac
-echo "fenji-server v0.0.0 (/fenji/crates/fenji-server)"
-echo "tokio v1.0.0"
-case "${FAKE_OODLE:-no}" in
-  yes) echo "fenji-oodle v0.0.0 (/fenji/crates/fenji-oodle)" ;;
-  prefix) echo "fenji-oodle-helper v0.0.0 (/fenji/tools/oodle-helper)" ;;
+out=
+prev=
+for a in "$@"; do
+  if [ "$prev" = -o ]; then out=$a; fi
+  prev=$a
+done
+prev=
+{
+  pwd -P
+  for a in "$@"; do
+    if [ "$prev" = -o ]; then echo OUT; else printf '%s\n' "$a"; fi
+    prev=$a
+  done
+} > "$FAKE_CARGO_ARGS.$1"
+case "$1" in
+  tree)
+    case "${FAKE_OODLE:-no}" in
+      fail) echo "error: failed to download from \`https://index.crates.io/\`" >&2; exit 101 ;;
+    esac
+    echo "fenji-server v0.0.0 (/fenji/crates/fenji-server)"
+    echo "tokio v1.0.0"
+    case "${FAKE_OODLE:-no}" in
+      yes) echo "fenji-oodle v0.0.0 (/fenji/crates/fenji-oodle)" ;;
+      prefix) echo "fenji-oodle-helper v0.0.0 (/fenji/tools/oodle-helper)" ;;
+    esac ;;
+  about)
+    if [ "${FAKE_ABOUT:-}" = fail ]; then
+      echo "error: failed to satisfy license requirements" >&2
+      exit 1
+    fi
+    cat "$FAKE_NOTICES" > "$out" ;;
+  *) echo "stand-in cargo: no subcommand $1" >&2; exit 101 ;;
 esac
 EOF
 chmod 0755 "$T/bin/cargo"
+printf 'Third-party notices, from a stand-in for cargo about\n  subtle 2.6.1: BSD-3-Clause\n' > "$T/notices"
 PATH="$T/bin:$PATH"
-export PATH FAKE_CARGO_ARGS="$T/cargo-args"
-unset FAKE_OODLE
+export PATH FAKE_CARGO_ARGS="$T/cargo-args" FAKE_NOTICES="$T/notices"
+unset FAKE_OODLE FAKE_ABOUT
 
 # The fake binary, in a folder with a space in its name, and 0644, as a new file is: the archive's
 # copy must be 0755.
@@ -109,16 +136,19 @@ packs "a Linux target packs"
 same "it prints the archive's path" "$out" "$T/out/$L.tar.gz"
 same "the Linux tarball holds one folder: the server, start-server.sh and the texts" \
   "$(tar -tzf "$T/out/$L.tar.gz")" \
-  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt)"
+  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)"
 same "the folder, the server and start-server.sh are 0755, the texts 0644" "$(modes "$T/out/$L.tar.gz")" "$(printf '%s\n' \
   "drwxr-xr-x $L/" "-rwxr-xr-x $L/fenji-server" "-rwxr-xr-x $L/start-server.sh" "-rw-r--r-- $L/fenji.example.toml" \
-  "-rw-r--r-- $L/README.txt" "-rw-r--r-- $L/LICENSE" "-rw-r--r-- $L/SOURCE.txt")"
+  "-rw-r--r-- $L/README.txt" "-rw-r--r-- $L/LICENSE" "-rw-r--r-- $L/SOURCE.txt" "-rw-r--r-- $L/THIRD-PARTY-NOTICES.txt")"
 case "$(tar --version 2>/dev/null)" in
   *"GNU tar"*)
     same "every entry is root's, by number" "$(tar --numeric-owner -tvzf "$T/out/$L.tar.gz" | awk '{ print $2 }' | sort -u)" 0/0 ;;
 esac
-same "cargo tree is asked, in the repository, for the target's linked crates, locked" "$(cat "$T/cargo-args")" "$(printf '%s\n' \
+same "cargo tree is asked, in the repository, for the target's linked crates, locked" "$(cat "$T/cargo-args.tree")" "$(printf '%s\n' \
   "$REPO" tree --locked -p fenji-server --target x86_64-unknown-linux-musl -e normal --prefix none)"
+same "cargo about is asked, in the repository, for the notices of the target's linked crates, locked, failing closed" \
+  "$(cat "$T/cargo-args.about")" "$(printf '%s\n' "$REPO" about generate --locked --fail -m crates/fenji-server/Cargo.toml \
+  --target x86_64-unknown-linux-musl -c deploy/archive/about.toml -o OUT deploy/archive/THIRD-PARTY-NOTICES.hbs)"
 mkdir "$T/linux"
 tar -xzf "$T/out/$L.tar.gz" -C "$T/linux"
 X=$T/linux/$L
@@ -130,6 +160,14 @@ holds "SOURCE.txt names the version's source code" grep -qxF "$src" "$X/SOURCE.t
 holds "README.txt links the version's hosting guide" grep -qF "$guide" "$X/README.txt"
 holds "README.txt keeps no placeholder" lacks "$X/README.txt" @VERSION@
 holds "without fenji-oodle, README.txt names no other licence" lacks "$X/README.txt" fenji-oodle
+holds "README.txt names the third-party notices" grep -qF THIRD-PARTY-NOTICES.txt "$X/README.txt"
+# A musl build's notices: cargo about's, then musl's COPYRIGHT, whole, at the end.
+musl=$REPO/deploy/archive/musl-COPYRIGHT
+holds "the notices start with cargo about's" cmp -s "$T/notices" <(head -n 2 "$X/THIRD-PARTY-NOTICES.txt")
+holds "a musl build's notices end with musl's COPYRIGHT" \
+  cmp -s "$musl" <(tail -c "$(wc -c < "$musl" | tr -d ' ')" "$X/THIRD-PARTY-NOTICES.txt")
+holds "musl's notice says which musl" grep -qxF "musl 1.2.5, the C library the static Linux builds link in:" \
+  "$X/THIRD-PARTY-NOTICES.txt"
 
 # Windows: a zip with start-server.bat, whose lines end in CR LF.
 W=fenji-server-$v-x86_64-pc-windows-msvc
@@ -138,7 +176,7 @@ packs "a Windows target packs"
 same "it prints the zip's path" "$out" "$T/out/$W.zip"
 same "the Windows zip holds one folder: the server, start-server.bat and the texts" \
   "$(unzip -Z1 "$T/out/$W.zip")" \
-  "$(entries "$W" fenji-server.exe start-server.bat fenji.example.toml README.txt LICENSE SOURCE.txt)"
+  "$(entries "$W" fenji-server.exe start-server.bat fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)"
 unzip -p "$T/out/$W.zip" "$W/fenji-server.exe" > "$T/exe"
 holds "fenji-server.exe is the binary given" cmp -s "$T/exe" "$T/in/with space/fake"
 unzip -p "$T/out/$W.zip" "$W/start-server.bat" > "$T/bat"
@@ -148,6 +186,8 @@ tr -d '\r' < "$REPO/deploy/start/start-server.bat" > "$T/bat-repo"
 holds "start-server.bat is deploy/start's" cmp -s "$T/bat-lf" "$T/bat-repo"
 unzip -p "$T/out/$W.zip" "$W/SOURCE.txt" > "$T/source"
 holds "the zip's SOURCE.txt names the version's source code" grep -qxF "$src" "$T/source"
+unzip -p "$T/out/$W.zip" "$W/THIRD-PARTY-NOTICES.txt" > "$T/win-notices"
+holds "a Windows build's notices are cargo about's, without musl's" cmp -s "$T/win-notices" "$T/notices"
 
 # A zip already there is replaced, not added to (zip adds to an archive that's there).
 rm -f "$T/out/$W.zip"
@@ -156,7 +196,7 @@ printf 'stray\n' > "$T/stray.txt"
 pack "$v" x86_64-pc-windows-msvc
 packs "a Windows target packs over an old zip"
 same "the old zip is replaced" "$(unzip -Z1 "$T/out/$W.zip")" \
-  "$(entries "$W" fenji-server.exe start-server.bat fenji.example.toml README.txt LICENSE SOURCE.txt)"
+  "$(entries "$W" fenji-server.exe start-server.bat fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)"
 
 # macOS: a tarball with start-server.command, which Finder runs only if it's executable.
 M=fenji-server-$v-aarch64-apple-darwin
@@ -164,11 +204,13 @@ pack "$v" aarch64-apple-darwin
 packs "a macOS target packs"
 same "the macOS tarball holds one folder: the server, start-server.command and the texts" \
   "$(tar -tzf "$T/out/$M.tar.gz")" \
-  "$(entries "$M" fenji-server start-server.command fenji.example.toml README.txt LICENSE SOURCE.txt)"
+  "$(entries "$M" fenji-server start-server.command fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)"
 same "start-server.command is 0755" "$(modes "$T/out/$M.tar.gz" | grep start-server)" "-rwxr-xr-x $M/start-server.command"
 mkdir "$T/mac"
 tar -xzf "$T/out/$M.tar.gz" -C "$T/mac"
 holds "start-server.command is deploy/start's" cmp -s "$T/mac/$M/start-server.command" "$REPO/deploy/start/start-server.command"
+holds "a macOS build's notices are cargo about's, without musl's" cmp -s "$T/mac/$M/THIRD-PARTY-NOTICES.txt" "$T/notices"
+same "cargo about is asked for the macOS target's crates" "$(sed -n '/^--target$/{n;p;}' "$T/cargo-args.about")" aarch64-apple-darwin
 
 # A release candidate's version.
 R=fenji-server-1.2.3-rc.1-x86_64-unknown-linux-musl
@@ -185,7 +227,7 @@ rm -rf "$T/out"
 pack "$v" x86_64-unknown-linux-musl
 packs "a Linux target that links fenji-oodle packs"
 same "its tarball adds fenji-oodle's COPYING and NOTICE" "$(tar -tzf "$T/out/$L.tar.gz")" \
-  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt \
+  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt \
     fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)"
 same "fenji-oodle's folder is 0755 and its texts 0644" "$(modes "$T/out/$L.tar.gz" | grep fenji-oodle)" "$(printf '%s\n' \
   "drwxr-xr-x $L/fenji-oodle/" "-rw-r--r-- $L/fenji-oodle/COPYING" "-rw-r--r-- $L/fenji-oodle/NOTICE")"
@@ -197,13 +239,13 @@ holds "README.txt names fenji-oodle's licence" grep -qF fenji-oodle/COPYING "$T/
 pack "$v" x86_64-pc-windows-msvc
 packs "a Windows target that links fenji-oodle packs"
 same "its zip adds fenji-oodle's COPYING and NOTICE" "$(unzip -Z1 "$T/out/$W.zip")" \
-  "$(entries "$W" fenji-server.exe start-server.bat fenji.example.toml README.txt LICENSE SOURCE.txt \
+  "$(entries "$W" fenji-server.exe start-server.bat fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt \
     fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)"
 export FAKE_OODLE=prefix
 pack "$v" x86_64-unknown-linux-musl
 packs "a build with a crate named like fenji-oodle packs"
 same "a crate whose name only starts with fenji-oodle brings no GPL texts" "$(tar -tzf "$T/out/$L.tar.gz")" \
-  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt)"
+  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)"
 unset FAKE_OODLE
 
 # The archive is staged in a folder beside it, so that its last move is a rename on one file
@@ -225,6 +267,40 @@ got=$(cd "$REPO" && CDPATH=$T/decoy scripts/package-server.sh "$v" x86_64-unknow
   "$T/in/with space/fake" "$T/out" 2> "$T/err")
 rc=$?
 same "run by a relative path with CDPATH set, it finds its own repository" "$rc $got" "0 $T/out/$L.tar.gz"
+
+# When the notices can't be made, nothing is packed: no archive, and no staging folder left.
+export FAKE_ABOUT=fail
+rm -rf "$T/out"
+got=$(cd "$T" && "$PACK" "$v" x86_64-unknown-linux-musl "in/with space/fake" out 2>&1 > /dev/null)
+rc=$?
+if [ "$rc" = 1 ] && grep -q "cargo about failed" <<< "$got" && [ -z "$(find "$T/out" -mindepth 1 2>/dev/null)" ]; then
+  ok "a failing cargo about stops it: no archive goes out without its notices"
+else
+  bad "a failing cargo about stops it: exit $rc: $got: $(find "$T/out" -mindepth 1 2>&1)"
+fi
+unset FAKE_ABOUT
+
+# toml_list FILE TABLE KEY: the strings in FILE's KEY = [ ... ] array, under [TABLE] (or before any
+# table when TABLE is empty), one a line, in order.
+toml_list() {
+  awk -v table="$2" -v key="$3" '
+    /^\[/ { t = $0; gsub(/^\[|\]$/, "", t); next }
+    !on && t == table && $0 ~ "^" key " *= *\\[" { on = 1 }
+    on {
+      s = $0
+      sub(/#.*/, "", s)
+      while (match(s, /"[^"]*"/)) { print substr(s, RSTART + 1, RLENGTH - 2); s = substr(s, RSTART + RLENGTH) }
+      if (s ~ /\]/) on = 0
+    }
+  ' "$1"
+}
+
+# cargo-about accepts exactly the licences cargo-deny allows, in the same order, so the notices and
+# the dependency check never disagree about what may go into a build.
+allowed=$(toml_list "$REPO/deny.toml" licenses allow)
+holds "deny.toml's [licenses] allow list is read" test -n "$allowed"
+same "deploy/archive/about.toml accepts exactly deny.toml's licences, in its order" \
+  "$(toml_list "$REPO/deploy/archive/about.toml" "" accepted)" "$allowed"
 
 # refused WANT_RC PATTERN WHAT -- ARGS...: package-server.sh ARGS, run from $T, exits WANT_RC with
 # PATTERN in its message, and makes no out-dir.

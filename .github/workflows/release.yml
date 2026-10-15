@@ -64,6 +64,12 @@ jobs:
           rustup toolchain install
           rustup target add "$TARGET"
           rustc -vV
+      - name: Install cargo-about, for the archive's third-party notices
+        run: |
+          source scripts/versions.env
+          # Its program is behind the cli feature: without it, cargo install builds nothing.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
       - name: Install musl-tools, for the static Linux builds' C code
         if: runner.os == 'Linux'
         run: |

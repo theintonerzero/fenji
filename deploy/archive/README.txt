@@ -26,3 +26,5 @@ Fenji @VERSION@: a private server for Swords of Legends Online
 fenji.example.toml describes every setting. Fenji is free software: LICENSE
 is its licence, the GNU Affero General Public License, version 3 or later,
 and SOURCE.txt says where this version's source code is.
+THIRD-PARTY-NOTICES.txt lists the open-source code built into the server,
+with its licences.
