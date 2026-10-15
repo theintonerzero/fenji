@@ -1,11 +1,14 @@
 //! The account API's client (M3 spec D12, D14). It speaks only https, or http to this machine,
 //! never follows a redirect, and never shows a password, session token or ticket in `Debug`. What
 //! a server says in its own words (maintenance, a ban's reason, its MOTD, the names in its world)
-//! reaches the player with hidden characters shown as escapes (M4 hosting spec §3.8, §3.9, §8).
+//! reaches the player with hidden characters shown as escapes (M4 hosting spec §3.8, §3.9, §8), so
+//! a hostile server can't put terminal sequences on the player's screen. The hidden characters are
+//! one list with the server's checks and the host console's (M4 hosting plan, Ruling HP3).
 use std::net::IpAddr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use fenji_console::text::{escape_hidden, hidden};
 use reqwest::{Method, StatusCode, Url};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -91,35 +94,6 @@ fn utc_minute(ms: i64) -> String {
         rem / 3600,
         rem % 3600 / 60
     )
-}
-
-/// Whether `c` would act on a terminal, or change how the text around it reads: controls (ESC
-/// among them), the line and paragraph separators, the bidirectional marks, overrides and
-/// isolates, and the zero-width characters.
-fn hidden(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{061C}'
-                | '\u{200B}'..='\u{200F}'
-                | '\u{2028}'..='\u{202E}'
-                | '\u{2060}'..='\u{2069}'
-                | '\u{FEFF}'
-        )
-}
-
-/// A server's words as the launcher shows them: each [`hidden`] character written as its escape,
-/// such as `\u{1b}`, so a hostile server can't put terminal sequences on the player's screen.
-fn escape_hidden(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if hidden(c) {
-            out.extend(c.escape_unicode());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// Whether `url` is one a launcher may offer to open: `https://` or `http://`, then something,
