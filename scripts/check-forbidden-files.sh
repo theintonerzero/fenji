@@ -100,6 +100,16 @@ while IFS= read -r -d '' f <&3; do
         fail "$f" "an Oodle spool block"; continue
       fi ;;
   esac
+  # An Oodle stream. Only fenji-oodle's synthetic fixtures may be one: its tests check each .oz file
+  # in their folder against the manifest (crates/fenji-oodle/tests/fixtures/README.md). So a name
+  # passes only as they read it: in that folder, not below it, exactly, with .oz in lower case.
+  case "$lower" in
+    *.oz)
+      fixture=${f#crates/fenji-oodle/tests/fixtures/}
+      if [ "$fixture" = "$f" ] || [ "$fixture" != "${fixture##*/}" ] || [ "$fixture" = "${fixture%.oz}" ]; then
+        fail "$f" "an Oodle stream outside fenji-oodle's test fixtures"; continue
+      fi ;;
+  esac
 
   # A submodule or an unmerged path has no blob at stage 0, so there is nothing to read (the name
   # rules above applied to it already).

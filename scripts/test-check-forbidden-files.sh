@@ -176,6 +176,18 @@ expect_accept "$(stage spool/0123456789abcdef0123456789abcdef01234567-x.bin 'x')
 rejected logs/1791772292581-7800-127.0.0.1_51234.log '# fenji-stub session\n' "a stub session log (it holds the client's auth frame)"
 expect_accept "$(stage docs/build.log 'x')" "a .log whose name isn't a stub session's" --staged
 
+# ---- Oodle streams: only fenji-oodle's synthetic fixtures, as its tests read them (each .oz in
+# their folder is checked against the manifest)
+
+rejected out/text-4096-1.c8.l4.oz 'x' "an Oodle stream outside fenji-oodle's fixtures"
+rejected spool/BLOCK.OZ 'x' "an Oodle stream, upper case"
+rejected crates/fenji-oodle/tests/text-4096-1.c8.l4.oz 'x' "an Oodle stream beside the fixtures' folder"
+rejected crates/fenji-oodle/tests/fixtures/more/x.oz 'x' "an Oodle stream below the fixtures' folder"
+rejected crates/fenji-oodle/tests/fixtures/x.OZ 'x' "an Oodle stream in the fixtures' folder that its tests don't read"
+rejected Crates/fenji-oodle/tests/fixtures/x.oz 'x' "an Oodle stream in a folder named as the fixtures' in another case"
+expect_accept "$(stage crates/fenji-oodle/tests/fixtures/text-4096-1.c8.l4.oz 'x')" "an Oodle stream among fenji-oodle's fixtures" --staged
+expect_accept "$(stage crates/fenji-oodle/tests/fixtures/README.md 'x')" "a file beside the fixtures that isn't a stream" --staged
+
 # ---- native libraries and Oodle's SDK (the middleware ground rule 3 keeps out)
 
 rejected sdk/oo2core_9_win64.lib 'x' "an import library"

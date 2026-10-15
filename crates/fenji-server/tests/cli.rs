@@ -227,6 +227,121 @@ fn first_run_writes_the_config_and_data_then_starts() {
     }
 }
 
+/// The server run out of file descriptors: its account API waits between tries rather than spin,
+/// and serves again once descriptors come back. Linux, for /proc and for 127.0.0.0/8's other
+/// addresses.
+#[cfg(target_os = "linux")]
+mod out_of_descriptors {
+    use std::net::SocketAddr;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpSocket, TcpStream};
+
+    use super::*;
+
+    /// The processor time `pid` has used, user and system, in clock ticks.
+    fn cpu_ticks(pid: u32) -> u64 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let fields: Vec<&str> = stat[stat.rfind(')').unwrap() + 2..].split(' ').collect();
+        fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+    }
+
+    fn descriptors(pid: u32) -> usize {
+        std::fs::read_dir(format!("/proc/{pid}/fd")).map_or(0, |d| d.count())
+    }
+
+    /// The account API's answer to `GET /api/v1/server`, within 2 s.
+    async fn facts(api: SocketAddr) -> Option<String> {
+        let ask = async {
+            let mut conn = TcpStream::connect(api).await?;
+            conn.write_all(b"GET /api/v1/server HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                .await?;
+            let mut answer = String::new();
+            conn.read_to_string(&mut answer).await?;
+            std::io::Result::Ok(answer)
+        };
+        tokio::time::timeout(Duration::from_secs(2), ask)
+            .await
+            .ok()?
+            .ok()
+    }
+
+    #[tokio::test]
+    async fn the_api_waits_rather_than_spins_and_serves_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n";
+        std::fs::write(dir.path().join("fenji.toml"), config).unwrap();
+        // 64 descriptors, of which a running server holds about 16.
+        let log = tempfile::NamedTempFile::new().unwrap();
+        let child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("ulimit -n 64 && exec \"$0\" --config fenji.toml run")
+            .arg(env!("CARGO_BIN_EXE_fenji-server"))
+            .current_dir(dir.path())
+            .env("RUST_LOG", "info")
+            .env_remove("FENJI_LOGIN_BIND")
+            .env_remove("FENJI_API_BIND")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(log.reopen().unwrap())
+            .spawn()
+            .unwrap();
+        let mut server = Running { child, log };
+        server.wait_for("Fenji is running");
+        let said = server.said();
+        let running = said
+            .lines()
+            .find(|l| l.contains("Fenji is running"))
+            .unwrap();
+        // The gate's address, then the API's.
+        let port: String = running
+            .rsplit("127.0.0.1:")
+            .next()
+            .unwrap()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let api = SocketAddr::from(([127, 0, 0, 1], port.parse().unwrap()));
+        let pid = server.child.id();
+        // Sixteen from each of six networks, the most each may have open: more than the server
+        // has descriptors left for.
+        let mut held = Vec::new();
+        for n in 2..8 {
+            for _ in 0..16 {
+                let sock = TcpSocket::new_v4().unwrap();
+                sock.bind(format!("127.0.0.{n}:0").parse().unwrap())
+                    .unwrap();
+                held.push(sock.connect(api).await.unwrap());
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while descriptors(pid) < 64 {
+            assert!(
+                Instant::now() < deadline,
+                "only {} descriptors in use",
+                descriptors(pid)
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // Out of descriptors, its accept fails at every try: it must wait between them.
+        let before = cpu_ticks(pid);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let used = cpu_ticks(pid) - before;
+        assert!(used < 50, "{used} ticks of processor time in 2 s");
+        drop(held);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !facts(api)
+            .await
+            .is_some_and(|answer| answer.starts_with("HTTP/1.1 200"))
+        {
+            assert!(Instant::now() < deadline, "not served again");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let status = server.stop();
+        assert!(status.success(), "{status}:\n{}", server.said());
+    }
+}
+
 #[test]
 fn a_bind_in_the_environment_that_doesnt_parse_stops_the_start_and_is_named() {
     let dir = tempfile::tempdir().unwrap();

@@ -9,7 +9,8 @@
 //! handshake runs on a task of its own within a time limit (Review Focus 3), so connections that
 //! never finish theirs hold their network's places for the limit at most, and keep no other
 //! network from the account API. A finished one is handed to axum in a [`Conn`], which keeps its
-//! open place and ends it once it has sent nothing for the idle time (`crate::listen`).
+//! open place and ends it once no byte has come in or gone out for the idle time
+//! (`crate::listen`).
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -194,7 +195,20 @@ fn temporary_beside(path: &Path) -> anyhow::Result<PathBuf> {
 /// that finds the files there, another first start's made meanwhile, loads those instead, and two
 /// starts never serve two keys. A crash between the two links leaves the key without its
 /// certificate, which the next start refuses, as it refuses any key without its certificate.
+/// Where links can't be made (FAT32 and exFAT drives, some network shares), each file is written
+/// in place instead, as a new file, which never replaces one either (Ruling HP10); there a crash
+/// can also leave a file cut short, which the next start refuses as one that doesn't parse.
 fn make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
+    make_with(dir, public_host, |from, to| std::fs::hard_link(from, to))
+}
+
+/// [`make`], linking each file into place with `link`: [`std::fs::hard_link`], but in tests of the
+/// folders where links can't be made.
+fn make_with(
+    dir: &Path,
+    public_host: &str,
+    link: impl Fn(&Path, &Path) -> io::Result<()>,
+) -> anyhow::Result<ServerKey> {
     crate::config::private_folder(dir)
         .with_context(|| format!("can't make the key's folder {}", dir.display()))?;
     owner_only(dir)?;
@@ -221,26 +235,21 @@ fn make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
     for stale in [key_new, cert_new] {
         let _ = std::fs::remove_file(stale);
     }
-    write_file(key_new, key.serialize_pem().as_bytes(), true)?;
-    write_file(cert_new, cert.pem().as_bytes(), false)?;
-    for (from, to) in [(key_new, &key_path), (cert_new, &cert_path)] {
-        match std::fs::hard_link(from, to) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                tracing::info!(
-                    "found the server's key made meanwhile in {}: serving that one",
-                    dir.display()
-                );
-                return load(&key_path, &cert_path);
-            }
-            Err(e) => {
-                let e = anyhow::Error::new(e);
-                return Err(e.context(format!(
-                    "can't link {} to {}",
-                    from.display(),
-                    to.display()
-                )));
-            }
+    let (key_pem, cert_pem) = (key.serialize_pem(), cert.pem());
+    let files = [
+        (key_new, &key_path, key_pem.as_bytes(), true),
+        (cert_new, &cert_path, cert_pem.as_bytes(), false),
+    ];
+    for (new, _, bytes, private) in files {
+        write_file(new, bytes, private)?;
+    }
+    for (new, path, bytes, private) in files {
+        if !put(new, path, bytes, private, &link)? {
+            tracing::info!(
+                "found the server's key made meanwhile in {}: serving that one",
+                dir.display()
+            );
+            return load(&key_path, &cert_path);
         }
     }
     drop(own);
@@ -252,6 +261,40 @@ fn make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
         dir.display()
     );
     Ok(made)
+}
+
+/// Puts the file written whole at `new`, this start's own name for it, at `path`, unless a file is
+/// there already: false then. By a link, which never replaces a file; or, when the link fails for
+/// any other reason, as where links can't be made, by writing `bytes` to `path` as a new file,
+/// which never replaces one either.
+fn put(
+    new: &Path,
+    path: &Path,
+    bytes: &[u8],
+    private: bool,
+    link: &impl Fn(&Path, &Path) -> io::Result<()>,
+) -> anyhow::Result<bool> {
+    let unlinked = match link(new, path) {
+        Ok(()) => return Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => e,
+    };
+    tracing::debug!(
+        error = %unlinked,
+        "can't link {} to {}: writing it in place",
+        new.display(),
+        path.display()
+    );
+    match write_file(path, bytes, private) {
+        Ok(()) => Ok(true),
+        Err(e)
+            if e.downcast_ref::<io::Error>()
+                .is_some_and(|e| e.kind() == io::ErrorKind::AlreadyExists) =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Writes `bytes` to `path` as a new file, owner-only (0600) on Unix when `private`, from the
@@ -352,7 +395,7 @@ impl TlsListener {
         };
         let (done, finished) = mpsc::channel(limits.in_flight.max(1));
         let tls = TlsAcceptor::from(Arc::new(config));
-        tokio::spawn(accept(tcp, tls, limits, conns.idle, places, done));
+        tokio::spawn(accept(tcp, tls, limits, conns, places, done));
         Ok(TlsListener { local, finished })
     }
 }
@@ -367,12 +410,16 @@ struct Places {
 /// Accepts on `tcp` while the listener holds `done`'s other end. Every connection is accepted at
 /// once, never kept waiting for a place, and closed at once without both of its places; with them,
 /// its handshake runs on a task of its own, within the time limit, and its stream is handed over
-/// in a [`Conn`] that ends it after `idle` without a byte.
+/// in a [`Conn`] under `conns`. Each place is a guard, given back when dropped: when a handshake
+/// fails, runs out of time or panics, when its stream can't be handed over, when the connection
+/// ends, and when the listener goes, which ends this task and with it the handshakes' tasks. The
+/// handshakes that ended are reaped at every turn, so the set holds no more than those in flight
+/// and those that ended since; the channel to axum holds as many as there are handshake places.
 async fn accept(
     mut tcp: TcpListener,
     tls: TlsAcceptor,
     limits: TlsLimits,
-    idle: Duration,
+    conns: ConnLimits,
     places: Places,
     done: mpsc::Sender<Finished>,
 ) {
@@ -399,7 +446,7 @@ async fn accept(
             match tokio::time::timeout(limits.handshake, tls.accept(stream)).await {
                 Ok(Ok(stream)) => {
                     let _ = done
-                        .send((Conn::new(stream, local, open, idle), peer))
+                        .send((Conn::new(stream, local, open, conns), peer))
                         .await;
                 }
                 Ok(Err(e)) => tracing::debug!(%peer, error = %e, "a TLS handshake failed"),
@@ -623,6 +670,53 @@ mod tests {
         );
     }
 
+    /// A link that fails with `kind`, as in the folders that can't hold links: FAT32 and exFAT
+    /// drives, and some network shares.
+    fn no_links(kind: io::ErrorKind) -> impl Fn(&Path, &Path) -> io::Result<()> {
+        move |_, _| Err(io::Error::new(kind, "this folder can't hold links"))
+    }
+
+    #[test]
+    fn where_links_cant_be_made_the_files_are_written_in_place() {
+        // Ruling HP10. Linux's FAT drivers say a link isn't permitted; macOS's, Windows' and
+        // network shares say it isn't supported.
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Unsupported] {
+            let (_root, dir) = key_dir();
+            let made = make_with(dir.as_path(), "127.0.0.1", no_links(kind)).unwrap();
+            assert_eq!(
+                names(dir.as_path()),
+                ["cert.pem", "key.pem"],
+                "no file left over"
+            );
+            let again = ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
+            assert_eq!(again.pin, made.pin, "{kind:?}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let key = std::fs::metadata(dir.as_path().join(KEY_FILE)).unwrap();
+                assert_eq!(key.permissions().mode() & 0o777, 0o600, "{kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn where_links_cant_be_made_a_key_made_meanwhile_is_still_never_replaced() {
+        // Written in place, each file is still made new: a start that finds the files another
+        // start made loads those, as when it links.
+        let (_root, dir) = key_dir();
+        let first = ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
+        let key = std::fs::read(dir.as_path().join(KEY_FILE)).unwrap();
+        let no_links = no_links(io::ErrorKind::PermissionDenied);
+        let second = make_with(dir.as_path(), "127.0.0.1", no_links).unwrap();
+        assert_eq!(second.pin, first.pin);
+        assert_eq!(std::fs::read(dir.as_path().join(KEY_FILE)).unwrap(), key);
+        assert_eq!(
+            names(dir.as_path()),
+            ["cert.pem", "key.pem"],
+            "no file left over"
+        );
+    }
+
     #[test]
     fn a_key_and_certificate_that_dont_go_together_are_refused() {
         let ((_a, a), (_b, b)) = (key_dir(), key_dir());
@@ -675,23 +769,26 @@ mod tests {
     }
 
     /// A TLS listener on a free loopback port under `limits` and `conns`, serving a router whose
-    /// `/` says `ok` when the connection's own address reached it: its address.
+    /// `/` says `ok` when the connection's own address reached it, and whose `/big` answers with
+    /// a mebibyte: its address.
     async fn serving(dir: &std::path::Path, limits: TlsLimits, conns: ConnLimits) -> SocketAddr {
         let key = ServerKey::load_or_make(&dir.join("tls"), "127.0.0.1").unwrap();
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();
         let listener = TlsListener::new(tcp, &key, limits, conns, &[]).unwrap();
         assert_eq!(axum::serve::Listener::local_addr(&listener).unwrap(), addr);
-        let app = Router::new().route(
-            "/",
-            get(move |ConnectInfo(a): ConnectInfo<Addrs>| async move {
-                if a.local == addr && a.peer != addr {
-                    "ok"
-                } else {
-                    "not this connection's addresses"
-                }
-            }),
-        );
+        let app = Router::new()
+            .route(
+                "/",
+                get(move |ConnectInfo(a): ConnectInfo<Addrs>| async move {
+                    if a.local == addr && a.peer != addr {
+                        "ok"
+                    } else {
+                        "not this connection's addresses"
+                    }
+                }),
+            )
+            .route("/big", get(|| async { vec![b'.'; 1 << 20] }));
         let service = app.into_make_service_with_connect_info::<Addrs>();
         tokio::spawn(axum::serve(listener, service).into_future());
         addr
@@ -736,14 +833,14 @@ mod tests {
             .collect()
     }
 
-    /// Whether the server has closed `conn` within `within`: a read that ends, empty, reset or cut
-    /// short, rather than one still waiting.
+    /// Whether the server has closed `conn` within `within`: reading on comes to its end, empty,
+    /// reset or cut short, past whatever came first (such as an alert for a failed handshake),
+    /// rather than still waiting.
     async fn closed_within<S: AsyncRead + Unpin>(conn: &mut S, within: Duration) -> bool {
-        let mut byte = [0; 1];
-        matches!(
-            tokio::time::timeout(within, conn.read(&mut byte)).await,
-            Ok(Ok(0) | Err(_))
-        )
+        let mut rest = Vec::new();
+        tokio::time::timeout(within, conn.read_to_end(&mut rest))
+            .await
+            .is_ok()
     }
 
     /// A certificate verifier that takes any certificate, but checks the handshake's signatures:
@@ -921,6 +1018,123 @@ mod tests {
             "no HTTP over the TLS port"
         );
         get_ok(&client(), addr).await;
+    }
+
+    /// Whether a fresh connection to `addr` is served within 3 s, by a client that closes it after
+    /// its one request; then a moment for the close to reach the server.
+    async fn served_again(addr: SocketAddr) -> bool {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::Client::builder()
+            .tls_danger_accept_invalid_certs(true)
+            .pool_max_idle_per_host(0)
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if let Ok(answer) = client.get(format!("https://{addr}/")).send().await
+                && answer.text().await.is_ok_and(|body| body == "ok")
+            {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn every_place_comes_back_however_its_connection_ends() {
+        // One place of each kind, so each step needs the one before to have given both back.
+        let dir = tempfile::tempdir().unwrap();
+        let limits = TlsLimits {
+            handshake: Duration::from_millis(300),
+            in_flight: 1,
+            in_flight_per_network: 1,
+        };
+        let conns = ConnLimits {
+            open: 1,
+            open_per_network: 1,
+            idle: Duration::from_millis(300),
+            ..ConnLimits::default()
+        };
+        let addr = serving(dir.path(), limits, conns).await;
+        assert!(
+            served_again(addr).await,
+            "served, then closed by its client"
+        );
+        let mut failed = TcpStream::connect(addr).await.unwrap();
+        failed
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        assert!(closed_within(&mut failed, Duration::from_secs(2)).await);
+        assert!(served_again(addr).await, "after a handshake that failed");
+        let mut silent = TcpStream::connect(addr).await.unwrap();
+        assert!(closed_within(&mut silent, Duration::from_secs(3)).await);
+        assert!(served_again(addr).await, "after a handshake out of time");
+        let mut idle = handshaken(TcpStream::connect(addr).await.unwrap()).await;
+        assert!(closed_within(&mut idle, Duration::from_secs(3)).await);
+        assert!(
+            served_again(addr).await,
+            "after a connection ended for idling"
+        );
+        drop(TcpStream::connect(addr).await.unwrap());
+        assert!(
+            served_again(addr).await,
+            "after a client that left mid-handshake"
+        );
+    }
+
+    /// Whether a new connection to `addr` is served now, within a second, by a client that
+    /// closes it after its one request.
+    async fn served_now(addr: SocketAddr) -> bool {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::Client::builder()
+            .tls_danger_accept_invalid_certs(true)
+            .pool_max_idle_per_host(0)
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+        match client.get(format!("https://{addr}/")).send().await {
+            Ok(answer) => answer.text().await.is_ok_and(|body| body == "ok"),
+            Err(_) => false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_that_never_reads_its_answers_gives_its_place_back() {
+        // Ruling HP10 over TLS, where rustls takes an answer's bytes until its own buffer is full,
+        // and the writes wait after that: as for the plain listener (the test of the same name in
+        // `crate::listen`), the deadline ends the connection.
+        let dir = tempfile::tempdir().unwrap();
+        let conns = ConnLimits {
+            open_per_network: 1,
+            idle: Duration::from_millis(300),
+            request: Duration::from_millis(300),
+            ..ConnLimits::default()
+        };
+        let addr = serving(dir.path(), TlsLimits::default(), conns).await;
+        let tls = handshaken(TcpStream::connect(addr).await.unwrap()).await;
+        let (unread, mut wr) = tokio::io::split(tls);
+        let pipelined = b"GET /big HTTP/1.1\r\nHost: x\r\n\r\n".repeat(3000);
+        let pipeliner = tokio::spawn(async move {
+            let _ = wr.write_all(&pipelined).await;
+            // Its half stays open: dropping it would close the connection.
+            std::future::pending::<()>().await;
+        });
+        let started = Instant::now();
+        assert!(!served_now(addr).await, "its place is held at first");
+        while !served_now(addr).await {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the place is still held after {:?}",
+                started.elapsed()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        pipeliner.abort();
+        drop(unread);
     }
 
     #[test]
