@@ -101,7 +101,8 @@ fn hash_parts_to(
 ) -> Result<Totals, fenji_data::Error> {
     let mut t = Totals::default();
     fenji_data::archive::each_oodle_blob(&client.join("data"), |source, name, blob| {
-        let (_, blocks) = fenji_data::blocks(blob, 0)?;
+        let (_, blocks) = fenji_data::blocks(blob, 0)
+            .map_err(|e| fenji_data::Error::BadArchive(format!("{name}: {e}")))?;
         let walked = t.walked.entry(source).or_default();
         walked.0 += 1;
         walked.1 += blocks.len() as u64;
@@ -484,6 +485,22 @@ mod tests {
         assert_eq!(totals.failed, 2);
         // The block whose prefix disagrees never reaches the DLL.
         assert_eq!(asked, [524_288, 75_712, 8, 2, 1000]);
+    }
+
+    #[test]
+    fn hash_parts_names_a_blob_it_cant_read() {
+        // data001: an Oodle record whose size runs past its part.
+        use fenji_data::test_util::{oodle_memset_blob, zfs_part};
+        let client = client();
+        let mut part = zfs_part(&[vec![(1, [0xE; 20], oodle_memset_blob(10, 10, 1))]]);
+        let r = 12; // the first record, after "ZFS\0", "[IX]" and the next block's offset
+        let size = u32::from_le_bytes(part[r + 24..r + 28].try_into().unwrap()) + 1;
+        part[r + 24..r + 28].copy_from_slice(&size.to_le_bytes());
+        let crc = fenji_data::archive::crc16_arc(&part[r..r + 28]);
+        part[r + 28..r + 30].copy_from_slice(&crc.to_le_bytes());
+        std::fs::write(client.path().join("data/data001"), part).unwrap();
+        let e = hash_parts_to(client.path(), &mut Vec::new(), native).unwrap_err();
+        assert!(e.to_string().contains(&"0e".repeat(20)), "{e}");
     }
 
     #[test]

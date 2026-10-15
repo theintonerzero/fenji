@@ -1221,6 +1221,26 @@ fn verify_oodle_reports_a_block_that_fails_natively() {
 }
 
 #[test]
+fn verify_oodle_names_a_blob_it_cant_read() {
+    // data001: an Oodle record whose size runs past its part. The walk stops before any decode,
+    // and names it.
+    let (repo, blocks) = verify_repo();
+    let blob = fenji_data::test_util::oodle_memset_blob(10, 10, 1);
+    let mut part = zfs_part(&[vec![(1, [0xB; 20], blob)]]);
+    let r = 12; // the first record, after "ZFS\0", "[IX]" and the next block's offset
+    let size = u32::from_le_bytes(part[r + 24..r + 28].try_into().unwrap()) + 1;
+    part[r + 24..r + 28].copy_from_slice(&size.to_le_bytes());
+    let crc = fenji_data::archive::crc16_arc(&part[r..r + 28]);
+    part[r + 28..r + 30].copy_from_slice(&crc.to_le_bytes());
+    std::fs::write(repo.path().join("client/data/data001"), part).unwrap();
+    let out = verify(repo.path(), &dll_hashes(&blocks));
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains(&hex(&[0xB; 20])), "{err}");
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
 fn verify_oodle_refuses_outside_re_and_a_hash_list_it_cant_read() {
     let (repo, blocks) = verify_repo();
     std::fs::create_dir_all(repo.path().join("re/v")).unwrap();

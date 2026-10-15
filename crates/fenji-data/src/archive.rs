@@ -257,15 +257,18 @@ pub enum OodleSource {
 ///
 /// Every part's index chain and blob headers, every container's records and their files' blob
 /// headers, and `_index`'s, are read first: a damaged part or container stops the walk before
-/// `each` sees any blob. So do more than [`MAX_CONTAINERS`] containers. One container at a time is
-/// in memory. An error from `each` stops the walk too, and is handed back.
+/// `each` sees any blob. So do more than [`MAX_CONTAINERS`] containers. A walked part record's size
+/// must be its blob's stored size (docs/re/m1-archives.md 2.2), and a container's file and `_index`
+/// must hold their blobs whole. Each such error names the blob, or the part, it's about. One
+/// container at a time is in memory. An error from `each` stops the walk too, and is handed back.
 pub fn each_oodle_blob<E: From<Error>>(
     data: &Path,
     mut each: impl FnMut(OodleSource, &str, &[u8]) -> std::result::Result<(), E>,
 ) -> std::result::Result<(), E> {
     let (parts, containers) = oodle_places(data)?;
-    let index = std::fs::read(data.join("_index")).map_err(Error::from)?;
-    if BlobHeader::parse(&index, 0)?.codec == Codec::Oodle {
+    let index_path = data.join("_index");
+    let index = read_index(&index_path).map_err(|e| about(index_path.display(), e))?;
+    if let Some(index) = index {
         each(OodleSource::Index, "_index", &index)?;
     }
     for c in &containers {
@@ -278,16 +281,36 @@ pub fn each_oodle_blob<E: From<Error>>(
         }
     }
     for (path, oodle) in &parts {
-        let mut f = File::open(path).map_err(Error::from)?;
+        let mut f = File::open(path).map_err(|e| about(path.display(), e.into()))?;
         for &(key, at, size) in oodle {
-            each(
-                OodleSource::Part,
-                &crate::hex(&key),
-                &read_blob(&mut f, at, size)?,
-            )?;
+            let what = || format!("{} at {at:#x} in {}", crate::hex(&key), path.display());
+            let blob = read_blob(&mut f, at, size).map_err(|e| about(what(), e))?;
+            each(OodleSource::Part, &crate::hex(&key), &blob)?;
         }
     }
     Ok(())
+}
+
+/// `e`, said of `what`: a blob or a part, by its key or its path.
+fn about(what: impl std::fmt::Display, e: Error) -> Error {
+    match e {
+        Error::BadArchive(e) => Error::BadArchive(format!("{what}: {e}")),
+        e => Error::BadArchive(format!("{what}: {e}")),
+    }
+}
+
+/// `_index` whole, if it is an Oodle blob.
+fn read_index(path: &Path) -> Result<Option<Vec<u8>>> {
+    let index = std::fs::read(path)?;
+    let h = BlobHeader::parse(&index, 0)?;
+    if h.stored_size > index.len() as u64 {
+        return Err(Error::BadArchive(format!(
+            "its stored size, {}, is more than its {} bytes",
+            h.stored_size,
+            index.len()
+        )));
+    }
+    Ok((h.codec == Codec::Oodle).then_some(index))
 }
 
 /// More containers than this among the parts' live records means a damaged archive: the pinned
@@ -316,16 +339,22 @@ fn oodle_places(data: &Path) -> Result<(Vec<PartPlaces>, Vec<ContainerPlace>)> {
         if !path.exists() {
             break;
         }
-        let h = read_part_header(&path)?;
-        let mut f = File::open(&path)?;
+        let h = read_part_header(&path).map_err(|e| about(path.display(), e))?;
+        let mut f = File::open(&path).map_err(|e| about(path.display(), e.into()))?;
+        let len = f
+            .metadata()
+            .map_err(|e| about(path.display(), e.into()))?
+            .len();
         let mut oodle = Vec::new();
         for r in h.live() {
             if !seen.insert(r.key) {
                 continue;
             }
             let at = u64::from(r.offset);
-            let b = read_blob_header(&mut f, at)?;
+            let what = || format!("{} at {at:#x} in {}", crate::hex(&r.key), path.display());
+            let b = read_blob_header(&mut f, at).map_err(|e| about(what(), e))?;
             if b.codec == Codec::Oodle {
+                check_record(r, &b, len).map_err(|e| about(what(), e))?;
                 oodle.push((r.key, at, r.size));
                 continue;
             }
@@ -333,17 +362,20 @@ fn oodle_places(data: &Path) -> Result<(Vec<PartPlaces>, Vec<ContainerPlace>)> {
                 continue;
             }
             let mut magic = [0; 4];
-            read_at(&mut f, at + FIXED_LEN as u64, &mut magic, "a stored file")?;
+            read_at(&mut f, at + FIXED_LEN as u64, &mut magic, "a stored file")
+                .map_err(|e| about(what(), e))?;
             if &magic != CONTAINER_MAGIC {
                 continue;
             }
+            check_record(r, &b, len).map_err(|e| about(what(), e))?;
             if containers.len() == MAX_CONTAINERS {
-                let key = crate::hex(&r.key);
-                return Err(Error::BadArchive(format!(
-                    "{key} at {at:#x} in {}: more than {MAX_CONTAINERS} containers, which means \
-                     a damaged archive (the pinned client has 2)",
-                    path.display()
-                )));
+                return Err(about(
+                    what(),
+                    Error::BadArchive(format!(
+                        "more than {MAX_CONTAINERS} containers, which means a damaged archive \
+                         (the pinned client has 2)"
+                    )),
+                ));
             }
             let place = ContainerPlace {
                 part: path.clone(),
@@ -359,30 +391,59 @@ fn oodle_places(data: &Path) -> Result<(Vec<PartPlaces>, Vec<ContainerPlace>)> {
     Ok((parts, containers))
 }
 
+/// A part record the walk reads lies inside its part, of `len` bytes, and its size is its blob's
+/// stored size, as for every live record of the pinned client (docs/re/m1-archives.md 2.2).
+fn check_record(r: &Record, b: &BlobHeader, len: u64) -> Result<()> {
+    if u64::from(r.offset) + u64::from(r.size) > len {
+        return Err(Error::BadArchive(format!(
+            "its {} bytes run past the end of its part, at {len}",
+            r.size
+        )));
+    }
+    if u64::from(r.size) != b.stored_size {
+        return Err(Error::BadArchive(format!(
+            "its size, {}, isn't its blob's stored size, {}",
+            r.size, b.stored_size
+        )));
+    }
+    Ok(())
+}
+
 /// A container's content, and the records of its Oodle files, checked: its records as
-/// [`container_records`] checks them, and each file's blob header. An error names the container.
+/// [`container_records`] checks them, and each file's blob, whose header must parse and whose
+/// stored size its record must hold. An error names the container, and the file if it's one's.
 fn read_container(c: &ContainerPlace) -> Result<(Vec<u8>, Vec<Record>)> {
-    let damaged = |e: Error| {
-        let key = crate::hex(&c.key);
-        Error::BadArchive(format!("{key} at {:#x} in {}: {e}", c.at, c.part.display()))
-    };
-    let mut content = read_blob(&mut File::open(&c.part)?, c.at, c.size).map_err(damaged)?;
-    let h = BlobHeader::parse(&content, c.at).map_err(damaged)?;
+    let what = format!(
+        "{} at {:#x} in {}",
+        crate::hex(&c.key),
+        c.at,
+        c.part.display()
+    );
+    let mut f = File::open(&c.part).map_err(|e| about(&what, e.into()))?;
+    let mut content = read_blob(&mut f, c.at, c.size).map_err(|e| about(&what, e))?;
+    let h = BlobHeader::parse(&content, c.at).map_err(|e| about(&what, e))?;
     if h.codec != Codec::Stored || h.stored_size > u64::from(c.size) {
-        return Err(damaged(Error::BadArchive("not a whole stored blob".into())));
+        let e = Error::BadArchive("not a whole stored blob".into());
+        return Err(about(&what, e));
     }
     // The stored blob's data, in place: its content, from the `[SP]`.
     content.truncate(h.stored_size as usize);
     content.drain(..h.header_len());
     let mut oodle = Vec::new();
-    for file in container_records(&content).map_err(damaged)? {
+    for file in container_records(&content).map_err(|e| about(&what, e))? {
+        let file_what = || format!("{what}, its file {} ({})", file.slot, crate::hex(&file.key));
         // In bounds: `container_records` checks every record's file.
         let bytes = &content[file.offset as usize..][..file.size as usize];
-        if BlobHeader::parse(bytes, u64::from(file.offset))
-            .map_err(damaged)?
-            .codec
-            == Codec::Oodle
-        {
+        let fh =
+            BlobHeader::parse(bytes, u64::from(file.offset)).map_err(|e| about(file_what(), e))?;
+        if fh.stored_size > u64::from(file.size) {
+            let e = Error::BadArchive(format!(
+                "its blob's stored size, {}, is more than its record's {} bytes",
+                fh.stored_size, file.size
+            ));
+            return Err(about(file_what(), e));
+        }
+        if fh.codec == Codec::Oodle {
             oodle.push(file);
         }
     }
@@ -391,9 +452,10 @@ fn read_container(c: &ContainerPlace) -> Result<(Vec<u8>, Vec<Record>)> {
 
 /// The `size` bytes of the blob at `at`, once they're known to lie inside the file.
 fn read_blob(f: &mut File, at: u64, size: u32) -> Result<Vec<u8>> {
-    if at + u64::from(size) > f.metadata()?.len() {
+    let len = f.metadata()?.len();
+    if at + u64::from(size) > len {
         return Err(Error::BadArchive(format!(
-            "the record at {at:#x} ({size} bytes) runs past the end of its part"
+            "its {size} bytes run past the end of its part, at {len}"
         )));
     }
     let mut blob = vec![0; size as usize];
@@ -758,6 +820,84 @@ mod tests {
             part[r + 28..r + 30].copy_from_slice(&crc.to_le_bytes());
         }
         part
+    }
+
+    /// Sets the size of record `slot` of `records`, the first record of an index block or of a
+    /// container's records, and makes its CRC good again.
+    fn set_size(records: &mut [u8], slot: usize, size: impl Fn(u32) -> u32) {
+        let r = slot * RECORD_LEN;
+        let old = u32::from_le_bytes(records[r + 24..r + 28].try_into().unwrap());
+        records[r + 24..r + 28].copy_from_slice(&size(old).to_le_bytes());
+        let crc = crc16_arc(&records[r..r + 28]);
+        records[r + 28..r + 30].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    #[test]
+    fn every_error_of_the_walk_names_its_blob() {
+        // Each is caught in the first pass, before any blob is handed out.
+        let refused = |data: &Path, name: &str, what: &str| {
+            let mut called = false;
+            let r = each_oodle_blob(data, |_, _, _| {
+                called = true;
+                Ok::<(), Error>(())
+            });
+            assert!(
+                matches!(&r, Err(Error::BadArchive(m)) if m.contains(name)),
+                "{what}: {r:?}"
+            );
+            assert!(!called, "{what}");
+        };
+        let records = FIRST_INDEX as usize + 8;
+        let two = || {
+            zfs_part(&[vec![
+                (1, [2; 20], oodle_file(b"two", 512)),
+                (1, [3; 20], stored_blob(b"x")),
+            ]])
+        };
+        let mut part = two();
+        set_size(&mut part[records..], 0, |n| n + 1);
+        refused(
+            data_with(part).path(),
+            &"02".repeat(20),
+            "a size that isn't the stored size",
+        );
+        let mut last = zfs_part(&[vec![(1, [4; 20], oodle_file(b"four", 512))]]);
+        set_size(&mut last[records..], 0, |n| n + 100);
+        refused(
+            data_with(last).path(),
+            &"04".repeat(20),
+            "a record past its part's end",
+        );
+        let part = zfs_part(&[vec![(1, [5; 20], vec![0; 32])]]);
+        refused(
+            data_with(part).path(),
+            &"05".repeat(20),
+            "a blob header that doesn't parse",
+        );
+        refused(
+            data_with(b"junk".to_vec()).path(),
+            "data000",
+            "a part that isn't one",
+        );
+        // A container's file whose blob runs past its record.
+        let mut content = two_files_and_a_note();
+        let first = CONTAINER_HEADER_LEN + content[8] as usize;
+        set_size(&mut content[first..], 0, |n| n - 1);
+        let part = zfs_part(&[vec![(1, [6; 20], stored_blob(&content))]]);
+        refused(
+            data_with(part).path(),
+            &"a1".repeat(20),
+            "a container's file past its record",
+        );
+        // _index, missing or cut short.
+        let data = client_data();
+        std::fs::remove_file(data.path().join("_index")).unwrap();
+        refused(data.path(), "_index", "no _index");
+        let data = client_data();
+        let mut index = oodle_file(b"the index", 4);
+        index.pop();
+        std::fs::write(data.path().join("_index"), index).unwrap();
+        refused(data.path(), "_index", "an _index cut short");
     }
 
     #[test]

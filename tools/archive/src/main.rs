@@ -628,7 +628,7 @@ fn verify_oodle(client: &Path, dll_hashes: &Path, out: &Path) -> Result<ExitCode
     };
     let started = std::time::Instant::now();
     each_oodle_blob(&client.join("data"), |source, name, blob| -> Result<()> {
-        let (_, blocks) = fenji_data::blocks(blob, 0)?;
+        let (_, blocks) = fenji_data::blocks(blob, 0).with_context(|| name.to_string())?;
         let walked = v.walked.entry(source).or_default();
         walked.0 += 1;
         walked.1 += blocks.len() as u64;
