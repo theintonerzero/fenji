@@ -43,6 +43,7 @@ The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-des
 | `crates/fenji-auth` | Password hashing (argon2id) and the invite and token formats. |
 | `crates/fenji-launcher` | The launcher's library and `fenji-launch`, its command line: redeem an invite, check the client folder against the pinned build, and play (on Linux, through umu-launcher). |
 | `crates/fenji-data` | Reads the client's own data: its archives, file index, embedded file system and table cache. |
+| `crates/fenji-oodle` | An open decoder for the Oodle Kraken compression of the client's archives: a safe Rust port of [ooz](https://github.com/powzix/ooz), GPL-3.0-or-later. |
 | `crates/fenji-lua` | The client's Lua 5.3 dialect: parser, disassembler, normaliser. |
 | `tools/` | Command-line tools: `stub` (test server), `archive`, `luatool`, and `oodle-helper`. |
 | `scripts/` | Machine setup, the sandbox for client runs, and repository checks. |

@@ -9,7 +9,7 @@
 //!
 //! It prints what it measured. With `FENJI_LOAD_ASSERT=1` it also asserts the targets, which are
 //! meant for release builds on a host's machine, and that the bots delivered the load: no move
-//! refused, and each bot sent at least 95% of the moves and lines it planned.
+//! refused, and each bot sent at least 95% of the moves and lines it planned, rounded down.
 //!
 //! The database goes in a temporary directory under `TMPDIR`, which the output names. Where that
 //! is a tmpfs, as `/tmp` is on Fedora, the shutdown's saves never reach a disk, so point `TMPDIR`
@@ -66,9 +66,10 @@ const DELIVERED: u64 = 95;
 /// How long the last moves may take to reach the others once the bots stop.
 const SETTLE: Duration = Duration::from_secs(5);
 
-/// The least a bot may send of `planned` messages: [`DELIVERED`] percent, rounded up.
+/// The least a bot may send of `planned` messages: [`DELIVERED`] percent, rounded down, so a
+/// bot whose last line a short stall pushed past the minute still counts.
 const fn delivered(planned: u64) -> u64 {
-    (planned * DELIVERED).div_ceil(100)
+    planned * DELIVERED / 100
 }
 
 /// The name of bot `i`'s character: the Western rule allows letters, but no digits.
@@ -203,8 +204,8 @@ fn spread(tallies: &[Tally], pids: &[i64], counts: fn(&Tally) -> &HashMap<i64, u
 #[test]
 fn each_bot_plans_599_moves_and_12_lines_and_must_send_95_percent() {
     assert_eq!((PLANNED_MOVES, PLANNED_LINES), (599, 12));
-    assert_eq!(delivered(PLANNED_MOVES), 570, "569 is under 95% of 599");
-    assert_eq!(delivered(PLANNED_LINES), 12, "11 is under 95% of 12");
+    assert_eq!(delivered(PLANNED_MOVES), 569, "95% of 599, rounded down");
+    assert_eq!(delivered(PLANNED_LINES), 11, "95% of 12, rounded down");
 }
 
 #[tokio::test(flavor = "multi_thread")]

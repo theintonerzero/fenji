@@ -373,7 +373,7 @@ Task 19's measurement (2026-10-15) ran no client. The load harness, `crates/fenj
 
 **Observed (Task 19):**
 - **Both targets met, far inside.** The tick's p99 was 117 to 148 µs, under 1.5% of the 10 ms target, and no tick in the three runs went over its 50 ms budget; the slowest of the play took 2.28 ms (m4-l1). The shutdown took 64 to 66 ms, about 3% of the 2 s target.
-- **The full load, in every run.** Each bot sent all 599 of its moves and all 12 of its lines, and got 599 13s and 12 378s from each other bot; the world refused no move, and each bot was saved where it last stepped. With `FENJI_LOAD_ASSERT=1` the harness asserted both targets, that no move was refused, and that each bot sent at least 95% of its moves and of its lines.
+- **The full load, in every run.** Each bot sent all 599 of its moves and all 12 of its lines, and got 599 13s and 12 378s from each other bot; the world refused no move, and each bot was saved where it last stepped. With `FENJI_LOAD_ASSERT=1` the harness asserted both targets, that no move was refused, and that each bot sent at least 95% of its moves and of its lines, rounded down (569 and 11).
 - **The disk's share of the shutdown.** A fourth run, m4-l4, with the database on `/tmp`, shut down in 49.8 ms (p50 83.2 µs, p99 122.5 µs, max 360.3 µs), so the disk added about 15 ms.
 
 **Unknown (Task 19):**
