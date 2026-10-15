@@ -11,6 +11,13 @@ const LZ4_MAX_RATIO: usize = 255;
 /// (m1-archives.md 2.4, 3.1).
 pub const MAX_OODLE_BLOCK: usize = 512 * 1024;
 
+/// Whether this build decodes Oodle: the `oodle` feature, which links fenji-oodle
+/// (GPL-3.0-or-later). tools/oodle-helper, the program that loads the client's own Oodle DLL,
+/// refuses to build for Windows with it (Ruling O16). It turns the feature off, but Cargo turns a
+/// feature on for every package that one command builds, so `-p fenji-archive` or `--workspace`
+/// beside it would link fenji-oodle into it all the same.
+pub const OODLE_DECODER: bool = cfg!(feature = "oodle");
+
 /// Decodes one block of a blob.
 pub trait Decompressor {
     /// Decodes `input`, one block of `codec` data, into exactly `raw_len` bytes. `index` is the
