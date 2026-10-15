@@ -47,8 +47,14 @@ const FRAME_WAIT: Duration = Duration::from_secs(1);
 
 /// The full-screen console, until the host leaves it or the server goes. It draws on every
 /// message and key, and every second for the uptime. Ctrl-C sends `stop` in-process, and leaves
-/// when attached.
-pub async fn run_tui(session: Session, mode: Mode, colours: Colours) -> io::Result<Ending> {
+/// when attached. Once `leave` is done, the console leaves as an attached one's Ctrl-C does, with
+/// [`Ending::Detached`] and the terminal given back: an attached console's signals.
+pub async fn run_tui(
+    session: Session,
+    mode: Mode,
+    colours: Colours,
+    leave: impl Future<Output = ()>,
+) -> io::Result<Ending> {
     let Session {
         hello,
         mut from_server,
@@ -63,6 +69,7 @@ pub async fn run_tui(session: Session, mode: Mode, colours: Colours) -> io::Resu
     let mut second = tokio::time::interval(Duration::from_secs(1));
     second.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_id = 0;
+    let mut leave = std::pin::pin!(leave);
     loop {
         let Some(drawing) = Drawing::begin() else {
             // The panic hook gave the terminal back: drawing now would scribble on the shell.
@@ -90,6 +97,7 @@ pub async fn run_tui(session: Session, mode: Mode, colours: Colours) -> io::Resu
                 Some(Ok(_)) => {}
             },
             _ = second.tick() => {}
+            () = &mut leave => return Ok(Ending::Detached),
         }
     }
 }

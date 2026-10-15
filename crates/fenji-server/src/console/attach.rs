@@ -1,7 +1,8 @@
 //! A console attached to a running server (M4 hosting spec §3.1, §3.5): `fenji-server console`
 //! connects to the console socket of its config's data folder and takes the server's hello,
 //! refusing a server that speaks another protocol. Then it shows the full-screen console, or plain
-//! lines, which leave on Ctrl-C, `exit` or `quit` while the server runs on. `--run` runs one
+//! lines, which leave on Ctrl-C, `exit` or `quit` while the server runs on, and on SIGTERM,
+//! SIGHUP, SIGINT and SIGQUIT too, giving the terminal back (Review Focus 2). `--run` runs one
 //! command for a script, prints its answer, and exits 0 if it ran, or 1. Linux and macOS: Windows
 //! has no console socket in M4.
 use std::process::ExitCode;
@@ -46,15 +47,23 @@ mod unix {
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
     use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, watch};
 
     use crate::config::{self, Config};
     use crate::console::socket::{self, Line};
     use crate::console::{self, Front};
-    use crate::server;
+    use crate::{lock, server};
 
     /// How long a server has to say hello.
     const HELLO_WAIT: Duration = Duration::from_secs(10);
+
+    /// How long a console left by a signal has to give its terminal back. A terminal that takes no
+    /// more output, as a frozen link's doesn't, would keep it from ending: it ends without.
+    const LEAVE_WAIT: Duration = Duration::from_secs(2);
+
+    /// How long a console that ended with an error waits for a signal to leave: a terminal that
+    /// hangs up fails the console's reads and writes as its SIGHUP comes.
+    const HANGUP_WAIT: Duration = Duration::from_millis(200);
 
     /// The server's messages that may wait for the console.
     const FROM_SERVER: usize = 64;
@@ -78,24 +87,90 @@ mod unix {
             return Ok(exit(ok));
         }
         let session = Link::connect(&socket).await?.session();
+        let left = leave_signals()?;
         let term = std::env::var("TERM").ok();
         let terminal = (io::stdin().is_terminal(), io::stdout().is_terminal());
-        let ended = match console::front(terminal.0, terminal.1, term.as_deref(), plain) {
-            Front::Full => {
-                let tui = run_tui(session, Mode::Attached, Colours::from_env());
-                server::held(tui).await
+        let front = console::front(terminal.0, terminal.1, term.as_deref(), plain);
+        let leave = left_now(left.clone());
+        // Off the runtime's workers either way, as `run`'s own console is: a terminal that takes
+        // no more holds the console's thread alone, and the signals still come.
+        let shown = async move {
+            match front {
+                Front::Full => {
+                    let tui = run_tui(session, Mode::Attached, Colours::from_env(), leave);
+                    server::held(tui).await
+                }
+                Front::Plain => {
+                    let input = BufReader::new(tokio::io::stdin());
+                    let (out, err) = (io::stdout(), io::stderr());
+                    let lines = run_plain(session, input, out, err, true, Mode::Attached, leave);
+                    server::held(lines).await
+                }
             }
-            Front::Plain => {
-                let input = BufReader::new(tokio::io::stdin());
-                let (out, err) = (io::stdout(), io::stderr());
-                run_plain(session, input, out, err, true, Mode::Attached).await
-            }
+        };
+        let ended = tokio::select! {
+            ended = shown => settle(ended, left).await,
+            // Left, but its terminal takes nothing more: there's nothing to give back, or to say.
+            () = stuck(left.clone()) => return Ok(ExitCode::SUCCESS),
         };
         let (note, ok) = ending(&ended);
         if let Some(note) = note {
             server::say(&note);
         }
         Ok(exit(ok))
+    }
+
+    /// The host leaving the console by a signal: from now on SIGTERM, SIGHUP, SIGINT and SIGQUIT
+    /// no longer end the process at once, with its terminal still the console's (Review Focus 2),
+    /// but turn this value true, which ends the console as Ctrl-C ends the full-screen one.
+    fn leave_signals() -> io::Result<watch::Receiver<bool>> {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate())?;
+        let mut hangup = signal(SignalKind::hangup())?;
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let mut quit = signal(SignalKind::quit())?;
+        let (leave, left) = watch::channel(false);
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = hangup.recv() => {}
+                _ = interrupt.recv() => {}
+                _ = quit.recv() => {}
+            }
+            leave.send_replace(true);
+        });
+        Ok(left)
+    }
+
+    /// Done once the host has left the console by a signal.
+    async fn left_now(mut left: watch::Receiver<bool>) {
+        let gone = left.wait_for(|left| *left).await.is_err();
+        if gone {
+            // The signals' task ended without one: there's none to wait for.
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// Done once the host has left the console by a signal and [`LEAVE_WAIT`] has passed, the
+    /// console still running.
+    async fn stuck(left: watch::Receiver<bool>) {
+        left_now(left).await;
+        tokio::time::sleep(LEAVE_WAIT).await;
+    }
+
+    /// How the console ended, with the host's leaving counted: after a signal to leave, any ending
+    /// but the server's goodbye is the host's, whatever the terminal did meanwhile. An error waits
+    /// [`HANGUP_WAIT`] for such a signal, as a terminal that hangs up fails the console's reads as
+    /// its SIGHUP comes.
+    async fn settle(ended: io::Result<Ending>, left: watch::Receiver<bool>) -> io::Result<Ending> {
+        if ended.is_err() {
+            let _ = tokio::time::timeout(HANGUP_WAIT, left_now(left.clone())).await;
+        }
+        match ended {
+            Ok(Ending::ServerStopped(reason)) => Ok(Ending::ServerStopped(reason)),
+            _ if *left.borrow() => Ok(Ending::Detached),
+            ended => ended,
+        }
     }
 
     fn exit(ok: bool) -> ExitCode {
@@ -269,7 +344,7 @@ mod unix {
         if let Some(why) = socket::too_long(socket) {
             return anyhow!("can't attach to the server: {why}");
         }
-        let data = socket::shown(socket.parent().unwrap_or(Path::new(".")));
+        let data = lock::shown(socket.parent().unwrap_or(Path::new(".")));
         match e.kind() {
             io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => anyhow!(
                 "no server is running with this data folder ({})",
@@ -337,6 +412,32 @@ mod unix {
             assert_eq!(ending(&Ok(Ending::InputClosed)), (None, true));
             assert!(!ending(&Ok(Ending::Lost)).1);
             assert!(!ending(&Err(io::Error::other("a panic ended the console"))).1);
+        }
+
+        #[tokio::test]
+        async fn a_leave_signal_makes_the_ending_the_hosts_leaving() {
+            // Task 11's review 1, Important 1: whatever the terminal did as the signal came.
+            let (leave, left) = tokio::sync::watch::channel(false);
+            let stopping = || Ending::ServerStopped("the server is stopping".into());
+            // Without one, an ending is as it was.
+            let closed = settle(Ok(Ending::InputClosed), left.clone()).await;
+            assert_eq!(closed.unwrap(), Ending::InputClosed);
+            // A terminal that hangs up fails the console's reads as its SIGHUP comes: an error
+            // waits a moment for the signal.
+            let hangup = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                leave.send_replace(true);
+                leave
+            });
+            let failed = settle(Err(io::Error::other("Input/output error")), left.clone()).await;
+            assert_eq!(failed.unwrap(), Ending::Detached);
+            let _leave = hangup.await.unwrap();
+            // Once left, any ending but the server's goodbye is the host's leaving.
+            assert_eq!(
+                settle(Ok(Ending::Lost), left.clone()).await.unwrap(),
+                Ending::Detached
+            );
+            assert_eq!(settle(Ok(stopping()), left).await.unwrap(), stopping());
         }
     }
 }

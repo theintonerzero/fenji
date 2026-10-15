@@ -17,8 +17,9 @@ use crate::{Ending, Session};
 /// At the end of the input it waits for the answers still due, then ends with
 /// [`Ending::InputClosed`]. Attached to a running server ([`Mode::Attached`]), a line `exit` or
 /// `quit` ends the input in the same way, and the console with [`Ending::Detached`]: the word never
-/// reaches the server, which runs on. A line over [`INPUT_MAX`] bytes, or with a hidden character,
-/// isn't sent, and `err` says why.
+/// reaches the server, which runs on. Once `leave` is done, it ends with [`Ending::Detached`] at
+/// once, the answers due or not: an attached console's signals. A line over [`INPUT_MAX`] bytes,
+/// or with a hidden character, isn't sent, and `err` says why.
 pub async fn run_plain(
     session: Session,
     input: impl AsyncBufRead + Unpin,
@@ -26,12 +27,14 @@ pub async fn run_plain(
     mut err: impl Write,
     print_logs: bool,
     mode: Mode,
+    leave: impl Future<Output = ()>,
 ) -> io::Result<Ending> {
     let Session {
         mut from_server,
         to_server,
         ..
     } = session;
+    let mut leave = std::pin::pin!(leave);
     let mut lines = Lines::new(input);
     let mut input_open = true;
     // A line read and not yet sent: no more is read until it is.
@@ -102,6 +105,7 @@ pub async fn run_plain(
                     line => queued = Some(line.to_owned()),
                 },
             },
+            () = &mut leave => return Ok(Ending::Detached),
         }
     }
 }
@@ -234,6 +238,7 @@ mod tests {
                 std::io::sink(),
                 true,
                 Mode::Attached,
+                std::future::pending(),
             );
             // A console that sent `exit` on would wait for its answer: none comes.
             let ending = tokio::time::timeout(std::time::Duration::from_secs(10), console)
@@ -267,6 +272,7 @@ mod tests {
             std::io::sink(),
             false,
             Mode::InProcess,
+            std::future::pending(),
         )
         .await
         .unwrap();
@@ -276,6 +282,47 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "no command exit; type help\n"
         );
+    }
+
+    #[tokio::test]
+    async fn leaving_ends_the_console_at_once_without_its_answers() {
+        // Task 11's review 1, Important 1: an attached console's SIGTERM, SIGHUP, SIGINT or
+        // SIGQUIT leaves it as Ctrl-C leaves the full-screen one, without waiting for the answers
+        // due, the server running on.
+        let (to_console, from_server) = mpsc::channel(8);
+        let (to_server, mut console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let (leave_now, left) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            // The command comes, and its answer never does; then the host leaves.
+            let ConsoleMsg::Run { line, .. } = console_out.recv().await.unwrap();
+            assert_eq!(line, "backup");
+            leave_now.send(()).unwrap();
+            let after = console_out.recv().await;
+            (after, to_console)
+        });
+        // Input that stays open: only leaving ends the console.
+        let (mut typing, input) = tokio::io::duplex(64);
+        typing.write_all(b"backup\n").await.unwrap();
+        let console = run_plain(
+            session,
+            BufReader::new(input),
+            std::io::sink(),
+            std::io::sink(),
+            true,
+            Mode::Attached,
+            async {
+                let _ = left.await;
+            },
+        );
+        let ending = tokio::time::timeout(std::time::Duration::from_secs(10), console)
+            .await
+            .expect("it leaves at once")
+            .unwrap();
+        assert_eq!(ending, Ending::Detached);
+        let (after, _open) = server.await.unwrap();
+        assert_eq!(after, None, "nothing after the host left");
+        drop(typing);
     }
 
     #[tokio::test]
@@ -306,6 +353,7 @@ mod tests {
             std::io::sink(),
             false,
             Mode::Attached,
+            std::future::pending(),
         )
         .await
         .unwrap();
@@ -329,6 +377,7 @@ mod tests {
             err.clone(),
             true,
             Mode::InProcess,
+            std::future::pending(),
         )
         .await
         .unwrap();
@@ -388,6 +437,7 @@ mod tests {
             std::io::sink(),
             true,
             Mode::InProcess,
+            std::future::pending(),
         )
         .await
         .unwrap();
@@ -426,6 +476,7 @@ mod tests {
             std::io::sink(),
             true,
             Mode::InProcess,
+            std::future::pending(),
         )
         .await
         .unwrap();
@@ -474,6 +525,7 @@ mod tests {
             &mut err,
             true,
             Mode::InProcess,
+            std::future::pending(),
         )
         .await
         .unwrap();
@@ -515,6 +567,7 @@ mod tests {
             &mut err,
             false,
             Mode::InProcess,
+            std::future::pending(),
         )
         .await
         .unwrap();
@@ -553,6 +606,7 @@ mod tests {
             &mut err,
             true,
             Mode::InProcess,
+            std::future::pending(),
         )
         .await
         .unwrap();

@@ -363,9 +363,10 @@ pub async fn start(
 /// `fenji-server run`: serves until Ctrl-C, SIGTERM or the console's `stop`, with `front` in the
 /// terminal it started in (M4 hosting spec §3.1), `hub` being the log's. A first run (§3.6) says
 /// what it wrote before it starts, and what's next once it runs.
-/// - First, on Linux and macOS, it claims its data folder (§3.5): another server using it stops
-///   this one before it opens the store or listens (Review Focus 5). Consoles attach to its socket
-///   while it serves, and are told goodbye as it stops.
+/// - First it claims its data folder (§3.5): another server using it stops this one before it
+///   opens the store or listens (Review Focus 5). On Linux and macOS the claim is also the console
+///   socket, which consoles attach to while it serves, and are told goodbye on as it stops;
+///   elsewhere it's the folder's lock alone ([`crate::lock`]).
 /// - [`Front::Full`]: the full-screen console holds the terminal while the server runs on a task
 ///   of its own; Ctrl-C there is `stop`. However the console ends, a panic included, it gives the
 ///   terminal back first (Review Focus 2). One that ends while the server runs leaves it running,
@@ -380,12 +381,16 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
             (cfg, Some(config::first_run_lines(&here)))
         }
     };
+    let data = config::data_folder(&cfg.store.path);
     #[cfg(unix)]
-    let claim = console::socket::claim(&config::data_folder(&cfg.store.path)).await?;
+    let claim = console::socket::claim(&data).await?;
     #[cfg(unix)]
     if let Some(why) = claim.unattachable() {
         tracing::warn!("{why}");
     }
+    // Held until the server has stopped, at the end of `run`.
+    #[cfg(not(unix))]
+    let _lock = crate::lock::take(&data)?;
     if let Some([wrote, ..]) = &first_run {
         tracing::info!("{wrote}");
     }
@@ -423,8 +428,14 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
     let session = service::session(&console, &hub);
     let logs = console::log::folder(&cfg.store.path);
     let served = match front {
+        // Signals stop the server here (`signalled`), and the console ends on its goodbye.
         Front::Full => {
-            let tui = fenji_console::run_tui(session, Mode::InProcess, Colours::from_env());
+            let tui = fenji_console::run_tui(
+                session,
+                Mode::InProcess,
+                Colours::from_env(),
+                std::future::pending(),
+            );
             let ended = held(tui).await;
             // The terminal is the host's again, whatever ended the console.
             let serving = !served.is_finished() && !*console.stopping().borrow();
@@ -436,7 +447,9 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
         Front::Plain => {
             let input = tokio::io::BufReader::new(tokio::io::stdin());
             let (out, err) = (std::io::stdout(), std::io::stderr());
-            let lines = fenji_console::run_plain(session, input, out, err, false, Mode::InProcess);
+            let leave = std::future::pending();
+            let lines =
+                fenji_console::run_plain(session, input, out, err, false, Mode::InProcess, leave);
             if let Err(e) = lines.await {
                 tracing::warn!(error = %e, "the console's lines have stopped: the server runs on");
             }
@@ -461,12 +474,13 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
 /// terminal back and printed the message.
 const CONSOLE_PANICKED: &str = "a panic ended the console; its message is above";
 
-/// The full-screen console, run until it ends on a thread of its own, off the runtime's workers:
-/// its writes to the terminal block, and a terminal that stops reading (a stalled SSH link) would
-/// otherwise hold a worker, all of them on a one-CPU host, and the server with them (re-review,
-/// NB2). One whose own code panics ends as a console that failed, so `run` goes on serving until a
-/// signal stops the server gracefully, rather than unwinding through it and out of the process
-/// (review 1, Important 1). `main` doesn't wait for this thread as it exits.
+/// A console, full-screen or plain lines, run until it ends on a thread of its own, off the
+/// runtime's workers: its writes to the terminal block, and a terminal that stops reading (a
+/// stalled SSH link) would otherwise hold a worker, all of them on a one-CPU host, and the server
+/// with them (re-review, NB2). One whose own code panics ends as a console that failed, so `run`
+/// goes on serving until a signal stops the server gracefully, rather than unwinding through it
+/// and out of the process (review 1, Important 1). `main` doesn't wait for this thread as it
+/// exits.
 pub(crate) async fn held(
     console: impl Future<Output = std::io::Result<Ending>> + Send + 'static,
 ) -> std::io::Result<Ending> {

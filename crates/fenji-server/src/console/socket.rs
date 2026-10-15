@@ -1,17 +1,16 @@
 //! The console socket (M4 hosting spec §3.5), on Linux and macOS: `console.sock` in the data
 //! folder, owner-only, which `fenji-server console` attaches to.
 //! - [`claim`], first thing in `fenji-server run`, keeps one server to a data folder. It takes
-//!   the folder's lock, `server.lock`, which the system lets go however the process ends, and
-//!   refuses if another server holds it or answers on the socket. It replaces a stale socket with
-//!   its own, never more open than 0600. A folder too deep for a socket's path keeps its server,
-//!   which runs without one and says why.
+//!   the folder's lock ([`crate::lock`]) and refuses if another server holds it or answers on the
+//!   socket. It replaces a stale socket with its own, never more open than 0600. A folder too deep
+//!   for a socket's path keeps its server, which runs without one and says why.
 //! - [`serve`] gives each console, four at once, the hello and then [`service::connect`]'s feed as
 //!   JSON lines, each within the wire's limit ([`wire::encode_server`]), and runs its numbered
 //!   commands. A console that stops reading holds up nothing: its socket and its queue fill, and
 //!   it loses log lines, as the log hub has it.
-use std::fs::{DirBuilder, File, OpenOptions, Permissions, TryLockError};
+use std::fs::{DirBuilder, Permissions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::Arc;
@@ -28,12 +27,10 @@ use tokio::task::JoinSet;
 
 use crate::console::log::LogHub;
 use crate::console::service::{self, ConsoleService};
+use crate::lock::{self, Lock};
 
 /// The console socket's name in the data folder.
 pub const NAME: &str = "console.sock";
-
-/// The data folder's lock, which a running server holds.
-pub const LOCK: &str = "server.lock";
 
 /// Where a socket is made before it's moved into place: a folder only this user may enter. With
 /// the socket's name, `s`, in it, its path is shorter than [`NAME`]'s, so it fits wherever that
@@ -82,7 +79,7 @@ pub struct Claim {
     /// Declared before the lock, so dropped before it: no next server sees this one's socket.
     socket: Option<Bound>,
     unattachable: Option<String>,
-    _lock: File,
+    _lock: Lock,
 }
 
 /// The console socket, bound at `path`; dropped, it's removed.
@@ -118,9 +115,7 @@ impl Claim {
 /// # Errors
 /// If another server uses the folder, or the folder or its lock can't be made or taken.
 pub async fn claim(data: &Path) -> anyhow::Result<Claim> {
-    crate::config::private_folder(data)
-        .with_context(|| format!("can't make the data folder {}", data.display()))?;
-    let lock = lock(data)?;
+    let lock = lock::take(data)?;
     let path = path(data);
     let unattachable = |why: String| {
         Some(format!(
@@ -136,7 +131,7 @@ pub async fn claim(data: &Path) -> anyhow::Result<Claim> {
     }
     // A server without the lock: one whose lock file was deleted from under it.
     if answers(&path).await? {
-        bail!(in_use(data));
+        bail!(lock::in_use(data));
     }
     let (socket, unattachable) = match bind(data, &path) {
         Ok(listener) => (Some(Bound { listener, path }), None),
@@ -150,38 +145,6 @@ pub async fn claim(data: &Path) -> anyhow::Result<Claim> {
         unattachable,
         _lock: lock,
     })
-}
-
-/// The data folder's lock, taken for this process: the system lets go of it however the process
-/// ends, `kill -9` included.
-fn lock(data: &Path) -> anyhow::Result<File> {
-    let path = data.join(LOCK);
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(&path)
-        .with_context(|| format!("can't open {}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(TryLockError::WouldBlock) => bail!(in_use(data)),
-        Err(TryLockError::Error(e)) => {
-            Err(e).with_context(|| format!("can't lock {}", path.display()))
-        }
-    }
-}
-
-fn in_use(data: &Path) -> String {
-    format!(
-        "a server is already using this data folder ({})",
-        shown(data).display()
-    )
-}
-
-/// `data` as a host finds it: from the root, as the working directory makes it.
-pub(crate) fn shown(data: &Path) -> PathBuf {
-    std::path::absolute(data).unwrap_or_else(|_| data.to_owned())
 }
 
 /// Why a socket can't be at `path`, if the path is too long for one.
@@ -297,25 +260,39 @@ async fn attached(
     let (feed, commands) = service::connect(&service, &hub);
     let (refuse, refusals) = mpsc::channel(REFUSALS);
     let (read, write) = stream.into_split();
-    let mut reading = pin!(read_commands(read, commands, refuse));
+    let mut reads = pin!(read_commands(read, commands, refuse));
     let mut writing = pin!(write_feed(write, hello, feed, refusals));
-    // A console that sends no more, its side shut, still gets its answers and the feed.
     let mut listening = true;
     loop {
         tokio::select! {
-            () = &mut reading, if listening => listening = false,
+            reading = &mut reads, if listening => match reading {
+                // Its place is free at once, though nothing is written that would find it gone.
+                Reading::Gone => return,
+                // It still gets its answers and the feed, or its goodbye.
+                Reading::Shut | Reading::Refused => listening = false,
+            },
             () = &mut writing => return,
         }
     }
 }
 
-/// The console's lines, its commands for the service, until it goes or sends a line too long. A
-/// line that isn't a message is refused if it has an id, and let go otherwise.
+/// How a console's reading ended.
+enum Reading {
+    /// Its socket is closed both ways, as when its process ends: it has gone.
+    Gone,
+    /// It sends no more, its side of the socket shut, but still reads.
+    Shut,
+    /// It sent a line too long, and is told goodbye.
+    Refused,
+}
+
+/// The console's lines, its commands for the service, until it goes, shuts its side, or sends a
+/// line too long. A line that isn't a message is refused if it has an id, and let go otherwise.
 async fn read_commands(
     read: OwnedReadHalf,
     commands: mpsc::Sender<ConsoleMsg>,
     refuse: mpsc::Sender<ServerMsg>,
-) {
+) -> Reading {
     let mut reader = BufReader::new(read);
     let mut buf = Vec::new();
     loop {
@@ -327,15 +304,17 @@ async fn read_commands(
                     reason: LINE_TOO_LONG.into(),
                 };
                 let _ = refuse.send(bye).await;
-                return;
+                return Reading::Refused;
             }
-            // The console has gone, or sends no more.
-            Ok(None) | Err(_) => return,
+            Ok(None) if gone(reader.get_ref()) => return Reading::Gone,
+            Ok(None) => return Reading::Shut,
+            Err(_) => return Reading::Gone,
         };
         match wire::decode_console(&line) {
             Ok(command) => {
+                // The server has stopped: its goodbye is on its way.
                 if commands.send(command).await.is_err() {
-                    return;
+                    return Reading::Shut;
                 }
             }
             Err(e) => {
@@ -347,11 +326,18 @@ async fn read_commands(
                     more: false,
                 };
                 if refuse.send(refused).await.is_err() {
-                    return;
+                    return Reading::Gone;
                 }
             }
         }
     }
+}
+
+/// Whether the console at the other end of `read`, whose side is shut, has closed the socket both
+/// ways. A write of nothing finds out without writing: it fails once the other end is closed.
+fn gone(read: &OwnedReadHalf) -> bool {
+    let stream: &UnixStream = read.as_ref();
+    matches!(stream.try_write(&[]), Err(e) if e.kind() != io::ErrorKind::WouldBlock)
 }
 
 /// The number a line that isn't a message gives as its `id`, if any.

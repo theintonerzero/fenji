@@ -13,6 +13,7 @@ pub mod invite;
 mod link;
 pub mod listen;
 pub mod lobby;
+pub mod lock;
 pub mod online;
 pub mod server;
 pub mod status;

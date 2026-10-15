@@ -274,6 +274,34 @@ async fn the_fifth_console_and_long_lines_are_refused() {
 }
 
 #[tokio::test]
+async fn a_console_that_goes_gives_its_place_back_at_once() {
+    // Found by Task 11's fix round 1: four consoles that came and went, as by Ctrl-C or a signal,
+    // held every place until something was logged, so an idle server turned the next away.
+    let s = started_with_socket().await;
+    let socket = s.data().join("console.sock");
+    for _ in 0..4 {
+        let mut c = Raw::connect(&socket).await;
+        assert!(matches!(c.next().await, ServerMsg::Hello { .. }));
+    }
+    // Time for the server to see them go: nothing is logged meanwhile.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut fifth = Raw::connect(&socket).await;
+    let first = fifth.next().await;
+    assert!(matches!(first, ServerMsg::Hello { .. }), "{first:?}");
+}
+
+#[tokio::test]
+async fn a_console_that_shuts_its_side_still_gets_its_answers() {
+    // A console that sends a command and then sends no more, its side of the socket shut, isn't
+    // gone: its answer still comes.
+    let s = started_with_socket().await;
+    let mut c = Raw::connect(&s.data().join("console.sock")).await;
+    c.send(&run(1, "online")).await;
+    c.writer.shutdown().await.unwrap();
+    assert_eq!(c.answer(1).await, (true, vec!["nobody is online".into()]));
+}
+
+#[tokio::test]
 async fn run_once_prints_the_answer_and_its_status() {
     let s = started_with_socket().await;
     let (ok, out) = console::attach::run_once(&s.data().join("console.sock"), "online")
