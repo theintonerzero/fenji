@@ -875,10 +875,13 @@ mod tests {
         h.tick(50);
         let one = WorldOut::Chat(ChatOut::Announce { text: "one".into() });
         assert_eq!(h.take(1), vec![one]);
-        // Once used, it's forgotten: the next join brings its own link's reading.
+        // Once used, it's forgotten: the same account's next join brings its own link's reading.
         h.push(WorldIn::Leave { conn: 1 });
         h.tick(50);
-        h.enter(player(4, "Lin", at(0.0, 0.0)));
+        h.enter(Player {
+            account: 1,
+            ..player(4, "Lin", at(0.0, 0.0))
+        });
         h.push(bang(4, "!announce two"));
         h.tick(50);
         let said = WorldOut::Chat(ChatOut::Said {

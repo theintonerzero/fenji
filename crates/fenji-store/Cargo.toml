@@ -13,7 +13,8 @@ thiserror.workspace = true
 tokio = { workspace = true, optional = true }
 
 [features]
-# Store::hold_write_lock, for other crates' tests of what writers see while a transaction is open.
+# Store::hold_write_lock, for other crates' tests of what writers see while a transaction is open,
+# and Store::break_bans, for their tests of a store that can't read bans.
 test-util = ["dep:tokio"]
 
 [dev-dependencies]
