@@ -10,11 +10,13 @@ pub mod config;
 pub mod gate;
 pub mod invite;
 mod link;
+pub mod listen;
 pub mod lobby;
 pub mod online;
 pub mod server;
 pub mod status;
 pub mod text;
+pub mod tls;
 pub mod world;
 
 /// The most characters `[lobby] max_characters` may allow.

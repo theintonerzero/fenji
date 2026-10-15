@@ -176,9 +176,11 @@ namespace_cmd() {
 }
 
 # The environment inside: no session bus, no agents, no Wayland (the client draws on X11 display N),
-# no password.
+# no password, and no FENJI_LOGIN_BIND or FENJI_API_BIND, which would move fenji-server off the
+# 127.0.0.1 binds its --server config was checked for (Ruling HP7).
 namespace_env() {
-  printf '%s\n' env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD "DISPLAY=:$1"
+  printf '%s\n' env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD \
+    -u FENJI_LOGIN_BIND -u FENJI_API_BIND "DISPLAY=:$1"
   if [ -n "${2:-}" ]; then printf '%s\n' "XAUTHORITY=$2"; fi
 }
 

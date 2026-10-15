@@ -27,10 +27,14 @@ fenji-launcher = { path = "crates/fenji-launcher" }
 fenji-lua = { path = "crates/fenji-lua" }
 fenji-proto = { path = "crates/fenji-proto" }
 fenji-store = { path = "crates/fenji-store" }
+futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
 getrandom = "0.4.3"
+if-addrs = "0.15.0"
 libloading = "0.9.0"
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 mlua = { version = "0.12.2", features = ["lua53", "vendored"] }
+# The server's own TLS certificate (M4 hosting spec §3.10): ring, as rustls has, never aws-lc-rs.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "http2"] }
 rustix = { version = "1.1.5", default-features = false, features = ["std", "process"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
@@ -44,6 +48,7 @@ tempfile = "3.27.0"
 thiserror = "2.0.21"
 toml = "1.1.8"
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "io-util", "signal", "time", "sync"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tower-http = { version = "0.7.1", features = ["timeout"] }
 tracing = "0.1.44"
