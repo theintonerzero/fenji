@@ -4,11 +4,14 @@
 //! links carry the key's pin, the base64url SHA-256 of the certificate's SubjectPublicKeyInfo
 //! (Ruling HP2), which launchers check in place of a certificate authority.
 //!
-//! Each handshake runs on a task of its own, within a time limit, and only so many at once (Review
-//! Focus 3): connections that never finish theirs hold a place for the limit at most, and keep no
-//! one else from the account API. The rest queue in the system's backlog until a place frees.
+//! Every connection is accepted at once, then given a place among the open connections and one
+//! among the handshakes, both counted by the peer's network (Ruling HP9), or closed at once. Each
+//! handshake runs on a task of its own within a time limit (Review Focus 3), so connections that
+//! never finish theirs hold their network's places for the limit at most, and keep no other
+//! network from the account API. A finished one is handed to axum in a [`Conn`], which keeps its
+//! open place and ends it once it has sent nothing for the idle time (`crate::listen`).
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,12 +21,13 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 
 use crate::clock::{Clock, SystemClock, Utc};
+use crate::listen::{ApiPlaces, Conn, ConnLimits, local_of};
 
 /// The key's file in its folder: PKCS #8 in PEM, owner-only (0600) on Unix.
 pub const KEY_FILE: &str = "key.pem";
@@ -60,13 +64,40 @@ impl ServerKey {
     /// The key in `dir`, made there with a certificate naming `public_host` if neither file is
     /// there. The certificate's names don't matter to launchers, which pin the key. One file
     /// without the other is an error, and nothing is made: a new key would change the pin every
-    /// player holds.
+    /// player holds. So is a folder that other users can open (Unix), or a key and certificate
+    /// that don't go together.
     pub fn load_or_make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
         match key_files(dir)? {
-            Some((key, cert)) => load(&key, &cert),
+            Some((key, cert)) => {
+                owner_only(dir)?;
+                load(&key, &cert)
+            }
             None => make(dir, public_host),
         }
     }
+}
+
+/// Refuses a key folder that other users can open (on Unix): the server's key is its own alone.
+fn owner_only(dir: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir)
+            .with_context(|| format!("can't read {}'s permissions", dir.display()))?
+            .permissions()
+            .mode()
+            & 0o777;
+        if mode & 0o077 != 0 {
+            bail!(
+                "{0} holds the server's key but other users can open it (mode {mode:03o}): run \
+                 `chmod 700 {0}`",
+                dir.display()
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 /// The pin of the key in `dir`, read from its certificate alone: `invite create`'s, which may run
@@ -114,21 +145,59 @@ fn read_cert(path: &Path) -> anyhow::Result<CertificateDer<'static>> {
         .map_err(|e| anyhow::anyhow!("{} isn't a PEM certificate: {e}", path.display()))
 }
 
+/// The key and certificate at these paths, which must go together: the certificate's public key
+/// the key's.
 fn load(key_path: &Path, cert_path: &Path) -> anyhow::Result<ServerKey> {
     let cert = read_cert(cert_path)?;
     let pem =
         std::fs::read(key_path).with_context(|| format!("can't read {}", key_path.display()))?;
     let key = PrivateKeyDer::from_pem_slice(&pem)
         .map_err(|e| anyhow::anyhow!("{} isn't a PEM private key: {e}", key_path.display()))?;
+    let provider = rustls::crypto::ring::default_provider();
+    rustls::sign::CertifiedKey::from_der(vec![cert.clone()], key.clone_key(), &provider).map_err(
+        |e| {
+            anyhow::anyhow!(
+                "{} and {} don't go together ({e}): restore both from one backup",
+                key_path.display(),
+                cert_path.display()
+            )
+        },
+    )?;
     let pin = pin_of(&cert).with_context(|| format!("in {}", cert_path.display()))?;
     Ok(ServerKey { cert, key, pin })
 }
 
-/// Makes the key and its certificate in `dir`, owner-only (0700) on Unix. Each file is written
-/// whole beside its place, then moved in, the key first: a write that fails leaves neither.
+/// Files removed when dropped, whatever happens: a start's own temporary ones.
+struct Temporary([PathBuf; 2]);
+
+impl Drop for Temporary {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// A name beside `path` for this start's own temporary copy of it, which no other start shares.
+fn temporary_beside(path: &Path) -> anyhow::Result<PathBuf> {
+    let mut nonce = [0u8; 8];
+    getrandom::fill(&mut nonce).map_err(|e| anyhow::anyhow!("no random bytes: {e}"))?;
+    let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tls");
+    let name = format!(".{name}.{}-{nonce}.new", std::process::id());
+    Ok(path.with_file_name(name))
+}
+
+/// Makes the key and its certificate in `dir`, an owner-only folder (0700) on Unix: made if it's
+/// missing, refused if other users can open it. Each file is written whole under a name of this
+/// start's own, then linked into place, the key first. A link never replaces a file, so a start
+/// that finds the files there, another first start's made meanwhile, loads those instead, and two
+/// starts never serve two keys. A crash between the two links leaves the key without its
+/// certificate, which the next start refuses, as it refuses any key without its certificate.
 fn make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
     crate::config::private_folder(dir)
         .with_context(|| format!("can't make the key's folder {}", dir.display()))?;
+    owner_only(dir)?;
     let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
     let mut params = rcgen::CertificateParams::new(vec![public_host.to_owned()])
         .with_context(|| format!("can't name {public_host:?} in a certificate"))?;
@@ -147,13 +216,34 @@ fn make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
     params.not_after = date(Utc::from_ms(now), VALID_YEARS, 28)?;
     let cert = params.self_signed(&key)?;
     let (key_path, cert_path) = (dir.join(KEY_FILE), dir.join(CERT_FILE));
-    let (key_new, cert_new) = (dir.join("key.pem.new"), dir.join("cert.pem.new"));
-    write_file(&key_new, key.serialize_pem().as_bytes(), true)?;
-    write_file(&cert_new, cert.pem().as_bytes(), false)?;
-    for (from, to) in [(&key_new, &key_path), (&cert_new, &cert_path)] {
-        std::fs::rename(from, to)
-            .with_context(|| format!("can't move {} to {}", from.display(), to.display()))?;
+    let own = Temporary([temporary_beside(&key_path)?, temporary_beside(&cert_path)?]);
+    let [key_new, cert_new] = &own.0;
+    for stale in [key_new, cert_new] {
+        let _ = std::fs::remove_file(stale);
     }
+    write_file(key_new, key.serialize_pem().as_bytes(), true)?;
+    write_file(cert_new, cert.pem().as_bytes(), false)?;
+    for (from, to) in [(key_new, &key_path), (cert_new, &cert_path)] {
+        match std::fs::hard_link(from, to) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                tracing::info!(
+                    "found the server's key made meanwhile in {}: serving that one",
+                    dir.display()
+                );
+                return load(&key_path, &cert_path);
+            }
+            Err(e) => {
+                let e = anyhow::Error::new(e);
+                return Err(e.context(format!(
+                    "can't link {} to {}",
+                    from.display(),
+                    to.display()
+                )));
+            }
+        }
+    }
+    drop(own);
     let made = load(&key_path, &cert_path)?;
     tracing::info!(
         pin = %made.pin,
@@ -164,22 +254,25 @@ fn make(dir: &Path, public_host: &str) -> anyhow::Result<ServerKey> {
     Ok(made)
 }
 
-/// Writes `bytes` to `path` whole, replacing what is there; owner-only (0600) on Unix when
-/// `private`, from the moment the file exists.
+/// Writes `bytes` to `path` as a new file, owner-only (0600) on Unix when `private`, from the
+/// moment it exists: never into a file or through a link already there. A file this call made
+/// and couldn't finish is removed.
 fn write_file(path: &Path, bytes: &[u8], private: bool) -> anyhow::Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     if private {
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     }
     #[cfg(not(unix))]
     let _ = private;
-    let written = options
+    let mut file = options
         .open(path)
-        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()));
+        .with_context(|| format!("can't make {}", path.display()))?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
     if written.is_err() {
+        drop(file);
         let _ = std::fs::remove_file(path);
     }
     written.with_context(|| format!("can't write {}", path.display()))
@@ -202,12 +295,15 @@ fn base64url(bytes: &[u8]) -> String {
     out
 }
 
-/// How the TLS listener bounds handshakes (M4 hosting spec §3, exact values): each must finish
-/// within `handshake`, and at most `in_flight` run at once.
+/// How the TLS listener bounds handshakes (M4 hosting spec §3, exact values; Ruling HP9): each
+/// must finish within `handshake`, at most `in_flight` run at once, and at most
+/// `in_flight_per_network` of those from one network (an IPv4 address or an IPv6 /64), so that
+/// one host can't take them all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TlsLimits {
     pub handshake: Duration,
     pub in_flight: usize,
+    pub in_flight_per_network: usize,
 }
 
 impl Default for TlsLimits {
@@ -215,12 +311,13 @@ impl Default for TlsLimits {
         Self {
             handshake: Duration::from_secs(10),
             in_flight: 64,
+            in_flight_per_network: 8,
         }
     }
 }
 
 /// A connection whose handshake has finished, with its peer's address.
-type Finished = (TlsStream<TcpStream>, SocketAddr);
+type Finished = (Conn<TlsStream<TcpStream>>, SocketAddr);
 
 /// The account API's listener under `tls = "self"`: TCP connections in, finished TLS streams out,
 /// for `axum::serve`. A task of its own accepts, and runs each handshake on a task of its own;
@@ -231,12 +328,15 @@ pub struct TlsListener {
 }
 
 impl TlsListener {
-    /// Starts accepting on `tcp`, with `key`, under `limits`: rustls with the `ring` provider, TLS
-    /// 1.2 and 1.3, and ALPN `http/1.1`.
+    /// Starts accepting on `tcp`, with `key`, under `limits` and `conns`, `proxies` being
+    /// `[server] trusted_proxies`: rustls with the `ring` provider, TLS 1.2 and 1.3, and ALPN
+    /// `http/1.1`.
     pub fn new(
         tcp: TcpListener,
         key: &ServerKey,
         limits: TlsLimits,
+        conns: ConnLimits,
+        proxies: &[IpAddr],
     ) -> anyhow::Result<TlsListener> {
         let local = tcp.local_addr()?;
         let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -246,49 +346,61 @@ impl TlsListener {
             .with_single_cert(vec![key.cert.clone()], key.key.clone_key())
             .context("the server's key and certificate don't go together")?;
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        let in_flight = limits.in_flight.max(1);
-        let (done, finished) = mpsc::channel(in_flight);
-        tokio::spawn(accept(
-            tcp,
-            TlsAcceptor::from(Arc::new(config)),
-            limits,
-            done,
-        ));
+        let places = Places {
+            open: ApiPlaces::new(conns.open, conns.open_per_network, proxies),
+            handshakes: ApiPlaces::new(limits.in_flight, limits.in_flight_per_network, proxies),
+        };
+        let (done, finished) = mpsc::channel(limits.in_flight.max(1));
+        let tls = TlsAcceptor::from(Arc::new(config));
+        tokio::spawn(accept(tcp, tls, limits, conns.idle, places, done));
         Ok(TlsListener { local, finished })
     }
 }
 
-/// Accepts on `tcp` while the listener holds `done`'s other end. Before each connection it takes
-/// one of `in_flight` places, which the connection's handshake holds until it ends or runs out of
-/// time, and until its stream is handed over.
+/// The places a connection takes as it's accepted: one among the open connections, which it keeps
+/// until it closes, and one among the handshakes, which it gives back once its handshake ends.
+struct Places {
+    open: ApiPlaces,
+    handshakes: ApiPlaces,
+}
+
+/// Accepts on `tcp` while the listener holds `done`'s other end. Every connection is accepted at
+/// once, never kept waiting for a place, and closed at once without both of its places; with them,
+/// its handshake runs on a task of its own, within the time limit, and its stream is handed over
+/// in a [`Conn`] that ends it after `idle` without a byte.
 async fn accept(
     mut tcp: TcpListener,
     tls: TlsAcceptor,
     limits: TlsLimits,
+    idle: Duration,
+    places: Places,
     done: mpsc::Sender<Finished>,
 ) {
-    let places = Arc::new(Semaphore::new(limits.in_flight.max(1)));
     let mut handshakes = JoinSet::new();
     loop {
         while handshakes.try_join_next().is_some() {}
-        let place = tokio::select! {
-            () = done.closed() => return,
-            place = Arc::clone(&places).acquire_owned() => match place {
-                Ok(place) => place,
-                Err(_) => return,
-            },
-        };
         let (stream, peer) = tokio::select! {
             () = done.closed() => return,
             // axum's own accept: it waits out and logs the errors a TCP listener can meet.
             accepted = axum::serve::Listener::accept(&mut tcp) => accepted,
         };
+        let Some(open) = places.open.take(peer.ip()) else {
+            tracing::debug!(%peer, "closed at once: no open connection's place free for it");
+            continue;
+        };
+        let Some(handshake) = places.handshakes.take(peer.ip()) else {
+            tracing::debug!(%peer, "closed at once: no handshake's place free for it");
+            continue;
+        };
+        let local = local_of(&stream);
         let (tls, done) = (tls.clone(), done.clone());
         handshakes.spawn(async move {
-            let _place = place;
+            let _handshake = handshake;
             match tokio::time::timeout(limits.handshake, tls.accept(stream)).await {
                 Ok(Ok(stream)) => {
-                    let _ = done.send((stream, peer)).await;
+                    let _ = done
+                        .send((Conn::new(stream, local, open, idle), peer))
+                        .await;
                 }
                 Ok(Err(e)) => tracing::debug!(%peer, error = %e, "a TLS handshake failed"),
                 Err(_) => tracing::debug!(%peer, "a TLS handshake ran out of time"),
@@ -298,7 +410,7 @@ async fn accept(
 }
 
 impl axum::serve::Listener for TlsListener {
-    type Io = TlsStream<TcpStream>;
+    type Io = Conn<TlsStream<TcpStream>>;
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
@@ -326,17 +438,26 @@ mod tests {
     use axum::extract::ConnectInfo;
     use axum::routing::get;
     use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
     use crate::api::Addrs;
 
+    /// A temporary folder, and the key's folder in it, `tls/`: made owner-only by the first
+    /// `load_or_make`, as the server's is.
+    fn key_dir() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("tls");
+        (root, dir)
+    }
+
     #[test]
     fn the_key_is_made_once_and_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let first = ServerKey::load_or_make(dir.path(), "203.0.113.5").unwrap();
+        let (_root, dir) = key_dir();
+        let first = ServerKey::load_or_make(dir.as_path(), "203.0.113.5").unwrap();
         assert_eq!(first.pin.len(), 43);
-        let again = ServerKey::load_or_make(dir.path(), "198.51.100.7").unwrap();
+        let again = ServerKey::load_or_make(dir.as_path(), "198.51.100.7").unwrap();
         assert_eq!(
             again.pin, first.pin,
             "the same key, whatever public_host says now"
@@ -344,15 +465,15 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.path().join("key.pem"))
+            let mode = std::fs::metadata(dir.as_path().join("key.pem"))
                 .unwrap()
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        std::fs::remove_file(dir.path().join("cert.pem")).unwrap();
+        std::fs::remove_file(dir.as_path().join("cert.pem")).unwrap();
         assert!(
-            ServerKey::load_or_make(dir.path(), "203.0.113.5").is_err(),
+            ServerKey::load_or_make(dir.as_path(), "203.0.113.5").is_err(),
             "never a silent new key"
         );
     }
@@ -379,28 +500,28 @@ mod tests {
 
     #[test]
     fn a_key_without_its_certificate_is_an_error_and_never_replaced() {
-        let dir = tempfile::tempdir().unwrap();
-        ServerKey::load_or_make(dir.path(), "127.0.0.1").unwrap();
-        let key = std::fs::read(dir.path().join("key.pem")).unwrap();
-        std::fs::remove_file(dir.path().join("cert.pem")).unwrap();
+        let (_root, dir) = key_dir();
+        ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
+        let key = std::fs::read(dir.as_path().join("key.pem")).unwrap();
+        std::fs::remove_file(dir.as_path().join("cert.pem")).unwrap();
         let e = format!(
             "{:#}",
-            ServerKey::load_or_make(dir.path(), "127.0.0.1").unwrap_err()
+            ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap_err()
         );
         assert!(e.contains("cert.pem"), "names what is missing: {e}");
         assert_eq!(
-            std::fs::read(dir.path().join("key.pem")).unwrap(),
+            std::fs::read(dir.as_path().join("key.pem")).unwrap(),
             key,
             "the key stays as it was"
         );
-        assert!(!dir.path().join("cert.pem").exists());
+        assert!(!dir.as_path().join("cert.pem").exists());
         // And the other way round.
-        let dir = tempfile::tempdir().unwrap();
-        ServerKey::load_or_make(dir.path(), "127.0.0.1").unwrap();
-        std::fs::remove_file(dir.path().join("key.pem")).unwrap();
+        let (_root, dir) = key_dir();
+        ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
+        std::fs::remove_file(dir.as_path().join("key.pem")).unwrap();
         let e = format!(
             "{:#}",
-            ServerKey::load_or_make(dir.path(), "127.0.0.1").unwrap_err()
+            ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap_err()
         );
         assert!(e.contains("key.pem"), "names what is missing: {e}");
     }
@@ -409,9 +530,9 @@ mod tests {
     fn the_pin_is_the_hash_of_the_keys_subject_public_key_info() {
         // Ruling HP2: computed from the certificate with rustls, it must equal the hash of the key's
         // own SubjectPublicKeyInfo, as rcgen encodes it from the private key.
-        let dir = tempfile::tempdir().unwrap();
-        let made = ServerKey::load_or_make(dir.path(), "127.0.0.1").unwrap();
-        let pem = std::fs::read_to_string(dir.path().join("key.pem")).unwrap();
+        let (_root, dir) = key_dir();
+        let made = ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
+        let pem = std::fs::read_to_string(dir.as_path().join("key.pem")).unwrap();
         let pair = rcgen::KeyPair::from_pem(&pem).unwrap();
         let spki = rcgen::PublicKeyData::subject_public_key_info(&pair);
         assert_eq!(made.pin, base64url(&Sha256::digest(&spki)));
@@ -428,12 +549,15 @@ mod tests {
     #[test]
     fn the_pin_can_be_read_from_the_certificate_alone() {
         // `invite create` reads the pin without the key, which may be the server's user's alone.
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(pin_in(dir.path()).unwrap(), None, "no key made yet");
-        let made = ServerKey::load_or_make(dir.path(), "127.0.0.1").unwrap();
-        assert_eq!(pin_in(dir.path()).unwrap(), Some(made.pin));
-        std::fs::remove_file(dir.path().join("key.pem")).unwrap();
-        assert!(pin_in(dir.path()).is_err(), "a certificate without its key");
+        let (_root, dir) = key_dir();
+        assert_eq!(pin_in(dir.as_path()).unwrap(), None, "no key made yet");
+        let made = ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
+        assert_eq!(pin_in(dir.as_path()).unwrap(), Some(made.pin));
+        std::fs::remove_file(dir.as_path().join("key.pem")).unwrap();
+        assert!(
+            pin_in(dir.as_path()).is_err(),
+            "a certificate without its key"
+        );
         let none = tempfile::tempdir().unwrap();
         let missing = none.path().join("tls");
         assert_eq!(pin_in(&missing).unwrap(), None, "no folder, no pin");
@@ -457,13 +581,106 @@ mod tests {
         assert_eq!(base64url(&[0; 32]).len(), 43);
     }
 
-    /// A TLS listener on a free loopback port with `limits`, serving a router whose `/` says `ok`
-    /// when the connection's own address reached it: its address.
-    async fn serving(dir: &std::path::Path, limits: TlsLimits) -> SocketAddr {
-        let key = ServerKey::load_or_make(dir, "127.0.0.1").unwrap();
+    #[test]
+    fn the_pin_is_the_one_openssl_computes() {
+        // A known answer, so that the launcher's pin (hosting Task 5) can't drift from the
+        // server's: tests/fixtures/pin-known-answer.pem, an openssl certificate whose pin is
+        //   openssl x509 -in pin-known-answer.pem -pubkey -noout | openssl pkey -pubin -outform der \
+        //     | openssl dgst -sha256 -binary | basenc --base64url
+        // without its padding.
+        let pem = include_bytes!("../tests/fixtures/pin-known-answer.pem");
+        let cert = CertificateDer::from_pem_slice(pem).unwrap();
+        assert_eq!(
+            pin_of(&cert).unwrap(),
+            "6QFQfpzx9v37ULM885PDlbUAQse-jH9cH7nfRVOL9Lo"
+        );
+    }
+
+    /// The files in `dir`, sorted.
+    fn names(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_key_another_start_made_meanwhile_is_loaded_and_never_replaced() {
+        // Two first starts on one folder: the one that finds the files there when it moves its
+        // own in loads them, so both serve the same key.
+        let (_root, dir) = key_dir();
+        let first = ServerKey::load_or_make(dir.as_path(), "127.0.0.1").unwrap();
+        let key = std::fs::read(dir.as_path().join(KEY_FILE)).unwrap();
+        let second = make(dir.as_path(), "127.0.0.1").unwrap();
+        assert_eq!(second.pin, first.pin);
+        assert_eq!(std::fs::read(dir.as_path().join(KEY_FILE)).unwrap(), key);
+        assert_eq!(
+            names(dir.as_path()),
+            ["cert.pem", "key.pem"],
+            "no file left over"
+        );
+    }
+
+    #[test]
+    fn a_key_and_certificate_that_dont_go_together_are_refused() {
+        let ((_a, a), (_b, b)) = (key_dir(), key_dir());
+        ServerKey::load_or_make(a.as_path(), "127.0.0.1").unwrap();
+        ServerKey::load_or_make(b.as_path(), "127.0.0.1").unwrap();
+        std::fs::copy(b.as_path().join(KEY_FILE), a.as_path().join(KEY_FILE)).unwrap();
+        let e = format!(
+            "{:#}",
+            ServerKey::load_or_make(a.as_path(), "127.0.0.1").unwrap_err()
+        );
+        assert!(e.contains("don't go together"), "{e}");
+        assert!(
+            pin_in(a.as_path()).is_ok(),
+            "the certificate alone still has its pin"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_never_follows_a_link_planted_in_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"the host's").unwrap();
+        let planted = dir.path().join("key.pem.new");
+        std::os::unix::fs::symlink(&target, &planted).unwrap();
+        assert!(write_file(&planted, b"a key", true).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"the host's");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_folder_other_users_can_open_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let tls = dir.path().join("tls");
+        ServerKey::load_or_make(&tls, "127.0.0.1").unwrap();
+        let open = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&tls, open.clone()).unwrap();
+        let e = format!(
+            "{:#}",
+            ServerKey::load_or_make(&tls, "127.0.0.1").unwrap_err()
+        );
+        assert!(e.contains("chmod 700") && e.contains("tls"), "{e}");
+        // One made by hand, empty: refused before a key goes in it.
+        let made = dir.path().join("made-by-hand");
+        std::fs::create_dir(&made).unwrap();
+        std::fs::set_permissions(&made, open).unwrap();
+        assert!(ServerKey::load_or_make(&made, "127.0.0.1").is_err());
+        assert!(names(&made).is_empty(), "no key made: {:?}", names(&made));
+    }
+
+    /// A TLS listener on a free loopback port under `limits` and `conns`, serving a router whose
+    /// `/` says `ok` when the connection's own address reached it: its address.
+    async fn serving(dir: &std::path::Path, limits: TlsLimits, conns: ConnLimits) -> SocketAddr {
+        let key = ServerKey::load_or_make(&dir.join("tls"), "127.0.0.1").unwrap();
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();
-        let listener = TlsListener::new(tcp, &key, limits).unwrap();
+        let listener = TlsListener::new(tcp, &key, limits, conns, &[]).unwrap();
         assert_eq!(axum::serve::Listener::local_addr(&listener).unwrap(), addr);
         let app = Router::new().route(
             "/",
@@ -478,6 +695,14 @@ mod tests {
         let service = app.into_make_service_with_connect_info::<Addrs>();
         tokio::spawn(axum::serve(listener, service).into_future());
         addr
+    }
+
+    /// Handshakes limited to `ms` milliseconds, with the default places.
+    fn within_ms(ms: u64) -> TlsLimits {
+        TlsLimits {
+            handshake: Duration::from_millis(ms),
+            ..TlsLimits::default()
+        }
     }
 
     /// A client that takes any certificate, as Task 5 brings pinning to the launcher.
@@ -502,27 +727,6 @@ mod tests {
         assert_eq!(body, "ok");
     }
 
-    #[tokio::test]
-    async fn handshakes_that_never_finish_dont_keep_others_out() {
-        // Review Focus 3, with short limits so the test is quick.
-        let dir = tempfile::tempdir().unwrap();
-        let limits = TlsLimits {
-            handshake: Duration::from_millis(300),
-            in_flight: 4,
-        };
-        let addr = serving(dir.path(), limits).await;
-        let client = client();
-        let started = Instant::now();
-        let idle = idle(addr, 4).await;
-        get_ok(&client, addr).await;
-        let took = started.elapsed();
-        assert!(took < Duration::from_secs(3), "{took:?}");
-        // The four held every place, the request queued behind them, and its handshake began
-        // only once one of theirs had run out of time: at most in_flight run at once.
-        assert!(took >= limits.handshake, "{took:?}");
-        drop(idle);
-    }
-
     /// `n` connections to `addr` that never begin a handshake.
     async fn idle(addr: SocketAddr, n: usize) -> Vec<TcpStream> {
         futures_util::future::join_all((0..n).map(|_| TcpStream::connect(addr)))
@@ -530,6 +734,127 @@ mod tests {
             .into_iter()
             .map(Result::unwrap)
             .collect()
+    }
+
+    /// Whether the server has closed `conn` within `within`: a read that ends, empty, reset or cut
+    /// short, rather than one still waiting.
+    async fn closed_within<S: AsyncRead + Unpin>(conn: &mut S, within: Duration) -> bool {
+        let mut byte = [0; 1];
+        matches!(
+            tokio::time::timeout(within, conn.read(&mut byte)).await,
+            Ok(Ok(0) | Err(_))
+        )
+    }
+
+    /// A certificate verifier that takes any certificate, but checks the handshake's signatures:
+    /// these tests are about places and times, not trust.
+    #[derive(Debug)]
+    struct AnyCertificate(Arc<rustls::crypto::CryptoProvider>);
+
+    impl rustls::client::danger::ServerCertVerifier for AnyCertificate {
+        fn verify_server_cert(
+            &self,
+            _: &CertificateDer<'_>,
+            _: &[CertificateDer<'_>],
+            _: &rustls::pki_types::ServerName<'_>,
+            _: &[u8],
+            _: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            let algorithms = &self.0.signature_verification_algorithms;
+            rustls::crypto::verify_tls12_signature(message, cert, dss, algorithms)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            let algorithms = &self.0.signature_verification_algorithms;
+            rustls::crypto::verify_tls13_signature(message, cert, dss, algorithms)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            self.0.signature_verification_algorithms.supported_schemes()
+        }
+    }
+
+    /// `tcp` after a finished TLS handshake, with nothing sent over it.
+    async fn handshaken(tcp: TcpStream) -> tokio_rustls::client::TlsStream<TcpStream> {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AnyCertificate(provider)))
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+        tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(name, tcp)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn handshakes_that_never_finish_dont_keep_others_out() {
+        // Review Focus 3, with short limits so the test is quick: four idle connections, then a
+        // request, from one network with places to spare (one past them is closed at once, below).
+        let dir = tempfile::tempdir().unwrap();
+        let addr = serving(dir.path(), within_ms(300), ConnLimits::default()).await;
+        let client = client();
+        let idle = idle(addr, 4).await;
+        let started = Instant::now();
+        get_ok(&client, addr).await;
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(3), "{took:?}");
+        drop(idle);
+    }
+
+    #[tokio::test]
+    async fn handshakes_run_side_by_side() {
+        // Idle connections hold up no one: under a limit far beyond the client's patience, the
+        // request isn't queued behind theirs.
+        let dir = tempfile::tempdir().unwrap();
+        let addr = serving(dir.path(), within_ms(20_000), ConnLimits::default()).await;
+        let client = client();
+        let idle = idle(addr, 6).await;
+        let started = Instant::now();
+        get_ok(&client, addr).await;
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        drop(idle);
+    }
+
+    #[tokio::test]
+    async fn a_connection_past_the_handshake_places_is_closed_at_once_not_queued() {
+        // Ruling HP9: every connection is accepted, and one with no place left is closed then,
+        // never kept waiting for a place.
+        let dir = tempfile::tempdir().unwrap();
+        let limits = TlsLimits {
+            handshake: Duration::from_secs(10),
+            in_flight: 2,
+            in_flight_per_network: 2,
+        };
+        let addr = serving(dir.path(), limits, ConnLimits::default()).await;
+        let idle = idle(addr, 2).await;
+        let mut third = TcpStream::connect(addr).await.unwrap();
+        let started = Instant::now();
+        assert!(closed_within(&mut third, Duration::from_secs(2)).await);
+        let took = started.elapsed();
+        assert!(
+            took < limits.handshake / 4,
+            "not after a time limit: {took:?}"
+        );
+        drop(idle);
     }
 
     /// A TLS record header for a 512-byte handshake record, then a ClientHello's first bytes.
@@ -542,21 +867,16 @@ mod tests {
         // Silent, or stopped partway through a ClientHello: the server lets go of either once the
         // limit has passed, which frees its place.
         let dir = tempfile::tempdir().unwrap();
-        let limits = TlsLimits {
-            handshake: Duration::from_millis(300),
-            in_flight: 4,
-        };
-        let addr = serving(dir.path(), limits).await;
+        let limits = within_ms(300);
+        let addr = serving(dir.path(), limits, ConnLimits::default()).await;
         let started = Instant::now();
         let mut silent = TcpStream::connect(addr).await.unwrap();
         let mut partial = TcpStream::connect(addr).await.unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut partial, &PARTIAL_CLIENT_HELLO)
-            .await
-            .unwrap();
+        partial.write_all(&PARTIAL_CLIENT_HELLO).await.unwrap();
         for stream in [&mut silent, &mut partial] {
             let mut rest = Vec::new();
             // The server's end closes: the read ends, empty or reset.
-            let read = tokio::io::AsyncReadExt::read_to_end(stream, &mut rest);
+            let read = stream.read_to_end(&mut rest);
             let _ = tokio::time::timeout(Duration::from_secs(3), read)
                 .await
                 .expect("closed by the server within its limit");
@@ -567,42 +887,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshakes_run_side_by_side() {
-        // With places to spare, idle connections hold up no one: the request isn't queued behind
-        // their time limits.
+    async fn a_connection_idle_after_its_handshake_is_closed_after_the_idle_time() {
+        // Ruling HP9, part 2: the handshake done, a connection that sends nothing more is let go,
+        // which hyper would never do without a timer.
         let dir = tempfile::tempdir().unwrap();
-        let limits = TlsLimits {
-            handshake: Duration::from_secs(20),
-            in_flight: 64,
+        let conns = ConnLimits {
+            idle: Duration::from_millis(300),
+            ..ConnLimits::default()
         };
-        let addr = serving(dir.path(), limits).await;
-        let client = client();
-        let idle = idle(addr, 8).await;
+        let addr = serving(dir.path(), TlsLimits::default(), conns).await;
+        let mut tls = handshaken(TcpStream::connect(addr).await.unwrap()).await;
         let started = Instant::now();
-        get_ok(&client, addr).await;
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "{:?}",
-            started.elapsed()
-        );
-        drop(idle);
+        assert!(closed_within(&mut tls, Duration::from_secs(3)).await);
+        let took = started.elapsed();
+        assert!(took >= conns.idle, "not before the idle time: {took:?}");
     }
 
     #[tokio::test]
     async fn a_connection_that_isnt_tls_is_dropped_and_the_listener_goes_on() {
         let dir = tempfile::tempdir().unwrap();
-        let addr = serving(dir.path(), TlsLimits::default()).await;
+        let addr = serving(dir.path(), TlsLimits::default(), ConnLimits::default()).await;
         let mut plain = TcpStream::connect(addr).await.unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut plain, b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        plain
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
             .await
             .unwrap();
         let mut answer = Vec::new();
-        let read = tokio::time::timeout(
-            Duration::from_secs(5),
-            tokio::io::AsyncReadExt::read_to_end(&mut plain, &mut answer),
-        )
-        .await
-        .expect("closed, not left open");
+        let read = tokio::time::timeout(Duration::from_secs(5), plain.read_to_end(&mut answer))
+            .await
+            .expect("closed, not left open");
         assert!(
             read.is_err() || !answer.starts_with(b"HTTP"),
             "no HTTP over the TLS port"
@@ -611,23 +924,96 @@ mod tests {
     }
 
     #[test]
-    fn the_limits_default_to_ten_seconds_and_sixty_four_handshakes() {
+    fn the_limits_default_to_ten_seconds_and_64_handshakes_8_from_a_network() {
         let d = TlsLimits::default();
-        assert_eq!((d.handshake, d.in_flight), (Duration::from_secs(10), 64));
+        assert_eq!(
+            (d.handshake, d.in_flight, d.in_flight_per_network),
+            (Duration::from_secs(10), 64, 8)
+        );
     }
 
     #[tokio::test]
     async fn dropping_the_listener_closes_its_port() {
         let dir = tempfile::tempdir().unwrap();
-        let key = ServerKey::load_or_make(dir.path(), "127.0.0.1").unwrap();
+        let key = ServerKey::load_or_make(&dir.path().join("tls"), "127.0.0.1").unwrap();
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();
-        let listener = TlsListener::new(tcp, &key, TlsLimits::default()).unwrap();
+        let listener =
+            TlsListener::new(tcp, &key, TlsLimits::default(), ConnLimits::default(), &[]).unwrap();
         drop(listener);
         let deadline = Instant::now() + Duration::from_secs(5);
         while TcpStream::connect(addr).await.is_ok() {
             assert!(Instant::now() < deadline, "the port is still open");
             tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Places by network (Ruling HP9), from a second loopback address: Linux routes all of
+    /// 127.0.0.0/8 to loopback, where macOS has 127.0.0.1 alone unless told otherwise.
+    #[cfg(target_os = "linux")]
+    mod other_networks {
+        use tokio::net::TcpSocket;
+
+        use super::*;
+
+        /// A connection to `addr` from `source`.
+        async fn from(source: &str, addr: SocketAddr) -> TcpStream {
+            let sock = TcpSocket::new_v4().unwrap();
+            sock.bind(format!("{source}:0").parse().unwrap()).unwrap();
+            sock.connect(addr).await.unwrap()
+        }
+
+        #[tokio::test]
+        async fn one_networks_stalled_handshakes_keep_no_other_network_out() {
+            // Part 1: past its network's places, a silent connection is closed at once, and a
+            // player on another network is answered at once.
+            let dir = tempfile::tempdir().unwrap();
+            let limits = TlsLimits {
+                handshake: Duration::from_secs(10),
+                in_flight: 64,
+                in_flight_per_network: 2,
+            };
+            let addr = serving(dir.path(), limits, ConnLimits::default()).await;
+            let mut flood = Vec::new();
+            for _ in 0..6 {
+                flood.push(from("127.0.0.2", addr).await);
+            }
+            let client = client();
+            let started = Instant::now();
+            get_ok(&client, addr).await;
+            let took = started.elapsed();
+            assert!(took < limits.handshake / 4, "{took:?}");
+            let closes = flood
+                .iter_mut()
+                .map(|conn| closed_within(conn, Duration::from_secs(2)));
+            let closed = futures_util::future::join_all(closes)
+                .await
+                .into_iter()
+                .filter(|&c| c)
+                .count();
+            assert_eq!(closed, 6 - 2, "all but the network's places");
+        }
+
+        #[tokio::test]
+        async fn one_networks_open_connections_keep_no_other_network_out() {
+            // Part 2: three finished handshakes hold 127.0.0.2's places, its fourth connection is
+            // closed at once, and 127.0.0.1 still gets in.
+            let dir = tempfile::tempdir().unwrap();
+            let conns = ConnLimits {
+                open_per_network: 3,
+                ..ConnLimits::default()
+            };
+            let addr = serving(dir.path(), TlsLimits::default(), conns).await;
+            let mut held = Vec::new();
+            for _ in 0..3 {
+                held.push(handshaken(from("127.0.0.2", addr).await).await);
+            }
+            let mut fourth = from("127.0.0.2", addr).await;
+            assert!(closed_within(&mut fourth, Duration::from_secs(2)).await);
+            for conn in &mut held {
+                assert!(!closed_within(conn, Duration::from_millis(50)).await);
+            }
+            get_ok(&client(), addr).await;
         }
     }
 }

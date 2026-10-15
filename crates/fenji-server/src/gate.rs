@@ -145,7 +145,7 @@ impl Gate {
 }
 
 /// The places for connections waiting for their auth (M3 spec D17): at most `total`, and at most
-/// `per_network` from one network.
+/// `per_network` from one network. The account API's listeners count theirs so too (Ruling HP9).
 #[derive(Clone)]
 pub(crate) struct Places(Arc<PlacesInner>);
 
@@ -159,7 +159,8 @@ struct PlacesInner {
 /// A taken place, given back when dropped.
 pub(crate) struct Place {
     places: Places,
-    net: IpAddr,
+    /// The network it counts against; none for a trusted proxy's.
+    net: Option<IpAddr>,
 }
 
 impl Places {
@@ -172,14 +173,26 @@ impl Places {
     }
 
     pub fn take(&self, addr: IpAddr) -> Option<Place> {
-        let net = network(addr);
+        self.take_counted(Some(network(addr)))
+    }
+
+    /// A place that counts toward the total alone: a trusted proxy's, whose connections carry
+    /// many players' requests (M3 spec D12).
+    pub fn take_for_proxy(&self) -> Option<Place> {
+        self.take_counted(None)
+    }
+
+    fn take_counted(&self, net: Option<IpAddr>) -> Option<Place> {
         let mut taken = self.0.taken.lock().unwrap_or_else(|e| e.into_inner());
         let (all, nets) = &mut *taken;
-        if *all >= self.0.total || nets.get(&net).is_some_and(|&n| n >= self.0.per_network) {
+        let full = |net: &IpAddr| nets.get(net).is_some_and(|&n| n >= self.0.per_network);
+        if *all >= self.0.total || net.as_ref().is_some_and(full) {
             return None;
         }
         *all += 1;
-        *nets.entry(net).or_insert(0) += 1;
+        if let Some(net) = net {
+            *nets.entry(net).or_insert(0) += 1;
+        }
         Some(Place {
             places: self.clone(),
             net,
@@ -197,10 +210,12 @@ impl Drop for Place {
             .unwrap_or_else(|e| e.into_inner());
         let (all, nets) = &mut *taken;
         *all -= 1;
-        if let Some(n) = nets.get_mut(&self.net) {
+        if let Some(net) = &self.net
+            && let Some(n) = nets.get_mut(net)
+        {
             *n -= 1;
             if *n == 0 {
-                nets.remove(&self.net);
+                nets.remove(net);
             }
         }
     }

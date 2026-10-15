@@ -18,10 +18,10 @@ use axum::serve::IncomingStream;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::net::TcpListener;
 use tower_http::timeout::TimeoutLayer;
 
 use crate::accounts::{Accounts, AccountsError};
+use crate::listen::PlainListener;
 use crate::online::Online;
 use crate::status::Status;
 use crate::tls::TlsListener;
@@ -35,18 +35,11 @@ pub struct Addrs {
     pub local: SocketAddr,
 }
 
-/// This end's address of `tcp`. The system always has it for a connected socket; otherwise the
-/// unspecified address stands in, a gate launchers refuse.
-fn local_of(tcp: &tokio::net::TcpStream) -> SocketAddr {
-    tcp.local_addr()
-        .unwrap_or(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
-}
-
-impl Connected<IncomingStream<'_, TcpListener>> for Addrs {
-    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
+impl Connected<IncomingStream<'_, PlainListener>> for Addrs {
+    fn connect_info(stream: IncomingStream<'_, PlainListener>) -> Self {
         Addrs {
             peer: *stream.remote_addr(),
-            local: local_of(stream.io()),
+            local: stream.io().local_addr(),
         }
     }
 }
@@ -55,7 +48,7 @@ impl Connected<IncomingStream<'_, TlsListener>> for Addrs {
     fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
         Addrs {
             peer: *stream.remote_addr(),
-            local: local_of(stream.io().get_ref().0),
+            local: stream.io().local_addr(),
         }
     }
 }

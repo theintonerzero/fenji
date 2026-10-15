@@ -18,6 +18,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::config::{self, Config, Loaded, Tls};
 pub use crate::gate::GateLimits;
 use crate::gate::{self, Gate, Places, accept_loop};
+use crate::listen::{ConnLimits, PlainListener};
 use crate::lobby::LobbyLimits;
 use crate::online::Online;
 use crate::status::Status;
@@ -163,9 +164,10 @@ fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<&'static str> {
     warnings
 }
 
-/// The account API's listener: plain TCP, or TLS with the server's own key.
+/// The account API's listener: plain, or TLS with the server's own key. Either keeps the open
+/// connections to their places and ends idle ones (Ruling HP9).
 enum ApiListener {
-    Plain(TcpListener),
+    Plain(PlainListener),
     OwnKey(TlsListener),
 }
 
@@ -220,9 +222,16 @@ pub async fn start(
         .await
         .with_context(|| format!("can't listen on {}", cfg.server.api_bind))?;
     let api_addr = api.local_addr()?;
+    let (conns, proxies) = (ConnLimits::default(), &cfg.server.trusted_proxies);
     let api = match &key {
-        Some(key) => ApiListener::OwnKey(TlsListener::new(api, key, TlsLimits::default())?),
-        None => ApiListener::Plain(api),
+        Some(key) => ApiListener::OwnKey(TlsListener::new(
+            api,
+            key,
+            TlsLimits::default(),
+            conns,
+            proxies,
+        )?),
+        None => ApiListener::Plain(PlainListener::new(api, conns, proxies)?),
     };
     for warning in address_warnings(cfg, pin.as_deref()) {
         tracing::warn!("{warning}");

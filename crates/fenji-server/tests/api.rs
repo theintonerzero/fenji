@@ -1089,6 +1089,109 @@ async fn stalled_handshakes_keep_no_one_from_the_account_api() {
     server.shutdown().await.unwrap();
 }
 
+/// Places by network (Ruling HP9), from a second loopback address. Linux routes all of
+/// 127.0.0.0/8 to loopback; macOS has 127.0.0.1 alone unless told otherwise.
+#[cfg(target_os = "linux")]
+mod by_network {
+    use std::net::SocketAddr;
+    use std::time::{Duration, Instant};
+
+    use tokio::io::AsyncReadExt;
+    use tokio::net::{TcpSocket, TcpStream};
+
+    use super::*;
+
+    /// A connection to `addr` from 127.0.0.2: another network than 127.0.0.1's.
+    async fn from_other_network(addr: SocketAddr) -> TcpStream {
+        let sock = TcpSocket::new_v4().unwrap();
+        sock.bind("127.0.0.2:0".parse().unwrap()).unwrap();
+        sock.connect(addr).await.unwrap()
+    }
+
+    /// Whether the server has closed `conn` within `within`: a read that ends, empty or reset,
+    /// rather than one still waiting.
+    async fn closed_within(conn: &mut TcpStream, within: Duration) -> bool {
+        let mut byte = [0; 1];
+        matches!(
+            tokio::time::timeout(within, conn.read(&mut byte)).await,
+            Ok(Ok(0) | Err(_))
+        )
+    }
+
+    #[tokio::test]
+    async fn a_flood_from_one_network_keeps_no_one_else_from_a_handshake() {
+        // Ruling HP9, part 1: one host's silent connections take at most its network's 8
+        // handshake places and are closed past them at once, so the flood holds neither the 64
+        // places nor the backlog, and a player on another network is answered at once.
+        let dir = tempfile::tempdir().unwrap();
+        let (server, _clock) =
+            common::server(dir.path(), "tls = \"self\"\n", GateLimits::default()).await;
+        let addr = server.api_addr;
+        let mut flood = Vec::new();
+        for _ in 0..80 {
+            flood.push(from_other_network(addr).await);
+        }
+        let client = any_certificate();
+        let started = Instant::now();
+        let info: Value = client
+            .get(format!("https://127.0.0.1:{}/api/v1/server", addr.port()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let took = started.elapsed();
+        assert_eq!(info["name"], "Fenji");
+        let limit = fenji_server::tls::TlsLimits::default().handshake;
+        assert!(took < limit / 4, "{took:?}, the limit being {limit:?}");
+        let closes = flood
+            .iter_mut()
+            .map(|conn| closed_within(conn, Duration::from_secs(2)));
+        let closed = futures_util::future::join_all(closes)
+            .await
+            .into_iter()
+            .filter(|&c| c)
+            .count();
+        assert_eq!(closed, 80 - 8, "all but the network's 8 closed at once");
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_network_holds_16_open_connections_at_most_and_another_still_gets_in() {
+        // Ruling HP9, part 2, on the plain listener: open connections hold places, 16 per network,
+        // and one past them is closed at once.
+        let dir = tempfile::tempdir().unwrap();
+        let (server, _clock) = common::server(dir.path(), "", GateLimits::default()).await;
+        let addr = server.api_addr;
+        let mut held = Vec::new();
+        for _ in 0..16 {
+            held.push(from_other_network(addr).await);
+        }
+        let mut seventeenth = from_other_network(addr).await;
+        assert!(
+            closed_within(&mut seventeenth, Duration::from_secs(2)).await,
+            "the 17th is closed at once"
+        );
+        for conn in &mut held {
+            assert!(
+                !closed_within(conn, Duration::from_millis(50)).await,
+                "the first 16 stay open"
+            );
+        }
+        let info: Value = any_certificate()
+            .get(format!("http://127.0.0.1:{}/api/v1/server", addr.port()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(info["name"], "Fenji");
+        server.shutdown().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn without_tls_there_is_no_key_and_no_pin() {
     let s = started().await;
