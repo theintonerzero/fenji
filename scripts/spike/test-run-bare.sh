@@ -151,6 +151,15 @@ else
   bad "--print's fenji-launch plan (exit $rc): $plan"
 fi
 
+# A launcher run's GTK folder dialog lists the run's client copy as a bookmark, so the player's
+# step is two clicks, not a typed path, which the dialog's completion mangles (rehearsal r4).
+mark=$(app_bookmark "$WORK/runs/t r1")
+if [ "$mark" = "file://$WORK/runs/t%20r1/client SoLO (this run)" ]; then
+  ok "a launcher run bookmarks its client copy for GTK's folder dialog, as a file URI"
+else
+  bad "app_bookmark: $mark"
+fi
+
 # --- @password: the typist types --password-file's first line through xkey.py's --type-file, so
 # the password is never on a command line and never in keys.log.
 (

@@ -47,7 +47,8 @@
 # config and cache folders inside the run, so with no settings file; PROTONPATH names the pinned
 # GE-Proton and umu-run's folder comes first on PATH; and the dedicated prefix is bound where the
 # launcher keeps its own (RUN/data/fenji-launcher/prefix), so the launcher's Wine prefix is this one,
-# primed and watched. The player's steps are --key, --type and --click on --display: --type
+# primed and watched. GTK's folder dialog lists the run's client copy as a bookmark, "SoLO (this
+# run)". The player's steps are --key, --type and --click on --display: --type
 # T:@password types --password-file's first line through xkey.py --type-file, so the password is
 # never on a command line or in a file of the run, and every input is followed by a screenshot
 # (step-Ts-KIND.png). --username is optional there: the launcher's own form takes the name. The
@@ -194,6 +195,14 @@ namespace_cmd() {
 
 # Where the desktop launcher keeps its Wine prefix in run folder RUN: XDG_DATA_HOME/fenji-launcher.
 app_prefix() { echo "$1/data/fenji-launcher/prefix"; }
+
+# The bookmark that lists run folder RUN's client copy in GTK's folder dialog (--launcher-app), as
+# GTK reads it from XDG_CONFIG_HOME/gtk-3.0/bookmarks: a file URI and a label. Choosing the folder is
+# then two clicks: a typed path is mangled by the dialog's completion (rehearsal r4).
+app_bookmark() {
+  python3 -I -c 'import sys, urllib.parse; print("file://" + urllib.parse.quote(sys.argv[1]) + " SoLO (this run)")' \
+    "$1/client"
+}
 
 # The desktop launcher's command in run folder RUN (--launcher-app): its unpacked AppImage, with its
 # data, config and cache folders in the run, the pinned GE-Proton and umu-run's folder first on PATH.
@@ -715,8 +724,10 @@ PY
   cp -a --reflink=always -- "$PINNED_COPY/." "$RUN/client/" ||
     die "the client copy needs a filesystem with reflinks (btrfs, XFS); nothing was started"
   if [ -n "$app" ]; then
-    # The launcher's own folders start empty, and its prefix's mount point waits for the bind.
-    mkdir -p "$prefix_at" "$RUN/config" "$RUN/cache"
+    # The launcher's own folders start empty, bar GTK's bookmark of the client copy, and its
+    # prefix's mount point waits for the bind.
+    mkdir -p "$prefix_at" "$RUN/config/gtk-3.0" "$RUN/cache"
+    app_bookmark "$RUN" > "$RUN/config/gtk-3.0/bookmarks"
     if ! (cd "$RUN" && "$app" --appimage-extract > "$IO/extract.log" 2>&1) || ! mv -- "$RUN/squashfs-root" "$RUN/launcher"; then
       die "couldn't unpack $app (see $IO/extract.log); nothing was started"
     fi
