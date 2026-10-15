@@ -187,30 +187,45 @@ impl App {
         })
     }
 
-    /// Runs the check on a blocking thread, publishing its progress, then its result.
+    /// Runs the check in its own task.
     fn run_check(&self, job: CheckJob) {
         let app = self.clone();
         self.inner.rt.spawn(async move {
-            let CheckJob {
-                folder,
-                manifest,
-                level,
-                stop,
-            } = job;
-            let (reporter, looked) = (app.clone(), folder.clone());
-            let report = tokio::task::spawn_blocking(move || {
-                let throttle = Throttle::new();
-                let progress = |p: Progress| {
-                    if throttle.due() {
-                        reporter.checking(level, p);
-                    }
-                };
-                verify::verify_with(&looked, &manifest, level.into(), &progress, &stop)
-            })
-            .await;
-            let report = report.map_err(anyhow::Error::from).and_then(|r| r);
-            app.checked(level, &folder, report);
+            app.run_check_here(job).await;
         });
+    }
+
+    /// Checks the saved folder now, as a job, and gives back what the check found: `None` when
+    /// it was stopped or failed (its notice says which).
+    pub(super) async fn check_here(
+        &self,
+        level: LevelView,
+    ) -> Result<Option<CheckView>, IntentError> {
+        let job = self.change(|st| self.begin_check(st, level, None))?;
+        Ok(self.run_check_here(job).await)
+    }
+
+    /// Runs the check on a blocking thread, publishing its progress, then its result.
+    async fn run_check_here(&self, job: CheckJob) -> Option<CheckView> {
+        let CheckJob {
+            folder,
+            manifest,
+            level,
+            stop,
+        } = job;
+        let (reporter, looked) = (self.clone(), folder.clone());
+        let report = tokio::task::spawn_blocking(move || {
+            let throttle = Throttle::new();
+            let progress = |p: Progress| {
+                if throttle.due() {
+                    reporter.checking(level, p);
+                }
+            };
+            verify::verify_with(&looked, &manifest, level.into(), &progress, &stop)
+        })
+        .await;
+        let report = report.map_err(anyhow::Error::from).and_then(|r| r);
+        self.checked(level, &folder, report)
     }
 
     fn checking(&self, level: LevelView, p: Progress) {
@@ -226,9 +241,15 @@ impl App {
         });
     }
 
-    /// A check's end. Every file the manifest lists counts toward `fine`, so a repair's check of
-    /// just its files still reads as the whole copy.
-    fn checked(&self, level: LevelView, folder: &Path, result: anyhow::Result<Report>) {
+    /// A check's end, and what it found (`None` when it was stopped or failed). Every file the
+    /// manifest lists counts toward `fine`, so a repair's check of just its files still reads as
+    /// the whole copy.
+    fn checked(
+        &self,
+        level: LevelView,
+        folder: &Path,
+        result: anyhow::Result<Report>,
+    ) -> Option<CheckView> {
         let at_ms = now_ms();
         let total = self.inner.cfg.manifest.entries.len();
         self.change(|st| {
@@ -262,6 +283,7 @@ impl App {
                         text: words::CHECK_STOPPED.into(),
                         error: false,
                     });
+                    return None;
                 }
                 Err(_) if !folder.is_dir() => st.client.check = CheckView::FolderMissing,
                 Err(e) => {
@@ -270,9 +292,11 @@ impl App {
                         text: words::check_failed(&format!("{e:#}")),
                         error: true,
                     });
+                    return None;
                 }
             }
-        });
+            Some(st.client.check.clone())
+        })
     }
 
     /// Download: DepotDownloader fetches the pinned build into `folder`, then every file is
@@ -415,13 +439,24 @@ impl App {
         }
     }
 
-    /// DepotDownloader's program: the configured one, or else fetched once into the data folder,
-    /// shown as fetching.
+    /// DepotDownloader's program: the configured one, or else fetched once into the data folder.
     async fn depot_downloader(&self) -> Result<PathBuf, String> {
-        let cfg = &self.inner.cfg;
-        if let Some(dd) = &cfg.depot_downloader {
-            return Ok(dd.clone());
+        match &self.inner.cfg.depot_downloader {
+            Some(dd) => Ok(dd.clone()),
+            None => {
+                self.fetch_tool(tools::depot_downloader(), DEPOT_DOWNLOADER)
+                    .await
+            }
         }
+    }
+
+    /// A pinned tool, fetched once into the data folder (launcher spec L4), while the job shows
+    /// `Fetching` with its progress.
+    pub(super) async fn fetch_tool(
+        &self,
+        tool: tools::Tool,
+        name: &'static str,
+    ) -> Result<PathBuf, String> {
         let throttle = Throttle::new();
         let progress = |done: u64, total: Option<u64>| {
             if !throttle.due() {
@@ -431,21 +466,17 @@ impl App {
                 .filter(|&t| t > 0)
                 .map(|t| (done as f64 * 100.0 / t as f64) as f32);
             self.change(|st| {
-                if matches!(st.client.job, Some(JobView::Fetching { .. })) {
+                if matches!(&st.client.job, Some(JobView::Fetching { tool, .. }) if tool == name) {
                     st.client.job = Some(JobView::Fetching {
-                        tool: DEPOT_DOWNLOADER.into(),
+                        tool: name.into(),
                         percent,
                     });
                 }
             });
         };
-        tools::ensure(
-            &tools::depot_downloader(),
-            &cfg.data_dir.join("tools"),
-            &progress,
-        )
-        .await
-        .map_err(|e| words::tool_failed(DEPOT_DOWNLOADER, &e.to_string()))
+        tools::ensure(&tool, &self.inner.cfg.data_dir.join("tools"), &progress)
+            .await
+            .map_err(|e| words::tool_failed(name, &e.to_string()))
     }
 
     /// A fresh run folder: `<data dir>/depot/<unix ms>`.
@@ -873,12 +904,13 @@ exit {code}"#,
         .await
         .unwrap();
         let before = until(&app, checked(LevelView::Quick)).await.client.check;
-        // A check that ends because it was stopped.
-        app.checked(
+        // A check that ends because it was stopped found nothing.
+        let found = app.checked(
             LevelView::Full,
             &t.good,
             Err(anyhow::Error::new(crate::verify::Stopped)),
         );
+        assert_eq!(found, None);
         let s = app.snapshot();
         assert_eq!(s.client.check, before);
         let notice = s.notice.unwrap();

@@ -39,7 +39,7 @@ pub(super) async fn run(inner: Weak<Inner>) {
 }
 
 /// Whether an answer means the session is over: it ended, or the host banned the account.
-fn session_over(e: &ApiError) -> bool {
+pub(super) fn session_over(e: &ApiError) -> bool {
     match e {
         ApiError::Banned { .. } => true,
         ApiError::Server { code, .. } => code == "bad_session",
@@ -114,7 +114,7 @@ impl App {
         }
     }
 
-    fn probed(&self, id: u32, api: &Arc<ApiClient>, found: Probe) {
+    pub(super) fn probed(&self, id: u32, api: &Arc<ApiClient>, found: Probe) {
         let now = Instant::now();
         self.change(|st| {
             let Some(live) = st.live.get_mut(&id) else {
@@ -441,6 +441,7 @@ impl App {
                 return Err(self.refusal(id, &e, Some(&username)));
             }
         };
+        let mut resume = false;
         let unkept = self.change(|st| {
             // Removed while it signed in: the session has nowhere to live.
             if st.settings.server(id).is_none() {
@@ -464,7 +465,8 @@ impl App {
             live.session = Some(session);
             live.username = Some(username.clone());
             live.lobby = None;
-            st.need_sign_in = false;
+            // Play waited for this sign-in (plan LP8): it carries on below.
+            resume = std::mem::replace(&mut st.need_sign_in, false);
             // Signed in with an account they had: the invite waiting there isn't needed.
             if let Some(code) = waiting
                 && st.pending_invite == Some((id, code))
@@ -480,6 +482,9 @@ impl App {
         }
         info!(server = id, %username, "signed in");
         self.list_players(true);
+        if resume {
+            self.play_soon();
+        }
         Ok(())
     }
 
