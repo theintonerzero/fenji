@@ -116,7 +116,8 @@ impl GateLimits {
 /// What every connection shares.
 pub(crate) struct Gate {
     pub accounts: Arc<Accounts>,
-    pub online: Online,
+    /// Shared with the account API, whose server facts count the players online.
+    pub online: Arc<Online>,
     pub lobby: LobbyLimits,
     pub limits: GateLimits,
     pub waiting: Places,
@@ -125,7 +126,8 @@ pub(crate) struct Gate {
     pub world: WorldHandle,
     /// Where a character that has never entered starts (`[world]` start_scene, start_position).
     pub start: Location,
-    /// `[access].admins`, lower-cased: names are compared without regard to ASCII case.
+    /// `[access].admins`, lower-cased: names are compared without regard to ASCII case. They and
+    /// the store's ops are the admins ([`crate::accounts::is_admin`]).
     pub admins: Vec<String>,
     /// True once the server is stopping: the listener stops accepting, and connections before
     /// their auth or in the lobby end at once. Players in the world end when the world lets go of

@@ -1,5 +1,6 @@
 //! Running the server (M3 spec D5; M4 world spec §3.9): one process with the game gate, the world,
-//! the account API, and the purge of expired sessions and tokens at start-up and every hour.
+//! the account API, and the purge of expired sessions and tokens at start-up and every hour. Its
+//! changing facts, maintenance mode among them, are its [`Status`] (M4 hosting spec §3.8, §3.9).
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +19,7 @@ pub use crate::gate::GateLimits;
 use crate::gate::{self, Gate, Places, accept_loop};
 use crate::lobby::LobbyLimits;
 use crate::online::Online;
+use crate::status::Status;
 use crate::world::{self, Rules, RunningWorld, TickReport, WorldHandle, WorldIn};
 
 /// The pinned client build this server speaks to (docs/re/pinned-build.md).
@@ -28,6 +30,9 @@ pub struct RunningServer {
     pub login_addr: SocketAddr,
     pub api_addr: SocketAddr,
     accounts: Arc<Accounts>,
+    status: Arc<Status>,
+    /// The account API's state, as its router serves it.
+    api: AppState,
     world: RunningWorld,
     gate: Arc<Gate>,
     /// The gate's listener, which hands back the connections still open when it stops.
@@ -39,6 +44,16 @@ pub struct RunningServer {
 impl RunningServer {
     pub fn accounts(&self) -> Arc<Accounts> {
         Arc::clone(&self.accounts)
+    }
+
+    /// Maintenance, the MOTD and who is in the world.
+    pub fn status(&self) -> Arc<Status> {
+        Arc::clone(&self.status)
+    }
+
+    /// The state the account API serves, for a router over it in process (`api::router`).
+    pub fn api_state(&self) -> AppState {
+        self.api.clone()
     }
 
     /// The world's channel, as a connection task holds it.
@@ -112,21 +127,37 @@ pub async fn open_store(cfg: &Config) -> anyhow::Result<Store> {
         .with_context(|| format!("opening {}", cfg.store.path.display()))
 }
 
-/// Opens the store ([`open_store`]), binds both listeners (port 0 takes a free port) and starts
-/// serving.
+/// Opens the store ([`open_store`]), loads the server's [`Status`] from it, binds both listeners
+/// (port 0 takes a free port) and starts serving.
 pub async fn start(
     cfg: &Config,
     clock: Arc<dyn Clock>,
     limits: GateLimits,
 ) -> anyhow::Result<RunningServer> {
     let store = open_store(cfg).await?;
+    let status = Status::load(&store, clock.now_ms(), &cfg.server.motd).await?;
+    if status.maintenance().is_some() {
+        tracing::warn!(
+            "maintenance is on, as it was: only admins can sign in until it's turned off"
+        );
+    }
     let world = world::start(
         Rules::from_config(cfg),
         store.clone(),
         cfg.invite_base(),
         Arc::clone(&clock),
     )?;
-    let accounts = Arc::new(Accounts::new(store, cfg.auth.clone(), Arc::clone(&clock)));
+    // `[access].admins`, lower-cased: names are compared without regard to ASCII case.
+    let admins: Vec<String> = cfg
+        .access
+        .admins
+        .iter()
+        .map(|a| a.to_ascii_lowercase())
+        .collect();
+    let accounts = Arc::new(
+        Accounts::new(store, cfg.auth.clone(), Arc::clone(&clock))
+            .with_door(Arc::clone(&status), admins.clone()),
+    );
     // The fixed hash for unknown usernames, made now rather than at the first one (#132's review).
     tokio::task::spawn_blocking(fenji_auth::password::warm_dummy);
     let login = TcpListener::bind(cfg.server.login_bind)
@@ -151,10 +182,12 @@ pub async fn start(
         gate_host: cfg.server.public_host.clone(),
         gate_port: login_addr.port(),
         server_id: cfg.server.id,
+        source: cfg.server.source_url.clone(),
     };
+    let online = Arc::new(Online::new(limits.max_players));
     let gate = Arc::new(Gate {
         accounts: Arc::clone(&accounts),
-        online: Online::new(limits.max_players),
+        online: Arc::clone(&online),
         lobby: LobbyLimits {
             max_characters: cfg.lobby.max_characters,
         },
@@ -166,19 +199,17 @@ pub async fn start(
         clock,
         world: world.handle(),
         start: world::start_location(cfg),
-        admins: cfg
-            .access
-            .admins
-            .iter()
-            .map(|a| a.to_ascii_lowercase())
-            .collect(),
+        admins,
         stopping: watch::Sender::new(false),
     });
-    let app = router(AppState {
+    let state = AppState {
         accounts: Arc::clone(&accounts),
         info,
         trusted_proxies: cfg.server.trusted_proxies.clone(),
-    });
+        status: Arc::clone(&status),
+        online,
+    };
+    let app = router(state.clone());
     let purger = Arc::clone(&accounts);
     let listener = tokio::spawn(accept_loop(login, Arc::clone(&gate)));
     let tasks = vec![
@@ -203,6 +234,8 @@ pub async fn start(
         login_addr,
         api_addr,
         accounts,
+        status,
+        api: state,
         world,
         gate,
         listener,

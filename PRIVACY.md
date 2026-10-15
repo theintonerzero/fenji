@@ -21,11 +21,14 @@ Those requests come from umu, not from Fenji. They carry nothing about your acco
 - **Invites:** the one-time codes the operator issues, each with an optional label the operator writes, such as who it's for.
 - **Your characters:** for now their name, class, body type, level and appearance (voice, face, outfit and portrait), when they were created, and where they last stood in the game world (a scene, a position and a facing), so they survive a restart. Stats, inventory and skills join them in later milestones.
 - **Tokens, as hashes only:** invite codes, session tokens and game tokens are stored as SHA-256 hashes with their times, never as the codes or tokens themselves.
+- **Ops and bans:** whether the operator has made your account an op (one of the server's admins), and, if they have banned it, the reason they gave and when.
 - **Backups:** the reference setup (design spec §8) keeps nightly backups of the server's database for 14 days; each operator can choose otherwise.
 
 It also handles short-lived tokens: a session token after you sign in, and a single-use game token, valid for 60 seconds by default, when you press Play.
 
 In the game world it passes each chat line on to the players it is for and keeps no copy. Its logs say that a line came or went, and on which channel, but not what it said or whom a whisper was for. The exception is an admin's command (`!tp`, `!kick`, `!announce` or `!invite`): the server logs each one with the admin's account and the command's arguments, so the operator can see what their admins did.
+
+Players who are signed in to the server's launcher see the names of the characters in the world.
 
 Like any server, it sees the IP address you connect from, and its logs may record it. The operator decides how long logs and backups are kept.
 

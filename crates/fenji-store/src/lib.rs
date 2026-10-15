@@ -1,7 +1,8 @@
-//! Fenji's SQLite store (M3 spec D7, §4): accounts, invites, sessions, game tokens and characters,
-//! in one file in WAL mode with foreign keys on. Every write that must be atomic is one
-//! `BEGIN IMMEDIATE` transaction, so two writers queue on the busy timeout instead of failing
-//! halfway. Times are Unix milliseconds; secrets arrive here already hashed.
+//! Fenji's SQLite store (M3 spec D7, §4; M4 hosting spec §3.9, §8): accounts, invites, sessions,
+//! game tokens, characters, ops and bans, and the server's own state, in one file in WAL mode with
+//! foreign keys on. Every write that must be atomic is one `BEGIN IMMEDIATE` transaction, so two
+//! writers queue on the busy timeout instead of failing halfway. Times are Unix milliseconds;
+//! secrets arrive here already hashed.
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -9,12 +10,14 @@ use std::time::Duration;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
+mod access;
 mod accounts;
 mod characters;
 mod error;
 mod invites;
 mod tokens;
 
+pub use access::Ban;
 pub use accounts::{Account, AccountSummary};
 pub use characters::{CREATE_LEVEL, Character, NewCharacter, Place};
 pub use error::{Error, Result};
@@ -105,6 +108,39 @@ impl Store {
     /// Closes every connection; later calls fail.
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+
+    /// The server's state under `key` (M4 hosting spec §3.9), such as maintenance mode, if it has
+    /// any.
+    pub async fn state(&self, key: &str) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT value FROM server_state WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Keeps `value` under `key`, in place of what was there.
+    pub async fn set_state(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO server_state (key, value) VALUES (?, ?) \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Drops what is under `key`, if anything is.
+    pub async fn clear_state(&self, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM server_state WHERE key = ?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Holds the write lock for `d`, then lets go without writing: for tests of what other writers
@@ -374,6 +410,32 @@ mod tests {
                 .all(|n| n == "copy.db" || n.as_bytes().starts_with(b"fenji.db")),
             "nothing written under that name or a lossy one: {names:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn server_state_keeps_one_value_per_key_across_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.db");
+        let s = Store::open(&path).await.unwrap();
+        assert_eq!(s.state("maintenance").await.unwrap(), None);
+        s.set_state("maintenance", "{\"message\":\"a\"}")
+            .await
+            .unwrap();
+        s.set_state("maintenance", "{\"message\":\"b\"}")
+            .await
+            .unwrap();
+        s.set_state("motd", "Welcome").await.unwrap();
+        s.close().await;
+        let s = Store::open(&path).await.unwrap();
+        assert_eq!(
+            s.state("maintenance").await.unwrap().as_deref(),
+            Some("{\"message\":\"b\"}"),
+            "the latest value, kept"
+        );
+        s.clear_state("maintenance").await.unwrap();
+        s.clear_state("maintenance").await.unwrap();
+        assert_eq!(s.state("maintenance").await.unwrap(), None);
+        assert_eq!(s.state("motd").await.unwrap().as_deref(), Some("Welcome"));
     }
 
     #[tokio::test]

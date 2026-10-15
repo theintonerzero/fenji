@@ -12,6 +12,10 @@ api_bind = "127.0.0.1:7801"     # the account API; put Caddy (TLS) in front of i
 max_players = 20
 trusted_proxies = []            # e.g. ["127.0.0.1"] when Caddy runs on this machine
 tick_hz = 20                    # the world's ticks per second (1 to 60)
+motd = ""                       # a notice launchers show players: plain text, at most 200 characters
+# source_url = "https://example.net/my-fenji"   # where players get the source of the Fenji you
+#                                               # run (the AGPL's §13): set it if you change Fenji;
+#                                               # unset, Fenji's own at this version's tag
 
 [store]
 path = "fenji.db"               # relative to this file; a first run puts it at data/fenji.db

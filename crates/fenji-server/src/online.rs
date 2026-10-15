@@ -1,5 +1,6 @@
 //! Who is in `WORK` (M3 spec D17): at most `max` accounts, and one connection per account. A
-//! second login replaces the first, which is told to close.
+//! second login replaces the first, which is told to close. The gate and the account API share it
+//! (`Arc<Online>`): the API's server facts count the players online (M4 hosting spec §3.8).
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -60,12 +61,18 @@ impl Online {
         }
     }
 
+    /// The accounts connected, in the lobby or the world.
     pub fn count(&self) -> usize {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .accounts
             .len()
+    }
+
+    /// The most accounts that may be connected at once (`[server] max_players`).
+    pub fn max(&self) -> usize {
+        self.max
     }
 }
 

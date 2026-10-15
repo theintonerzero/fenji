@@ -27,6 +27,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, MissedTickBehavior};
 
+use crate::accounts;
 use crate::gate::{self, Gate};
 use crate::lobby::stored_appearance;
 use crate::world::{
@@ -76,7 +77,16 @@ pub(crate) async fn play(
     let deadline = gate.limits.write_deadline;
     let pid = character.pid;
     let (tx, mut rx) = mpsc::channel(OUTBOUND);
-    let player = player(gate.start, &gate.admins, account, conn, character);
+    // `[access].admins` or an op (M4 hosting spec §8, HA5). A store that can't say enters the
+    // player without an admin's commands.
+    let admin = match accounts::is_admin(gate.accounts.store(), &gate.admins, account).await {
+        Ok(admin) => admin,
+        Err(e) => {
+            tracing::error!(error = %e, account = %account.username, "checking for an op: entering without an admin's commands");
+            false
+        }
+    };
+    let player = player(gate.start, admin, account, conn, character);
     if !gate.world.send(WorldIn::Join { player, out: tx }) {
         tracing::warn!(%peer, account = %account.username, "the world has stopped: entry refused");
         let bytes = gate::script_out(server, &lobby::error_code(code::SERVER_NOT_RESP))?;
@@ -183,15 +193,10 @@ pub(crate) async fn play(
     }
 }
 
-/// The player `c` enters as: its look, `[access].admins`' verdict on the account (without regard
-/// to ASCII case), and where it last stood, or `start` for a character that never entered.
-fn player(
-    start: Location,
-    admins: &[String],
-    account: &Account,
-    conn: ConnId,
-    c: Character,
-) -> Player {
+/// The player `c` enters as: its look, whether its account is an admin's
+/// ([`accounts::is_admin`]), and where it last stood, or `start` for a character that never
+/// entered.
+fn player(start: Location, admin: bool, account: &Account, conn: ConnId, c: Character) -> Player {
     let at = c.place.map_or(start, |p| Location {
         scene: p.scene,
         pos: Pos {
@@ -204,9 +209,7 @@ fn player(
     Player {
         conn,
         account: account.id,
-        admin: admins
-            .iter()
-            .any(|a| a.eq_ignore_ascii_case(&account.username)),
+        admin,
         pid: c.pid,
         look: Look {
             name: c.name,
@@ -742,7 +745,7 @@ mod tests {
                 AuthConfig::default(),
                 Arc::clone(&clock),
             )),
-            online: Online::new(4),
+            online: Arc::new(Online::new(4)),
             lobby: LobbyLimits { max_characters: 9 },
             limits: GateLimits {
                 linger: Duration::from_millis(200),
@@ -840,14 +843,10 @@ mod tests {
     }
 
     #[test]
-    fn the_player_comes_from_the_character_and_the_config() {
-        let admins = ["boss".to_string()];
-        let p = player(START, &admins, &account("Boss"), 3, lin(None));
+    fn the_player_comes_from_the_character_and_the_account() {
+        let p = player(START, true, &account("Boss"), 3, lin(None));
         assert_eq!((p.conn, p.account, p.pid), (3, 7, 258));
-        assert!(
-            p.admin,
-            "[access].admins names the account, whatever its case"
-        );
+        assert!(p.admin, "an admin's account");
         assert_eq!(
             p.at, START,
             "[world]'s start for a character that never entered"
@@ -869,7 +868,7 @@ mod tests {
             z: 30.0,
             yaw: -45.0,
         };
-        let p = player(START, &admins, &account("tester"), 3, lin(Some(place)));
+        let p = player(START, false, &account("tester"), 3, lin(Some(place)));
         assert!(!p.admin);
         assert_eq!(
             p.at,

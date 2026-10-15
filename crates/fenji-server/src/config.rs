@@ -58,6 +58,15 @@ pub struct ServerConfig {
     /// The world's ticks per second (Fenji design spec §6.4).
     #[serde(default = "twenty")]
     pub tick_hz: u32,
+    /// Where the source code of the server that runs is (M4 hosting spec §3.8), which launchers
+    /// offer players: the AGPL's §13 asks a host who changes Fenji to offer their changes. By
+    /// default, this repository at this version's tag.
+    #[serde(default = "source_url")]
+    pub source_url: String,
+    /// The host's notice for players, which launchers show (M4 hosting spec §8, HA1); empty for
+    /// none. The console can set one over it.
+    #[serde(default)]
+    pub motd: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -215,6 +224,29 @@ fn login_bind() -> SocketAddr {
 fn api_bind() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 7801))
 }
+fn source_url() -> String {
+    format!(
+        "https://github.com/theintonerzero/fenji/tree/v{}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// The longest `[server] source_url`, in characters.
+pub const SOURCE_URL_MAX: usize = 200;
+
+/// Whether `url` can be `[server] source_url`: an `https://` or `http://` address of at most
+/// [`SOURCE_URL_MAX`] characters, without whitespace or hidden characters, since launchers show it
+/// and offer it to open.
+fn source_url_ok(url: &str) -> bool {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    rest.is_some_and(|r| !r.is_empty())
+        && url.chars().count() <= SOURCE_URL_MAX
+        && !url
+            .chars()
+            .any(|c| c.is_whitespace() || crate::text::hidden(c))
+}
 
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
@@ -273,6 +305,17 @@ impl Config {
         {
             bail!(
                 "[server] public_api: https://<host>[:<port>], or http:// to a loopback address, with no path"
+            );
+        }
+        if !source_url_ok(&s.source_url) {
+            bail!(
+                "[server] source_url: an https:// or http:// address of at most {SOURCE_URL_MAX} characters, without spaces or control characters"
+            );
+        }
+        if crate::status::check_message(&s.motd).is_err() {
+            bail!(
+                "[server] motd: plain text of at most {} characters, without control or invisible characters",
+                crate::status::MESSAGE_MAX
             );
         }
         if !(10..=3600).contains(&self.auth.game_token_ttl_secs) {
@@ -481,6 +524,8 @@ mod tests {
         assert_eq!(c.world.start_position, [2366.0, -71735.0, 64854.0, 345.0]);
         assert_eq!(c.world.move_tolerance, 1.5);
         assert_eq!(c.world.save_every_secs, 300);
+        assert_eq!(c.server.motd, "");
+        assert_eq!(c.server.source_url, source_url());
     }
 
     #[test]
@@ -640,6 +685,68 @@ mod tests {
             ("[world]\nsave_every_secs = 29", "save_every_secs"),
             ("[world]\nsave_every_secs = 3601", "save_every_secs"),
             ("[world]\nbogus = 1", "bogus"),
+        ] {
+            let e = format!("{:#}", parse(extra).unwrap_err());
+            assert!(e.contains(place), "{extra}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_source_defaults_to_this_versions_tag_and_the_motd_to_none() {
+        let c = Config::parse("[server]\nname = \"F\"\n", Path::new("/")).unwrap();
+        assert_eq!(
+            c.server.source_url,
+            format!(
+                "https://github.com/theintonerzero/fenji/tree/v{}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert_eq!(c.server.motd, "");
+        let c = Config::parse(
+            "[server]\nname = \"F\"\nsource_url = \"http://git.example.net/my-fenji\"\n\
+             motd = \"Welcome, é! Events on Fridays.\"\n",
+            Path::new("/"),
+        )
+        .unwrap();
+        assert_eq!(c.server.source_url, "http://git.example.net/my-fenji");
+        assert_eq!(c.server.motd, "Welcome, é! Events on Fridays.");
+    }
+
+    #[test]
+    fn a_source_is_a_web_address_and_an_motd_plain_text_each_of_200_characters_at_most() {
+        let parse = |extra: &str| {
+            Config::parse(
+                &format!("[server]\nname = \"F\"\n{extra}\n"),
+                Path::new("/"),
+            )
+        };
+        // "https://example.net/" is 20 characters.
+        parse(&format!(
+            "source_url = \"https://example.net/{}\"",
+            "x".repeat(180)
+        ))
+        .unwrap();
+        parse(&format!("motd = \"{}\"", "é".repeat(200))).unwrap();
+        let long_source = format!("source_url = \"https://example.net/{}\"", "x".repeat(181));
+        let long_motd = format!("motd = \"{}\"", "é".repeat(201));
+        for (extra, place) in [
+            ("source_url = \"ftp://example.net/fenji\"", "source_url"),
+            ("source_url = \"github.com/me/fenji\"", "source_url"),
+            ("source_url = \"https://\"", "source_url"),
+            (
+                "source_url = \"https://example.net/my fenji\"",
+                "source_url",
+            ),
+            (
+                "source_url = \"https://example.net/\\u001b[2J\"",
+                "source_url",
+            ),
+            ("source_url = \"https://example.net/\\u202e\"", "source_url"),
+            (long_source.as_str(), "source_url"),
+            ("motd = \"\\u001b[31mred\"", "motd"),
+            ("motd = \"two\\nlines\"", "motd"),
+            ("motd = \"back \\u202esoon\"", "motd"),
+            (long_motd.as_str(), "motd"),
         ] {
             let e = format!("{:#}", parse(extra).unwrap_err());
             assert!(e.contains(place), "{extra}: {e}");

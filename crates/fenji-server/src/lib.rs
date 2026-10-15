@@ -13,6 +13,7 @@ mod link;
 pub mod lobby;
 pub mod online;
 pub mod server;
+pub mod status;
 pub mod text;
 pub mod world;
 

@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use fenji_launcher::api::ApiClient;
+use fenji_launcher::api::{ApiClient, ApiError};
 use fenji_launcher::manifest::{HEADER, Manifest};
 use fenji_launcher::settings::Os;
 use fenji_launcher::start::{self, Login, UmuOptions};
@@ -127,7 +127,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 .context("give the server's address with --server")?;
             let pw = password(password_file.as_deref())?;
             let api = ApiClient::new(&server)?;
-            runtime()?.block_on(api.register(&code.display(), &username, &pw))?;
+            runtime()?
+                .block_on(api.register(&code.display(), &username, &pw))
+                .map_err(refused_redeem)?;
             println!("registered {username} on {server}");
             Ok(ExitCode::SUCCESS)
         }
@@ -240,8 +242,40 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
 }
 
+/// What `redeem` prints when the server refuses: the error, which carries the host's words for
+/// maintenance and a ban. Maintenance refuses an invite before spending it (M4 hosting spec §3.9),
+/// so the player also hears that it still works.
+fn refused_redeem(e: ApiError) -> anyhow::Error {
+    match e {
+        ApiError::Maintenance { .. } => {
+            anyhow::anyhow!("{e}; the invite wasn't used, so try it again once the server is back")
+        }
+        e => e.into(),
+    }
+}
+
 fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_redeem_held_by_maintenance_says_the_invite_still_works() {
+        let held = ApiError::Maintenance {
+            message: "Updating".into(),
+            until: None,
+        };
+        assert_eq!(
+            refused_redeem(held).to_string(),
+            "the server is in maintenance: Updating; the invite wasn't used, so try it again \
+             once the server is back"
+        );
+        let other = refused_redeem(ApiError::Insecure).to_string();
+        assert_eq!(other, ApiError::Insecure.to_string());
+    }
 }
