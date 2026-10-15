@@ -10,7 +10,7 @@ import { facts } from "../ui/card";
 import { icons } from "../ui/icons";
 import { clientLine } from "../words";
 import { PRIVACY } from "./account";
-import { path } from "./client-parts";
+import { path, shown } from "./client-parts";
 import { contextColumn, noticeSlot, renew } from "./parts";
 
 const REPOSITORY = "https://github.com/theintonerzero/fenji";
@@ -128,7 +128,7 @@ export function settings(root: HTMLElement, ctx: Ctx): Screen {
   return {
     update(s) {
       slot.update(s);
-      folder.value = s.client.folder ?? "";
+      folder.value = s.client.folder === null ? "" : shown(s.client.folder, s.platform.home);
       renew(verified, clientLine(s, true), () => {
         const ok = s.client.check.kind === "verified" ? icons.check(13) : null;
         ok?.classList.add("icon-ok");

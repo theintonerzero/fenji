@@ -46,6 +46,7 @@ test("About: the version, the licence, the contributors, no telemetry, and two l
   }
   // The Settings board's About: "0.4.0 · up to date", with an ok dot (the finish review's fix 6).
   expect(root.textContent).toContain("~/.local/share/fenji-launcher/logs");
+  expect(root.querySelector<HTMLInputElement>("#settings-folder")!.value).toBe("~/Games/SoLO");
   const version = root.querySelector(".about-version")!;
   expect(version.textContent).toContain("up to date");
   expect(version.querySelector(".dot-ok")).not.toBeNull();
