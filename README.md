@@ -39,6 +39,7 @@ The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-des
 |---|---|
 | `crates/fenji-proto` | The client's network transport without I/O: the handshake, encryption, frames and message encoding, and the lobby's, the world's and chat's messages. |
 | `crates/fenji-server` | The server: the account API (invites, accounts, sign-in, game tokens), the gate that takes the client's login, the character lobby, and the world: who sees whom, movement, chat and admin commands. |
+| `crates/fenji-console` | The host console: live logs above and a command line below, full-screen in a terminal or as plain lines, and what a server and its consoles say to each other. |
 | `crates/fenji-store` | The server's SQLite store: accounts, invites, sessions, game tokens and characters. |
 | `crates/fenji-auth` | Password hashing (argon2id) and the invite and token formats. |
 | `crates/fenji-launcher` | The launcher's library and `fenji-launch`, its command line: redeem an invite, check the client folder against the pinned build, and play (on Linux, through umu-launcher). |

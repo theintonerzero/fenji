@@ -63,7 +63,7 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 
 ## Versioning: SemVer 2.0.0
 
-- One version for the whole monorepo: `[workspace.package] version` in `Cargo.toml`. Every crate inherits it (`version.workspace = true`). The launcher's `tauri.conf.json` and `package.json` are kept equal by the release steps below.
+- One version for the whole monorepo: `[workspace.package] version` in `Cargo.toml`. Every crate inherits it (`version.workspace = true`). The desktop launcher's `apps/launcher/package.json` and `apps/launcher/src-tauri/Cargo.toml` carry it too (its `tauri.conf.json` has none of its own), kept equal by the release steps below and checked in CI by `scripts/check-launcher-version.sh`.
 - Tags: `vX.Y.Z` on `main`. Release candidates: `vX.Y.Z-rc.N` on the release branch.
 - Before 1.0.0, each milestone release bumps the **minor** version: M0 → `0.1.0`, M1 → `0.2.0`, M2 → `0.3.0`, M3 → `0.4.0`, M4 → `0.5.0`. M5 (grind loop, v1) → `1.0.0`.
 - Between milestones: fixes bump **patch**.
@@ -79,12 +79,15 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 ```bash
 git switch dev && git pull
 git switch -c release/vX.Y.Z
-# bump [workspace.package] version in Cargo.toml (+ launcher tauri.conf.json / package.json once they exist)
+# bump the version in Cargo.toml's [workspace.package], apps/launcher/package.json and
+# apps/launcher/src-tauri/Cargo.toml (scripts/check-launcher-version.sh says whether they agree)
 cargo check --workspace          # refreshes Cargo.lock; CI builds with --locked
+(cd apps/launcher/src-tauri && cargo check)   # and the launcher shell's own Cargo.lock
 # set CLAUDE.md's **Status:** line: this milestone released as vX.Y.Z, and which milestone is next
 git cliff --tag vX.Y.Z -o CHANGELOG.md
 # stage the release files only, so no unrelated local edit rides into the release commit
-git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md   # + the launcher's tauri.conf.json / package.json once they exist
+git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md apps/launcher/package.json \
+  apps/launcher/src-tauri/Cargo.toml apps/launcher/src-tauri/Cargo.lock
 git commit -m "chore(release): vX.Y.Z"
 # PR release/vX.Y.Z → main, merge commit, then:
 git switch main && git pull && git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
@@ -121,3 +124,23 @@ cargo test --workspace
 cargo deny check
 scripts/check-forbidden-files.sh
 ```
+
+A change under `apps/launcher/` also runs the launcher's checks (CI's `launcher` job), below.
+
+## The desktop launcher
+
+`apps/launcher` is the desktop launcher (spec: `docs/superpowers/specs/2026-10-15-m4-launcher-design.md`). Its model, with all its state and secrets, is the `fenji-launcher` crate in the workspace; `apps/launcher/src-tauri` is a thin Tauri 2 shell, a Cargo workspace of its own outside the repository's; `apps/launcher/src` is the TypeScript view. The model's tests write the view's types (`src/gen/`) and check the golden snapshots (`fixtures/`); see `apps/launcher/fixtures/README.md`.
+
+Building the shell needs Node 24, pnpm 12.11.2 and tauri-cli 2.12.2, and on Linux WebKitGTK's development packages; `scripts/bootstrap.sh` installs them all on Fedora and macOS (CI's `launcher` job lists Ubuntu's packages).
+
+```bash
+cd apps/launcher
+pnpm install --frozen-lockfile
+pnpm run check && pnpm test && pnpm run build && node scripts/check-licences.mjs
+cd src-tauri
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo deny check
+cargo tauri dev                  # the launcher with the view served live by Vite
+cargo tauri build --no-bundle    # a release build, without the installers
+```
+
+The launcher keeps its settings in `~/.config/fenji-launcher/` and its data (the log, fetched tools, the Wine prefix) in `~/.local/share/fenji-launcher/` on Linux. To try it without touching yours, start it with `XDG_CONFIG_HOME` and `XDG_DATA_HOME` pointing at a scratch folder.
