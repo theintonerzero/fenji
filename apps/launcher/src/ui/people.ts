@@ -10,11 +10,16 @@ export function initials(name: string): string {
   return letters.toUpperCase();
 }
 
-export function avatar(name: string, tint: number | null, small = false): HTMLElement {
+/** 34 px in lists, 28 px in the account pill, 48 px on the Account page. */
+export function avatar(
+  name: string,
+  tint: number | null,
+  size: "regular" | "small" | "large" = "regular",
+): HTMLElement {
   return h(
     "span",
     {
-      class: small ? "avatar avatar-small" : "avatar",
+      class: size === "regular" ? "avatar" : `avatar avatar-${size}`,
       "data-tint": tint === null ? null : String(tint),
       "aria-hidden": "true",
     },
@@ -29,7 +34,7 @@ export function avatar(name: string, tint: number | null, small = false): HTMLEl
 export function people(names: string[] | null, you: string | null, host: string | null): HTMLElement {
   const heading = h("h2", { class: "column-heading" }, "Playing now");
   if (names === null) {
-    return h("section", {}, heading, h("p", { class: "people-empty" }, "Sign in to see who's online."));
+    return h("section", {}, heading, h("p", { class: "people-empty" }, "Sign in to see who's playing."));
   }
   if (names.length === 0) {
     return h("section", {}, heading, h("p", { class: "people-empty" }, "No one is playing right now."));

@@ -4,6 +4,11 @@
 // while the model asks for it.
 import { h } from "./dom";
 import { activeServer, bladeFor, groundFor, route, type ScreenName, type Tab } from "./route";
+import { account } from "./screens/account";
+import { play } from "./screens/play";
+import { redeem } from "./screens/redeem";
+import { signIn } from "./screens/sign-in";
+import { welcome } from "./screens/welcome";
 import type { Intent, Snapshot } from "./types";
 import { blade } from "./ui/blade";
 import { facts } from "./ui/card";
@@ -27,7 +32,7 @@ export interface Screen {
 export type ScreenFactory = (root: HTMLElement, ctx: Ctx) => Screen;
 
 /** The screens by name. A screen that isn't here yet gets a placeholder with its name. */
-export const screens: Partial<Record<ScreenName, ScreenFactory>> = {};
+export const screens: Partial<Record<ScreenName, ScreenFactory>> = { welcome, redeem, signIn, account, play };
 
 /** What comes over any screen: the update dialog, while `update.showDialog` (launcher Task 14). */
 export const overlays: { update?: ScreenFactory } = {};

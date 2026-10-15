@@ -3,10 +3,12 @@
 // is no maximise: the window is fixed. Its empty space drags the window.
 import type { Ctx } from "../app";
 import { h } from "../dom";
-import { activeServer, type Tab } from "../route";
+import { activeServer, route, type ScreenName, type Tab } from "../route";
 import type { Snapshot } from "../types";
 import { icons } from "./icons";
 import { avatar } from "./people";
+
+const SIGN_IN_SCREENS = new Set<ScreenName>(["welcome", "redeem", "signIn"]);
 
 const TABS: [Tab, string][] = [
   ["play", "Play"],
@@ -73,8 +75,11 @@ export function header(ctx: Ctx, s: Snapshot): HTMLElement & { update(s: Snapsho
     }
     const server = activeServer(next);
     const name = server?.signedIn ? server.username : null;
+    // Signed out, the pill offers Sign in, except on the screens that are the sign-in already
+    // (the boards show none there).
+    pill.hidden = name === null && SIGN_IN_SCREENS.has(route(ctx.tab, next));
     pill.classList.toggle("pill-signed-out", name === null);
-    pill.replaceChildren(...(name === null ? ["Sign in"] : [avatar(name, null, true), name]));
+    pill.replaceChildren(...(name === null ? ["Sign in"] : [avatar(name, null, "small"), name]));
   };
   update(s);
   return Object.assign(el, { update });
