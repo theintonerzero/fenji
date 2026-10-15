@@ -74,7 +74,7 @@ fn the_bots_lines_are_the_real_clients() {
             "hi world from Mai",
             include_str!("fixtures/t16-c1-world.hex"),
         ),
-        (2, "team line", include_str!("fixtures/t16-c1-team.hex")),
+        (TEAM, "team line", include_str!("fixtures/t16-c1-team.hex")),
     ] {
         assert_eq!(
             transmit(channel, text, Value::Nil),
@@ -397,8 +397,8 @@ async fn the_bots_chat_on_all_three_channels() {
     let back = Heard::said(WHISPER, c.made(), "back", Some(a.made()));
     assert_eq!(a.heard().await, back);
     assert_eq!(c.heard().await, back);
-    // Team chat (2) isn't carried: Lin alone gets a 270.
-    a.say(2, "team").await;
+    // Team chat isn't carried: Lin alone gets a 270.
+    a.say(TEAM, "team").await;
     a.expect_refused(chat::code::CHAT_INVALID_CHANNEL).await;
     // Mai heard neither whisper, and nobody heard the team line.
     nothing_else(&mut b, &mut [&mut a, &mut c]).await;

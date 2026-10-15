@@ -238,8 +238,8 @@ async fn client_enter_brings_7_and_8_in_order() {
     select(&mut bot, pid).await;
     let seven = enter(&mut bot, pid).await;
     // The header: a player (1), difficulty 255, template vocation 7 × 10000 (world.md 5.4).
-    assert_eq!(seven[8..14], [1, 255, 0x70, 0x11, 0x01, 0x00]);
-    let blob = world::decode_blob(&seven[14..]).unwrap();
+    assert_eq!(seven[8..SEVEN_HEADER], [1, 255, 0x70, 0x11, 0x01, 0x00]);
+    let blob = world::decode_blob(&seven[SEVEN_HEADER..]).unwrap();
     let get = |i: u16| {
         blob.iter()
             .find(|(index, _)| *index == i)
@@ -384,7 +384,7 @@ async fn two_players_see_each_other() {
     let lin_seen = pulled(&mut b, lin).await;
     assert_eq!(mai_seen, mais_own, "Lin sees Mai as Mai's client has her");
     assert_eq!(lin_seen, lins_own, "Mai sees Lin as Lin's client has her");
-    let blob = world::decode_blob(&mai_seen[14..]).unwrap();
+    let blob = world::decode_blob(&mai_seen[SEVEN_HEADER..]).unwrap();
     assert_eq!(blob[0], (1, BlobValue::Str(b"Mai".to_vec())), "the name");
     // A second pull of a player already sent gets nothing, and nothing else comes.
     a.send_native(Cts::SyncFilterSet.to_u8(), &pull(mai)).await;
@@ -910,8 +910,8 @@ async fn a_refused_line_is_a_270() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
     let (mut a, _lin, mut b, _mai, mut c, _kai) = three_players(&s).await;
-    // Team chat (2): the link refuses a channel M4 doesn't carry.
-    say(&mut a, &[Value::Int(2), string("hi"), Value::Nil]).await;
+    // Team chat: the link refuses a channel M4 doesn't carry.
+    say(&mut a, &[Value::Int(TEAM), string("hi"), Value::Nil]).await;
     refused(&mut a, chat::code::CHAT_INVALID_CHANNEL).await;
     // A forged player link, then 141 characters: the world refuses them.
     let forged = "[link type=\"player\" pid=\"1\" name=\"Admin\" gm=\"1\"]";
