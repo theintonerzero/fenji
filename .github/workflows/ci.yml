@@ -68,9 +68,17 @@ jobs:
           node-version: 24
       - name: pnpm, at the version scripts/versions.env pins
         run: npm install -g pnpm@12.11.2
+      # Before cargo-about's install: the cache brings back ~/.cargo/bin, and cargo install then
+      # finds the pinned version there.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/launcher/src-tauri
+      - name: cargo-about, at the version scripts/versions.env pins
+        run: |
+          source scripts/versions.env
+          # Its program is behind the cli feature: without it, cargo install builds nothing.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
       - name: The view
         working-directory: apps/launcher
         run: |
@@ -79,6 +87,10 @@ jobs:
           pnpm test
           pnpm run build
           node scripts/check-licences.mjs
+      # The AppImage's third-party notices, which only the release workflow puts in a bundle: a
+      # dependency change that leaves a crate without a licence text of its own shows here (#341).
+      - name: The launcher's third-party notices, for Linux
+        run: scripts/launcher-notices.sh x86_64-unknown-linux-gnu "$RUNNER_TEMP/THIRD-PARTY-NOTICES.txt"
       # After the view's build: the shell embeds its files (tauri.conf.json's frontendDist).
       - name: The shell
         working-directory: apps/launcher/src-tauri
@@ -152,6 +164,8 @@ jobs:
         run: scripts/test-check-no-session-links.sh
       - name: Release packaging tests
         run: scripts/test-package-server.sh
+      - name: The launcher's third-party notices tests
+        run: scripts/test-launcher-notices.sh
       - name: The launcher's latest.json tests
         run: scripts/test-launcher-latest-json.sh
       - name: No session links in the PR's title, description or new commits
