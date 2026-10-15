@@ -28,6 +28,8 @@ jobs:
       - run: cargo clippy -p fenji-oodle-helper --target x86_64-pc-windows-gnu --locked -- -D warnings
       # fenji-data without its `oodle` feature, as tools/oodle-helper builds it.
       - run: cargo clippy -p fenji-data --no-default-features --all-targets --locked -- -D warnings
+      # Its tests without it too: --workspace turns `oodle` on, so codec.rs's no-feature test runs only here.
+      - run: cargo test -p fenji-data --no-default-features --locked
       - name: The program that loads Epic's Oodle DLL links no GPL code (fenji-oodle)
         run: |
           deps=$(cargo tree -p fenji-oodle-helper --target x86_64-pc-windows-gnu -e normal --prefix none --locked)

@@ -20,6 +20,16 @@ use std::process::ExitCode;
 
 use fenji_data::archive::OodleSource;
 
+// Ruling O16: the program that loads Epic's DLL links no GPL code, so it takes fenji-data without
+// the `oodle` feature (Cargo.toml). Cargo turns a feature on for every package that one command
+// builds, so a Windows build beside fenji-archive, or of the whole workspace, would link
+// fenji-oodle all the same: such a build doesn't compile.
+#[cfg(windows)]
+const _: () = assert!(
+    !fenji_data::OODLE_DECODER,
+    "Ruling O16 (the Oodle decoder plan): oodle-helper loads Epic's Oodle DLL, so it links no GPL code, but another package in this build turned on fenji-data's `oodle` feature, which links fenji-oodle (GPL-3.0-or-later). Build the helper on its own: cargo build --release -p fenji-oodle-helper --target x86_64-pc-windows-gnu"
+);
+
 const USAGE: &str = "usage: oodle-helper DLL SPOOL | oodle-helper DLL probe | oodle-helper DLL compress IN OUT COMPRESSOR LEVEL | oodle-helper DLL hash-parts CLIENT OUT_TSV";
 
 /// What a command line asks for.
