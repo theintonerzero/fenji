@@ -20,14 +20,17 @@ function card(title: string, ...children: Child[]): HTMLElement {
   return h("section", { class: "card settings-card" }, h("h2", { class: "card-title" }, title), ...children);
 }
 
-/** The launcher's own version, and an update only when the updater has found one. */
+/** The launcher's own version, then an update when the updater has found one, or "up to date" when
+ * its last check found nothing newer (the Settings board). */
 function version(s: Snapshot): Child[] {
   const { update } = s;
   if (update.checking) {
     return [update.current, h("span", { class: "muted" }, "· checking…")];
   }
   if (update.available === null) {
-    return [update.current];
+    return update.upToDate
+      ? [update.current, h("span", { class: "dot dot-ok", "aria-hidden": "true" }), "up to date"]
+      : [update.current];
   }
   return [
     update.current,

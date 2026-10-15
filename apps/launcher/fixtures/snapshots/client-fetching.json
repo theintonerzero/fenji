@@ -62,7 +62,8 @@
     "available": null,
     "ready": false,
     "notes": null,
-    "showDialog": false
+    "showDialog": false,
+    "upToDate": true
   },
   "settings": {
     "autoUpdate": true,

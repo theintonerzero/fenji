@@ -44,6 +44,10 @@ test("About: the version, the licence, the contributors, no telemetry, and two l
   for (const words of ["0.5.0", "AGPL-3.0-or-later", "The Fenji contributors", "No telemetry: Fenji sends nothing about you.", "Language: English"]) {
     expect(root.textContent).toContain(words);
   }
+  // The Settings board's About: "0.4.0 · up to date", with an ok dot (the finish review's fix 6).
+  const version = root.querySelector(".about-version")!;
+  expect(version.textContent).toContain("up to date");
+  expect(version.querySelector(".dot-ok")).not.toBeNull();
   press(root, "Read the privacy page");
   press(root, "Source code");
   expect(sent).toEqual([

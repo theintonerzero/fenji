@@ -159,6 +159,7 @@ impl App {
                 ready: false,
                 notes: None,
                 show_dialog: false,
+                up_to_date: false,
             },
             settings,
             added: HashSet::new(),

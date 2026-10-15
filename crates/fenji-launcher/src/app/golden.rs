@@ -131,6 +131,8 @@ fn base() -> Snapshot {
             ready: false,
             notes: None,
             show_dialog: false,
+            // As the boards show it: a launcher whose last check found nothing newer.
+            up_to_date: true,
         },
         settings: SettingsView {
             auto_update: true,
@@ -358,6 +360,7 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
                 s.update.ready = true;
                 s.update.notes = Some(NOTES.into());
                 s.update.show_dialog = true;
+                s.update.up_to_date = false;
             }),
         ),
     ]

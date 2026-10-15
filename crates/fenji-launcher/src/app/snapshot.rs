@@ -213,6 +213,8 @@ pub struct UpdateView {
     pub ready: bool,
     pub notes: Option<String>,
     pub show_dialog: bool,
+    /// The last check found nothing newer: the column's foot says "up to date" (the boards).
+    pub up_to_date: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
