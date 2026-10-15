@@ -16,6 +16,36 @@ pub const NO_SERVER: &str = "Add a server first: paste the link or the address y
 /// A typed invite code that isn't one.
 pub const BAD_CODE: &str = "That isn't an invite code. Check it against the link your host sent.";
 
+/// A download off Linux (launcher spec L2).
+pub const DOWNLOAD_LINUX_ONLY: &str = "Downloading with Steam works on Linux only for now.";
+/// A check, download or repair while another runs.
+pub const BUSY: &str = "Something is already running: wait for it to finish, or stop it.";
+/// No terminal to open DepotDownloader in: the view shows `client.manualCommand` after it.
+pub const NO_TERMINAL: &str =
+    "Fenji couldn't open a terminal for DepotDownloader. Run this in yours:";
+pub const CHECK_STOPPED: &str = "The check was stopped.";
+pub const DOWNLOAD_CANCELLED: &str = "The download was cancelled.";
+pub const WINDOW_CLOSED: &str =
+    "DepotDownloader's window closed before the download finished. Try again.";
+pub const NOTHING_TO_REPAIR: &str = "Every file checked out last time: there's nothing to repair.";
+/// A check or repair with no game folder chosen.
+pub const NO_FOLDER: &str = "Choose your game folder first.";
+
+/// DepotDownloader ended with another status than 0.
+pub fn download_stopped(code: i32) -> String {
+    format!("The download stopped: DepotDownloader ended with {code}. Try again.")
+}
+
+/// A tool couldn't be fetched (launcher plan Task 3: the tool's error doesn't name it).
+pub fn tool_failed(tool: &str, why: &str) -> String {
+    sentence(&format!("Fenji couldn't get {tool}"), why)
+}
+
+/// A check that failed for another reason than a missing folder or a stop.
+pub fn check_failed(why: &str) -> String {
+    sentence("Fenji couldn't check the files", why)
+}
+
 /// What an answer from the account API (or its failure) means to the player.
 pub fn api_error(e: &ApiError, server: &str, host: Option<&str>, username: Option<&str>) -> String {
     let host_lower = host.unwrap_or("your host");

@@ -5,6 +5,8 @@ use std::time::Duration;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
+use crate::app::{App, Snapshot};
+
 /// Held by every test that writes an executable or starts a process. A child forked while another
 /// test still has its fresh script open for writing would make that script "Text file busy"
 /// (ETXTBSY) to exec, so the two never overlap.
@@ -12,6 +14,21 @@ static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn spawning() -> std::sync::MutexGuard<'static, ()> {
     SPAWN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The first snapshot `what` holds for, waiting at most 10 s.
+pub(crate) async fn until(app: &App, what: impl Fn(&Snapshot) -> bool) -> Snapshot {
+    let mut rx = app.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if what(&rx.borrow_and_update()) {
+                return rx.borrow().clone();
+            }
+            rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the state never came")
 }
 
 /// A TLS server on loopback presenting `cert` and proving it with `key`. It reads each request
