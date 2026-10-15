@@ -1,0 +1,5 @@
+[env]
+# ts-rs writes the launcher's TypeScript types here when fenji-launcher's tests run (launcher plan
+# LP13), and writes i64 as a number, as serde_json does.
+TS_RS_EXPORT_DIR = { value = "apps/launcher/src/gen", relative = true }
+TS_RS_LARGE_INT = "number"
