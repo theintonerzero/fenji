@@ -8,6 +8,7 @@ use std::sync::Arc;
 use common::*;
 use fenji_launcher::api::{ApiClient, ApiError, MaintenanceInfo, Players, ServerInfo, ServerState};
 use fenji_launcher::pin::ServerAddr;
+use fenji_launcher::probe::{Status, probe, probe_within};
 use fenji_server::server::GateLimits;
 use fenji_server::status::Maintenance;
 use serde_json::json;
@@ -200,5 +201,60 @@ async fn the_launcher_trusts_exactly_the_pinned_key() {
         ApiClient::new(&bare).unwrap().server_info().await,
         Err(ApiError::OwnKey)
     ));
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_probe_reads_a_running_server_and_a_silent_one_goes_offline_in_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    let api =
+        ApiClient::new(&ServerAddr::parse(&format!("http://{}", s.api_addr)).unwrap()).unwrap();
+    let p = probe(&api, "10015727").await;
+    assert_eq!(p.status, Status::Online);
+    assert!(p.ping_ms.is_some() && p.info.is_some());
+    s.shutdown().await.unwrap();
+
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = silent.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((c, _)) = silent.accept().await {
+            held.push(c);
+        }
+    });
+    let api = ApiClient::new(&ServerAddr::parse(&format!("http://{addr}")).unwrap()).unwrap();
+    let started = std::time::Instant::now();
+    let p = probe_within(&api, "10015727", std::time::Duration::from_millis(300)).await;
+    assert_eq!((p.status, p.ping_ms), (Status::Offline, None));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn a_probe_tells_a_changed_key_from_a_missing_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = started_with_own_key(dir.path()).await;
+    let origin = format!("https://127.0.0.1:{}", s.api_addr.port());
+    let wrong = ServerAddr::parse(&format!("{origin}/#pin={}", "A".repeat(43))).unwrap();
+    assert_eq!(
+        probe(&ApiClient::new(&wrong).unwrap(), "10015727")
+            .await
+            .status,
+        Status::KeyChanged
+    );
+    let bare = ServerAddr::parse(&origin).unwrap();
+    assert_eq!(
+        probe(&ApiClient::new(&bare).unwrap(), "10015727")
+            .await
+            .status,
+        Status::OwnKey
+    );
+    let right = ServerAddr::parse(&format!("{origin}/#pin={}", s.pin().unwrap())).unwrap();
+    assert_eq!(
+        probe(&ApiClient::new(&right).unwrap(), "10015727")
+            .await
+            .status,
+        Status::Online
+    );
     s.shutdown().await.unwrap();
 }
