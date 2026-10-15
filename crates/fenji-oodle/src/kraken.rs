@@ -8,10 +8,10 @@
 //! streams, decoded into the scratch first and then run.
 use std::ops::Range;
 
-use crate::Error;
 use crate::bits::BitReader;
 use crate::entropy::{decode_bytes, decode_bytes_to_scratch};
 use crate::lz::copy_match;
+use crate::{Departures, Error};
 
 /// The most output a chunk holds (kraken.cpp:2686).
 const CHUNK: usize = 0x20000;
@@ -40,26 +40,30 @@ struct LzTable {
     cmd: Range<usize>,
     offs: Vec<i32>,
     lens: Vec<i32>,
+    /// Whether the offsets are coded the new way, for [`Departures`].
+    new_coding: bool,
 }
 
 /// Port of `Kraken_DecodeQuantum` (kraken.cpp:2678): fills `dst[start..]` from `src`, one quantum
-/// of decoder 6, in chunks that match back into all of `dst`. Returns how many bytes of `src` it
-/// read; an error's `at` is where its chunk starts in `src`.
+/// of decoder 6, in chunks that match back into all of `dst`, and counts its [`Departures`].
+/// Returns how many bytes of `src` it read; an error's `at` is where its chunk starts in `src`.
 pub(crate) fn decode_quantum(
     dst: &mut [u8],
     start: usize,
     src: &[u8],
     scratch: &mut [u8],
+    departures: &mut Departures,
 ) -> Result<usize, Error> {
     let mut pos = start;
     let mut at = 0;
     while pos < dst.len() {
         let dst_count = (dst.len() - pos).min(CHUNK);
         let chunk = src.get(at..).ok_or_else(bad)?;
-        let used = decode_chunk(dst, pos, dst_count, chunk, scratch).map_err(|e| match e {
-            Error::Corrupt { what, .. } => Error::Corrupt { at, what },
-            e => e,
-        })?;
+        let used =
+            decode_chunk(dst, pos, dst_count, chunk, scratch, departures).map_err(|e| match e {
+                Error::Corrupt { what, .. } => Error::Corrupt { at, what },
+                e => e,
+            })?;
         at += used;
         pos += dst_count;
     }
@@ -67,13 +71,15 @@ pub(crate) fn decode_quantum(
 }
 
 /// One pass of `Kraken_DecodeQuantum`'s loop (kraken.cpp:2685–2722): `dst[pos..pos + dst_count]`
-/// from the chunk at the start of `src`. Returns the bytes read.
+/// from the chunk at the start of `src`, counting the chunk in `departures` if it takes one of the
+/// paths where the port departs from ooz. Returns the bytes read.
 fn decode_chunk(
     dst: &mut [u8],
     pos: usize,
     dst_count: usize,
     src: &[u8],
     scratch: &mut [u8],
+    departures: &mut Departures,
 ) -> Result<usize, Error> {
     let &[h0, h1, h2, _, ..] = src else {
         return Err(Error::corrupt("a chunk header is cut short"));
@@ -83,10 +89,15 @@ fn decode_chunk(
     if chunkhdr & 0x80_0000 == 0 {
         // Entropy-coded, with no matches. A stored block here, ooz leaves where it is: its local
         // `out` points at the input, and the output is never written (kraken.cpp:2692–2693 and
-        // 2149). The port copies it into the output, which is what the chunk says.
+        // 2149). The port copies it into the output, which is what the chunk says (Ruling O14).
         let (used, written) = decode_bytes(src, &mut dst[pos..], scratch)?;
         if written != dst_count {
             return Err(Error::corrupt("a chunk decodes to a different length"));
+        }
+        // A stored block's header is its type, 0, under a clear top bit, and an 18-bit size of at
+        // most a chunk (`entropy::header`): a first byte of 0x00 to 0x02.
+        if h0 <= 0x02 {
+            departures.stored_entropy_chunks += 1;
         }
         return Ok(used);
     }
@@ -105,6 +116,11 @@ fn decode_chunk(
         let scratch = &mut scratch[LZ_TABLE_SIZE..scratch_usage];
         let table = read_lz_table(mode, body, dst, pos, dst_count, scratch)?;
         process_lz_runs(mode, dst, pos, &table, scratch)?;
+        // Every offset in the table is some match's (`process_lz_runs` uses them all), and the
+        // recent offsets hold only these and -8: so a match 1 to 7 back is one of these.
+        if table.new_coding && table.offs.iter().any(|o| (-7..=-1).contains(o)) {
+            departures.near_match_chunks += 1;
+        }
     } else if src_used > dst_count || mode != 0 {
         return Err(bad());
     } else {
@@ -209,6 +225,7 @@ fn read_lz_table(
         cmd,
         offs,
         lens,
+        new_coding: offs_scaling != 0,
     })
 }
 
@@ -517,6 +534,124 @@ mod tests {
         // header (3) and the first chunk (10).
         let got = crate::decompress(&two_chunks(1), CHUNK + 100);
         assert!(matches!(got, Err(Error::Corrupt { at: 15, .. })), "{got:?}");
+    }
+
+    /// A stream of one quantum: an LZ chunk of mode 1 at the very start of the output, whose one
+    /// command copies literals and then matches with an offset coded the new way (the flag byte
+    /// `0x80 + scale - 1`). The packed offset is 0 to 7 with no more bits (`new_offset`'s `n` is
+    /// 0), which names 0 to 7 bytes back; a scale of 2 doubles that and takes a low-bits byte.
+    fn new_coding_chunk(scale: u8, packed: u8, low: u8) -> Vec<u8> {
+        // At the start, 8 bytes as they are.
+        let mut body = b"ABCDEFGH".to_vec();
+        // The literals, a stored block of 9.
+        body.extend([0x00, 0x00, 0x09, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        // One command: literals and a match whose lengths both come from the lengths stream (3
+        // and 15), with a new offset (index 3).
+        body.extend([0x80, 0x01, 0xFF]);
+        // The offsets: the flag byte, the packed offset, and with a scale of 2 the low bits.
+        body.extend([0x80 + scale - 1, 0x80, 0x01, packed]);
+        if scale != 1 {
+            body.extend([0x80, 0x01, low]);
+        }
+        // The lengths: 4 + 3 literals, then 14 + 20 + 3 bytes of match.
+        body.extend([0x80, 0x02, 4, 20]);
+        // The bits, as in `one_lz_chunk`: the new offset reads none.
+        body.push(0x80);
+        let used = body.len() as u8;
+        let mut s = vec![0x8C, 0x06, 0x00, 0x00, used + 3 - 1];
+        s.extend([0x80 | 1 << 3, 0x00, used]);
+        s.extend(body);
+        s
+    }
+
+    /// What `new_coding_chunk` decodes to, with its match `distance` back.
+    fn new_coding_output(distance: usize) -> Vec<u8> {
+        let mut want = b"ABCDEFGH\x01\x02\x03\x04\x05\x06\x07".to_vec();
+        for _ in 0..37 {
+            want.push(want[want.len() - distance]);
+        }
+        want.extend([8, 9]);
+        want
+    }
+
+    #[test]
+    fn a_match_1_to_7_back_in_the_new_offset_coding_is_counted() {
+        // Ruling O14 (a): ooz's 8-byte copy and the port's exact one differ there (lz.rs).
+        let (out, d) = crate::decompress_counting(&new_coding_chunk(1, 1, 0), 54).unwrap();
+        assert_eq!(out, new_coding_output(1));
+        assert_eq!(
+            d,
+            crate::Departures {
+                near_match_chunks: 1,
+                stored_entropy_chunks: 0
+            }
+        );
+        let (out, d) = crate::decompress_counting(&new_coding_chunk(1, 7, 0), 54).unwrap();
+        assert_eq!(out, new_coding_output(7));
+        assert_eq!(d.near_match_chunks, 1);
+    }
+
+    #[test]
+    fn a_match_8_or_more_back_is_not_counted() {
+        // The new coding at a scale of 2: 2 × 7 + 1 bytes back.
+        let (out, d) = crate::decompress_counting(&new_coding_chunk(2, 7, 1), 54).unwrap();
+        assert_eq!(out, new_coding_output(15));
+        assert_eq!(d, crate::Departures::default());
+        // The traditional coding never names fewer than 8.
+        for mode in [0, 1] {
+            let (_, d) = crate::decompress_counting(&one_lz_chunk(mode), 28).unwrap();
+            assert_eq!(d, crate::Departures::default(), "mode {mode}");
+        }
+    }
+
+    #[test]
+    fn a_stored_block_in_an_entropy_only_chunk_is_counted_and_written() {
+        // Ruling O14 (b): ooz leaves it unwritten (decode_chunk), the port writes it. The first
+        // chunk of `two_chunks`, then an entropy-only chunk of one stored block: the chunk header's
+        // bit 23 clear, its first byte 0x00.
+        let mut s = two_chunks(0);
+        let second = s.len() - 103;
+        s[second..second + 3].copy_from_slice(&[0x00, 0x00, 100]);
+        let (out, d) = crate::decompress_counting(&s, CHUNK + 100).unwrap();
+        let mut want = vec![b'X'; CHUNK];
+        want.extend(0..100u8);
+        assert!(out == want);
+        assert_eq!(
+            d,
+            crate::Departures {
+                near_match_chunks: 0,
+                stored_entropy_chunks: 1
+            }
+        );
+        // The largest such block, a whole chunk, has the first byte 0x02; the RLE chunk after it
+        // (first byte 0x37) isn't one.
+        let rle = &two_chunks(0)[5..15];
+        let mut s = vec![0x8C, 0x06, 0x02, 0x00, 0x0C, 0x02, 0x00, 0x00];
+        let stored: Vec<u8> = (0..CHUNK).map(|i| (i % 251) as u8).collect();
+        s.extend(&stored);
+        s.extend(rle);
+        let (out, d) = crate::decompress_counting(&s, 2 * CHUNK).unwrap();
+        assert!(out[..CHUNK] == stored[..] && out[CHUNK..] == [b'X'; CHUNK]);
+        assert_eq!(d.stored_entropy_chunks, 1);
+        // A stored chunk with bit 23 set is the LZ path's own, which ooz writes.
+        let (_, d) = crate::decompress_counting(&two_chunks(0), CHUNK + 100).unwrap();
+        assert_eq!(d, crate::Departures::default());
+    }
+
+    #[test]
+    fn counting_changes_nothing_in_the_output() {
+        for (s, n) in [
+            (new_coding_chunk(1, 3, 0), 54),
+            (new_coding_chunk(2, 7, 1), 54),
+            (one_lz_chunk(0), 28),
+            (two_chunks(0), CHUNK + 100),
+            (two_chunks(1), CHUNK + 100),
+        ] {
+            assert_eq!(
+                crate::decompress_counting(&s, n).map(|(out, _)| out),
+                crate::decompress(&s, n)
+            );
+        }
     }
 
     #[test]

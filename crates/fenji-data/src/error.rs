@@ -5,7 +5,7 @@ pub enum Error {
     NotPe(&'static str),
     #[error("blob header at {at:#x}: {reason}")]
     BadBlob { at: u64, reason: String },
-    #[error("codec {0} is not available here (codec 4 needs an OodleSpool: M2 plan Task 11)")]
+    #[error("codec {0} isn't one Fenji decodes")]
     CodecUnavailable(u16),
     #[error("Oodle block {0} is spooled: run scripts/spike/run-oodle-helper.sh, then retry")]
     OodlePending(String),

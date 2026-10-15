@@ -1,9 +1,14 @@
-//! Block decompression. Fenji decodes stored and LZ4 blocks itself. Oodle (codec 4) goes through
-//! an [`OodleSpool`](crate::oodle_spool::OodleSpool) and the sandboxed helper (gate #39, route c).
+//! Block decompression. Fenji decodes stored, LZ4 and Oodle (codec 4) blocks itself, Oodle with
+//! fenji-oodle, its port of ooz's Kraken decoder. The [`OodleSpool`](crate::oodle_spool::OodleSpool)
+//! and the sandboxed helper with the client's own DLL stay, as a dev-only cross-check (gate #39).
 use crate::{Codec, Error, Result};
 
 /// The most an LZ4 block can expand: each extra length byte adds at most 255 output bytes.
 const LZ4_MAX_RATIO: usize = 255;
+
+/// The most raw bytes an Oodle block holds: the engine's blocks are at most 512 KiB
+/// (m1-archives.md 2.4, 3.1).
+pub const MAX_OODLE_BLOCK: usize = 512 * 1024;
 
 /// Decodes one block of a blob.
 pub trait Decompressor {
@@ -18,7 +23,7 @@ pub trait Decompressor {
     ) -> Result<Vec<u8>>;
 }
 
-/// Stored and LZ4.
+/// Stored, LZ4 and Oodle.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BuiltinCodecs;
 
@@ -46,6 +51,7 @@ impl Decompressor for BuiltinCodecs {
                     reason: e.to_string(),
                 })?
             }
+            Codec::Oodle => decode_oodle_block(input, raw_len, index)?.0,
             other => return Err(Error::CodecUnavailable(other.as_u16())),
         };
         if out.len() != raw_len {
@@ -56,6 +62,31 @@ impl Decompressor for BuiltinCodecs {
         }
         Ok(out)
     }
+}
+
+/// Decodes one Oodle block as [`BuiltinCodecs`] does, and counts the chunks in it where
+/// fenji-oodle's output departs from ooz's, for `archive verify-oodle` (Rulings O13 and O14).
+///
+/// A block of more than [`MAX_OODLE_BLOCK`] raw bytes is refused before any decoding (the Oodle
+/// decoder plan's Review Focus 5): fenji-oodle's output grows only as the stream backs it, but a
+/// memset quantum backs 256 KiB with 6 bytes, so a tampered blob header could still ask for
+/// gigabytes. Then the block's `u32` raw length must match the blob header's ([`oodle_payload`]).
+pub fn decode_oodle_block(
+    input: &[u8],
+    raw_len: usize,
+    index: usize,
+) -> Result<(Vec<u8>, fenji_oodle::Departures)> {
+    if raw_len > MAX_OODLE_BLOCK {
+        return Err(Error::Oodle {
+            index,
+            reason: format!("{raw_len} raw bytes, more than a block holds"),
+        });
+    }
+    let stream = oodle_payload(input, raw_len, index)?;
+    fenji_oodle::decompress_counting(stream, raw_len).map_err(|e| Error::Oodle {
+        index,
+        reason: e.to_string(),
+    })
 }
 
 /// An Oodle block's stream, once its leading raw length (`m1-archives.md` 3.4) matches the
@@ -95,6 +126,79 @@ mod tests {
         assert!(matches!(
             crate::oodle_payload(&[1, 2, 3], 1, 0),
             Err(Error::Oodle { .. })
+        ));
+    }
+
+    #[test]
+    fn builtin_codecs_decode_oodle() {
+        // A memset stream (fenji-oodle's own format test), behind the archive's raw-length prefix.
+        let mut block = 1000u32.to_le_bytes().to_vec();
+        block.extend_from_slice(&[0x8C, 0x06, 0x07, 0xFF, 0xFF, 0x2A]);
+        assert_eq!(
+            BuiltinCodecs
+                .decompress_block(Codec::Oodle, &block, 1000, 0)
+                .unwrap(),
+            vec![0x2A; 1000]
+        );
+    }
+
+    #[test]
+    fn oversized_oodle_blocks_are_refused() {
+        // Review Focus 5: a tampered header can't make the decoder allocate more than a block.
+        // The stream backs all 600 KiB (a memset quantum is 256 KiB from 6 bytes), so only the
+        // bound refuses it.
+        use crate::test_util::{oodle_block, oodle_memset_stream};
+        let block = oodle_block(600 * 1024, &oodle_memset_stream(600 * 1024, 0x2A));
+        let got = BuiltinCodecs.decompress_block(Codec::Oodle, &block, 600 * 1024, 2);
+        assert!(
+            matches!(&got, Err(Error::Oodle { index: 2, reason }) if reason.contains("614400")),
+            "{:?}",
+            got.map(|raw| raw.len())
+        );
+        // A whole block is fine.
+        let block = oodle_block(512 * 1024, &oodle_memset_stream(512 * 1024, 0x2A));
+        assert_eq!(
+            BuiltinCodecs
+                .decompress_block(Codec::Oodle, &block, 512 * 1024, 0)
+                .unwrap(),
+            vec![0x2A; 512 * 1024]
+        );
+    }
+
+    #[test]
+    fn decode_oodle_block_counts_where_the_port_departs_from_ooz() {
+        // Ruling O14: an entropy-only chunk of one stored block, after an RLE one (as in
+        // fenji-oodle's Kraken tests).
+        use crate::test_util::{oodle_block, oodle_memset_stream};
+        let mut stream = vec![0x8C, 0x06, 0x00, 0x00, 0x70];
+        stream.extend([0x37, 0xFF, 0xFC, 0x00, 0x05, 0x00, b'X', 0xFF, 0x0C, 0x01]);
+        stream.extend([0x00, 0x00, 100]);
+        stream.extend(0..100u8);
+        let raw_len = 0x2_0000 + 100;
+        let block = oodle_block(raw_len, &stream);
+        let (raw, departures) = crate::decode_oodle_block(&block, raw_len, 0).unwrap();
+        assert!(
+            raw == BuiltinCodecs
+                .decompress_block(Codec::Oodle, &block, raw_len, 0)
+                .unwrap()
+        );
+        assert_eq!(
+            (
+                departures.stored_entropy_chunks,
+                departures.near_match_chunks
+            ),
+            (1, 0)
+        );
+        // BuiltinCodecs' checks: the raw length its prefix gives, and the bound.
+        assert!(matches!(
+            crate::decode_oodle_block(&block, raw_len - 1, 4),
+            Err(Error::Oodle { index: 4, .. })
+        ));
+        let over = crate::MAX_OODLE_BLOCK + 1;
+        let big = oodle_block(over, &oodle_memset_stream(over, 0));
+        assert!(matches!(
+            crate::decode_oodle_block(&big, over, 0),
+            Err(Error::Oodle { reason, .. }) if reason.contains("more than a block holds")
         ));
     }
 }

@@ -2,17 +2,15 @@
 use std::path::Path;
 use std::process::Command;
 
-use fenji_data::test_util::{lz4_blob, lz4_blob_blocks, stored_blob, zfs_part};
+use fenji_data::test_util::{lz4_blob_blocks, stored_blob, zfs_part};
 use sha1::{Digest, Sha1};
 
 const VIDEO: &[u8] = b"KB2j fake video bytes";
 const CONTAINER: &[u8] = b"[SP] fake container";
 
-/// An LZ4 blob relabelled codec 4 (Oodle): the tool reads only its header.
+/// An Oodle blob (codec 4) of one block, which decodes to "abcabcabcabc".
 fn oodle_blob() -> Vec<u8> {
-    let mut b = lz4_blob(b"abcabcabcabc", 0);
-    b[28] = 4;
-    b
+    fenji_data::test_util::oodle_blob(b"abcabcabcabc", 12)
 }
 
 fn sha1(bytes: &[u8]) -> [u8; 20] {
@@ -237,7 +235,7 @@ fn paths_refuses_outside_re() {
 fn paths_spools_index_and_waits_for_the_helper() {
     let repo = setup();
     let out = archive(repo.path())
-        .args(["paths", "--out", "re/p"])
+        .args(["paths", "--spool", "re/oodle-spool", "--out", "re/p"])
         .output()
         .unwrap();
     assert_eq!(
@@ -257,7 +255,7 @@ fn paths_spools_index_and_waits_for_the_helper() {
     assert!(!repo.path().join("re/p/paths.tsv").exists());
 }
 
-/// A repo whose _index is decoded in the spool: three paths (see `paths_maps_index_paths_to_records`).
+/// A repo whose _index names three paths (see `paths_maps_index_paths_to_records`).
 fn decoded_index_repo() -> tempfile::TempDir {
     // An _index of three paths: one stored file in data000, one Oodle file in data001, one key
     // no part holds.
@@ -269,20 +267,29 @@ fn decoded_index_repo() -> tempfile::TempDir {
     ))
 }
 
-/// A synthetic client whose _index holds `text`. Its one block stands in for Oodle data; its
-/// "decoded" output is placed in the spool as the helper would.
+/// A synthetic client whose _index holds `text`, in one Oodle block. For runs with --spool, its
+/// decoded output is also placed in the spool, as the helper would.
 fn repo_with_index(text: &str) -> tempfile::TempDir {
-    use fenji_data::oodle_spool::OodleSpool;
     let repo = setup();
-    let mut index = lz4_blob(text.as_bytes(), 0);
-    index[28] = 4;
+    let index = fenji_data::test_util::oodle_blob(text.as_bytes(), 512 * 1024);
     std::fs::write(repo.path().join("client/data/_index"), &index).unwrap();
-    let block = &index[fenji_data::FIXED_LEN + 4..];
-    let name = OodleSpool::name(block, text.len());
-    let spool = repo.path().join("re/oodle-spool");
-    std::fs::create_dir_all(spool.join("out")).unwrap();
-    std::fs::write(spool.join("out").join(name), text).unwrap();
+    spool_index_output(repo.path(), text);
     repo
+}
+
+/// Puts `text` in the spool as the helper's output for _index's one block.
+fn spool_index_output(repo: &Path, text: &str) {
+    use fenji_data::oodle_spool::OodleSpool;
+    let index = std::fs::read(repo.join("client/data/_index")).unwrap();
+    let block = &index[fenji_data::FIXED_LEN + 4..];
+    let raw_len = u64::from_le_bytes(index[..8].try_into().unwrap()) as usize;
+    let spool = repo.join("re/oodle-spool");
+    std::fs::create_dir_all(spool.join("out")).unwrap();
+    std::fs::write(
+        spool.join("out").join(OodleSpool::name(block, raw_len)),
+        text,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -319,6 +326,54 @@ fn paths_maps_index_paths_to_records() {
                 hex(&sha1(VIDEO))
             ),
         ]
+    );
+}
+
+#[test]
+fn paths_decodes_index_natively_and_never_spools() {
+    // setup()'s _index is an Oodle blob of "abcabcabcabc": one line that isn't a path.
+    let repo = setup();
+    let out = archive(repo.path())
+        .args(["paths", "--out", "re/p"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let summary = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        summary.contains("0 paths") && summary.contains("1 bad lines"),
+        "{summary}"
+    );
+    assert!(!repo.path().join("re/oodle-spool").exists());
+}
+
+#[test]
+fn paths_takes_the_helpers_output_with_spool() {
+    // The spool's output for _index differs from what it decodes to: a path ends in z, not y.
+    let repo = decoded_index_repo();
+    let text = format!(
+        "{}\tmovie/intro.bk2\n{}\tdata/x.tab\n{}\tgone/z.tab\n",
+        hex(&sha1(VIDEO)),
+        hex(&[9; 20]),
+        hex(&[7; 20])
+    );
+    spool_index_output(repo.path(), &text);
+    let out = archive(repo.path())
+        .args(["paths", "--spool", "re/oodle-spool", "--out", "re/p"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let tsv = std::fs::read_to_string(repo.path().join("re/p/paths.tsv")).unwrap();
+    assert!(
+        tsv.contains("gone/z.tab") && !tsv.contains("gone/y.tab"),
+        "{tsv}"
     );
 }
 
@@ -418,7 +473,7 @@ fn dump_writes_a_sheet_as_json_lines() {
 
 #[test]
 fn dump_refuses_a_cache_whose_sha1_isnt_its_key() {
-    // The record's key names other content: a damaged archive or a bad spool output
+    // The record's key names other content: a damaged archive or a bad decode
     // (m2-tables.md 1.6: a file's key is the SHA-1 of its decoded content).
     let key = [5; 20];
     let repo = repo_with_index(&format!(
@@ -496,7 +551,15 @@ fn dump_waits_for_the_caches_own_blocks() {
     let part = zfs_part(&[vec![(1, key, oodle_blob())]]);
     std::fs::write(repo.path().join("client/data/data002"), part).unwrap();
     let out = archive(repo.path())
-        .args(["dump", "--table", "items", "--out", "re/d"])
+        .args([
+            "dump",
+            "--table",
+            "items",
+            "--spool",
+            "re/oodle-spool",
+            "--out",
+            "re/d",
+        ])
         .output()
         .unwrap();
     assert_eq!(
@@ -507,6 +570,34 @@ fn dump_waits_for_the_caches_own_blocks() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("1 blocks spooled"));
     assert!(!repo.path().join("re/d/items.jsonl").exists());
+}
+
+#[test]
+fn dump_decodes_an_oodle_cache_natively() {
+    // The cache in two Oodle blocks, and _index in one: no spool.
+    let cache = cache_bytes();
+    let repo = repo_with_index(&format!(
+        "{}\tdata/caches/all_tables.new_cache\n",
+        hex(&sha1(&cache))
+    ));
+    std::fs::remove_dir_all(repo.path().join("re/oodle-spool")).unwrap();
+    let blob = fenji_data::test_util::oodle_blob(&cache, 64);
+    let part = zfs_part(&[vec![(1, sha1(&cache), blob)]]);
+    std::fs::write(repo.path().join("client/data/data002"), part).unwrap();
+    let out = archive(repo.path())
+        .args(["dump", "--table", "items", "--out", "re/d"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("re/d/items.jsonl")).unwrap(),
+        "{\"$key\":7,\"a\":1,\"b\":2}\n{\"$key\":8,\"a\":5,\"effects\":[9]}\n"
+    );
+    assert!(!repo.path().join("re/oodle-spool").exists());
 }
 
 #[test]
@@ -533,16 +624,25 @@ fn extract_key_writes_one_stored_file() {
 #[test]
 fn extract_key_decodes_an_oodle_file_through_the_spool() {
     use fenji_data::oodle_spool::OodleSpool;
-    // data001's Oodle record: its one block, decoded in the spool as the helper would.
+    // data001's Oodle record: its one block, decoded in the spool as the helper would. The
+    // helper's output stands out from the block's own bytes, so it shows which route ran.
     let repo = setup();
     let blob = oodle_blob();
     let block = &blob[fenji_data::FIXED_LEN + 4..];
     let out_dir = repo.path().join("re/oodle-spool/out");
     std::fs::create_dir_all(&out_dir).unwrap();
-    std::fs::write(out_dir.join(OodleSpool::name(block, 12)), b"abcabcabcabc").unwrap();
+    std::fs::write(out_dir.join(OodleSpool::name(block, 12)), b"ABCABCABCABC").unwrap();
     let key = hex(&[9; 20]);
     let out = archive(repo.path())
-        .args(["extract", "--key", &key, "--out", "re/k"])
+        .args([
+            "extract",
+            "--key",
+            &key,
+            "--spool",
+            "re/oodle-spool",
+            "--out",
+            "re/k",
+        ])
         .output()
         .unwrap();
     assert!(
@@ -552,17 +652,73 @@ fn extract_key_decodes_an_oodle_file_through_the_spool() {
     );
     assert_eq!(
         std::fs::read(repo.path().join("re/k").join(&key)).unwrap(),
-        b"abcabcabcabc"
+        b"ABCABCABCABC"
     );
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("doesn't match the key"), "{text}");
 }
 
 #[test]
+fn extract_key_decodes_an_oodle_file_natively() {
+    // A file of 700,000 bytes in two Oodle blocks, under the SHA-1 of its content; no spool.
+    let repo = setup();
+    let content: Vec<u8> = (0..700_000u32).map(|i| (i % 241) as u8).collect();
+    let blob = fenji_data::test_util::oodle_blob(&content, 512 * 1024);
+    let part = zfs_part(&[vec![(1, sha1(&content), blob)]]);
+    std::fs::write(repo.path().join("client/data/data002"), part).unwrap();
+    let key = hex(&sha1(&content));
+    let out = archive(repo.path())
+        .args(["extract", "--key", &key, "--out", "re/k"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(std::fs::read(repo.path().join("re/k").join(&key)).unwrap() == content);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("its SHA-1 matches the key"), "{text}");
+    assert!(!repo.path().join("re/oodle-spool").exists());
+}
+
+#[test]
+fn a_block_that_doesnt_decode_is_an_error_not_a_wait() {
+    // data000's Oodle file, its stream cut short: without --spool, an error (exit 1), never the
+    // spool's exit 3.
+    let repo = setup();
+    let mut blob = oodle_blob();
+    let last = blob.len() - 1;
+    blob.truncate(last);
+    let stored = u64::from_le_bytes(blob[16..24].try_into().unwrap()) - 1;
+    blob[16..24].copy_from_slice(&stored.to_le_bytes());
+    let block = blob.len() as u32 - 36;
+    blob[32..36].copy_from_slice(&block.to_le_bytes());
+    let part = zfs_part(&[vec![(1, [0x2B; 20], blob)]]);
+    std::fs::write(repo.path().join("client/data/data002"), part).unwrap();
+    let out = archive(repo.path())
+        .args(["extract", "--key", &hex(&[0x2B; 20]), "--out", "re/k"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("Oodle block 0"), "{err}");
+    assert!(!repo.path().join("re/oodle-spool").exists());
+}
+
+#[test]
 fn extract_key_waits_for_the_helper() {
     let repo = setup();
     let out = archive(repo.path())
-        .args(["extract", "--key", &hex(&[2; 20]), "--out", "re/k"])
+        .args([
+            "extract",
+            "--key",
+            &hex(&[2; 20]),
+            "--spool",
+            "re/oodle-spool",
+            "--out",
+            "re/k",
+        ])
         .output()
         .unwrap();
     assert_eq!(
@@ -632,10 +788,18 @@ fn dump_refuses_outside_re_and_names_an_unknown_sheet() {
 
 #[test]
 fn dump_waits_for_the_helper() {
-    // setup()'s _index is an Oodle blob nobody has decoded yet.
+    // setup()'s _index is an Oodle blob that isn't in the spool yet.
     let repo = setup();
     let out = archive(repo.path())
-        .args(["dump", "--table", "items", "--out", "re/d"])
+        .args([
+            "dump",
+            "--table",
+            "items",
+            "--spool",
+            "re/oodle-spool",
+            "--out",
+            "re/d",
+        ])
         .output()
         .unwrap();
     assert_eq!(
@@ -648,9 +812,9 @@ fn dump_waits_for_the_helper() {
 }
 
 #[test]
-#[ignore = "needs the pinned client and a decoded spool: FENJI_CLIENT_PATH=~/fenji-client cargo test -p fenji-archive --test cli -- --ignored"]
+#[ignore = "needs the pinned client: FENJI_CLIENT_PATH=~/fenji-client cargo test -p fenji-archive --test cli -- --ignored"]
 fn dump_items_from_the_client() {
-    // Run from the repository root, whose re/oodle-spool the helper has filled (M2 plan Task 13).
+    // Run from the repository root, which has re/; the cache and _index decode natively.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let client = std::env::var_os("FENJI_CLIENT_PATH").expect("set FENJI_CLIENT_PATH");
     let out = Command::new(env!("CARGO_BIN_EXE_archive"))
@@ -818,4 +982,265 @@ fn census_oodle_replaces_a_link_instead_of_writing_through_it() {
             .is_symlink()
     );
     assert_eq!(std::fs::read_to_string(&tsv).unwrap(), CENSUS);
+}
+
+/// An Oodle stream that departs from ooz where Ruling O14 counts (fenji-oodle's Kraken tests): an
+/// LZ chunk whose new offset coding makes a match 1 byte back. Its raw bytes too.
+fn near_match_stream() -> (Vec<u8>, Vec<u8>) {
+    let mut body = b"ABCDEFGH".to_vec();
+    body.extend([0x00, 0x00, 0x09, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    body.extend([
+        0x80, 0x01, 0xFF, 0x80, 0x80, 0x01, 1, 0x80, 0x02, 4, 20, 0x80,
+    ]);
+    let mut s = vec![0x8C, 0x06, 0x00, 0x00, body.len() as u8 + 2, 0x88, 0x00];
+    s.push(body.len() as u8);
+    s.extend(body);
+    let mut raw = b"ABCDEFGH\x01\x02\x03\x04\x05\x06\x07".to_vec();
+    raw.extend([7; 37]);
+    raw.extend([8, 9]);
+    (s, raw)
+}
+
+/// An Oodle stream that departs from ooz where Ruling O14 counts: 128 KiB of 'X' in an
+/// entropy-only chunk of RLE, then 100 bytes in an entropy-only chunk of one stored block. Its raw
+/// bytes too.
+fn stored_entropy_stream() -> (Vec<u8>, Vec<u8>) {
+    let mut s = vec![0x8C, 0x06, 0x00, 0x00, 0x70];
+    s.extend([0x37, 0xFF, 0xFC, 0x00, 0x05, 0x00, b'X', 0xFF, 0x0C, 0x01]);
+    s.extend([0x00, 0x00, 100]);
+    s.extend(0..100u8);
+    let mut raw = vec![b'X'; 0x2_0000];
+    raw.extend(0..100u8);
+    (s, raw)
+}
+
+/// One block's name in the hash list, its index, and the bytes it decodes to.
+type Expected = (String, usize, Vec<u8>);
+
+/// A synthetic client for `verify-oodle`: `_index` in two memset blocks; and in data000, a memset
+/// file, a container (a memset file in three blocks, and a stored one), and two files whose one
+/// block each departs from ooz. Every Oodle block it holds, in the walk's order.
+fn verify_repo() -> (tempfile::TempDir, Vec<Expected>) {
+    use fenji_data::test_util::{container, oodle_memset_blob};
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    std::fs::create_dir(repo.path().join("re")).unwrap();
+    let data = repo.path().join("client/data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join("_index"),
+        oodle_memset_blob(700_000, 512 * 1024, 1),
+    )
+    .unwrap();
+    let inner = container(&[
+        ([0xD1; 20], "asset/a.dds", oodle_memset_blob(10, 4, 3)),
+        ([0xD2; 20], "asset/b.txt", stored_blob(b"plain")),
+    ]);
+    let one_block = |(stream, raw): &(Vec<u8>, Vec<u8>)| {
+        let block = oodle_block(raw.len() as u32, &[stream]);
+        oodle_stream_blob(&[block], raw.len() as u64, 512 * 1024)
+    };
+    let (near, stored) = (near_match_stream(), stored_entropy_stream());
+    let part = zfs_part(&[vec![
+        (1, [0xA; 20], oodle_memset_blob(1000, 512 * 1024, 2)),
+        (1, [0xC; 20], stored_blob(&inner)),
+        (1, [0x5A; 20], one_block(&near)),
+        (1, [0xE; 20], one_block(&stored)),
+    ]]);
+    std::fs::write(data.join("data000"), part).unwrap();
+    let inner_file = format!("{}/0/{}", hex(&[0xC; 20]), hex(&[0xD1; 20]));
+    let blocks = vec![
+        ("_index".to_string(), 0, vec![1; 524_288]),
+        ("_index".to_string(), 1, vec![1; 700_000 - 524_288]),
+        (inner_file.clone(), 0, vec![3; 4]),
+        (inner_file.clone(), 1, vec![3; 4]),
+        (inner_file, 2, vec![3; 2]),
+        (hex(&[0xA; 20]), 0, vec![2; 1000]),
+        (hex(&[0x5A; 20]), 0, near.1),
+        (hex(&[0xE; 20]), 0, stored.1),
+    ];
+    (repo, blocks)
+}
+
+/// `oodle-helper hash-parts`' TSV for `blocks`: `key\tblock\traw_len\tsha256` lines.
+fn dll_hashes(blocks: &[Expected]) -> String {
+    blocks
+        .iter()
+        .map(|(key, index, raw)| {
+            let sha = fenji_data::sha256_hex(raw);
+            format!("{key}\t{index}\t{}\t{sha}\n", raw.len())
+        })
+        .collect()
+}
+
+/// `verify-oodle` against `tsv` as the DLL's hashes, with its output in re/oodle-verify.
+fn verify(repo: &Path, tsv: &str) -> std::process::Output {
+    std::fs::create_dir_all(repo.join("re/v")).unwrap();
+    std::fs::write(repo.join("re/v/dll.tsv"), tsv).unwrap();
+    archive(repo)
+        .args(["verify-oodle", "--dll-hashes", "re/v/dll.tsv"])
+        .output()
+        .unwrap()
+}
+
+fn verified(repo: &Path, file: &str) -> String {
+    std::fs::read_to_string(repo.join("re/oodle-verify").join(file)).unwrap()
+}
+
+const MISMATCHES: &str = "key\tblock\tproblem\n";
+
+#[test]
+fn verify_oodle_matches_every_block_with_the_dlls_hash() {
+    let (repo, blocks) = verify_repo();
+    let out = verify(repo.path(), &dll_hashes(&blocks));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        out.status.success(),
+        "{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.starts_with(
+            "8 blocks match, 0 differ, 0 failed natively, 0 failed in the DLL, \
+             0 have no DLL hash, and 0 DLL hashes match no block; 0.8 MB decoded in "
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "walked 1 files and 2 blocks in _index, 1 files and 3 blocks in the containers, \
+             3 files and 3 blocks in the parts\n"
+        ),
+        "{text}"
+    );
+    // Ruling O14: each departure from ooz, counted, and listed with what the DLL made of it.
+    assert!(
+        text.contains(
+            "1 chunks in 1 blocks match 1 to 7 bytes back in the new offset coding, and \
+             1 chunks in 1 blocks are one stored block in an entropy-only chunk; \
+             2 of those 2 blocks match the DLL"
+        ),
+        "{text}"
+    );
+    assert_eq!(verified(repo.path(), "mismatches.tsv"), MISMATCHES);
+    assert_eq!(
+        verified(repo.path(), "departures.tsv"),
+        format!(
+            "key\tblock\tnear_match_chunks\tstored_entropy_chunks\tdll\n\
+             {}\t0\t1\t0\tsame\n{}\t0\t0\t1\tsame\n",
+            hex(&[0x5A; 20]),
+            hex(&[0xE; 20])
+        )
+    );
+    assert_eq!(verified(repo.path(), "summary.txt"), text);
+}
+
+#[test]
+fn verify_oodle_names_a_block_that_differs() {
+    let (repo, blocks) = verify_repo();
+    let tsv = dll_hashes(&blocks).replace(&fenji_data::sha256_hex(&[2; 1000]), &"0".repeat(64));
+    let out = verify(repo.path(), &tsv);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("7 blocks match, 1 differ, "), "{text}");
+    assert_eq!(
+        verified(repo.path(), "mismatches.tsv"),
+        format!("{MISMATCHES}{}\t0\tbytes differ\n", hex(&[0xA; 20]))
+    );
+}
+
+#[test]
+fn verify_oodle_fails_a_block_with_no_dll_hash() {
+    let (repo, mut blocks) = verify_repo();
+    let (name, ..) = blocks.remove(3);
+    let out = verify(repo.path(), &dll_hashes(&blocks));
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.starts_with(
+            "7 blocks match, 0 differ, 0 failed natively, 0 failed in the DLL, 1 have no DLL hash, "
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        verified(repo.path(), "mismatches.tsv"),
+        format!("{MISMATCHES}{name}\t1\tno DLL hash\n")
+    );
+}
+
+#[test]
+fn verify_oodle_counts_the_dlls_failures_and_hashes_of_no_block() {
+    let (repo, blocks) = verify_repo();
+    let last = fenji_data::sha256_hex(&blocks[1].2);
+    let mut tsv = dll_hashes(&blocks).replace(&last, "FAILED");
+    tsv.push_str(&format!("{}\t0\t10\t{}\n", hex(&[0xF; 20]), "0".repeat(64)));
+    let out = verify(repo.path(), &tsv);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.starts_with(
+            "7 blocks match, 0 differ, 0 failed natively, 1 failed in the DLL, \
+             0 have no DLL hash, and 1 DLL hashes match no block;"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        verified(repo.path(), "mismatches.tsv"),
+        format!(
+            "{MISMATCHES}_index\t1\tthe DLL failed\n{}\t0\tno such block here\n",
+            hex(&[0xF; 20])
+        )
+    );
+}
+
+#[test]
+fn verify_oodle_reports_a_block_that_fails_natively() {
+    // data001: a stream cut short, which the DLL is said to have decoded.
+    let (repo, mut blocks) = verify_repo();
+    let cut = oodle_stream_blob(
+        &[oodle_block(10, &[&[0x8C, 6], &[0, 0, 4], &[0x33; 2]])],
+        10,
+        10,
+    );
+    let part = zfs_part(&[vec![(1, [0xB; 20], cut)]]);
+    std::fs::write(repo.path().join("client/data/data001"), part).unwrap();
+    blocks.push((hex(&[0xB; 20]), 0, vec![0x33; 10]));
+    let out = verify(repo.path(), &dll_hashes(&blocks));
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.starts_with("8 blocks match, 0 differ, 1 failed natively, "),
+        "{text}"
+    );
+    let mismatches = verified(repo.path(), "mismatches.tsv");
+    let want = format!(
+        "{MISMATCHES}{}\t0\tnative: Oodle block 0: ",
+        hex(&[0xB; 20])
+    );
+    assert!(mismatches.starts_with(&want), "{mismatches}");
+}
+
+#[test]
+fn verify_oodle_refuses_outside_re_and_a_hash_list_it_cant_read() {
+    let (repo, blocks) = verify_repo();
+    std::fs::create_dir_all(repo.path().join("re/v")).unwrap();
+    std::fs::write(repo.path().join("re/v/dll.tsv"), dll_hashes(&blocks)).unwrap();
+    let outside = archive(repo.path())
+        .args([
+            "verify-oodle",
+            "--dll-hashes",
+            "re/v/dll.tsv",
+            "--out",
+            "elsewhere",
+        ])
+        .output()
+        .unwrap();
+    assert!(!outside.status.success());
+    let err = String::from_utf8_lossy(&outside.stderr);
+    assert!(err.contains("elsewhere is not inside"), "{err}");
+    assert!(!repo.path().join("elsewhere").exists());
+    let out = verify(repo.path(), "_index\tzero\t1\tFAILED\n");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("dll.tsv, line 1"), "{err}");
 }

@@ -215,7 +215,7 @@ pub fn decode(bytes: &[u8], at: u64, codecs: &dyn Decompressor) -> Result<Vec<u8
 mod tests {
     use super::*;
     use crate::BuiltinCodecs;
-    use crate::test_util::{lz4_blob, lz4_blob_blocks, stored_blob};
+    use crate::test_util::{lz4_blob, lz4_blob_blocks, oodle_blob, oodle_memset_blob, stored_blob};
 
     #[test]
     fn single_block_lz4_round_trip() {
@@ -287,13 +287,38 @@ mod tests {
     }
 
     #[test]
-    fn builtin_codecs_refuse_oodle() {
+    fn builtin_codecs_decode_an_oodle_blob_block_by_block() {
+        // Three blocks of 512 KiB, the last one short; each holds an uncompressed stream of two
+        // quanta, or one.
+        let content: Vec<u8> = (0..1_200_000u32).map(|i| (i % 253) as u8).collect();
+        let blob = oodle_blob(&content, 512 * 1024);
+        assert_eq!(BlobHeader::parse(&blob, 0).unwrap().block_sizes.len(), 3);
+        assert!(decode(&blob, 0, &BuiltinCodecs).unwrap() == content);
+        let zeros = oodle_memset_blob(1_100_000, 512 * 1024, 0);
+        assert!(decode(&zeros, 0, &BuiltinCodecs).unwrap() == vec![0; 1_100_000]);
+    }
+
+    #[test]
+    fn builtin_codecs_refuse_a_codec_fenji_doesnt_decode() {
         let mut blob = lz4_blob(b"abcabcabc", 0);
-        blob[28] = 4;
-        assert!(matches!(
-            decode(&blob, 0, &BuiltinCodecs),
-            Err(Error::CodecUnavailable(4))
-        ));
+        blob[28] = 7;
+        let e = decode(&blob, 0, &BuiltinCodecs).unwrap_err();
+        assert!(matches!(e, Error::CodecUnavailable(7)), "{e:?}");
+        assert_eq!(e.to_string(), "codec 7 isn't one Fenji decodes");
+    }
+
+    #[test]
+    fn an_oodle_block_that_doesnt_decode_names_its_block() {
+        let mut blob = oodle_blob(&[7; 1000], 400);
+        let last = blob.len() - 1;
+        blob.truncate(last); // the third block's stream ends early …
+        let stored = u64::from_le_bytes(blob[16..24].try_into().unwrap()) - 1;
+        blob[16..24].copy_from_slice(&stored.to_le_bytes());
+        let third = FIXED_LEN + 8;
+        let size = u32::from_le_bytes(blob[third..third + 4].try_into().unwrap()) - 1;
+        blob[third..third + 4].copy_from_slice(&size.to_le_bytes()); // … and the header agrees
+        let e = decode(&blob, 0, &BuiltinCodecs).unwrap_err();
+        assert!(matches!(e, Error::Oodle { index: 2, .. }), "{e:?}");
     }
 
     #[test]

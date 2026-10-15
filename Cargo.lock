@@ -846,6 +846,7 @@ dependencies = [
 name = "fenji-data"
 version = "0.4.1"
 dependencies = [
+ "fenji-oodle",
  "lz4_flex",
  "sha1",
  "sha2 0.11.0",
@@ -898,6 +899,7 @@ version = "0.4.1"
 name = "fenji-oodle-helper"
 version = "0.4.1"
 dependencies = [
+ "fenji-data",
  "libloading",
  "tempfile",
 ]

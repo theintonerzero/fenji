@@ -1,6 +1,6 @@
 [package]
 name = "fenji-oodle-helper"
-description = "Decodes spooled Oodle LZ blocks with the client's own oo2core_6_win64.dll, and compresses Fenji's synthetic test fixtures with it, under Wine inside the sandbox only (M2 spec §6, gate #39 route c)"
+description = "Decodes spooled Oodle LZ blocks with the client's own oo2core_6_win64.dll, compresses Fenji's synthetic test fixtures with it, and hashes its output for every Oodle block of the client, under Wine inside the sandbox only (M2 spec §6, gate #39 route c)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,10 +11,15 @@ license.workspace = true
 name = "oodle-helper"
 path = "src/main.rs"
 
+[dependencies]
+# Pure Rust, so it builds for the Windows target: the archives' walk for hash-parts.
+fenji-data.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true
 
 [dev-dependencies]
+fenji-data = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 
 # Deviation D1: not the workspace's `forbid`, so that dll.rs alone may allow it.

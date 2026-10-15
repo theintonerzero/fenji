@@ -62,13 +62,18 @@ pub fn lz4_blob(content: &[u8], timestamp: u64) -> Vec<u8> {
 
 /// An LZ4 blob (codec 1) of already compressed blocks, `block_size` raw bytes each but the last.
 pub fn lz4_blob_blocks(blocks: &[Vec<u8>], raw_size: u64, block_size: u32) -> Vec<u8> {
+    blob_of_blocks(blocks, raw_size, block_size, 1)
+}
+
+/// A blob of `codec` whose blocks are already encoded, `block_size` raw bytes each but the last.
+fn blob_of_blocks(blocks: &[Vec<u8>], raw_size: u64, block_size: u32, codec: u16) -> Vec<u8> {
     let stored = FIXED_LEN + 4 * blocks.len() + blocks.iter().map(Vec::len).sum::<usize>();
     let mut b = Vec::new();
     b.extend_from_slice(&raw_size.to_le_bytes());
     b.extend_from_slice(&0u64.to_le_bytes());
     b.extend_from_slice(&(stored as u64).to_le_bytes());
     b.extend_from_slice(&block_size.to_le_bytes());
-    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&codec.to_le_bytes());
     b.extend_from_slice(&0u16.to_le_bytes());
     for c in blocks {
         b.extend_from_slice(&(c.len() as u32).to_le_bytes());
@@ -77,6 +82,55 @@ pub fn lz4_blob_blocks(blocks: &[Vec<u8>], raw_size: u64, block_size: u32) -> Ve
         b.extend_from_slice(c);
     }
     b
+}
+
+/// An Oodle stream (Kraken, decoder 6) of `len` copies of `byte`: one memset quantum per 256 KiB,
+/// each behind its stream header. Six bytes for each 256 KiB of output.
+pub fn oodle_memset_stream(len: usize, byte: u8) -> Vec<u8> {
+    [0x8C, 0x06, 0x07, 0xFF, 0xFF, byte].repeat(len.div_ceil(fenji_oodle::QUANTUM))
+}
+
+/// An Oodle stream (Kraken) whose quanta hold `content` as it is, each 256 KiB behind a stream
+/// header that says so.
+pub fn oodle_uncompressed_stream(content: &[u8]) -> Vec<u8> {
+    let quanta = content.chunks(fenji_oodle::QUANTUM);
+    let mut s = Vec::with_capacity(content.len() + 2 * quanta.len());
+    for quantum in quanta {
+        s.extend_from_slice(&[0xCC, 0x06]);
+        s.extend_from_slice(quantum);
+    }
+    s
+}
+
+/// One Oodle block as the archives hold it (docs/re/m1-archives.md 3.4): its raw length as a `u32`,
+/// then its stream.
+pub fn oodle_block(raw_len: usize, stream: &[u8]) -> Vec<u8> {
+    let mut b = (raw_len as u32).to_le_bytes().to_vec();
+    b.extend_from_slice(stream);
+    b
+}
+
+/// An Oodle blob (codec 4) of `content`, in blocks of `block_size` raw bytes, each an uncompressed
+/// stream behind its raw length: it decodes to `content`.
+pub fn oodle_blob(content: &[u8], block_size: u32) -> Vec<u8> {
+    let blocks: Vec<Vec<u8>> = content
+        .chunks(block_size as usize)
+        .map(|c| oodle_block(c.len(), &oodle_uncompressed_stream(c)))
+        .collect();
+    blob_of_blocks(&blocks, content.len() as u64, block_size, 4)
+}
+
+/// An Oodle blob (codec 4) of `raw_size` copies of `byte`, in memset blocks of `block_size` raw
+/// bytes.
+pub fn oodle_memset_blob(raw_size: usize, block_size: u32, byte: u8) -> Vec<u8> {
+    let mut blocks = Vec::new();
+    let mut left = raw_size;
+    while left > 0 {
+        let n = left.min(block_size as usize);
+        blocks.push(oodle_block(n, &oodle_memset_stream(n, byte)));
+        left -= n;
+    }
+    blob_of_blocks(&blocks, raw_size as u64, block_size, 4)
 }
 
 /// A stored blob (codec 0): the 32-byte header, then `content`, with no block list. The block size
@@ -124,6 +178,48 @@ pub fn zfs_part(blocks: &[Vec<PartRecord>]) -> Vec<u8> {
         }
     }
     p
+}
+
+/// One file of a synthetic container for [`container`]: its key, its path in the listing, and its
+/// blob.
+pub type ContainerFile<'a> = ([u8; 20], &'a str, Vec<u8>);
+
+/// A container's content laid out like the client's (docs/re/m1-archives.md 4.3): the 18-byte
+/// header, the listing of `<key>\t<path>` lines, one record per file in the part layout with its
+/// offset counted from the content's first byte, then the files' blobs. A part stores it as a
+/// [`stored_blob`].
+pub fn container(files: &[ContainerFile<'_>]) -> Vec<u8> {
+    use crate::archive::{
+        CONTAINER_HEADER_LEN, CONTAINER_MAGIC, RECORD_LEN, STATUS_USED, crc16_arc,
+    };
+    let listing: String = files
+        .iter()
+        .map(|(key, path, _)| format!("{}\t{path}\n", crate::hex(key)))
+        .collect();
+    let records_at = CONTAINER_HEADER_LEN + listing.len();
+    let mut c = CONTAINER_MAGIC.to_vec();
+    for field in [files.len(), listing.len(), records_at] {
+        c.extend_from_slice(&(field as u32).to_le_bytes());
+    }
+    let crc = crc16_arc(&c[4..16]);
+    c.extend_from_slice(&crc.to_le_bytes());
+    c.extend_from_slice(listing.as_bytes());
+    let mut blob_at = records_at + RECORD_LEN * files.len();
+    for (key, _, blob) in files {
+        let mut r = [0u8; RECORD_LEN];
+        r[..20].copy_from_slice(key);
+        r[20..24].copy_from_slice(&(blob_at as u32).to_le_bytes());
+        r[24..28].copy_from_slice(&(blob.len() as u32).to_le_bytes());
+        let crc = crc16_arc(&r[..28]);
+        r[28..30].copy_from_slice(&crc.to_le_bytes());
+        r[31] = STATUS_USED;
+        c.extend_from_slice(&r);
+        blob_at += blob.len();
+    }
+    for (_, _, blob) in files {
+        c.extend_from_slice(blob);
+    }
+    c
 }
 
 /// Appends NUL-terminated `text` to `.rdata` bytes, 8-aligned, and returns its VA.
