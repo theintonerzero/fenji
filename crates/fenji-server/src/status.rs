@@ -15,8 +15,10 @@ use crate::commands::{self, CommandError};
 /// The most characters a maintenance message, or an MOTD, may have.
 pub const MESSAGE_MAX: usize = 200;
 
-/// The message of a maintenance mode turned on without one.
-pub const DEFAULT_MESSAGE: &str = "The server is in maintenance.";
+/// The message of a maintenance mode turned on without one. Players read it after words that say
+/// the server is in maintenance already, such as the launcher's "Moonward is in maintenance: ", so
+/// it says what comes next.
+pub const DEFAULT_MESSAGE: &str = "Back soon";
 
 /// `server_state`'s key for maintenance mode, as JSON, while it's on.
 const MAINTENANCE_KEY: &str = "maintenance";
@@ -205,7 +207,7 @@ mod tests {
     #[test]
     fn a_message_is_plain_text_of_200_characters_at_most() {
         assert_eq!(MESSAGE_MAX, 200);
-        assert_eq!(DEFAULT_MESSAGE, "The server is in maintenance.");
+        assert_eq!(DEFAULT_MESSAGE, "Back soon");
         assert_eq!(check_message(DEFAULT_MESSAGE), Ok(()));
         assert_eq!(check_message(""), Ok(()));
         // Characters, not bytes: each é is two.
@@ -227,6 +229,22 @@ mod tests {
                 "{hidden:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_default_message_reads_well_after_the_launchers_words() {
+        // The launcher leads with "in maintenance" itself, so the default says what's next.
+        use fenji_launcher::api::ApiError;
+        use fenji_launcher::app::words::api_error;
+        let e = ApiError::Maintenance {
+            message: DEFAULT_MESSAGE.into(),
+            until: None,
+        };
+        assert_eq!(e.to_string(), "the server is in maintenance: Back soon");
+        assert_eq!(
+            api_error(&e, "Moonward", None, None),
+            "Moonward is in maintenance: Back soon."
+        );
     }
 
     #[tokio::test]
