@@ -213,33 +213,59 @@ impl Drop for PanicHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::{Level, LogLine, Part};
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::backend::TestBackend;
     use std::sync::Mutex;
+
+    /// The thread the hook test panics on. The panic hook is the process's, and the crate's other
+    /// tests run beside it: the test counts only its own thread's panics, and passes every other
+    /// one on to the hook that was there before, which prints it as usual.
+    const HOOK_TEST: &str = "panic-hook-test";
+
+    fn on_hook_test_thread() -> bool {
+        std::thread::current().name() == Some(HOOK_TEST)
+    }
+
+    /// Whether `message` panicked on a thread of the hook test's.
+    fn panics_on_hook_test_thread(message: &'static str) -> bool {
+        std::thread::Builder::new()
+            .name(HOOK_TEST.into())
+            .spawn(move || panic!("{message}"))
+            .unwrap()
+            .join()
+            .is_err()
+    }
 
     #[test]
     fn a_panic_gives_the_terminal_back_before_the_previous_hook_prints() {
-        // Review Focus 2. The panic hook is the process's: no other test sets one.
+        // Review Focus 2.
         static SEEN: Mutex<Vec<&str>> = Mutex::new(Vec::new());
-        let before = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {
-            SEEN.lock().unwrap().push("the previous hook");
+        let before: Arc<Hook> = Arc::new(panic::take_hook());
+        let others = Arc::clone(&before);
+        panic::set_hook(Box::new(move |info| {
+            if on_hook_test_thread() {
+                SEEN.lock().unwrap().push("the previous hook");
+            } else {
+                (*others)(info);
+            }
         }));
         {
             let _hook = PanicHook::install(|| {
-                SEEN.lock().unwrap().push("the terminal given back");
+                if on_hook_test_thread() {
+                    SEEN.lock().unwrap().push("the terminal given back");
+                }
             });
-            assert!(
-                std::thread::spawn(|| panic!("in the console"))
-                    .join()
-                    .is_err()
-            );
+            assert!(panics_on_hook_test_thread("in the console"));
         }
         // Gone with its guard: the previous hook alone.
-        assert!(
-            std::thread::spawn(|| panic!("after the console"))
-                .join()
-                .is_err()
-        );
-        std::panic::set_hook(before);
+        assert!(panics_on_hook_test_thread("after the console"));
+        // The hook the tests had, back.
+        drop(panic::take_hook());
+        match Arc::try_unwrap(before) {
+            Ok(hook) => panic::set_hook(hook),
+            Err(shared) => panic::set_hook(Box::new(move |info| (*shared)(info))),
+        }
         assert_eq!(
             *SEEN.lock().unwrap(),
             [
@@ -248,5 +274,235 @@ mod tests {
                 "the previous hook"
             ]
         );
+    }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl_c() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+    }
+
+    /// Types `line` and presses Enter through [`act`]: what Enter did.
+    fn run(
+        view: &mut View,
+        line: &str,
+        mode: Mode,
+        to_server: &mpsc::Sender<ConsoleMsg>,
+        last_id: &mut u64,
+    ) -> Option<Ending> {
+        for c in line.chars() {
+            assert_eq!(
+                act(view, press(KeyCode::Char(c)), mode, to_server, last_id),
+                None
+            );
+        }
+        act(view, press(KeyCode::Enter), mode, to_server, last_id)
+    }
+
+    fn log(n: usize) -> ServerMsg {
+        ServerMsg::Log {
+            line: LogLine {
+                at_ms: 0,
+                level: Level::Info,
+                parts: vec![Part {
+                    text: format!("line {n}"),
+                    name: false,
+                }],
+            },
+        }
+    }
+
+    /// The view drawn at 80 × 24, as one string.
+    fn screen(view: &View) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| view.draw(frame, &Palette::of(Colours::True), 0))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        buffer
+            .area
+            .positions()
+            .map(|at| buffer[at].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn ctrl_c_sends_stop_in_process_and_only_leaves_when_attached() {
+        // The brief's rule, Review M4.
+        let (to_server, mut sent) = mpsc::channel(8);
+        let mut last_id = 0;
+        let mut view = View::new("F".into(), vec![], Mode::InProcess);
+        assert_eq!(
+            act(
+                &mut view,
+                ctrl_c(),
+                Mode::InProcess,
+                &to_server,
+                &mut last_id
+            ),
+            None
+        );
+        assert_eq!(
+            sent.try_recv(),
+            Ok(ConsoleMsg::Run {
+                id: 1,
+                line: "stop".into()
+            })
+        );
+        // A line run in-process is the next command, `exit` included.
+        assert_eq!(
+            run(&mut view, "exit", Mode::InProcess, &to_server, &mut last_id),
+            None
+        );
+        assert_eq!(
+            sent.try_recv(),
+            Ok(ConsoleMsg::Run {
+                id: 2,
+                line: "exit".into()
+            })
+        );
+        // Attached, Ctrl-C and `exit` leave, and send nothing.
+        let mut view = View::new("F".into(), vec![], Mode::Attached);
+        assert_eq!(
+            act(
+                &mut view,
+                ctrl_c(),
+                Mode::Attached,
+                &to_server,
+                &mut last_id
+            ),
+            Some(Ending::Detached)
+        );
+        assert_eq!(
+            run(&mut view, "exit", Mode::Attached, &to_server, &mut last_id),
+            Some(Ending::Detached)
+        );
+        assert_eq!(
+            run(
+                &mut view,
+                "online",
+                Mode::Attached,
+                &to_server,
+                &mut last_id
+            ),
+            None
+        );
+        assert_eq!(
+            sent.try_recv(),
+            Ok(ConsoleMsg::Run {
+                id: 3,
+                line: "online".into()
+            })
+        );
+        assert!(sent.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_busy_server_is_noted_and_a_gone_one_ends_the_console() {
+        let (to_server, sent) = mpsc::channel(1);
+        to_server
+            .try_send(ConsoleMsg::Run {
+                id: 0,
+                line: "backup".into(),
+            })
+            .unwrap();
+        let mut last_id = 0;
+        let mut view = View::new("F".into(), vec![], Mode::InProcess);
+        // A full queue: the command isn't sent, and the log says so; the console carries on.
+        assert_eq!(
+            run(
+                &mut view,
+                "online",
+                Mode::InProcess,
+                &to_server,
+                &mut last_id
+            ),
+            None
+        );
+        assert!(
+            screen(&view).contains("the server is busy"),
+            "{}",
+            screen(&view)
+        );
+        drop(sent);
+        assert_eq!(
+            run(
+                &mut view,
+                "online",
+                Mode::InProcess,
+                &to_server,
+                &mut last_id
+            ),
+            Some(Ending::Lost)
+        );
+        assert_eq!(
+            act(
+                &mut view,
+                ctrl_c(),
+                Mode::InProcess,
+                &to_server,
+                &mut last_id
+            ),
+            Some(Ending::Lost)
+        );
+    }
+
+    #[test]
+    fn the_servers_goodbye_or_its_going_ends_the_console() {
+        let mut view = View::new("F".into(), vec![], Mode::InProcess);
+        let (to_console, mut from_server) = mpsc::channel(8);
+        to_console.try_send(log(1)).unwrap();
+        to_console
+            .try_send(ServerMsg::Bye {
+                reason: "the server is stopping".into(),
+            })
+            .unwrap();
+        to_console.try_send(log(2)).unwrap();
+        assert_eq!(
+            take_messages(&mut view, Some(log(0)), &mut from_server),
+            Some(Ending::ServerStopped("the server is stopping".into()))
+        );
+        // The lines before the goodbye are shown, and none after it is taken.
+        let shown = screen(&view);
+        assert!(
+            shown.contains("line 0") && shown.contains("line 1"),
+            "{shown}"
+        );
+        assert_eq!(from_server.len(), 1);
+        // A server gone, at once or after the messages waiting, is lost.
+        assert_eq!(
+            take_messages(&mut view, None, &mut from_server),
+            Some(Ending::Lost)
+        );
+        drop(to_console);
+        let next = from_server.try_recv().ok();
+        assert_eq!(
+            take_messages(&mut view, next, &mut from_server),
+            Some(Ending::Lost)
+        );
+        assert!(screen(&view).contains("line 2"));
+    }
+
+    #[test]
+    fn a_flood_of_messages_is_taken_a_batch_at_a_time() {
+        let mut view = View::new("F".into(), vec![], Mode::InProcess);
+        let (to_console, mut from_server) = mpsc::channel(BATCH + 10);
+        for n in 0..BATCH + 10 {
+            to_console.try_send(log(n)).unwrap();
+        }
+        let first = from_server.try_recv().ok();
+        assert_eq!(take_messages(&mut view, first, &mut from_server), None);
+        assert_eq!(
+            from_server.len(),
+            10,
+            "the rest wait their turn, after the keys and a draw"
+        );
+        // A batch ends early when nothing more is waiting.
+        let next = from_server.try_recv().ok();
+        assert_eq!(take_messages(&mut view, next, &mut from_server), None);
+        assert!(from_server.is_empty());
+        assert!(screen(&view).contains(&format!("line {}", BATCH + 9)));
     }
 }
