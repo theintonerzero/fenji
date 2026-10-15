@@ -27,6 +27,7 @@ pub struct Report {
 /// What is wrong with one file (launcher spec §3.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub enum Problem {
     Missing,
     WrongSize,

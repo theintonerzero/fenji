@@ -38,6 +38,60 @@ jobs:
             exit 1
           fi
       - run: cargo test --workspace --locked
+      # The tests write the launcher's golden snapshots' types (ts-rs) and read its snapshots: the
+      # committed files must be what they write (launcher plan LP2, LP13).
+      - name: The launcher's golden snapshots and generated types are current
+        run: |
+          stale=$(git status --porcelain -- apps/launcher/fixtures apps/launcher/src/gen)
+          if [ -n "$stale" ]; then
+            echo "Run fenji-launcher's tests (FENJI_BLESS=1 for the snapshots) and commit:" >&2
+            echo "$stale" >&2
+            git diff -- apps/launcher/fixtures apps/launcher/src/gen >&2
+            exit 1
+          fi
+
+  # The desktop launcher (apps/launcher; launcher spec §3.1): its view, and its Tauri shell, a
+  # workspace of its own whose webview needs WebKitGTK to build.
+  launcher:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Tauri's Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: pnpm, at the version scripts/versions.env pins
+        run: npm install -g pnpm@12.11.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/launcher/src-tauri
+      - name: The view
+        working-directory: apps/launcher
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run check
+          pnpm test
+          pnpm run build
+          node scripts/check-licences.mjs
+      # After the view's build: the shell embeds its files (tauri.conf.json's frontendDist).
+      - name: The shell
+        working-directory: apps/launcher/src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+      - name: The shell's licences, advisories and sources
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: apps/launcher/src-tauri/Cargo.toml
+      - name: The launcher's versions are the workspace's
+        run: scripts/check-launcher-version.sh
 
   deny:
     runs-on: ubuntu-24.04
@@ -73,6 +127,8 @@ jobs:
           locale -a | grep -qi '^tr_TR.utf8$'
       - name: Forbidden-file check tests
         run: scripts/test-check-forbidden-files.sh
+      - name: Launcher version check tests
+        run: scripts/test-check-launcher-version.sh
       - name: Watchdog and runner tests
         run: |
           python3 -I scripts/spike/test-watchdog.py

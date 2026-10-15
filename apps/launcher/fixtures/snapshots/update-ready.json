@@ -1,0 +1,71 @@
+{
+  "launcherVersion": "0.5.0",
+  "platform": {
+    "os": "linux",
+    "canPlay": true,
+    "canDownload": true
+  },
+  "servers": [
+    {
+      "id": 1,
+      "name": "Moonward",
+      "address": "moonward.example.net",
+      "pinned": false,
+      "host": "Wen",
+      "status": {
+        "kind": "online"
+      },
+      "players": {
+        "online": 3,
+        "max": 10
+      },
+      "motd": "the lobby is open. Make your characters now; the world opens with Fenji 0.5.",
+      "pingMs": 24,
+      "lastSeenMs": 1792055640000,
+      "version": "0.5.0",
+      "source": "https://github.com/theintonerzero/fenji",
+      "username": "lin_yue",
+      "signedIn": true
+    }
+  ],
+  "active": 1,
+  "lobby": [
+    "Wen",
+    "Shu",
+    "Kai"
+  ],
+  "needSignIn": false,
+  "pendingInvite": null,
+  "keyChange": null,
+  "client": {
+    "folder": "/home/player/Games/SoLO",
+    "defaultFolder": "/home/player/Games/SoLO",
+    "build": "10015727",
+    "files": 210,
+    "check": {
+      "kind": "verified",
+      "level": "quick",
+      "atMs": 1792055400000
+    },
+    "manualCommand": null
+  },
+  "job": null,
+  "game": {
+    "kind": "idle"
+  },
+  "update": {
+    "current": "0.5.0",
+    "auto": true,
+    "checking": false,
+    "available": "0.5.1",
+    "ready": true,
+    "notes": "The Play tab shows the host's maintenance message and when the server is back.\nChecking files shows which file it's on and how many are left.\nPlainer words when the server can't be reached.",
+    "showDialog": true
+  },
+  "settings": {
+    "autoUpdate": true,
+    "umuRun": null,
+    "logFolder": "/home/player/.local/share/fenji-launcher/logs"
+  },
+  "notice": null
+}

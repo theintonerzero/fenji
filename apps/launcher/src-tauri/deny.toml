@@ -1,0 +1,47 @@
+# cargo-deny for the launcher's Tauri shell, a workspace of its own: the repository's deny.toml,
+# plus only what Tauri's graph needs (launcher plan, Global Constraints).
+# Run: cargo deny check (from apps/launcher/src-tauri)
+
+[graph]
+all-features = true
+# The platforms Fenji builds on: Linux and Windows for players and hosts, macOS for development
+# (M3 spec D20). Target-only dependencies elsewhere (such as wasm's webpki-root-certs) don't count.
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "x86_64-pc-windows-gnu", "aarch64-apple-darwin"]
+
+[advisories]
+ignore = [
+    # Unmaintained, not a vulnerability: a build-time macro crate under glib-macros 0.18, in the
+    # gtk-rs 0.18 stack that Tauri's Linux webview (wry, muda) builds on. Nothing newer exists for it.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: build-time only, under gtk-rs 0.18, which Tauri's Linux webview needs" },
+]
+
+[licenses]
+# Permissive licences only. Adding one is a deliberate `chore(deps)` change.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    # Tauri's graph only: cssparser, cssparser-macros, dtoa-short and selectors (the HTML and CSS
+    # parsing in tauri-utils, through dom_query), and option-ext (through dirs, in tauri).
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# Our own crates are `publish = false`.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

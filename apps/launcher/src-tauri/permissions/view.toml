@@ -1,0 +1,5 @@
+# The launcher's own commands, for its view: every intent, and the current snapshot.
+[[set]]
+identifier = "view"
+description = "The launcher's two commands: `intent`, which takes every intent, and `snapshot`."
+permissions = ["allow-intent", "allow-snapshot"]
