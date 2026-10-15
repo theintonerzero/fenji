@@ -2,7 +2,7 @@
 
 This page says what personal data Fenji's software handles and where it goes. It isn't a contract. The project itself runs no service: every Fenji server is run privately by someone who hosts it for the players they invite (the **operator**), and the operator is responsible for the data on that server.
 
-Fenji isn't playable yet. From v0.4.0 a Fenji server runs accounts and the character lobby, and the command-line launcher starts the client on Linux; the game world comes later. Where this page describes what isn't built yet, it follows the design ([`docs/superpowers/specs/2026-10-11-fenji-design.md`](docs/superpowers/specs/2026-10-11-fenji-design.md) §5–§8). This page changes as Fenji does; its git history shows how.
+Fenji isn't a game yet. From v0.4.0 a Fenji server runs accounts and the character lobby, and the command-line launcher starts the client on Linux. The `dev` branch adds a shared world (M4), where players see each other, move and chat. Where this page describes what isn't built yet, it follows the design ([`docs/superpowers/specs/2026-10-11-fenji-design.md`](docs/superpowers/specs/2026-10-11-fenji-design.md) §5–§8). This page changes as Fenji does; its git history shows how.
 
 ## No telemetry
 

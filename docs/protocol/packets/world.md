@@ -15,7 +15,7 @@ Players move as §16 reads: the client sends a direction command, type 8, when i
 
 §16 comes from a third reading (Task 14, 2026-10-14; its notes are L6) by the same method: the scripts, the exe in the shared Ghidra project and then through REA in two sessions (their IDs are in the same table), with `objdump` for the bytes at 0x140170C90 and 0x140174400, where Ghidra's analysis made no function, and Task 11's server logs (§13), which give each message's type and length only.
 
-Task 15's two-client runs (§16's Runs, 2026-10-15) then checked §16 against the real client: what they showed is tagged **Observed** (runs) in §16, and they changed one value, the time bound of 16.15.
+Task 15's two-client runs (§16's Runs, 2026-10-15) then checked §16 against the real client: what they showed is tagged **Observed** (runs) in §16, and they changed one value, the time bound of 16.15. Task 19 measured the world's tick and its shutdown with twenty protocol bots and no client (§13).
 
 A design-time survey (L4) gave the leads, and each finding here was checked against the bytecode or the exe. Nothing was run: no client, no debugger, no script in Ghidra, and nothing in the shared project was renamed or changed. Written by a session that has not read any source rejected in [`../../re/sources.md`](../../re/sources.md). Tags follow [`../../re/spike-0.md`](../../re/spike-0.md): **Observed** (literally in a file: a constant, a bytecode operand, a table value, bytes of the exe), **Inferred** (our reading of the code), **Unknown**. Script evidence cites the engine path and the function path in its disassembly (such as `0.56`), with bytecode positions in brackets; where the decompiled text and the bytecode differ, the bytecode wins. Native evidence cites functions and addresses in the pinned exe. Evidence keys resolve in the [Evidence index](#evidence-index).
 
@@ -358,6 +358,27 @@ Task 13's runs (2026-10-14) ran two clients at once in one sandbox, one Wine pre
 - Whether the name board shows another player's health at all, in combat or when that player is selected (M5).
 - Why Lin's client logs the `Acquirement` error in Task 13's runs and never did in Task 11's.
 - Whether two `umu-run` sessions share one wineserver, which the bare runner's two-client mode rests on (15.5).
+
+Task 19's measurement (2026-10-15) ran no client. The load harness, `crates/fenji-server/tests/load.rs` (Task 17; the plan's Amendment D), runs a server and twenty protocol bots in one process. Each bot signs in, makes a character and enters at `[world]`'s start, so all twenty stand in one cell, and each pulls the other 19. Then for 60 s each moves about 40 units every 100 ms and says a nearby line every 5 s, while a reader drains its socket. The harness prints the world's tick report (`RunningServer::ticks()`), whose percentiles cover the last minute of ticks, which is the play. It then times the shutdown with all twenty still in, which saves each one and closes the database. The targets are the design spec's §6.7: tick work at p99 of at most 10 ms with 20 players in the starting zone, against the 50 ms budget of a tick at 20 Hz, and all 20 saved within 2 s of a shutdown. It ran three times as `FENJI_LOAD_ASSERT=1 cargo test --release -p fenji-server --test load -- --ignored --nocapture`, with `TMPDIR` set to a folder made on the data disk (`target/load-tmp`) rather than `/tmp`, a tmpfs, so that the database was on the disk. The Linux game box was otherwise idle:
+- an AMD Ryzen 9 9950X3D, with 16 cores and 32 threads, and 62 GiB of memory;
+- Fedora 44, with Linux 7.2.9;
+- the database on a Samsung 9100 PRO NVMe SSD (2 TB), in btrfs with zstd compression;
+- Rust 1.97.1's release profile.
+
+| Run | Tick work p50 | p99 | Max | Ticks since the start (over budget) | Shutdown with 20 in | Sent |
+|---|---|---|---|---|---|---|
+| m4-l1 | 80.1 µs | 147.7 µs | 2.28 ms | 1,261 (0) | 66.4 ms | 11,980 moves, 240 lines |
+| m4-l2 | 81.9 µs | 119.9 µs | 181.6 µs | 1,263 (0) | 64.6 ms | 11,980 moves, 240 lines |
+| m4-l3 | 82.0 µs | 117.0 µs | 129.0 µs | 1,261 (0) | 64.1 ms | 11,980 moves, 240 lines |
+
+**Observed (Task 19):**
+- **Both targets met, far inside.** The tick's p99 was 117 to 148 µs, under 1.5% of the 10 ms target, and no tick in the three runs went over its 50 ms budget; the slowest of the play took 2.28 ms (m4-l1). The shutdown took 64 to 66 ms, about 3% of the 2 s target.
+- **The full load, in every run.** Each bot sent all 599 of its moves and all 12 of its lines, and got 599 13s and 12 378s from each other bot; the world refused no move, and each bot was saved where it last stepped. With `FENJI_LOAD_ASSERT=1` the harness asserted both targets, that no move was refused, and that each bot sent at least 95% of its moves and of its lines, rounded down (569 and 11).
+- **The disk's share of the shutdown.** A fourth run, m4-l4, with the database on `/tmp`, shut down in 49.8 ms (p50 83.2 µs, p99 122.5 µs, max 360.3 µs), so the disk added about 15 ms.
+
+**Unknown (Task 19):**
+- The tick with the monsters around the players, which §6.7's target also counts and M5 brings.
+- How a host smaller than this one does, such as a small VPS.
 
 ## 14. Seeing each other
 

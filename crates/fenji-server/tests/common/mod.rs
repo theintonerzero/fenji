@@ -679,9 +679,19 @@ pub fn move_body(time: u64, at: [i32; 3], yaw: i16, dir: u8, rate: u16) -> Vec<u
 /// The speed rate every player runs at in M4 (world spec §3.4): 100 is 500 units a second.
 pub const RATE: u16 = 100;
 
-/// The farthest a bot walks in one step (Amendment D, step 5): one step a tick at most, so well
-/// inside the speed rule's 1,275 units a second.
+/// The farthest a bot walks in one step (Amendment D, step 5). Nothing paces the steps: the
+/// callers keep inside the speed rule, which at rate 100 and the default tolerance allows 1,275
+/// units a second and saves up at most a second of that. `world_bot.rs` waits for each step's
+/// relay before the next, and the load harness steps 40 units every 100 ms, 400 a second.
 pub const STEP: f64 = 50.0;
+
+/// Type 7's header, before its blob (world.md 4.1): the pid (8 bytes), the actor type (1), the
+/// difficulty (1) and the template (4).
+pub const SEVEN_HEADER: usize = 8 + 1 + 1 + 4;
+
+/// The team channel, which the client's team line goes on (chat.md §7) and M4 doesn't carry:
+/// the world refuses a line on it with `CHAT_INVALID_CHANNEL`.
+pub const TEAM: i64 = 2;
 
 /// A character as its bot made it (Amendment D, step 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -755,7 +765,7 @@ pub fn loads_at(pid: i64, body: &[u8]) -> Place {
 pub fn assert_own_seven(made: &Made, at: Place, seven: &[u8]) {
     use world::{BlobValue, prop};
     assert_eq!(seven[..8], made.pid.to_le_bytes(), "the pid");
-    let blob = world::decode_blob(&seven[14..]).unwrap();
+    let blob = world::decode_blob(&seven[SEVEN_HEADER..]).unwrap();
     let get = |i: u16| {
         blob.iter()
             .find(|(index, _)| *index == i)

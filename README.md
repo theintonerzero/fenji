@@ -9,7 +9,7 @@ All the protocol and format knowledge here comes from studying our own licensed 
 
 ## Status
 
-**Not playable yet.** With M3, a Fenji server runs invite-only accounts and the character lobby. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and finds them again after a restart. Entering the world comes with M4. The game connection between the client and the server is readable and unauthenticated. It carries no password, but play over a trusted network or a VPN ([PRIVACY.md](PRIVACY.md)). Joining a server means trusting its host: the game client obeys server messages that can write files and run code on your computer. Fenji's server never sends them, but a changed server could ([PRIVACY.md](PRIVACY.md#trusting-a-servers-host)).
+**Not a game yet.** A Fenji server runs invite-only accounts and the character lobby (M3), and now a shared world, the first piece of M4. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and enters the starting zone. There, players see each other, move and see each other move, and chat nearby, to the whole server or in whispers, and the server's admins have `!tp`, `!kick`, `!announce` and `!invite`. Each character comes back where it last stood. There are no monsters, combat or quests until M5. The rest of M4 is still to come: hosting, with a console for hosts, release archives with start scripts and a guide for hosts, and then the desktop launcher. The game connection between the client and the server is readable and unauthenticated. It carries no password, but play over a trusted network or a VPN ([PRIVACY.md](PRIVACY.md)). Joining a server means trusting its host: the game client obeys server messages that can write files and run code on your computer. Fenji's server never sends them, but a changed server could ([PRIVACY.md](PRIVACY.md#trusting-a-servers-host)).
 
 | Milestone | What it delivers | State |
 |---|---|---|
@@ -17,7 +17,7 @@ All the protocol and format knowledge here comes from studying our own licensed 
 | M1 | Reading the client's data: archives, embedded scripts | Released, v0.2.0 |
 | M2 | The network transport and handshake, against the real client | Released, v0.3.0 |
 | M3 | Accounts, the launcher, character list and creation | Released, v0.4.0 |
-| M4 | Friends in the starting zone: moving, seeing each other, chat | Planned |
+| M4 | Friends in the starting zone: moving, seeing each other, chat | In progress: the world works; hosting and the launcher are next |
 | M5 | Monsters, combat, XP, loot and saved progress (v1) | Planned |
 
 The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-design.md) and the [docs index](docs/README.md). Each milestone ends with a summary, such as [M2's](docs/re/m2-summary.md).
@@ -37,18 +37,19 @@ The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-des
 
 | Path | What it is |
 |---|---|
-| `crates/fenji-proto` | The client's network transport without I/O: the handshake, encryption, frames and message encoding, and the lobby's messages. |
-| `crates/fenji-server` | The server: the account API (invites, accounts, sign-in, game tokens), the gate that takes the client's login, and the character lobby. |
+| `crates/fenji-proto` | The client's network transport without I/O: the handshake, encryption, frames and message encoding, and the lobby's, the world's and chat's messages. |
+| `crates/fenji-server` | The server: the account API (invites, accounts, sign-in, game tokens), the gate that takes the client's login, the character lobby, and the world: who sees whom, movement, chat and admin commands. |
 | `crates/fenji-store` | The server's SQLite store: accounts, invites, sessions, game tokens and characters. |
 | `crates/fenji-auth` | Password hashing (argon2id) and the invite and token formats. |
 | `crates/fenji-launcher` | The launcher's library and `fenji-launch`, its command line: redeem an invite, check the client folder against the pinned build, and play (on Linux, through umu-launcher). |
 | `crates/fenji-data` | Reads the client's own data: its archives, file index, embedded file system and table cache. |
+| `crates/fenji-oodle` | An open decoder for the Oodle Kraken compression of the client's archives: a safe Rust port of [ooz](https://github.com/powzix/ooz), GPL-3.0-or-later. |
 | `crates/fenji-lua` | The client's Lua 5.3 dialect: parser, disassembler, normaliser. |
 | `tools/` | Command-line tools: `stub` (test server), `archive`, `luatool`, and `oodle-helper`. |
 | `scripts/` | Machine setup, the sandbox for client runs, and repository checks. |
 | `docs/` | The design, what we've learned about the client, and how we work. |
 
-The game world comes in later milestones. The launcher's window (#146) and a console for hosts (#147) come next.
+Monsters, combat and the rest of the game come in M5. A console for hosts (#147) is in progress, and the launcher's window (#146) comes next.
 
 ## For developers
 
