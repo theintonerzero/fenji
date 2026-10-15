@@ -138,7 +138,7 @@ Neither is on fenji-proto's never-send list yet.
 ### 3.6 Admin commands
 
 Accounts in `[access].admins` type commands in chat with `!`, since `/` lines never leave the client:
-- `!tp <name>` takes the admin to a player, and `!tp <name> <name>` takes one player to another;
+- `!tp <name>` takes the admin to a player, and `!tp <name> <name>` takes one player to another, within one scene for now: a player in another scene is refused until a run has tried that path (#280);
 - `!kick <name>`;
 - `!announce <text>` shows the marquee (channel 66);
 - `!invite [label]` makes a new invite link and whispers it back.

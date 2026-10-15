@@ -38,15 +38,17 @@
 #   scripts/spike/run-bare.sh run NAME --server FILE --server-data DIR --username USER
 #       --password-file FILE (--display N | --desktop) [--timeout SECONDS] [--key T:KEY[/MS]]...
 #       [--type T:TEXT]... [--click T:X,Y]...
-#       [--clients 2 --username2 USER --password-file2 FILE (--display2 M | with --desktop)
-#        [--second-after S] [--timeout2 S]]
+#       [--clients 2 --rehearsed --username2 USER --password-file2 FILE
+#        (--display2 M | with --desktop) [--second-after S] [--timeout2 S]]
 #
-# --clients 2 (M4 world plan, Amendment B; Ruling R14: run it live only after its own umu rehearsal
-# and a separate go-ahead) adds a second client: a second reflink copy (RUN/client2), its own
-# fenji-launch on the one prefix with its own account (--username2, --password-file2), started S
-# seconds after the first (--second-after, default 30, at least 2), with its own timeout (--timeout2,
-# default --timeout) and display (--display2 M, a dedicated nested one other than --display's, or
-# with --desktop the session's for both). PROTON_LOG_DIR is $IO/1 and $IO/2, and the watchdog gets
+# --clients 2 (M4 world plan, Amendment B) adds a second client: a second reflink copy
+# (RUN/client2), its own fenji-launch on the one prefix with its own account (--username2,
+# --password-file2), started S seconds after the first (--second-after, default 30, at least 2),
+# with its own timeout (--timeout2, default --timeout) and display (--display2 M, a dedicated nested
+# one other than --display's, or with --desktop the session's for both). By Ruling R14, a live
+# two-client bare run waits for its own umu-run rehearsal and the owner's go-ahead, so --clients 2
+# is a usage error (exit 2) unless --rehearsed says both have happened (Ruling R25, #280); its
+# script tests pass it. PROTON_LOG_DIR is $IO/1 and $IO/2, and the watchdog gets
 # both logs in that order. --key, --type and --click take 2@T:... for client 2's display. Client 2's
 # timeout ends its fenji-launch; if its gujianol.exe is still there 10 s later, the namespace ends
 # that process by its own pid. Whether two umu-run sessions share one wineserver is Unknown
@@ -497,10 +499,11 @@ cmd_bare_setup() {
 }
 
 # A two-client bare run's options (Amendment B), after the first client's. Uses and sets
-# cmd_bare_run's clients, user, user2, pwfile2, desktop, display, display2, second_after,
+# cmd_bare_run's clients, rehearsed, user, user2, pwfile2, desktop, display, display2, second_after,
 # second_after_given, tmo2_given and the 2@ inputs.
 check_two_bare() {
   if [ "$clients" = 1 ]; then
+    [ "$rehearsed" = 0 ] || misuse "--rehearsed needs --clients 2: it says the two-client mode was rehearsed"
     [ -z "$user2" ] || misuse "--username2 needs --clients 2"
     [ -z "$pwfile2" ] || misuse "--password-file2 needs --clients 2"
     [ -z "$display2" ] || misuse "--display2 needs --clients 2"
@@ -541,7 +544,7 @@ cmd_bare_run() {
   local tmo=300 display="" display_given=0 desktop=0 xauth="" user="" pwfile="" keys=() types=() clicks=() presses=()
   local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 stub_args=()
   local clients=1 user2="" pwfile2="" display2="" second_after=30 second_after_given=0 tmo2="" tmo2_given=0
-  local keys2=() types2=() clicks2=()
+  local keys2=() types2=() clicks2=() rehearsed=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --server) [ $# -ge 2 ] || usage; server_cfg=$2; shift 2 ;;
@@ -570,6 +573,7 @@ cmd_bare_run() {
         case "$2" in 2@*) clicks2+=("${2#2@}") ;; *) clicks+=("$2") ;; esac
         shift 2 ;;
       --clients) [ $# -ge 2 ] || usage; clients=$2; shift 2 ;;
+      --rehearsed) rehearsed=1; shift ;;
       --username2) [ $# -ge 2 ] || usage; user2=$2; shift 2 ;;
       --password-file2) [ $# -ge 2 ] || usage; pwfile2=$2; shift 2 ;;
       --display2) [ $# -ge 2 ] || usage; display2=$2; shift 2 ;;
@@ -581,6 +585,10 @@ cmd_bare_run() {
   case "$run" in '' | */* | .* | *[!A-Za-z0-9._-]*) die "bad run name: '$run'" ;; esac
   case "$tmo" in '' | *[!0123456789]*) die "--timeout takes whole seconds" ;; esac
   case "$clients" in 1 | 2) ;; *) misuse "--clients takes 1 or 2, not '$clients'" ;; esac
+  # Ruling R14, in code by Ruling R25 (#280): checked first, so nothing else about client 2 matters.
+  if [ "$clients" = 2 ] && [ "$rehearsed" = 0 ]; then
+    misuse "--clients 2 waits for its own umu-run rehearsal and the owner's go-ahead (Ruling R14); add --rehearsed only once it has both"
+  fi
   case "$second_after" in '' | *[!0123456789]*) misuse "--second-after takes whole seconds, not '$second_after'" ;; esac
   if [ "$tmo2_given" = 1 ]; then
     case "$tmo2" in '' | *[!0123456789]*) misuse "--timeout2 takes whole seconds, not '$tmo2'" ;; esac
