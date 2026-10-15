@@ -2,11 +2,17 @@
 
 This page says what personal data Fenji's software handles and where it goes. It isn't a contract. The project itself runs no service: every Fenji server is run privately by someone who hosts it for the players they invite (the **operator**), and the operator is responsible for the data on that server.
 
-Fenji isn't a game yet. From v0.4.0 a Fenji server runs accounts and the character lobby, and the command-line launcher starts the client on Linux. The `dev` branch adds a shared world (M4), where players see each other, move and chat. Where this page describes what isn't built yet, it follows the design ([`docs/superpowers/specs/2026-10-11-fenji-design.md`](docs/superpowers/specs/2026-10-11-fenji-design.md) §5–§8). This page changes as Fenji does; its git history shows how.
+Fenji isn't a game yet. From v0.4.0 a Fenji server runs accounts and the character lobby, and the command-line launcher starts the client on Linux. The `dev` branch adds a shared world (M4), where players see each other, move and chat, and a desktop launcher. Where this page describes what isn't built yet, it follows the design ([`docs/superpowers/specs/2026-10-11-fenji-design.md`](docs/superpowers/specs/2026-10-11-fenji-design.md) §5–§8). This page changes as Fenji does; its git history shows how.
 
 ## No telemetry
 
-Fenji's own software sends nothing to the project or to anyone else. It has no analytics, crash reporters or update checks that phone home, and talks only to the server you point it at, and to Steam through DepotDownloader if you download your game client that way. The game client is another matter (below).
+Fenji's own software sends nothing about you to the project or to anyone else. It has no analytics or crash reporters. It talks to the servers you point it at, to Steam through DepotDownloader if you download your game client that way, and, from the desktop launcher, to GitHub:
+- **Its updates.** When it starts, the launcher asks GitHub for the latest release's `latest.json`, to see whether there's a newer launcher, and it asks again when you press "Check now" in Settings. With "Update automatically" off, it asks only when you press that. A newer launcher downloads from the same release, and installs only if Fenji's release key signed it.
+- **Two tools, once, on Linux.** The first time it needs them, the launcher downloads DepotDownloader and umu-launcher from their GitHub releases, at pinned versions that it checks by SHA-256. A `umu-run` on your `PATH` is used instead of a download.
+
+These requests carry nothing about you or your accounts, though like any request they show GitHub your IP address. The game client is another matter (below).
+
+**The launcher's log stays on your computer.** It notes what the launcher did, such as the servers you added and the account names you signed in with, but never a password, token or ticket (`launcher.<date>.log`, kept seven days). It also keeps what the game printed the last time it started (`game.log`). Both are in the launcher's data folder (`~/.local/share/fenji-launcher/logs` on Linux), which Settings opens with "Open the log folder". Nothing sends them anywhere.
 
 On Linux the launcher starts the client through [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher), which has network habits of its own:
 - it checks for a network route, with a UDP `connect` to `1.1.1.1` that sends nothing;
