@@ -825,6 +825,96 @@ mod tests {
     }
 
     #[test]
+    fn a_change_of_admin_that_reaches_the_world_before_the_join_holds() {
+        // The link reads whether the account is an admin, then joins: a `deop` between the two
+        // reaches the world first, and the join mustn't bring the old flag back. An `op` likewise.
+        let mut h = Harness::new();
+        h.enter(player(2, "Mai", at(100.0, 0.0)));
+        h.enter(player(3, "Ren", at(50_000.0, 0.0)));
+        h.push(WorldIn::SetAdmin {
+            account: 1,
+            admin: false,
+        });
+        h.push(WorldIn::SetAdmin {
+            account: 2,
+            admin: true,
+        });
+        h.tick(50);
+        h.enter(Player {
+            admin: true,
+            ..player(1, "Lin", at(0.0, 0.0))
+        });
+        h.push(bang(1, "!kick Mai"));
+        h.tick(50);
+        assert_eq!(
+            h.take(1),
+            vec![lin_says("!kick Mai")],
+            "chat, not a command"
+        );
+        assert_eq!(h.core.players(), 3, "Mai stays");
+        // Mai was in the world when she was made an admin: that took at once.
+        h.take(2);
+        h.push(bang(2, "!kick Ren"));
+        h.tick(50);
+        assert_eq!(h.take(3), vec![WorldOut::Kicked(KickReason::Kicked)]);
+        assert_eq!(h.core.players(), 2);
+    }
+
+    #[test]
+    fn a_change_of_admin_holds_for_one_join_only() {
+        let mut h = Harness::new();
+        h.enter(player(2, "Mai", at(50_000.0, 0.0)));
+        h.push(WorldIn::SetAdmin {
+            account: 1,
+            admin: true,
+        });
+        h.tick(50);
+        // An `op` before the join, whose link read the account before it: a command runs.
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        h.push(bang(1, "!announce one"));
+        h.tick(50);
+        let one = WorldOut::Chat(ChatOut::Announce { text: "one".into() });
+        assert_eq!(h.take(1), vec![one]);
+        // Once used, it's forgotten: the next join brings its own link's reading.
+        h.push(WorldIn::Leave { conn: 1 });
+        h.tick(50);
+        h.enter(player(4, "Lin", at(0.0, 0.0)));
+        h.push(bang(4, "!announce two"));
+        h.tick(50);
+        let said = WorldOut::Chat(ChatOut::Said {
+            channel: ChatChannel::Nearby,
+            from: Speaker {
+                pid: 4,
+                name: "Lin".into(),
+                vocation: 0,
+            },
+            to: None,
+            text: "!announce two".into(),
+        });
+        assert_eq!(h.take(4), vec![said]);
+    }
+
+    #[test]
+    fn a_deop_while_in_the_world_holds_for_a_newer_login_too() {
+        // A newer login's link may read the account before the deop, while the older connection
+        // is still in the world, which takes the deop: the newer join mustn't undo it.
+        let mut h = admins_world();
+        h.push(WorldIn::SetAdmin {
+            account: 1,
+            admin: false,
+        });
+        h.tick(50);
+        h.enter(Player {
+            conn: 4,
+            admin: true,
+            ..player(1, "Lin", at(0.0, 0.0))
+        });
+        h.push(bang(4, "!kick Mai"));
+        h.tick(50);
+        assert_eq!(h.core.players(), 3, "Mai stays");
+    }
+
+    #[test]
     fn a_ban_lets_the_accounts_player_go_as_a_kick_does() {
         let mut h = admins_world();
         h.push(WorldIn::Ban { account: 2 });

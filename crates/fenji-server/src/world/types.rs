@@ -177,8 +177,9 @@ pub enum WorldIn {
         reply: oneshot::Sender<String>,
     },
     /// The account is an admin now, or no longer is (`op` and `deop`; M4 hosting spec §8, HA5):
-    /// its player in the world, if any, runs commands from this tick, or no longer does. `admin`
-    /// is what `accounts::is_admin` says after the change, so a `deop` leaves an account that
+    /// its player in the world, if any, runs commands from this tick, or no longer does, and so
+    /// does its next join, whose link may have read the account before the change. `admin` is
+    /// what `accounts::is_admin` says after the change, so a `deop` leaves an account that
     /// `[access].admins` names an admin.
     SetAdmin { account: i64, admin: bool },
     /// The host banned the account (HA5): its player in the world, if any, is let go as an
@@ -255,22 +256,61 @@ pub enum Service {
 }
 
 /// For the tests, which compare the work queued: a reply channel has no equality of its own, so
-/// two invites for the console are alike when their labels are.
+/// two invites for the console are alike when their labels are. The match on `self` has no
+/// catch-all, so a new kind of work doesn't compile until it says how it compares.
 #[cfg(test)]
 impl PartialEq for Service {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::SavePlace { pid: a, at: x }, Self::SavePlace { pid: b, at: y }) => {
-                a == b && x == y
+        match self {
+            Self::SavePlace { pid, at } => {
+                matches!(other, Self::SavePlace { pid: p, at: a } if p == pid && a == at)
             }
-            (
-                Self::CreateInvite { conn: a, label: x },
-                Self::CreateInvite { conn: b, label: y },
-            ) => a == b && x == y,
-            (Self::CreateInviteFor { label: x, .. }, Self::CreateInviteFor { label: y, .. }) => {
-                x == y
+            Self::CreateInvite { conn, label } => {
+                matches!(other, Self::CreateInvite { conn: c, label: l } if c == conn && l == label)
             }
-            _ => false,
+            Self::CreateInviteFor { label, .. } => {
+                matches!(other, Self::CreateInviteFor { label: l, .. } if l == label)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One of each kind of work the world queues.
+    fn one_of_each() -> Vec<Service> {
+        let at = Location {
+            scene: 5,
+            pos: Pos {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+                yaw: 4.0,
+            },
+        };
+        let label = Some("for Bob".to_string());
+        vec![
+            Service::SavePlace { pid: 1, at },
+            Service::CreateInvite {
+                conn: 1,
+                label: label.clone(),
+            },
+            Service::CreateInviteFor {
+                reply: oneshot::channel().0,
+                label,
+            },
+        ]
+    }
+
+    #[test]
+    fn queued_work_is_equal_to_itself_and_to_no_other_kind() {
+        let (left, right) = (one_of_each(), one_of_each());
+        for (i, a) in left.iter().enumerate() {
+            for (j, b) in right.iter().enumerate() {
+                assert_eq!(a == b, i == j, "{a:?} and {b:?}");
+            }
         }
     }
 }

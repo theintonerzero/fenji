@@ -1108,6 +1108,23 @@ async fn a_banned_account_in_the_lobby_stays_out_of_the_world() {
 }
 
 #[tokio::test]
+async fn a_store_that_cant_say_whether_the_account_is_banned_keeps_it_in_the_lobby() {
+    // The world's door holds on a store error, as the read of the character does: a 270 the
+    // lobby shows, and the player, still in the lobby, can try again. Here the character still
+    // reads, and only the ban doesn't.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    s.accounts().store().break_bans().await.unwrap();
+    bot.send(lobby::SELECT_ACTOR, &[Value::Int(pid)]).await;
+    refused(&mut bot, code::SERVER_NOT_RESP).await;
+    bot.send(lobby::QUERY_ACTORS, &[]).await;
+    assert_eq!(bot.recv().await.0, lobby::ROLE_LIST, "still in the lobby");
+    assert!(s.status().names().is_empty(), "it never entered");
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_ban_closes_the_accounts_connection_in_the_lobby_and_in_the_world() {
     // What the console's `ban` calls besides `WorldIn::Ban` (HA5): the online registry tells the
     // account's connection to close, as it tells one a newer login replaced, wherever it is.

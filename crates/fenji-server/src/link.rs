@@ -68,7 +68,7 @@ fn filter_machine(i: usize) -> bool {
 
 /// Plays `character` in the world on the gate's connection, until the client leaves, the world
 /// lets go of it, or the online registry tells it to close: a newer login replaces it, or the
-/// account is banned. A banned account doesn't enter.
+/// account is banned. The lobby has checked that the account isn't banned (`gate::entry`).
 #[allow(clippy::too_many_arguments)] // the connection's state, as the lobby loop holds it
 pub(crate) async fn play(
     sock: &mut TcpStream,
@@ -81,20 +81,6 @@ pub(crate) async fn play(
     replaced: &mut oneshot::Receiver<Closing>,
 ) -> anyhow::Result<()> {
     let deadline = gate.limits.write_deadline;
-    // A ban that came after the ticket (M4 hosting spec §8, HA5): the player stays out, and its
-    // connection closes as a ban closes one in the world. A store that can't say lets it in, as
-    // the account check does (Ruling R5), and the error is logged: the console's `ban` closes the
-    // account's connection itself as it stores the ban (`Online::ban`).
-    match gate.accounts.store().ban_of(account.id).await {
-        Ok(None) => {}
-        Ok(Some(_)) => {
-            tracing::info!(%peer, account = %account.username, "banned: not entering the world");
-            return gate::close_with(sock, peer, gate, server, gate::BANNED).await;
-        }
-        Err(e) => {
-            tracing::error!(error = %e, account = %account.username, "checking for a ban: entering all the same");
-        }
-    }
     let pid = character.pid;
     let (tx, mut rx) = mpsc::channel(OUTBOUND);
     // `[access].admins` or an op (M4 hosting spec §8, HA5). A store that can't say enters the
@@ -1096,84 +1082,6 @@ mod tests {
         assert_eq!(
             rest(&mut theirs, &mut client).await,
             [ClientEvent::Closed(b"error auth-failed".to_vec())]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_banned_account_stays_out_of_the_world() {
-        // M4 hosting spec §8, HA5: a ban that came after the login, while the player was in the
-        // lobby. The world hears nothing, and the connection closes as a ban closes one there.
-        let dir = tempfile::tempdir().unwrap();
-        let (gate, mut inbox) = gate(dir.path()).await;
-        let tester = registered(&gate, "tester").await;
-        let store = gate.accounts.store();
-        assert!(store.ban(tester.id, "Griefing", NOW).await.unwrap());
-        let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
-        let (_newer, mut replaced) = oneshot::channel();
-        let played = play(
-            &mut ours,
-            peer,
-            &gate,
-            &mut server,
-            &tester,
-            1,
-            lin(None),
-            &mut replaced,
-        );
-        tokio::time::timeout(Duration::from_secs(5), played)
-            .await
-            .expect("at once")
-            .unwrap();
-        assert!(inbox.try_recv().is_err(), "the world heard of it");
-        drop(ours);
-        assert_eq!(
-            rest(&mut theirs, &mut client).await,
-            [ClientEvent::Closed(gate::BANNED.as_bytes().to_vec())]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_store_that_cant_say_whether_the_account_is_banned_lets_it_in() {
-        // As the account check does (Ruling R5): the store may answer next time, and the ban met
-        // the sign-in and the ticket already. The error is logged.
-        let logs = Logs::default();
-        let log = tracing_subscriber::fmt()
-            .with_writer(logs.clone())
-            .with_ansi(false);
-        let _logging = tracing::subscriber::set_default(log.finish());
-        let dir = tempfile::tempdir().unwrap();
-        let (gate, mut inbox) = gate(dir.path()).await;
-        gate.accounts.store().close().await;
-        let (mut ours, peer, mut server, _theirs, _client) = session().await;
-        let (_newer, mut replaced) = oneshot::channel();
-        let tester = account("tester");
-        let played = play(
-            &mut ours,
-            peer,
-            &gate,
-            &mut server,
-            &tester,
-            1,
-            lin(None),
-            &mut replaced,
-        );
-        let world = async {
-            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
-                panic!("a join first")
-            };
-            drop(out);
-        };
-        let (ended, ()) = tokio::time::timeout(Duration::from_secs(5), async {
-            tokio::join!(played, world)
-        })
-        .await
-        .expect("the world letting go ends it");
-        ended.unwrap();
-        let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
-        assert!(
-            text.lines()
-                .any(|l| l.contains("ERROR") && l.contains("checking for a ban")),
-            "{text}"
         );
     }
 

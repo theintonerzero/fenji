@@ -122,6 +122,14 @@ struct Names {
 #[derive(Resource)]
 struct Motd(watch::Receiver<String>);
 
+/// The last `SetAdmin` for each account, until the account's next join, which takes it over the
+/// flag its link read: a link reads the flag before it joins, so a change that reaches the world
+/// in between is the newer one, whether it finds the account out of the world or on an older
+/// connection. One entry for each account changed since it last joined; account ids are never
+/// handed out again, so an entry can't reach another account.
+#[derive(Resource, Default)]
+struct AdminChanges(HashMap<i64, bool>);
+
 /// When everyone's place is next saved; set by the first tick.
 #[derive(Resource, Default)]
 struct NextSave(Option<u64>);
@@ -185,6 +193,7 @@ impl WorldCore {
             changed: false,
         });
         world.insert_resource(Motd(motd));
+        world.insert_resource(AdminChanges::default());
         let phases = vec![
             ("inbound", phase(inbound)),
             ("movement", phase(super::movement::system)),
@@ -327,6 +336,10 @@ fn inbound(world: &mut World) {
                 world.resource_mut::<Pending>().orders.push(order);
             }
             WorldIn::SetAdmin { account, admin } => {
+                world
+                    .resource_mut::<AdminChanges>()
+                    .0
+                    .insert(account, admin);
                 let player = world.resource::<Index>().accounts.get(&account).copied();
                 if let Some(mut a) = player.and_then(|e| world.get_mut::<Account>(e)) {
                     a.admin = admin;
@@ -394,7 +407,8 @@ fn counted(
 /// A character enters. An account already in the game is replaced. A character that was in the
 /// game a moment ago, on the connection this replaces or one that left within [`KEEP_LEFT`],
 /// enters where it stood: the store's copy, which the login read, may be older, since saves are
-/// written off the tick (#222).
+/// written off the tick (#222). Likewise, an `op` or a `deop` since the account last joined
+/// stands over the flag its link read ([`AdminChanges`]).
 ///
 /// [`KEEP_LEFT`]: super::KEEP_LEFT
 fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
@@ -403,6 +417,11 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
         let _ = out.try_send(WorldOut::Kicked(KickReason::Kicked));
         return;
     }
+    let admin = world
+        .resource_mut::<AdminChanges>()
+        .0
+        .remove(&player.account)
+        .unwrap_or(player.admin);
     let older = world
         .resource::<Index>()
         .accounts
@@ -426,7 +445,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
             },
             Account {
                 id: player.account,
-                admin: player.admin,
+                admin,
             },
             Actor {
                 pid: player.pid,

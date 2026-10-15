@@ -519,11 +519,15 @@ async fn lobby_loop(
                                 }
                             }
                         }
-                        Step::Enter(pid) => match character(gate, account, pid).await {
-                            Ok(c) => {
+                        Step::Enter(pid) => match entry(gate, account, pid).await {
+                            Entry::Play(c) => {
                                 return link::play(sock, peer, gate, server, account, conn, c, replaced).await;
                             }
-                            Err(code) => {
+                            Entry::Banned => {
+                                tracing::info!(%peer, account = %account.username, "banned: not entering the world");
+                                return close_with(sock, peer, gate, server, BANNED).await;
+                            }
+                            Entry::Refused(code) => {
                                 let bytes = script_out(server, &fenji_proto::lobby::error_code(code))?;
                                 if !send_or_replaced(sock, &bytes, deadline, replaced).await? {
                                     tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a reply was blocked: closing");
@@ -679,6 +683,36 @@ async fn on_message(gate: &Gate, account: &Account, ty: u8, body: &[u8]) -> Step
             tracing::debug!(ty, len = body.len(), error = %e, "undecodable message skipped");
             Step::Replies(Vec::new())
         }
+    }
+}
+
+/// What a client's 10 comes to.
+enum Entry {
+    /// Enter the world as this character.
+    Play(Character),
+    /// Refuse with this 270 code: the player stays in the lobby, and may try again.
+    Refused(i64),
+    /// The account is banned: close the connection.
+    Banned,
+}
+
+/// Whether the account may enter the world as its character `pid`. A ban that came after its
+/// ticket keeps it out, and its connection closes as a ban closes one in the world (M4 hosting
+/// spec §8, HA5). A store that can't say whether the account is banned refuses it with
+/// `SERVER_NOT_RESP`, as one that can't read the character does ([`character`]): the player stays
+/// in the lobby, and may try again.
+async fn entry(gate: &Gate, account: &Account, pid: i64) -> Entry {
+    match gate.accounts.store().ban_of(account.id).await {
+        Ok(None) => {}
+        Ok(Some(_)) => return Entry::Banned,
+        Err(e) => {
+            tracing::error!(error = %e, account = %account.username, "checking for a ban to enter the world");
+            return Entry::Refused(fenji_proto::lobby::code::SERVER_NOT_RESP);
+        }
+    }
+    match character(gate, account, pid).await {
+        Ok(c) => Entry::Play(c),
+        Err(code) => Entry::Refused(code),
     }
 }
 
