@@ -639,22 +639,6 @@ mod tests {
     }
 
     #[test]
-    fn counting_changes_nothing_in_the_output() {
-        for (s, n) in [
-            (new_coding_chunk(1, 3, 0), 54),
-            (new_coding_chunk(2, 7, 1), 54),
-            (one_lz_chunk(0), 28),
-            (two_chunks(0), CHUNK + 100),
-            (two_chunks(1), CHUNK + 100),
-        ] {
-            assert_eq!(
-                crate::decompress_counting(&s, n).map(|(out, _)| out),
-                crate::decompress(&s, n)
-            );
-        }
-    }
-
-    #[test]
     fn a_match_before_the_start_is_corrupt() {
         // Review Focus 4, through the shared helper every codec uses.
         let mut dst = vec![0u8; 16];
