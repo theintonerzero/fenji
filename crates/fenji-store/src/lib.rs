@@ -245,6 +245,26 @@ pub(crate) mod test_util {
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_migration_file_is_embedded() {
+        // `sqlx::migrate!` embeds the folder's files when the crate compiles, and only build.rs
+        // tells cargo to compile it again when a file is added (#280). Without it, a local build
+        // after a new migration keeps the old list and opens databases without that migration.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut on_disk: Vec<i64> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter_map(|name| name.strip_suffix(".sql")?.split('_').next()?.parse().ok())
+            .collect();
+        on_disk.sort_unstable();
+        let mut embedded: Vec<i64> = sqlx::migrate!("./migrations")
+            .iter()
+            .map(|m| m.version)
+            .collect();
+        embedded.sort_unstable();
+        assert_eq!(embedded, on_disk);
+    }
+
     #[tokio::test]
     async fn open_uses_wal_and_keeps_data_across_reopen() {
         let dir = tempfile::tempdir().unwrap();
