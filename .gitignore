@@ -56,3 +56,9 @@ fenji.local.toml
 .DS_Store
 .idea/
 .vscode/
+
+# The impeccable skill's local state: its cache, its init interview, and the rejected first-round sketches
+.impeccable/hook.cache.json
+.impeccable/config.json
+.impeccable/questions/
+.impeccable/mocks/
