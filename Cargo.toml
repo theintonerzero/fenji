@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["tools/stub", "tools/luatool", "tools/archive", "tools/oodle-helper", "crates/fenji-data", "crates/fenji-oodle", "crates/fenji-lua", "crates/fenji-proto", "crates/fenji-auth", "crates/fenji-store", "crates/fenji-server", "crates/fenji-launcher"]
+members = ["tools/stub", "tools/luatool", "tools/archive", "tools/oodle-helper", "crates/fenji-data", "crates/fenji-oodle", "crates/fenji-lua", "crates/fenji-proto", "crates/fenji-auth", "crates/fenji-store", "crates/fenji-server", "crates/fenji-launcher", "crates/fenji-console"]
 # Crates in the tree that aren't the workspace's, each a workspace of its own: fenji-oodle's fuzz
 # target (its Cargo.toml and README), and the desktop launcher's Tauri shell, whose webview needs
 # system libraries the workspace's other builds don't (launcher spec §3.1).
@@ -22,7 +22,12 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "json
 # own thread.
 bevy_ecs = { version = "0.20.0", default-features = false, features = ["std"] }
 clap = { version = "4.6.7", features = ["derive"] }
+# The host console's terminal (M4 hosting spec §3.2), with its key events as a stream.
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 fenji-auth = { path = "crates/fenji-auth" }
+# Without its `tui` feature: the wire protocol and the text checks only, as the launcher takes it.
+# The server asks for `tui`.
+fenji-console = { path = "crates/fenji-console", default-features = false }
 fenji-data = { path = "crates/fenji-data" }
 fenji-launcher = { path = "crates/fenji-launcher" }
 fenji-lua = { path = "crates/fenji-lua" }
@@ -34,6 +39,9 @@ if-addrs = "0.15.0"
 libloading = "0.9.0"
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 mlua = { version = "0.12.2", features = ["lua53", "vendored"] }
+# The host console's full-screen front end, on the crossterm above; no widgets or caches it doesn't
+# use.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"] }
 # The server's own TLS certificate (M4 hosting spec §3.10): ring, as rustls has, never aws-lc-rs.
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "http2"] }

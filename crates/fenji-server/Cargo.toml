@@ -13,6 +13,7 @@ axum.workspace = true
 bevy_ecs.workspace = true
 clap.workspace = true
 fenji-auth.workspace = true
+fenji-console = { workspace = true, features = ["tui"] }
 fenji-proto.workspace = true
 fenji-store.workspace = true
 getrandom.workspace = true
