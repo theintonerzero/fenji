@@ -157,6 +157,9 @@ pub struct ServerInfo {
     /// The host's notice for players; empty for none.
     #[serde(default)]
     pub motd: String,
+    /// Who hosts the server, when the host gave a name (launcher spec L9).
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 /// How many players are connected, of how many the server takes.
@@ -500,14 +503,16 @@ impl ServerInfo {
         Ok(())
     }
 
-    /// The facts with the host's words ready to show: the MOTD and the maintenance message with
-    /// their hidden characters as escapes, and a source only if it's a web address.
+    /// The facts with the host's words ready to show: the MOTD, the maintenance message and the
+    /// host's name with their hidden characters as escapes, and a source only if it's a web
+    /// address.
     fn shown(mut self) -> Self {
         self.motd = escape_hidden(&self.motd);
         if let Some(m) = &mut self.maintenance {
             m.message = escape_hidden(&m.message);
         }
         self.source = self.source.filter(|url| web_address(url));
+        self.host = self.host.map(|h| escape_hidden(&h));
         self
     }
 }
@@ -572,6 +577,17 @@ fn server_error(status: u16, body: &[u8]) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hosts_name_is_read_with_its_hidden_characters_shown() {
+        let mut v = serde_json::json!({"name": "M", "version": "0.5.0", "pinned_build": "10015727",
+            "gate_host": "203.0.113.5", "gate_port": 7800, "server_id": 1, "api_version": 1});
+        let info: ServerInfo = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(info.host, None);
+        v["host"] = serde_json::json!("W\u{202E}en");
+        let info: ServerInfo = serde_json::from_value(v).unwrap();
+        assert_eq!(info.shown().host.as_deref(), Some("W\\u{202e}en"));
+    }
 
     #[test]
     fn error_bodies_become_codes() {

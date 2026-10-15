@@ -79,6 +79,9 @@ pub struct ServerInfo {
     /// Where the running server's source code is (`[server] source_url`), which the AGPL's §13
     /// asks a host to offer its players.
     pub source: String,
+    /// Who hosts it (`[server] host`), when the host gave a name (launcher spec L9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// The API's version in `GET /api/v1/server`.

@@ -77,7 +77,14 @@ pub struct ServerConfig {
     /// none. The console can set one over it.
     #[serde(default)]
     pub motd: String,
+    /// Who hosts this server, as players' launchers show it ("hosted by Wen"; launcher spec L9):
+    /// plain text of at most [`HOST_MAX`] characters. Unset, or blank, the launcher names no one.
+    #[serde(default)]
+    pub host: Option<String>,
 }
+
+/// The longest `[server] host`, in characters.
+pub const HOST_MAX: usize = 32;
 
 /// How the account API serves TLS itself (M4 hosting spec §3.10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -315,6 +322,13 @@ impl Config {
     /// Parses `text`, taking a relative store path from `base`.
     pub fn parse(text: &str, base: &Path) -> anyhow::Result<Self> {
         let mut c: Config = toml::from_str(text)?;
+        if c.server
+            .host
+            .as_deref()
+            .is_some_and(|h| h.trim().is_empty())
+        {
+            c.server.host = None;
+        }
         if c.store.path.is_relative() {
             c.store.path = base.join(&c.store.path);
         }
@@ -444,6 +458,13 @@ impl Config {
         if !source_url_ok(&s.source_url) {
             bail!(
                 "[server] source_url: an https:// or http:// address of at most {SOURCE_URL_MAX} characters, without spaces or control characters"
+            );
+        }
+        if let Some(host) = &s.host
+            && (host.chars().count() > HOST_MAX || crate::status::check_message(host).is_err())
+        {
+            bail!(
+                "[server] host: plain text of at most {HOST_MAX} characters, without control or invisible characters"
             );
         }
         if crate::status::check_message(&s.motd).is_err() {
@@ -944,6 +965,28 @@ mod tests {
             let e = format!("{:#}", parse(extra).unwrap_err());
             assert!(e.contains(place), "{extra}: {e}");
         }
+    }
+
+    #[test]
+    fn the_hosts_name_is_short_plain_text() {
+        let parse = |t: &str| Config::parse(t, Path::new("/"));
+        let c = parse("[server]\nname = \"Moonward\"\nhost = \"Wen\"\n").unwrap();
+        assert_eq!(c.server.host.as_deref(), Some("Wen"));
+        assert_eq!(parse("[server]\nname = \"M\"\n").unwrap().server.host, None);
+        let long = parse(&format!(
+            "[server]\nname = \"M\"\nhost = \"{}\"\n",
+            "x".repeat(33)
+        ))
+        .unwrap_err();
+        assert!(long.to_string().contains("[server] host"), "{long}");
+        assert!(parse("[server]\nname = \"M\"\nhost = \"W\\u0007en\"\n").is_err());
+        assert!(
+            parse(&format!(
+                "[server]\nname = \"M\"\nhost = \"{}\"\n",
+                "é".repeat(32)
+            ))
+            .is_ok()
+        );
     }
 
     #[test]
