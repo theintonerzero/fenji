@@ -25,12 +25,12 @@ function day(ms: number): number {
 const DAY = 24 * 60 * 60 * 1000;
 
 /** "21:00", or "Friday 21:00" when it isn't today. */
-function backAround(ms: number, now: number): string {
+export function backAround(ms: number, now: number): string {
   return day(ms) === day(now) ? clock(ms) : `${WEEKDAYS[new Date(ms).getDay()]} ${clock(ms)}`;
 }
 
 /** "today at 18:42", "yesterday at 23:10", or "on 12 Oct". */
-function seen(ms: number, now: number): string {
+export function seen(ms: number, now: number): string {
   const days = Math.round((day(now) - day(ms)) / DAY);
   if (days === 0) {
     return `today at ${clock(ms)}`;
@@ -105,14 +105,17 @@ export function filesOf(done: number, total: number): string {
   return `${done} of ${total} ${total === 1 ? "file" : "files"}`;
 }
 
-/** The client's meta line: "Client verified · build 10015727 · 210 files", or what's wrong. */
-export function clientLine(s: Snapshot): string {
+/**
+ * The client's meta line: "Client verified · build 10015727 · 210 files", or what's wrong. Under
+ * the column's "Your client" heading it starts "Verified".
+ */
+export function clientLine(s: Snapshot, underHeading = false): string {
   const { client } = s;
   const build = `build ${client.build}`;
   const files = `${client.files} files`;
   switch (client.check.kind) {
     case "verified":
-      return ["Client verified", build, files].join(JOIN);
+      return [underHeading ? "Verified" : "Client verified", build, files].join(JOIN);
     case "needsRepair": {
       const wrong = client.check.files.length;
       return [`${client.check.fine} fine`, `${wrong} to repair`, build].join(JOIN);

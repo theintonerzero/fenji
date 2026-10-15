@@ -6,25 +6,39 @@ export type PlayState =
   | { kind: "ready" }
   /** Visible but closed; the screen writes the reason beside it. */
   | { kind: "disabled" }
+  /** Closed while the game starts: it reads "Starting". */
+  | { kind: "starting" }
   | { kind: "running" };
 
 type OnClick = (event: Event) => void;
 
+/**
+ * Sets PLAY's state in place, so a screen keeps one button across snapshots and a player's focus
+ * stays on it (plan LP4).
+ */
+export function setPlay(el: HTMLButtonElement, state: PlayState): void {
+  el.classList.toggle("ember", state.kind === "ready");
+  el.disabled = state.kind !== "ready";
+  switch (state.kind) {
+    case "ready":
+    case "disabled":
+      el.replaceChildren("Play");
+      break;
+    case "starting":
+      el.replaceChildren("Starting");
+      break;
+    case "running":
+      el.replaceChildren(h("span", { class: "dot dot-ok", "aria-hidden": "true" }), "Running");
+      break;
+  }
+}
+
 export const button = {
+  /** PLAY, found by its `play` class. */
   play(state: PlayState, onclick?: OnClick): HTMLButtonElement {
-    switch (state.kind) {
-      case "ready":
-        return h("button", { class: "btn btn-play ember", type: "button", onclick }, "Play");
-      case "disabled":
-        return h("button", { class: "btn btn-play", type: "button", disabled: true }, "Play");
-      case "running":
-        return h(
-          "button",
-          { class: "btn btn-play", type: "button", disabled: true },
-          h("span", { class: "dot dot-ok", "aria-hidden": "true" }),
-          "Running",
-        );
-    }
+    const el = h("button", { class: "btn btn-play play", type: "button", onclick });
+    setPlay(el, state);
+    return el;
   },
 
   /** The screen's one action when it isn't Play: Continue, Create account, Repair from Steam. */

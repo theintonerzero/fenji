@@ -96,6 +96,11 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* Hidden means hidden, whatever display a component sets. */
+[hidden] {
+  display: none !important;
+}
+
 /* The window's chrome isn't text to copy. */
 header,
 nav,

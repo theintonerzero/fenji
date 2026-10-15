@@ -11,6 +11,8 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 fenji-auth.workspace = true
+# Without its `tui` feature: the text checks the server and the host console use.
+fenji-console.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
