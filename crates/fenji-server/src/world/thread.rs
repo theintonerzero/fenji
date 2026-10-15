@@ -17,6 +17,7 @@ use tokio::task::JoinError;
 use super::ecs::{Abandoned, Rules, WorldCore};
 use super::types::{ConnId, KickReason, Service, WorldIn, WorldOut};
 use crate::clock::Clock;
+use crate::invite::InviteBase;
 
 /// How long stopping waits for the last saves (Fenji design spec §6.7: 20 characters in 2 s).
 pub const SAVE_WAIT: Duration = Duration::from_secs(5);
@@ -142,7 +143,7 @@ pub struct RunningWorld {
 pub fn start(
     rules: Rules,
     store: Store,
-    invite_base: Option<String>,
+    invite_base: Option<InviteBase>,
     clock: Arc<dyn Clock>,
 ) -> anyhow::Result<RunningWorld> {
     let (tx, rx) = mpsc::unbounded_channel();

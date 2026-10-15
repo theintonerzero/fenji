@@ -8,12 +8,13 @@ use tokio::sync::mpsc;
 
 use super::types::{Service, WorldIn};
 use crate::clock::Clock;
+use crate::invite::InviteBase;
 
 /// Runs until the world drops its end of `jobs`, after the last job queued. `world` is weak, so
 /// this task never keeps the world from stopping.
 pub(super) async fn run(
     store: Store,
-    invite_base: Option<String>,
+    invite_base: Option<InviteBase>,
     clock: Arc<dyn Clock>,
     mut jobs: mpsc::UnboundedReceiver<Service>,
     world: mpsc::WeakUnboundedSender<WorldIn>,
@@ -48,7 +49,7 @@ pub(super) async fn run(
             Service::CreateInvite { conn, label } => {
                 let made = crate::invite::create(
                     &store,
-                    invite_base.as_deref(),
+                    invite_base.as_ref(),
                     label.as_deref(),
                     clock.now_ms(),
                     None,

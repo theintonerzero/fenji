@@ -68,13 +68,25 @@ struct Running {
     log: tempfile::NamedTempFile,
 }
 
+/// Free ports for both listeners, whatever the config says (Ruling HP7), so that no test needs
+/// fixed ones.
+const ANY_PORT: [(&str, &str); 2] = [
+    ("FENJI_LOGIN_BIND", "127.0.0.1:0"),
+    ("FENJI_API_BIND", "127.0.0.1:0"),
+];
+
 impl Running {
     fn start(dir: &Path, args: &[&str]) -> Self {
+        Self::start_with(dir, args, &ANY_PORT)
+    }
+
+    fn start_with(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Self {
         let log = tempfile::NamedTempFile::new().unwrap();
         let child = std::process::Command::new(env!("CARGO_BIN_EXE_fenji-server"))
             .current_dir(dir)
             .args(args)
             .env("RUST_LOG", "info")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log.reopen().unwrap())
@@ -152,9 +164,10 @@ impl Drop for Running {
 
 #[test]
 fn first_run_writes_the_config_and_data_then_starts() {
-    // H9: with no config at the default path, fenji.toml in the working directory, the server
-    // writes it and data/, starts on the template's loopback addresses (127.0.0.1:7800 and 7801,
-    // which must be free) and says so. A child process, as the default path is the working
+    // H9, with Amendment A's HA3: with no config at the default path, fenji.toml in the working
+    // directory, the server writes it and data/, makes its own key, starts and says who can join.
+    // The template listens on every interface; the environment moves both listeners to free
+    // loopback ports here (Ruling HP7). A child process, as the default path is the working
     // directory's.
     let dir = tempfile::tempdir().unwrap();
     let mut server = Running::start(dir.path(), &[]);
@@ -177,6 +190,15 @@ fn first_run_writes_the_config_and_data_then_starts() {
         line.contains(&format!("{folder}.")),
         "names its folder: {line}"
     );
+    // Both on loopback, where the environment put them (the log may colour its fields).
+    let running = said[at("Fenji is running")..].lines().next().unwrap();
+    assert!(
+        running.matches("127.0.0.1:").count() == 2 && !running.contains("0.0.0.0"),
+        "where the environment put them: {running}"
+    );
+    for warning in ["trusted_proxies", "invite links need"] {
+        assert!(!said.contains(warning), "nothing to warn about: {said}");
+    }
     assert!(dir.path().join("data/fenji.db").is_file());
     let status = server.stop();
     assert!(
@@ -188,16 +210,35 @@ fn first_run_writes_the_config_and_data_then_starts() {
         std::fs::read_to_string(dir.path().join("fenji.toml")).unwrap(),
         template()
     );
+    assert!(dir.path().join("data/tls/cert.pem").is_file());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let data = std::fs::metadata(dir.path().join("data")).unwrap();
-        assert_eq!(
-            data.permissions().mode() & 0o777,
-            0o700,
-            "data/ is owner-only"
-        );
+        let mode = |p: &str| {
+            std::fs::metadata(dir.path().join(p))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("data"), 0o700, "data/ is owner-only");
+        assert_eq!(mode("data/tls"), 0o700, "data/tls/ is owner-only");
+        assert_eq!(mode("data/tls/key.pem"), 0o600, "the key is owner-only");
     }
+}
+
+#[test]
+fn a_bind_in_the_environment_that_doesnt_parse_stops_the_start_and_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let config =
+        "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n";
+    std::fs::write(dir.path().join("fenji.toml"), config).unwrap();
+    let mut server = Running::start_with(dir.path(), &[], &[("FENJI_API_BIND", "localhost:7801")]);
+    let status = server.wait();
+    let said = server.said();
+    assert!(!status.success(), "{said}");
+    assert!(said.contains("FENJI_API_BIND"), "{said}");
+    assert!(!said.contains("Fenji is running"), "{said}");
 }
 
 #[test]
@@ -212,6 +253,8 @@ fn an_existing_config_at_the_default_path_is_used_as_it_is() {
     let said = server.said();
     assert!(cfg!(not(unix)) || status.success(), "{status}:\n{said}");
     assert!(!said.contains("First run"), "{said}");
+    // A loopback API with no public_api has no proxy in front to trust: nothing to warn about.
+    assert!(!said.contains("trusted_proxies"), "{said}");
     let now = std::fs::read(dir.path().join("fenji.toml")).unwrap();
     assert_eq!(now, mine.as_bytes(), "the file stays byte for byte");
     assert!(dir.path().join("mine.db").is_file());
@@ -404,8 +447,11 @@ async fn invite_create_prints_the_code_and_a_link_with_the_code_in_the_fragment(
     .await;
     let code = text.lines().find_map(|l| l.strip_prefix("code: ")).unwrap();
     assert!(fenji_auth::invite::InviteCode::parse(code).is_some());
+    // Amendment A, HA4: each link labelled, then the code.
     assert!(
-        text.contains(&format!("https://play.example.net/#invite={code}")),
+        text.starts_with(&format!(
+            "link (public_api): https://play.example.net/#invite={code}\ncode: {code}\n"
+        )),
         "{text}"
     );
     let list = run(
@@ -419,6 +465,11 @@ async fn invite_create_prints_the_code_and_a_link_with_the_code_in_the_fragment(
     assert!(!list.contains(code), "the list never shows codes: {list}");
 }
 
+/// The link lines of `invite create`'s output, in order.
+fn links(text: &str) -> Vec<&str> {
+    text.lines().filter(|l| l.starts_with("link (")).collect()
+}
+
 #[tokio::test]
 async fn an_invite_link_names_the_account_api_not_the_gate() {
     let dir = tempfile::tempdir().unwrap();
@@ -426,14 +477,97 @@ async fn an_invite_link_names_the_account_api_not_the_gate() {
     // which fenji-launch accepts for loopback only. public_host names the gate, not the API.
     let text = invite_with(dir.path(), "public_host = \"127.0.0.1\"\n").await;
     let code = text.lines().find_map(|l| l.strip_prefix("code: ")).unwrap();
-    assert!(
-        text.contains(&format!("link: http://127.0.0.1:7801/#invite={code}")),
+    assert_eq!(
+        links(&text),
+        [format!(
+            "link (this computer): http://127.0.0.1:7801/#invite={code}"
+        )],
         "{text}"
     );
-    // An API that listens beyond loopback, with no public_api: no link rather than a wrong one.
-    let text = invite_with(dir.path(), "api_bind = \"0.0.0.0:7801\"\n").await;
+    // #174: a public gate behind a loopback API, with no public_api: no link rather than a
+    // wrong one, and what to set.
+    let text = invite_with(dir.path(), "public_host = \"203.0.113.5\"\n").await;
     assert!(!text.contains("#invite="), "{text}");
+    assert!(
+        text.contains("public_api") && text.contains("tls = \"self\""),
+        "says what to set: {text}"
+    );
+    // An API that listens beyond loopback, without TLS or public_api: plain http is for this
+    // computer only, and the rest needs one of those.
+    let text = invite_with(dir.path(), "api_bind = \"0.0.0.0:7801\"\n").await;
+    let code = text.lines().find_map(|l| l.strip_prefix("code: ")).unwrap();
+    assert_eq!(
+        links(&text),
+        [format!(
+            "link (this computer): http://127.0.0.1:7801/#invite={code}"
+        )],
+        "{text}"
+    );
     assert!(text.contains("public_api"), "says what to set: {text}");
+}
+
+#[tokio::test]
+async fn with_the_servers_own_key_every_link_carries_its_pin() {
+    // Amendment A, HA4: with neither public_api nor public_host, a link for each of the machine's
+    // addresses (which this test can't know), then this computer's, then a word on the internet.
+    let dir = tempfile::tempdir().unwrap();
+    let server = "tls = \"self\"\napi_bind = \"0.0.0.0:7801\"\n";
+    let cfg = Config::parse(&format!("[server]\nname = \"Fenji\"\n{server}"), dir.path()).unwrap();
+    let tls = fenji_server::tls::folder(&cfg.store.path);
+    let key = fenji_server::tls::ServerKey::load_or_make(&tls, "127.0.0.1").unwrap();
+    let pin = &key.pin;
+    let text = invite_with(dir.path(), server).await;
+    let code = text.lines().find_map(|l| l.strip_prefix("code: ")).unwrap();
+    let links = links(&text);
+    assert_eq!(
+        links.last().copied(),
+        Some(
+            format!("link (this computer): https://127.0.0.1:7801/#invite={code}&pin={pin}")
+                .as_str()
+        ),
+        "{text}"
+    );
+    for link in &links {
+        let (_, url) = link.split_once("): https://").unwrap();
+        assert!(
+            url.ends_with(&format!(":7801/#invite={code}&pin={pin}")),
+            "{link}"
+        );
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let code_at = lines.iter().position(|l| l.starts_with("code: ")).unwrap();
+    assert_eq!(code_at, links.len(), "the links, then the code: {text}");
+    assert!(
+        lines[code_at + 1].contains("7800 and 7801") && lines[code_at + 1].contains("VPN"),
+        "{text}"
+    );
+    // With public_host, one link, there.
+    let text = invite_with(
+        dir.path(),
+        &format!("{server}public_host = \"203.0.113.5\"\n"),
+    )
+    .await;
+    let code = text.lines().find_map(|l| l.strip_prefix("code: ")).unwrap();
+    assert_eq!(
+        self::links(&text),
+        [format!(
+            "link (public_host): https://203.0.113.5:7801/#invite={code}&pin={pin}"
+        )],
+        "{text}"
+    );
+    assert!(!text.contains("VPN"), "{text}");
+}
+
+#[tokio::test]
+async fn before_the_server_has_made_its_key_an_invite_is_its_code_alone_and_no_key_is_made() {
+    // `invite create` only reads the key: one made here could be another user's than the
+    // server's, which then couldn't read it.
+    let dir = tempfile::tempdir().unwrap();
+    let text = invite_with(dir.path(), "tls = \"self\"\napi_bind = \"0.0.0.0:7801\"\n").await;
+    assert!(text.starts_with("code: "), "{text}");
+    assert!(!text.contains("#invite="), "{text}");
+    assert!(text.contains("key"), "says why: {text}");
+    assert!(!dir.path().join("tls").exists());
 }
 
 #[tokio::test]
@@ -512,7 +646,7 @@ async fn cli_writes_while_a_server_holds_the_database() {
         },
     )
     .await;
-    assert!(text.starts_with("code: "), "{text}");
+    assert!(text.contains("\ncode: "), "{text}");
     holder.await.unwrap().unwrap();
     assert_eq!(held.list_invites().await.unwrap().len(), 1);
 }

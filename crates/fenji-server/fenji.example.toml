@@ -4,11 +4,14 @@
 [server]
 id = 1                          # sent to the client as gj_uinfo's first field
 name = "Fenji"                  # shown by the client; no colons
-public_host = "127.0.0.1"       # what launchers connect to: an IPv4 address, or a name with one
-login_bind = "127.0.0.1:7800"   # the gate: game connections
-api_bind = "127.0.0.1:7801"     # the account API; put Caddy (TLS) in front of it to face the internet
-# public_api = "https://play.example.net"   # where players reach the account API (invite links
-#                                            # name it); unset, links use api_bind when loopback
+login_bind = "127.0.0.1:7800"   # the gate: game connections (0.0.0.0 listens on every interface)
+api_bind = "127.0.0.1:7801"     # the account API, where launchers sign players in
+# tls = "self"                  # the account API speaks TLS with the server's own key, made in
+#                               # data/tls (keep it with your backups); invite links carry its pin
+# public_host = "203.0.113.5"   # the address players' game clients connect to (the gate); unset,
+#                               # each player's is the one they reached the account API at
+# public_api = "https://play.example.net"   # where players reach the account API, which invite
+#                                            # links name: Caddy (TLS) in front of api_bind, say
 max_players = 20
 trusted_proxies = []            # e.g. ["127.0.0.1"] when Caddy runs on this machine
 tick_hz = 20                    # the world's ticks per second (1 to 60)

@@ -9,7 +9,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 
 use crate::clock::{Clock, Utc};
-use crate::config::Config;
+use crate::config::{Config, Tls};
 use crate::text::escape_hidden;
 
 /// Fenji's server: the game gate, the account API and the admin commands.
@@ -131,18 +131,49 @@ pub async fn admin(
         } => {
             let expires_at = expires
                 .map(|d| now.saturating_add(i64::try_from(d.as_millis()).unwrap_or(i64::MAX)));
-            let base = cfg.invite_base();
+            // The pin from the certificate alone, and no key made here: this may run as another
+            // user than the server's, who couldn't read a key this run made.
+            let tls = crate::tls::folder(&cfg.store.path);
+            let own_key = cfg.server.tls == Some(Tls::OwnKey);
+            let pin = if own_key {
+                crate::tls::pin_in(&tls)?
+            } else {
+                None
+            };
+            let api_port = cfg.server.api_bind.port();
+            let bases = crate::invite::bases(cfg, pin.as_deref(), api_port);
             let made =
-                crate::invite::create(&store, base.as_deref(), label.as_deref(), now, expires_at)
-                    .await?;
+                crate::invite::create(&store, None, label.as_deref(), now, expires_at).await?;
+            for (label, base) in &bases {
+                let link = base.invite_link(&made.code);
+                writeln!(out, "link ({}): {link}", escape_hidden(label))?;
+            }
             writeln!(out, "code: {}", made.code)?;
-            match &made.link {
-                Some(link) => writeln!(out, "link: {link}")?,
-                None => writeln!(
+            let s = &cfg.server;
+            if own_key && pin.is_none() {
+                writeln!(
                     out,
-                    "link: none; set [server] public_api to the address players reach the \
-                     account API at (such as https://play.example.net), or give players the code"
-                )?,
+                    "link: none yet; the server makes its key in {} when it first starts with \
+                     tls = \"self\", and links carry the key's pin",
+                    tls.display()
+                )?;
+            } else if bases.is_empty() {
+                writeln!(out, "link: none; {}", crate::invite::NO_LINKS)?;
+            } else if !own_key && cfg.invite_base(None).is_none() {
+                // Links for this computer alone, from an API that listens beyond it.
+                writeln!(out, "other computers: {}", crate::invite::NO_LINKS)?;
+            } else if own_key
+                && s.public_api.is_none()
+                && s.public_host.is_none()
+                && !s.api_bind.ip().to_canonical().is_loopback()
+            {
+                // A link for each of the machine's addresses (HA4), and how to go beyond them.
+                writeln!(
+                    out,
+                    "friends over the internet: open ports {} and {api_port} on your router, or \
+                     use a VPN: see docs/hosting.md",
+                    s.login_bind.port()
+                )?;
             }
             if let Some(at) = expires_at {
                 writeln!(out, "expires: {}", time(at))?;

@@ -1,13 +1,17 @@
 //! `fenji.toml` (M3 spec D16; M4 world spec §3): read whole, checked, then used. Unknown keys and
 //! impossible values are refused with the place they were found. Changes need a restart. A first
-//! run without one writes it, and `init` writes one to edit (M4 hosting spec §3.6).
+//! run without one writes it, and `init` writes one to edit (M4 hosting spec §3.6). Two variables
+//! of the environment move the listeners over the file's (Ruling HP7).
+use std::ffi::OsString;
 use std::io::Write;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use serde::Deserialize;
+
+use crate::invite::{InviteBase, THIS_COMPUTER};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,19 +39,25 @@ pub struct ServerConfig {
     pub id: u32,
     /// Shown by the client; it splits `gj_uinfo` on colons, so none here.
     pub name: String,
-    /// What launchers connect to: an IPv4 address, or a name that has one.
-    #[serde(default = "localhost")]
-    pub public_host: String,
+    /// The address players' game clients connect to (the gate): an IPv4 address, or a name that
+    /// has one. The account API's address is `public_api`. Unset, each player's is the one they
+    /// reached the account API at (M4 hosting spec §8, HA2).
+    #[serde(default)]
+    pub public_host: Option<String>,
     /// The gate: game connections.
     #[serde(default = "login_bind")]
     pub login_bind: SocketAddr,
     /// The account API.
     #[serde(default = "api_bind")]
     pub api_bind: SocketAddr,
+    /// `"self"`: the account API speaks TLS with the server's own key, which invite links pin (M4
+    /// hosting spec §3.10). Unset, plain http: for loopback, or behind a proxy that holds the
+    /// certificate.
+    #[serde(default)]
+    pub tls: Option<Tls>,
     /// The address players reach the account API at, which invite links name:
     /// `https://<host>[:<port>]`, or `http://` to a loopback address (fenji-launch refuses plain
-    /// http anywhere else). Unset, links name `api_bind` when it is a loopback address, and are
-    /// left out otherwise.
+    /// http anywhere else). Unset, links start as [`Config::invite_base`] and `invite::bases` say.
     #[serde(default)]
     pub public_api: Option<String>,
     #[serde(default = "twenty")]
@@ -67,6 +77,15 @@ pub struct ServerConfig {
     /// none. The console can set one over it.
     #[serde(default)]
     pub motd: String,
+}
+
+/// How the account API serves TLS itself (M4 hosting spec §3.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tls {
+    /// `tls = "self"`: with the server's own key, made on its first start in `data/tls/`.
+    #[serde(rename = "self")]
+    OwnKey,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -215,9 +234,6 @@ fn one_and_a_half() -> f64 {
 fn five_minutes() -> u64 {
     300
 }
-fn localhost() -> String {
-    "127.0.0.1".into()
-}
 fn login_bind() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 7800))
 }
@@ -248,12 +264,52 @@ fn source_url_ok(url: &str) -> bool {
             .any(|c| c.is_whitespace() || crate::text::hidden(c))
 }
 
+/// Whether `host` is one players can reach (`[server] public_host`, or the host a request names):
+/// an IPv4 address that isn't 0.0.0.0, a broadcast or a multicast one, or a host name, whose
+/// dot-separated labels of 1 to 63 letters, digits and hyphens neither start nor end with a hyphen,
+/// at most 253 characters in all, the last not all digits (RFC 1123), so that no IPv4 address in
+/// another spelling passes as a name.
+pub(crate) fn reachable_host(host: &str) -> bool {
+    if let Ok(ip) = host.parse::<Ipv4Addr>() {
+        return !(ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast());
+    }
+    let label_ok = |l: &str| {
+        (1..=63).contains(&l.len())
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+    };
+    host.len() <= 253
+        && host.split('.').all(label_ok)
+        && host
+            .rsplit('.')
+            .next()
+            .is_some_and(|last| !last.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether `host`, a [`reachable_host`], is this computer's own.
+fn loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The variable of the environment that moves `[server] login_bind` over the file's (Ruling HP7).
+pub const LOGIN_BIND_VAR: &str = "FENJI_LOGIN_BIND";
+
+/// The variable of the environment that moves `[server] api_bind` over the file's (Ruling HP7).
+pub const API_BIND_VAR: &str = "FENJI_API_BIND";
+
 impl Config {
+    /// The configuration at `path`, with the binds the environment gives over the file's
+    /// ([`Config::override_binds`]): what `fenji-server` runs with, for `run` and the admin
+    /// commands alike.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("can't read {}", path.display()))?;
         let base = path.parent().unwrap_or(Path::new("."));
-        Self::parse(&text, base).with_context(|| format!("in {}", path.display()))
+        Self::parse(&text, base)
+            .with_context(|| format!("in {}", path.display()))?
+            .override_binds(|name| std::env::var_os(name))
     }
 
     /// Parses `text`, taking a relative store path from `base`.
@@ -266,14 +322,80 @@ impl Config {
         Ok(c)
     }
 
-    /// What invite links start with (they end `/#invite=<code>`): `public_api`, or `api_bind`
-    /// over http when that is a loopback address, or none.
-    pub fn invite_base(&self) -> Option<String> {
-        if let Some(api) = &self.server.public_api {
-            return api_origin(api);
+    /// `login_bind` and `api_bind` from [`LOGIN_BIND_VAR`] and [`API_BIND_VAR`] as `var` reads
+    /// them, each where it's set (Ruling HP7): a container, a service or a test moves the
+    /// listeners without editing the file. A value that isn't an address and port is an error that
+    /// names its variable, and the binds are checked as the file's are.
+    pub fn override_binds(
+        mut self,
+        var: impl Fn(&str) -> Option<OsString>,
+    ) -> anyhow::Result<Self> {
+        let mut moved = false;
+        for (name, bind, example) in [
+            (LOGIN_BIND_VAR, &mut self.server.login_bind, "0.0.0.0:7800"),
+            (API_BIND_VAR, &mut self.server.api_bind, "0.0.0.0:7801"),
+        ] {
+            let Some(value) = var(name) else {
+                continue;
+            };
+            *bind = value
+                .to_str()
+                .and_then(|v| v.parse().ok())
+                .with_context(|| {
+                    format!("{name}: {value:?} isn't an address and port, such as {example}")
+                })?;
+            moved = true;
         }
-        let a = self.server.api_bind;
-        a.ip().is_loopback().then(|| format!("http://{a}"))
+        if moved {
+            self.check()
+                .with_context(|| format!("with {LOGIN_BIND_VAR} and {API_BIND_VAR}"))?;
+        }
+        Ok(self)
+    }
+
+    /// Where invite links start (M4 hosting spec §3.11), `pin` being the server's own key's:
+    /// 1. `public_api`'s origin;
+    /// 2. with `tls = "self"`, `https://<public_host>:<api_bind's port>`;
+    /// 3. `api_bind` itself, when it's a loopback address and `public_host` is one too or unset;
+    /// 4. otherwise none: `run` warns, with [`crate::invite::NO_LINKS`].
+    ///
+    /// Under `tls = "self"` each carries the pin, and there's none without it: a launcher couldn't
+    /// trust the server's key. With neither `public_api` nor `public_host` set, `invite::bases`
+    /// also gives one for each of the machine's addresses (Amendment A, HA4).
+    pub fn invite_base(&self, pin: Option<&str>) -> Option<InviteBase> {
+        self.labelled_invite_base(pin, self.server.api_bind.port())
+            .map(|(_, base)| base)
+    }
+
+    /// [`Config::invite_base`], for an API listening on `api_port`, with the rule's label for
+    /// `invite`: `public_api`, `public_host` or [`THIS_COMPUTER`].
+    pub(crate) fn labelled_invite_base(
+        &self,
+        pin: Option<&str>,
+        api_port: u16,
+    ) -> Option<(&'static str, InviteBase)> {
+        let s = &self.server;
+        let own_key = s.tls == Some(Tls::OwnKey);
+        let pin = match (own_key, pin) {
+            (true, None) => return None,
+            (true, Some(pin)) => Some(pin.to_owned()),
+            (false, _) => None,
+        };
+        if let Some(api) = &s.public_api {
+            let origin = api_origin(api)?;
+            return Some(("public_api", InviteBase { origin, pin }));
+        }
+        if let (true, Some(host)) = (own_key, &s.public_host) {
+            let origin = format!("https://{host}:{api_port}");
+            return Some(("public_host", InviteBase { origin, pin }));
+        }
+        let api = s.api_bind.ip().to_canonical();
+        if api.is_loopback() && s.public_host.as_deref().is_none_or(loopback_host) {
+            let scheme = if own_key { "https" } else { "http" };
+            let origin = format!("{scheme}://{}", SocketAddr::new(api, api_port));
+            return Some((THIS_COMPUTER, InviteBase { origin, pin }));
+        }
+        None
     }
 
     fn check(&self) -> anyhow::Result<()> {
@@ -296,8 +418,10 @@ impl Config {
         if s.max_players == 0 {
             bail!("[server] max_players: at least 1");
         }
-        if s.public_host.trim().is_empty() || s.public_host.contains([':', '/', ' ']) {
-            bail!("[server] public_host: a host name or an IPv4 address, without a port");
+        if s.public_host.as_deref().is_some_and(|h| !reachable_host(h)) {
+            bail!(
+                "[server] public_host: a host name or an IPv4 address players can reach, without a port"
+            );
         }
         if s.public_api
             .as_deref()
@@ -305,6 +429,15 @@ impl Config {
         {
             bail!(
                 "[server] public_api: https://<host>[:<port>], or http:// to a loopback address, with no path"
+            );
+        }
+        if s.tls == Some(Tls::OwnKey)
+            && s.public_api
+                .as_deref()
+                .is_some_and(|api| !api.starts_with("https://"))
+        {
+            bail!(
+                "[server] public_api: https://, as with tls = \"self\" the account API speaks TLS"
             );
         }
         if !source_url_ok(&s.source_url) {
@@ -398,11 +531,12 @@ pub const DEFAULT_PATH: &str = "fenji.toml";
 
 /// What a first run says, at `info`, `<folder>` being where it wrote: the first line before the
 /// server starts, so that a first run that can't start still explains its new files, and the
-/// others once it runs.
+/// others once it runs (Amendment A, HA3).
 pub const FIRST_RUN: [&str; 3] = [
     "First run: wrote fenji.toml and data/ in <folder>.",
-    "Type `invite` to make your first invite link.",
-    "Only this computer can join until you set public_host: see docs/hosting.md.",
+    "Friends on this network can join now: type `invite` for a link.",
+    "To let in friends over the internet, open ports 7800 and 7801 on your router, or use a VPN: \
+     see docs/hosting.md.",
 ];
 
 /// [`FIRST_RUN`]'s lines for a first run in `folder`, for `run` and the host console to show.
@@ -411,14 +545,30 @@ pub fn first_run_lines(folder: &Path) -> [String; 3] {
     FIRST_RUN.map(|line| line.replace("<folder>", &folder))
 }
 
-// `[store] path` in the example, and in the template: as wide as each other, so that the comment
-// after it stays in line.
-const EXAMPLE_STORE_PATH: &str = "\npath = \"fenji.db\"     ";
-const TEMPLATE_STORE_PATH: &str = "\npath = \"data/fenji.db\"";
+/// The lines the template changes in the example, each pair as wide as each other so that the
+/// comments after them stay in line: the database in `data/`, and the LAN-ready start of Amendment
+/// A's HA3, listening on every interface with the server's own key.
+const TEMPLATE_EDITS: [(&str, &str); 4] = [
+    ("\npath = \"fenji.db\"     ", "\npath = \"data/fenji.db\""),
+    (
+        "\nlogin_bind = \"127.0.0.1:7800\"",
+        "\nlogin_bind = \"0.0.0.0:7800\"  ",
+    ),
+    (
+        "\napi_bind = \"127.0.0.1:7801\"",
+        "\napi_bind = \"0.0.0.0:7801\"  ",
+    ),
+    ("\n# tls = \"self\"", "\ntls = \"self\"  "),
+];
 
-/// What a first run and `init` write: the example, with the database in `data/`, the data folder.
+/// What a first run and `init` write: the example, with the database in `data/`, the data folder,
+/// and ready for the LAN (HA3): both listeners on every interface, and `tls = "self"`.
 pub fn template() -> String {
-    EXAMPLE.replacen(EXAMPLE_STORE_PATH, TEMPLATE_STORE_PATH, 1)
+    TEMPLATE_EDITS
+        .iter()
+        .fold(EXAMPLE.to_owned(), |text, (from, to)| {
+            text.replacen(from, to, 1)
+        })
 }
 
 /// Writes the [`template`] at `path` for a host to edit (`fenji-server init`), making any folders
@@ -510,6 +660,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::invite::InviteBase;
 
     #[test]
     fn the_example_parses_and_resolves_the_store_path() {
@@ -529,12 +680,36 @@ mod tests {
     }
 
     #[test]
-    fn the_template_parses_binds_loopback_and_keeps_the_database_in_data() {
+    fn the_template_is_ready_for_the_lan_with_its_own_key_and_keeps_the_database_in_data() {
+        // Amendment A, HA3: listening on every interface, with the server's own key.
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::parse(&template(), dir.path()).unwrap();
         assert_eq!(cfg.store.path, dir.path().join("data/fenji.db"));
-        assert!(cfg.server.login_bind.ip().is_loopback());
-        assert!(cfg.server.api_bind.ip().is_loopback());
+        assert_eq!(cfg.server.login_bind, "0.0.0.0:7800".parse().unwrap());
+        assert_eq!(cfg.server.api_bind, "0.0.0.0:7801".parse().unwrap());
+        assert_eq!(cfg.server.tls, Some(Tls::OwnKey));
+        assert_eq!(
+            cfg.server.public_host, None,
+            "HA2: players play where they came in"
+        );
+        assert_eq!(cfg.server.public_api, None);
+        // The example keeps the defaults: loopback, no TLS of the server's own.
+        let example = Config::parse(EXAMPLE, dir.path()).unwrap();
+        assert!(example.server.login_bind.ip().is_loopback());
+        assert!(example.server.api_bind.ip().is_loopback());
+        assert_eq!(example.server.tls, None);
+        assert_eq!(example.server.public_host, None);
+        // Only those lines differ, and the comments after them stay in line.
+        let written = template();
+        let changed: Vec<(&str, &str)> = EXAMPLE
+            .lines()
+            .zip(written.lines())
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(changed.len(), 4, "{changed:#?}");
+        for (example, template) in changed {
+            assert_eq!(example.find(" # "), template.find(" # "), "{template}");
+        }
     }
 
     #[test]
@@ -561,13 +736,90 @@ mod tests {
     }
 
     #[test]
-    fn the_first_run_lines_name_the_folder() {
+    fn the_first_run_lines_name_the_folder_and_say_who_can_join() {
+        // Amendment A, HA3.
         let lines = first_run_lines(Path::new("/srv/fenji"));
         assert_eq!(
-            lines[0],
-            "First run: wrote fenji.toml and data/ in /srv/fenji."
+            lines,
+            [
+                "First run: wrote fenji.toml and data/ in /srv/fenji.",
+                "Friends on this network can join now: type `invite` for a link.",
+                "To let in friends over the internet, open ports 7800 and 7801 on your router, \
+                 or use a VPN: see docs/hosting.md.",
+            ]
         );
-        assert_eq!(lines[1..], FIRST_RUN[1..]);
+    }
+
+    #[test]
+    fn the_environment_moves_the_binds_and_a_bad_value_names_its_variable() {
+        // Ruling HP7: FENJI_LOGIN_BIND and FENJI_API_BIND, over the file's.
+        let file = Config::parse("[server]\nname = \"F\"\n", Path::new("/")).unwrap();
+        let env = |pairs: &[(&str, &str)]| {
+            let pairs: Vec<(String, String)> = pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| std::ffi::OsString::from(v))
+            }
+        };
+        let moved = file
+            .clone()
+            .override_binds(env(&[
+                ("FENJI_LOGIN_BIND", "127.0.0.1:0"),
+                ("FENJI_API_BIND", "[::1]:9001"),
+            ]))
+            .unwrap();
+        assert_eq!(moved.server.login_bind, "127.0.0.1:0".parse().unwrap());
+        assert_eq!(moved.server.api_bind, "[::1]:9001".parse().unwrap());
+        let one = file
+            .clone()
+            .override_binds(env(&[("FENJI_API_BIND", "0.0.0.0:9001")]))
+            .unwrap();
+        assert_eq!(one.server.login_bind, file.server.login_bind);
+        assert_eq!(one.server.api_bind, "0.0.0.0:9001".parse().unwrap());
+        let none = file.clone().override_binds(|_| None).unwrap();
+        assert_eq!(
+            (none.server.login_bind, none.server.api_bind),
+            (file.server.login_bind, file.server.api_bind)
+        );
+        for (name, value) in [
+            ("FENJI_LOGIN_BIND", "7800"),
+            ("FENJI_LOGIN_BIND", ""),
+            ("FENJI_API_BIND", "localhost:7801"),
+            ("FENJI_API_BIND", "0.0.0.0"),
+        ] {
+            let e = file
+                .clone()
+                .override_binds(env(&[(name, value)]))
+                .unwrap_err();
+            let e = format!("{e:#}");
+            assert!(
+                e.contains(name) && e.contains("an address and port"),
+                "{name}={value:?}: {e}"
+            );
+        }
+        // They're checked as the file's are: the two can't share an address.
+        let e = file
+            .override_binds(env(&[("FENJI_LOGIN_BIND", "127.0.0.1:7801")]))
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("api_bind"), "{e:#}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bind_that_isnt_text_names_its_variable_too() {
+        use std::os::unix::ffi::OsStringExt;
+        let file = Config::parse("[server]\nname = \"F\"\n", Path::new("/")).unwrap();
+        let e = file
+            .override_binds(|name| {
+                (name == "FENJI_API_BIND").then(|| std::ffi::OsString::from_vec(vec![0xff]))
+            })
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("FENJI_API_BIND"), "{e:#}");
     }
 
     #[test]
@@ -633,6 +885,8 @@ mod tests {
             (1, 20, 9)
         );
         assert!(c.server.trusted_proxies.is_empty());
+        assert_eq!((c.server.public_host, c.server.tls), (None, None));
+        assert!(c.server.login_bind.ip().is_loopback() && c.server.api_bind.ip().is_loopback());
         assert_eq!((c.server.tick_hz, c.world.start_scene), (20, 5));
         assert_eq!(
             (c.world.move_tolerance, c.world.save_every_secs),
@@ -753,6 +1007,142 @@ mod tests {
         }
     }
 
+    /// What `invite_base` gives without a pin: its origin.
+    fn origin(c: &Config) -> Option<String> {
+        c.invite_base(None).map(|b| b.origin)
+    }
+
+    #[test]
+    fn invite_links_start_where_players_can_reach() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), dir.path()).unwrap()
+        };
+        let at = |o: &str, p: Option<&str>| {
+            Some(InviteBase {
+                origin: o.into(),
+                pin: p.map(Into::into),
+            })
+        };
+
+        let local = cfg("api_bind = \"127.0.0.1:7801\"\npublic_host = \"127.0.0.1\"\n");
+        assert_eq!(local.invite_base(None), at("http://127.0.0.1:7801", None));
+
+        // #174: a public gate behind a loopback API with no public_api has no usable link.
+        let proxied = cfg("api_bind = \"127.0.0.1:7801\"\npublic_host = \"203.0.113.5\"\n");
+        assert_eq!(proxied.invite_base(None), None);
+
+        let named =
+            cfg("public_api = \"https://play.example.net\"\npublic_host = \"203.0.113.5\"\n");
+        assert_eq!(
+            named.invite_base(None),
+            at("https://play.example.net", None)
+        );
+
+        let own =
+            cfg("tls = \"self\"\napi_bind = \"0.0.0.0:7801\"\npublic_host = \"203.0.113.5\"\n");
+        assert_eq!(
+            own.invite_base(Some("PIN")),
+            at("https://203.0.113.5:7801", Some("PIN"))
+        );
+
+        let own_named = cfg(
+            "tls = \"self\"\npublic_api = \"https://play.example.net:7801\"\npublic_host = \"203.0.113.5\"\n",
+        );
+        assert_eq!(
+            own_named.invite_base(Some("PIN")),
+            at("https://play.example.net:7801", Some("PIN"))
+        );
+    }
+
+    #[test]
+    fn with_its_own_key_every_link_carries_the_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), dir.path()).unwrap()
+        };
+        // A launcher can't trust the server's own key without its pin: no link goes without it.
+        let own = cfg("tls = \"self\"\napi_bind = \"127.0.0.1:7801\"\n");
+        assert_eq!(own.invite_base(None), None);
+        let pinned = own.invite_base(Some("PIN")).unwrap();
+        assert_eq!(
+            (pinned.origin.as_str(), pinned.pin.as_deref()),
+            ("https://127.0.0.1:7801", Some("PIN")),
+            "a loopback API speaks TLS too"
+        );
+        let named = cfg("tls = \"self\"\npublic_api = \"https://play.example.net\"\n");
+        assert_eq!(named.invite_base(None), None);
+        // Without tls the server has no key of its own, and a pin would mean nothing.
+        let plain = cfg("api_bind = \"127.0.0.1:7801\"\n");
+        let base = plain.invite_base(Some("PIN")).unwrap();
+        assert_eq!(
+            (base.origin.as_str(), base.pin),
+            ("http://127.0.0.1:7801", None)
+        );
+    }
+
+    #[test]
+    fn tls_is_self_or_unset_and_takes_an_https_public_api() {
+        let parse = |extra: &str| {
+            Config::parse(
+                &format!("[server]\nname = \"F\"\n{extra}\n"),
+                Path::new("/"),
+            )
+        };
+        assert_eq!(parse("").unwrap().server.tls, None);
+        assert_eq!(
+            parse("tls = \"self\"").unwrap().server.tls,
+            Some(Tls::OwnKey)
+        );
+        for (extra, place) in [
+            ("tls = \"acme\"", "tls"),
+            ("tls = true", "tls"),
+            (
+                "tls = \"self\"\npublic_api = \"http://127.0.0.1:7801\"",
+                "public_api",
+            ),
+        ] {
+            let e = format!("{:#}", parse(extra).unwrap_err());
+            assert!(e.contains(place), "{extra}: {e}");
+        }
+    }
+
+    #[test]
+    fn public_host_is_optional_and_an_address_players_can_reach() {
+        // Amendment A, HA2: unset by default. #174: it names the gate.
+        let parse = |host: &str| {
+            Config::parse(
+                &format!("[server]\nname = \"F\"\npublic_host = \"{host}\"\n"),
+                Path::new("/"),
+            )
+        };
+        let c = Config::parse("[server]\nname = \"F\"\n", Path::new("/")).unwrap();
+        assert_eq!(c.server.public_host, None);
+        for good in ["203.0.113.5", "play.example.net", "localhost", "my-pc.lan"] {
+            let c = parse(good).unwrap();
+            assert_eq!(c.server.public_host.as_deref(), Some(good));
+        }
+        for bad in [
+            "",
+            " ",
+            "a:1",
+            "play example.net",
+            "play/x",
+            "play.example.net#x",
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.1",
+            "127.1",
+            "-play.example.net",
+            "play..example.net",
+            "pläy.example.net",
+            "play.example.net\\u001b",
+        ] {
+            let e = format!("{:#}", parse(bad).unwrap_err());
+            assert!(e.contains("public_host"), "{bad:?}: {e}");
+        }
+    }
+
     #[test]
     fn public_api_is_https_or_loopback_http() {
         let base = std::path::Path::new("/");
@@ -763,14 +1153,11 @@ mod tests {
             )
         };
         let c = parse("https://play.example.net/").unwrap();
-        assert_eq!(c.invite_base().as_deref(), Some("https://play.example.net"));
+        assert_eq!(origin(&c).as_deref(), Some("https://play.example.net"));
         let c = parse("https://play.example.net:8443").unwrap();
-        assert_eq!(
-            c.invite_base().as_deref(),
-            Some("https://play.example.net:8443")
-        );
+        assert_eq!(origin(&c).as_deref(), Some("https://play.example.net:8443"));
         let c = parse("http://127.0.0.1:7801").unwrap();
-        assert_eq!(c.invite_base().as_deref(), Some("http://127.0.0.1:7801"));
+        assert_eq!(origin(&c).as_deref(), Some("http://127.0.0.1:7801"));
         for bad in [
             "http://play.example.net",
             "ftp://play.example.net",
@@ -789,18 +1176,18 @@ mod tests {
     fn without_public_api_invite_links_use_a_loopback_api_bind_only() {
         let base = std::path::Path::new("/");
         let c = Config::parse("[server]\nname = \"F\"\n", base).unwrap();
-        assert_eq!(c.invite_base().as_deref(), Some("http://127.0.0.1:7801"));
+        assert_eq!(origin(&c).as_deref(), Some("http://127.0.0.1:7801"));
         let c = Config::parse(
             "[server]\nname = \"F\"\napi_bind = \"[::1]:7801\"\nlogin_bind = \"[::1]:7800\"\n",
             base,
         )
         .unwrap();
-        assert_eq!(c.invite_base().as_deref(), Some("http://[::1]:7801"));
+        assert_eq!(origin(&c).as_deref(), Some("http://[::1]:7801"));
         let c = Config::parse(
             "[server]\nname = \"F\"\napi_bind = \"0.0.0.0:7801\"\n",
             base,
         )
         .unwrap();
-        assert_eq!(c.invite_base(), None);
+        assert_eq!(c.invite_base(None), None);
     }
 }

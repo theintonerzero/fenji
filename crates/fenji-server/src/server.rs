@@ -1,6 +1,7 @@
 //! Running the server (M3 spec D5; M4 world spec §3.9): one process with the game gate, the world,
 //! the account API, and the purge of expired sessions and tokens at start-up and every hour. Its
 //! changing facts, maintenance mode among them, are its [`Status`] (M4 hosting spec §3.8, §3.9).
+//! With `tls = "self"` the account API speaks TLS with the server's own key (§3.10).
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,14 +13,15 @@ use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::accounts::Accounts;
-use crate::api::{AppState, ServerInfo, router};
+use crate::api::{Addrs, AppState, ServerInfo, router};
 use crate::clock::{Clock, SystemClock};
-use crate::config::{self, Config, Loaded};
+use crate::config::{self, Config, Loaded, Tls};
 pub use crate::gate::GateLimits;
 use crate::gate::{self, Gate, Places, accept_loop};
 use crate::lobby::LobbyLimits;
 use crate::online::Online;
 use crate::status::Status;
+use crate::tls::{self, ServerKey, TlsLimits, TlsListener};
 use crate::world::{self, Rules, RunningWorld, TickReport, WorldHandle, WorldIn};
 
 /// The pinned client build this server speaks to (docs/re/pinned-build.md).
@@ -29,6 +31,8 @@ pub const PINNED_BUILD: &str = "10015727";
 pub struct RunningServer {
     pub login_addr: SocketAddr,
     pub api_addr: SocketAddr,
+    /// The pin of the server's own key, under `tls = "self"`.
+    pin: Option<String>,
     accounts: Arc<Accounts>,
     status: Arc<Status>,
     /// The account API's state, as its router serves it.
@@ -44,6 +48,12 @@ pub struct RunningServer {
 impl RunningServer {
     pub fn accounts(&self) -> Arc<Accounts> {
         Arc::clone(&self.accounts)
+    }
+
+    /// The pin of the key the account API serves TLS with, under `tls = "self"`, which invite and
+    /// server links carry (M4 hosting spec §3.10).
+    pub fn pin(&self) -> Option<String> {
+        self.pin.clone()
     }
 
     /// Maintenance, the MOTD and who is in the world.
@@ -127,8 +137,40 @@ pub async fn open_store(cfg: &Config) -> anyhow::Result<Store> {
         .with_context(|| format!("opening {}", cfg.store.path.display()))
 }
 
-/// Opens the store ([`open_store`]), loads the server's [`Status`] from it, binds both listeners
-/// (port 0 takes a free port) and starts serving.
+/// What a start warns about when the account API sits on loopback behind a proxy (`public_api`
+/// set) that isn't trusted.
+const PROXY_NOT_TRUSTED: &str = "public_api is set and api_bind is a loopback address, so players \
+     reach the account API through a proxy on this machine; with trusted_proxies empty, every \
+     request seems to come from that proxy and they all share one address's limit: list it in \
+     [server] trusted_proxies";
+
+/// What a start warns the host about in `cfg`'s addresses, `pin` being the server's own key's:
+/// - no invite link that reaches beyond this computer (M4 hosting spec §3.11), which needs
+///   `public_api`, or `tls = "self"`, which gives one for each of the machine's addresses (HA4);
+/// - a proxy in front of a loopback API (`public_api` set) that `trusted_proxies` doesn't list.
+///
+/// A loopback API without `public_api` is a server for this computer, and warns of nothing.
+fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<&'static str> {
+    let s = &cfg.server;
+    let mut warnings = Vec::new();
+    if s.tls.is_none() && cfg.invite_base(pin).is_none() {
+        warnings.push(crate::invite::NO_LINKS);
+    }
+    if s.public_api.is_some() && s.api_bind.ip().is_loopback() && s.trusted_proxies.is_empty() {
+        warnings.push(PROXY_NOT_TRUSTED);
+    }
+    warnings
+}
+
+/// The account API's listener: plain TCP, or TLS with the server's own key.
+enum ApiListener {
+    Plain(TcpListener),
+    OwnKey(TlsListener),
+}
+
+/// Opens the store ([`open_store`]), loads the server's [`Status`] from it, and under
+/// `tls = "self"` its key (made on the first start, in `data/tls/`), binds both listeners (port 0
+/// takes a free port) and starts serving.
 pub async fn start(
     cfg: &Config,
     clock: Arc<dyn Clock>,
@@ -141,10 +183,19 @@ pub async fn start(
             "maintenance is on, as it was: only admins can sign in until it's turned off"
         );
     }
+    let key = match cfg.server.tls {
+        // The certificate's names don't matter to launchers, which pin the key.
+        Some(Tls::OwnKey) => Some(ServerKey::load_or_make(
+            &tls::folder(&cfg.store.path),
+            cfg.server.public_host.as_deref().unwrap_or("localhost"),
+        )?),
+        None => None,
+    };
+    let pin = key.as_ref().map(|k| k.pin.clone());
     let world = world::start(
         Rules::from_config(cfg),
         store.clone(),
-        cfg.invite_base(),
+        cfg.invite_base(pin.as_deref()),
         Arc::clone(&clock),
     )?;
     // `[access].admins`, lower-cased: names are compared without regard to ASCII case.
@@ -168,12 +219,12 @@ pub async fn start(
         .await
         .with_context(|| format!("can't listen on {}", cfg.server.api_bind))?;
     let api_addr = api.local_addr()?;
-    if cfg.server.api_bind.ip().is_loopback() && cfg.server.trusted_proxies.is_empty() {
-        tracing::warn!(
-            "api_bind is a loopback address and trusted_proxies is empty: behind a proxy on this \
-             machine, every request comes from 127.0.0.1 and shares one address limit; list the \
-             proxy in [server] trusted_proxies"
-        );
+    let api = match &key {
+        Some(key) => ApiListener::OwnKey(TlsListener::new(api, key, TlsLimits::default())?),
+        None => ApiListener::Plain(api),
+    };
+    for warning in address_warnings(cfg, pin.as_deref()) {
+        tracing::warn!("{warning}");
     }
     let info = ServerInfo {
         name: cfg.server.name.clone(),
@@ -214,8 +265,12 @@ pub async fn start(
     let listener = tokio::spawn(accept_loop(login, Arc::clone(&gate)));
     let tasks = vec![
         tokio::spawn(async move {
-            let service = app.into_make_service_with_connect_info::<SocketAddr>();
-            if let Err(e) = axum::serve(api, service).await {
+            let service = app.into_make_service_with_connect_info::<Addrs>();
+            let served = match api {
+                ApiListener::Plain(tcp) => axum::serve(tcp, service).await,
+                ApiListener::OwnKey(tls) => axum::serve(tls, service).await,
+            };
+            if let Err(e) = served {
                 tracing::error!(error = %e, "the account API stopped");
             }
         }),
@@ -233,6 +288,7 @@ pub async fn start(
     Ok(RunningServer {
         login_addr,
         api_addr,
+        pin,
         accounts,
         status,
         api: state,
@@ -389,24 +445,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_config_from_init_starts_and_makes_its_data_folder() {
+    async fn a_config_from_init_starts_and_makes_its_data_folder_and_key() {
         // `init` writes the template, whose database is in data/, but not that folder, and SQLite
-        // makes no folders: the start makes it.
+        // makes no folders: the start makes it, and the key the template's tls = "self" asks for.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fenji.toml");
         config::init(&path).unwrap();
-        let text = std::fs::read_to_string(&path)
+        // Free loopback ports rather than the template's, as FENJI_LOGIN_BIND and FENJI_API_BIND
+        // would make them (Ruling HP7).
+        let cfg = Config::load(&path)
             .unwrap()
-            .replace("\"127.0.0.1:7800\"", "\"127.0.0.1:0\"")
-            .replace("\"127.0.0.1:7801\"", "\"127.0.0.1:0\"");
-        std::fs::write(&path, text).unwrap();
-        let cfg = Config::load(&path).unwrap();
+            .override_binds(|_| Some("127.0.0.1:0".into()))
+            .unwrap();
         let ports = (cfg.server.login_bind.port(), cfg.server.api_bind.port());
         assert_eq!(ports, (0, 0), "the binds are free ports");
         let clock = Arc::new(TestClock::at(NOW));
         let server = start(&cfg, clock, GateLimits::default()).await.unwrap();
         let data = dir.path().join("data");
         assert!(data.join("fenji.db").is_file());
+        assert!(data.join("tls/key.pem").is_file() && data.join("tls/cert.pem").is_file());
+        assert_eq!(server.pin().map(|p| p.len()), Some(43));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -416,6 +474,67 @@ mod tests {
         TcpStream::connect(server.login_addr).await.unwrap();
         TcpStream::connect(server.api_addr).await.unwrap();
         server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_key_without_its_certificate_stops_the_start_before_anything_listens() {
+        let dir = tempfile::tempdir().unwrap();
+        let tls = dir.path().join("tls");
+        crate::tls::ServerKey::load_or_make(&tls, "127.0.0.1").unwrap();
+        std::fs::remove_file(tls.join("cert.pem")).unwrap();
+        let cfg = Config::parse(
+            "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n\
+             tls = \"self\"\n",
+            dir.path(),
+        )
+        .unwrap();
+        let clock = Arc::new(TestClock::at(NOW));
+        let e = match start(&cfg, clock, GateLimits::default()).await {
+            Ok(_) => panic!("a server started without its certificate"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(e.contains("cert.pem"), "{e}");
+        assert!(!tls.join("cert.pem").exists(), "never a silent new key");
+    }
+
+    #[test]
+    fn a_start_warns_only_where_the_addresses_need_the_host() {
+        let cfg = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/")).unwrap()
+        };
+        let pin = "q1o9C1M6ufA5UGrUkSYhW-AXXa3S7jdJ9Fxlp0f2cBo";
+        // This computer only, by default, and HA3's template: nothing to warn about.
+        assert_eq!(address_warnings(&cfg(""), None), Vec::<String>::new());
+        let template =
+            cfg("tls = \"self\"\nlogin_bind = \"0.0.0.0:7800\"\napi_bind = \"0.0.0.0:7801\"\n");
+        assert_eq!(address_warnings(&template, Some(pin)), Vec::<String>::new());
+        // No invite link that reaches beyond this computer (#174, §3.11).
+        for extra in [
+            "public_host = \"203.0.113.5\"\n",
+            "api_bind = \"0.0.0.0:7801\"\n",
+        ] {
+            assert_eq!(
+                address_warnings(&cfg(extra), None),
+                [crate::invite::NO_LINKS],
+                "{extra}"
+            );
+        }
+        // A proxy on this machine forwards to a loopback API: one address limit for everyone,
+        // unless it's trusted.
+        let proxied = cfg("public_api = \"https://play.example.net\"\n");
+        let warned = address_warnings(&proxied, None);
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(
+            warned[0].contains("trusted_proxies") && warned[0].contains("public_api"),
+            "says why it matters here: {}",
+            warned[0]
+        );
+        let trusted =
+            cfg("public_api = \"https://play.example.net\"\ntrusted_proxies = [\"127.0.0.1\"]\n");
+        assert_eq!(address_warnings(&trusted, None), Vec::<String>::new());
+        let direct =
+            cfg("public_api = \"https://play.example.net\"\napi_bind = \"0.0.0.0:7801\"\n");
+        assert_eq!(address_warnings(&direct, None), Vec::<String>::new());
     }
 
     /// The error a server serving in `served` stops with by itself (30 s at most).

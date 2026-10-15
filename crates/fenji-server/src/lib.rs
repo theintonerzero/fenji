@@ -15,6 +15,7 @@ pub mod online;
 pub mod server;
 pub mod status;
 pub mod text;
+pub mod tls;
 pub mod world;
 
 /// The most characters `[lobby] max_characters` may allow.
