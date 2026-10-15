@@ -425,22 +425,27 @@ rm -f -- "$TESTROOT/out/steam-started"
 
 # --- two clients: arguments and command lines (Amendment B)
 echo "a second long password" > "$TESTROOT/password2"
-TWO=(--clients 2 --username2 second --password-file2 "$TESTROOT/password2" --display2 97)
+TWO=(--clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/password2" --display2 97)
 says 2 "--clients takes 1 or 2" "--clients takes 1 or 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 3
+# Ruling R14, in code by Ruling R25 (#280): no live two-client run until its own umu rehearsal and a
+# go-ahead, which --rehearsed says have happened; every two-client test here passes it.
+says 2 "Ruling R14" "--clients 2 without --rehearsed is refused (Ruling R14)" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/password2" --display2 97
+says 2 "needs --clients 2" "--rehearsed needs --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --rehearsed
 says 2 "needs --username2" "two clients need client 2's account" -- \
-  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --password-file2 "$TESTROOT/password2" --display2 97
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --password-file2 "$TESTROOT/password2" --display2 97
 says 2 "needs --password-file2" "two clients need client 2's password" -- \
-  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --display2 97
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --display2 97
 says 2 "another account" "client 2's account is another one" -- \
-  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 tester --password-file2 "$TESTROOT/password2" --display2 97
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 tester --password-file2 "$TESTROOT/password2" --display2 97
 says 2 "--password-file2" "an unreadable second password file is refused" -- \
-  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/none" --display2 97
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/none" --display2 97
 says 2 "needs --display2" "a nested two-client run needs client 2's display" -- \
-  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/password2"
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/password2"
 says 2 "another display" "client 2's display is another one" -- \
   cmd_bare_run t "${GOOD[@]}" --display 97 "${TWO[@]}"
 says 1 "0 to 999" "--display2 takes a display number" -- \
-  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/password2" --display2 097
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/password2" --display2 097
 says 2 "both clients" "--desktop is both clients' display: no --display2" -- \
   with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --desktop "${TWO[@]}"
 says 2 "at least 2" "--second-after takes at least 2 s" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" "${TWO[@]}" --second-after 1
@@ -449,7 +454,7 @@ says 2 "needs --clients 2" "client 2's account needs --clients 2" -- cmd_bare_ru
 says 2 "needs --clients 2" "--display2 needs --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --display2 97
 says 2 "need --clients 2" "2@ inputs need --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --key 2@5:Return
 says 2 "--password-file2 is under $TESTROOT/ns" "a second password file the namespace would hide is refused" -- \
-  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/ns/password" --display2 97
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/ns/password" --display2 97
 mkdir -p "$TESTROOT/rt3"
 mapfile -t got < <(XDG_RUNTIME_DIR=$TESTROOT/rt3 HOME=$TESTROOT/nohome namespace_cmd 99 "" 97)
 want=(bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$TESTROOT/rt3" --tmpfs /tmp
@@ -909,7 +914,7 @@ print(*(x.getsockname()[1] for x in s))')
   # that stops a run whose namespace holds a second wineserver.
   echo "a second long password" > "$F/password2"
   rm -f -- "$F/work/compat/fenji-gate-event"
-  TWOARGS=(--clients 2 --username2 second --password-file2 "$F/password2" --display2 77 --second-after 2)
+  TWOARGS=(--clients 2 --rehearsed --username2 second --password-file2 "$F/password2" --display2 77 --second-after 2)
   flow run-two "$F/work" with_env FAKE_LAUNCH_SECS=1 with_env FAKE_CLIENT=1 cmd_bare_run two1 "${RUNARGS[@]}" \
     --display 78 "${TWOARGS[@]}" --timeout 25 --timeout2 3 --key 1:space --key 2:w/500 --key 2@3:Return
   BIO=$F/work/io/two1 BOUT=$F/work/out/two1 BRUN=$F/work/runs/two1
