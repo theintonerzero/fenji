@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-15T06:39:21+00:00",
+  "generatedAt": "2026-10-16T00:00:00+00:00",
   "title": "Design System: Fenji",
   "extensions": {
     "colorMeta": {
@@ -81,7 +81,7 @@
       "line-strong": {
         "role": "neutral",
         "displayName": "Line Strong",
-        "purpose": "Input and dialog borders.",
+        "purpose": "The dialog border and a selected server row's inset outline.",
         "canonical": "rgba(255, 255, 255, 0.12)"
       },
       "outline": {
@@ -700,16 +700,16 @@
       "name": "Text Field",
       "kind": "input",
       "refersTo": "input",
-      "description": "44 px field with a visible label; ember focus ring; danger border and message on error.",
+      "description": "44 px field with a visible label and a field-line border (3:1 against fill and ground); ember focus ring; danger border and message on error.",
       "html": "<div class=\"ds-field\"><label class=\"ds-label\" for=\"ds-user\">Username</label><input class=\"ds-input\" id=\"ds-user\" value=\"lin_yue\"></div>",
-      "css": ".ds-field { font-family: Geist, system-ui, sans-serif; display: flex; flex-direction: column; gap: 8px; max-width: 320px; } .ds-label { font-size: 13.5px; font-weight: 500; color: #c9c2b7; } .ds-input { height: 44px; box-sizing: border-box; padding: 0 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.12); background: #1c1c22; color: #f2efe9; font: inherit; font-size: 15px; } .ds-input:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-input[aria-invalid=\"true\"] { border-color: #f26d7d; }"
+      "css": ".ds-field { font-family: Geist, system-ui, sans-serif; display: flex; flex-direction: column; gap: 8px; max-width: 320px; } .ds-label { font-size: 13.5px; font-weight: 500; color: #c9c2b7; } .ds-input { height: 44px; box-sizing: border-box; padding: 0 14px; border-radius: 8px; border: 1px solid #706b63; background: #1c1c22; color: #f2efe9; font: inherit; font-size: 15px; } .ds-input:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-input[aria-invalid=\"true\"] { border-color: #f26d7d; }"
     },
     {
       "name": "Header and Tabs",
       "kind": "nav",
       "refersTo": "tab-active",
       "description": "56 px header: seal and wordmark, four tabs, the active one underlined in ember.",
-      "html": "<header class=\"ds-header\"><span class=\"ds-seal\" aria-hidden=\"true\">焚</span><span class=\"ds-wordmark\">FENJI</span><nav class=\"ds-tabs\" aria-label=\"Main\"><a class=\"ds-tab ds-tab-active\" href=\"#play\" aria-current=\"page\">Play</a><a class=\"ds-tab\" href=\"#server\">Server</a><a class=\"ds-tab\" href=\"#account\">Account</a><a class=\"ds-tab\" href=\"#client\">Client</a></nav></header>",
+      "html": "<header class=\"ds-header\"><span class=\"ds-seal\" aria-hidden=\"true\">焚</span><span class=\"ds-wordmark\">FENJI</span><nav class=\"ds-tabs\" aria-label=\"Main\"><a class=\"ds-tab ds-tab-active\" href=\"#play\" aria-current=\"page\">Play</a><a class=\"ds-tab\" href=\"#servers\">Servers</a><a class=\"ds-tab\" href=\"#account\">Account</a><a class=\"ds-tab\" href=\"#client\">Client</a></nav></header>",
       "css": ".ds-header { font-family: Geist, system-ui, sans-serif; height: 56px; display: flex; align-items: center; gap: 10px; padding-left: 24px; background: #0c0c0f; border-bottom: 1px solid rgba(255, 255, 255, 0.07); color: #f2efe9; } .ds-seal { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; background: #c8431f; color: #fff; font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 14px; } .ds-wordmark { font-family: Cinzel, serif; font-weight: 700; font-size: 19px; letter-spacing: 0.26em; } .ds-tabs { display: flex; gap: 28px; margin-left: 38px; height: 56px; } .ds-tab { display: flex; align-items: center; color: #a8a196; text-decoration: none; font-size: 14px; font-weight: 600; } .ds-tab:hover { color: #f2efe9; } .ds-tab:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-tab-active { color: #f2efe9; border-bottom: 2px solid #e4572e; padding-top: 2px; }"
     },
     {
@@ -807,9 +807,9 @@
       }
     ],
     "dos": [
-      "**Do** keep one ember-600 action per screen; with no Play, give the screen's one task a worded ember button (Continue, Create account, Repair from Steam).",
+      "**Do** keep at most one ember-600 action per screen; with no Play, give the screen's one task a worded ember button (Continue, Create account, Repair from Steam). Where the next step is on another tab, as on a ready copy, lead there with a gold link and keep the buttons outlines.",
       "**Do** say what is true in plain words beside every status colour: \"Online · 3 friends in the lobby\", \"1 needs repair\", \"Can't reach Moonward\".",
-      "**Do** keep PLAY visible but disabled (ink-800, muted) while the copy is being readied, the server is in maintenance or the system can't start the client, and write the reason beside it; when the server can't be reached, the one action becomes a worded \"Try again\".",
+      "**Do** keep PLAY visible but disabled (ink-800, muted) while the copy is being readied, the server is in maintenance or the system can't start the client, and write the reason beside it; when the server can't be reached, the one action becomes a worded \"Try again\"; when it answers but can't be played on, the one action is its cure (\"Add the new link\", \"Add the link\", \"Check for updates\"), never \"Try again\".",
       "**Do** keep the window at 1200 × 720 with minimise and close only.",
       "**Do** ship Cinzel, Geist, Geist Mono and the 焚寂 subset of Noto Serif SC inside the product (OFL); load nothing from a font CDN.",
       "**Do** use a 2 px ember-500 focus ring with a 2 px offset on every focusable element, and keep text at 12.5 px or larger.",

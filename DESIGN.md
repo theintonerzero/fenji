@@ -325,9 +325,9 @@ A warm-neutral ink palette with a single ember voice, a gold accent for people a
 - **Ink 850** (ink-850): cards, dialogs, the console status strip and command palette.
 - **Ink 800** (ink-800): inputs, the disabled PLAY, hover and the selected palette row, icon tiles and tags.
 - **Line** (line, white 7%): hairlines, dividers, card borders, the header's bottom edge.
-- **Line Strong** (line-strong, white 12%): input borders and the dialog border.
+- **Line Strong** (line-strong, white 12%): the dialog border, and the inset outline of a selected server row.
 - **Outline** (outline, white 16%): secondary button borders and checkbox borders.
-- **Field Line** (field-line): the border of inputs and fields: 3.2:1 against the ink-800 fill and 3.4:1 or more against the grounds around it, so a field's edge meets the 3:1 non-text floor. Added 2026-10-15 with the Servers boards, fixing the boards' input boundaries.
+- **Field Line** (field-line): the border of inputs and fields: 3.2:1 against the ink-800 fill and 3.4:1 or more against the grounds around it, so a field's edge meets the 3:1 non-text floor.
 - **Paper** (text): titles and primary text (17:1 on ink-950).
 - **Prose** (text-prose): running sentences in the main area: the host's notice, bullet lists, "What's new" (13:1). Used on every board but missing from the token sheet; recorded here because the build uses it consistently.
 - **Parchment** (text-2): secondary text, field labels, the status line (11:1).
@@ -367,7 +367,7 @@ The scale is a Minor Third (1.200) on a 15 px base: 12.5, 15, 18, 21.6, 25.9, 31
 - **Secondary / Label** (Geist 400 or 500, 13.5 px): helper text, meta lines, field labels.
 - **Data** (Geist 400, 13 px): definition lists in cards and the context column.
 - **Small** (Geist 400, 12.5 px): footnotes, table headers, the launcher version. The floor for any readable text.
-- **Mono** (Geist Mono 400 and 500, 13 px, line-height 1.75, tabular numbers): build numbers, invite codes, paths, and the whole host console (14 px on the prompt).
+- **Mono** (Geist Mono 400 and 500, 13 px, line-height 1.75, tabular numbers): build numbers, invite codes, paths, and the whole host console (14 px on the prompt). A path under the player's home folder shows it as `~` ("~/Games/SoLO"), for display only, so a screenshot carries no player's name; on Windows, where `~` means nothing to a player, paths show whole.
 
 ### Named Rules
 **The Plaque Rule.** Cinzel is only for the wordmark, server names and screen titles. Body, buttons, labels and tabs are Geist.
@@ -376,11 +376,11 @@ The scale is a Minor Third (1.200) on a 15 px base: 12.5, 15, 18, 21.6, 25.9, 31
 
 ## Layout
 
-The launcher is a fixed 1200 × 720 window: no resizing, no maximise, minimise and close only. A 56 px header runs across the top. Below it, a 860 px main area and a 340 px context column (ink-900, a hairline on its left edge, 24 px by 22 px padding, 22 px between sections, the launcher version pinned to its foot).
+The launcher is a fixed 1200 × 720 window: no resizing, no maximise, minimise and close only. A 56 px header runs across the top. Below it, a 860 px main area and a 340 px context column (ink-900, a hairline on its left edge, 24 px by 22 px padding, 22 px between sections, the launcher's version line pinned to its foot).
 
 The main area has two compositions:
 - **Hero** (Play, its states, Welcome, client setup, downloading, checking, repair): the blade stands at x 150 on the left; text starts at x 250, 120 px down (96 px on Welcome), at most 520 to 562 px wide. Order: title, status line, host notice, 34 px gap, the button row (12 px apart), a meta line below.
-- **Page** (Server, Account, Sign in, Redeem, Settings): 48 px top and 64 px side padding, a 45 px title, then cards and forms up to 420 to 640 px wide; Settings uses a two-column card grid with 20 px gaps.
+- **Page** (Servers, Account, Sign in, Redeem, Settings): 48 px top and 64 px side padding, a 45 px title, then cards and forms up to 420 to 640 px wide; Settings uses a two-column card grid with 20 px gaps.
 
 Spacing runs on 4, 8, 12, 16, 20, 24, 32, 40, 48 and 64. The boards also use a few in-between values that the token sheet does not list (22 px in the context column, 9 and 14 px gaps, 34 px above the button row); keep them where they sit and do not spread them.
 
@@ -408,21 +408,21 @@ Lines are 1 px everywhere except the active tab's 2 px ember underline and the 2
 ## Components
 
 ### Header and tabs
-- **Structure:** 56 px tall on ink-950 with a hairline below; 24 px left inset. The seal (a 26 px ember-600 tile, 6 px radius, white 焚 in Noto Serif SC 14 px) and the FENJI wordmark, then the tabs 48 px to the right: Play, Server, Account, Client, 28 px apart.
-- **Tabs:** Nav type; inactive in muted; the active tab in text with a 2 px ember-500 underline at the header's bottom edge. When Settings is open no tab is active and the Settings button takes an ink-800 tile with text colour.
+- **Structure:** 56 px tall on ink-950 with a hairline below; 24 px left inset. The seal (a 26 px ember-600 tile, 6 px radius, white 焚 in Noto Serif SC 14 px) and the FENJI wordmark, then the tabs 48 px to the right: Play, Servers, Account, Client, 28 px apart (the boards of 2026-10-13 say "Server"; the build names the tab for the list it shows).
+- **Tabs:** Nav type; inactive in muted; the active tab in text with a 2 px ember-500 underline at the header's bottom edge. When Settings is open no tab is active and the Settings button takes an ink-800 tile with text colour. The account tasks (Welcome, Sign in, Redeem) mark Account wherever they show, whichever tab led there.
 - **Right side:** the account pill (36 px, 18 px radius, a 28 px avatar, the username in 13.5 px 600), then Settings, Minimise and Close as 46 × 32 icon buttons in muted. There is no maximise button.
 
 ### Buttons
 - **PLAY:** 200 × 56, ember-600, white, Geist 700 17 px tracked 0.2em, 8 px radius, primary lift. At most one per screen.
-- **PLAY disabled:** the same box in ink-800 with muted text and no shadow; the reason is always written beside or below it. While the game runs it reads "Running" with an ok dot.
-- **Primary (worded):** 56 px tall, at least 200 px wide, 32 px side padding, ember-600, Geist 700 16 px, sentence case, primary lift. Used when the screen's one action is not Play.
+- **PLAY disabled:** the same box in ink-800 with muted text and no shadow; the reason is always written beside or below it. While the game runs it reads "Running" with an ok dot. When the server can't be played on at all, PLAY gives way to a worded ember (below).
+- **Primary (worded):** 56 px tall, at least 200 px wide, 32 px side padding, ember-600, Geist 700 16 px, sentence case, primary lift. Used when the screen's one action is not Play, and on Play when PLAY can't cure what's wrong: "Try again" when the server doesn't answer; "Add the new link" (a changed key) or "Add the link" (a server with its own key), which open Add server over Play; "Check for updates" when this launcher can't play on the server's version.
 - **Secondary:** 56 px tall beside a primary (44 px compact in cards and forms, 32 px small for "Change"), transparent with a 1 px outline border, Geist 600 14.5 px.
-- **Link / text button:** gold-300, Geist 600 14.5 px (13.5 px inline), no underline in action rows, underlined with a 3 px offset inside sentences; gold-100 on hover.
+- **Link / text button:** gold-300, Geist 600 14.5 px (13.5 px inline), no underline in action rows, underlined with a 3 px offset inside sentences; gold-100 on hover. A step that leads to another tab is a gold link with a chevron, not a button: "Go to Play ›" under a ready copy's meta lines.
 
 ### Inputs / Fields
-- **Style:** 44 px tall, ink-800 fill, 1 px field-line border, 8 px radius, 14 px padding, Body type in text colour. Paths, addresses being typed and readonly locations use Geist Mono 14 px.
+- **Style:** 44 px tall, ink-800 fill, 1 px field-line border, 8 px radius, 14 px padding, Body type in text colour. Paths, addresses being typed and readonly locations use Geist Mono 14 px; a path field shows the home folder as `~` like every other path.
 - **Label:** always visible above, 13.5 px 500 in text-2, 8 px gap.
-- **Boundary:** the field-line border meets the 3:1 non-text floor against the fill and every ground. The approved boards of 2026-10-13 drew it in line-strong (about 1.15:1 against the fill); the build uses field-line, as the Add server board shows.
+- **Boundary:** the field-line border meets the 3:1 non-text floor against the fill and every ground.
 - **Focus:** a 2 px ember-500 outline with a 2 px offset.
 - **Error:** a 1 px danger border, `aria-invalid`, and a message below in danger with the circled-exclamation icon, written as what happened and what to try.
 - **Checkbox:** 20 px, 6 px radius, outline border on ink-800, with its label clickable. **Switch:** 40 × 24 track, gold-300 when on, an ink-950 18 px knob; a real checkbox with `role="switch"` underneath.
@@ -432,6 +432,7 @@ Lines are 1 px everywhere except the active tab's 2 px ember underline and the 2
 - **Background:** ink-850, with a 1 px line border; no shadow.
 - **Internal Padding:** 20 px (16 px in the context column, 14 by 16 px for a compact server row).
 - **Contents:** an 18 px title, often led by a 36 px ink-800 icon tile with a gold icon; definition lists in Data type with muted terms; result tables with 12.5 px 600 muted headers and Geist Mono file paths.
+- **Choice cards** (Set up the game): two cards side by side, 16 px apart, each a tile, a title, its sentences and a full-width button at its foot; the two feet sit on one baseline whatever the text above. "Choose folder" is the ember, since most players a host invites have the game already; "Start download" is the outline.
 
 ### Lists
 - **People:** 34 px circular avatars with initials (12 px 700), a 14 px 600 name, and a 12.5 px muted status line, 12 px apart. The host and the player sit on ember-tint with gold initials; other players rotate through tinted grounds.
@@ -448,6 +449,8 @@ The Servers tab (the boards `Servers` and `AddServer`) lists the player's server
 
 ### Status
 - **Status line:** an 8 px dot (ok, warn, faint for no server or while checking) or, for errors and an unreachable server, a 16 px danger icon (a Servers row keeps the faint dot for an unreachable server, as the Servers board draws it), then plain words separated by " · " in Status type: "Online · 3 friends in the lobby · hosted by Wen", "In maintenance · back around 21:00 · hosted by Wen", "Can't reach Moonward · last seen today at 18:42".
+- **Status fact:** the context column's Server card repeats the state as its first fact, with the same mark ("Not responding", "Key changed").
+- **Words under it:** when the server doesn't answer, "What to try" and a short list; when it answers but can't be played on, one Prose sentence on what to do ("Ask Wen for the new invite link, then add it here."). Neither repeats the status line, and the host's notice gives way to them.
 - **Host notice:** Prose type, led by the host's name in gold 600 and a colon.
 - **Meta line:** 13.5 px muted with a 13 to 16 px icon: "Client verified · build 10015727 · 210 files", "Last checked at 20:14 · Play opens when Wen ends maintenance".
 
@@ -456,16 +459,17 @@ The Servers tab (the boards `Servers` and `AddServer`) lists the player's server
 - **The bar:** 4 px tall, ink-800 track, ember-500 fill, 2 px radius, with a 12.5 px label row above (what, and a Geist Mono count on the right). Only where the blade isn't shown.
 
 ### The context column
-Ink-900, 340 px, 24 by 22 px padding, sections 22 px apart with 14 px 600 headings: Playing now (who's on the server; the boards of 2026-10-13 say "In the lobby", true only before the world), Server (a card of facts), Your client, Host notice, What's next, About Fenji. It explains state when the main area cannot: "The lobby is closed while Moonward is in maintenance." The launcher version sits at the foot in 12.5 px faint.
+Ink-900, 340 px, 24 by 22 px padding, sections 22 px apart with 14 px 600 headings: Playing now, Server (a card of facts; "Game client" on the Client screens), Your client, Host notice, What's next, About Fenji. "Playing now" heads only the list of who is on; when the server is closed to the player (maintenance, no answer, or a server this launcher can't play on), the section is headed "Who's playing" and holds the sentence that says why there is no list: "The lobby is closed while Moonward is in maintenance.", "Who's online shows once you've added Wen's new link." The foot is the launcher's version line in 12.5 px faint: "Launcher 0.5.0", then " · up to date" once a check has found nothing newer, or " · 0.5.1 ready" when an update waits. Settings carries the same fact in its About card, with an ok dot before "up to date"; its foot is one sentence on what Fenji is.
 
 ### Dialogs
-480 px wide, ink-850, a 1 px line-strong border, 12 px radius, 28 px padding (24 px at the foot), the dialog shadow, over the scrim; `role="dialog"` with `aria-modal`. A 40 px icon tile and a 21.6 px title, a 15 px description, hairline-divided content, and the actions bottom right: secondary first, then the primary.
-- **Add a server** (the board `AddServer`): the 40 px tile with a gold servers icon, "Add a server", one line on what to paste, a hairline, the field "Address or invite link" in Geist Mono with its error below it, then Cancel and Add server (the one ember).
+480 px wide, ink-850, a 1 px line-strong border, 12 px radius, 28 px padding (24 px at the foot), the dialog shadow, over the scrim; `role="dialog"` with `aria-modal`. A 40 px icon tile (ink-800, a line border, 8 px radius, a gold icon) with the 21.6 px title and the 15 px Prose description in one column beside it, sharing its top; then hairline-divided content, and the actions bottom right: secondary first, then the primary, the dialog's one ember.
+- **Add a server** (the board `AddServer`): the 40 px tile with a gold servers icon, "Add a server", one line on what to paste, a hairline, the field "Address or invite link" in Geist Mono with its error below it, then Cancel and Add server (the one ember). Play opens it too, for a server whose link must be added again.
+- **Update** (the board `Update`): the tile with a gold update icon, "Fenji launcher 0.5.1 is ready", what restarting does, "What's new" as a bullet list, a line that the update is signed (an ok shield), then Later and Restart and update.
 
 ### The blade (signature component)
 A single vertical sword drawn in vector: a steel blade (blade-steel), a brass guard and pommel, and a leather-dark grip (blade-grip). Its states:
-- **Unlit:** steel only. No ready copy yet (first run, client setup), or a copy this system can't start.
-- **Climbing:** an ember gradient (ember-500 at 15% to ember-300 to gold-100) clipped at the progress height, with a sharp 7 × 1 px gold-100 tick at the progress point. Downloading, checking, repairing.
+- **Unlit:** steel only. No ready copy yet (first run, client setup, and while the launcher fetches DepotDownloader itself, when the lede gives the tool's percentage instead: "Getting DepotDownloader… 40%"), or a copy this system can't start.
+- **Climbing:** an ember gradient (ember-500 at 15% to ember-300 to gold-100) clipped at the progress height, with a sharp 7 × 1 px gold-100 tick at the progress point. Downloading the game's files, checking, repairing: only the copy's own progress climbs it.
 - **Lit:** the full gradient. The copy is verified.
 - **Lit with bloom:** the full gradient plus the radial tip bloom (ember-glow to transparent) and a few ember motes. The copy is ready and Play is open (or the game is running).
 
@@ -484,9 +488,9 @@ The same world as a terminal, all in Geist Mono 13 px with tabular numbers.
 ## Do's and Don'ts
 
 ### Do:
-- **Do** keep one ember-600 action per screen; with no Play, give the screen's one task a worded ember button (Continue, Create account, Repair from Steam).
+- **Do** keep at most one ember-600 action per screen; with no Play, give the screen's one task a worded ember button (Continue, Create account, Repair from Steam). Where the next step is on another tab, as on a ready copy, lead there with a gold link and keep the buttons outlines.
 - **Do** say what is true in plain words beside every status colour: "Online · 3 friends in the lobby", "1 needs repair", "Can't reach Moonward".
-- **Do** keep PLAY visible but disabled (ink-800, muted) while the copy is being readied, the server is in maintenance or the system can't start the client, and write the reason beside it; when the server can't be reached, the one action becomes a worded "Try again".
+- **Do** keep PLAY visible but disabled (ink-800, muted) while the copy is being readied, the server is in maintenance or the system can't start the client, and write the reason beside it; when the server can't be reached, the one action becomes a worded "Try again"; when it answers but can't be played on, the one action is its cure ("Add the new link", "Add the link", "Check for updates"), never "Try again".
 - **Do** keep the window at 1200 × 720 with minimise and close only.
 - **Do** ship Cinzel, Geist, Geist Mono and the 焚寂 subset of Noto Serif SC inside the product (OFL); load nothing from a font CDN.
 - **Do** use a 2 px ember-500 focus ring with a 2 px offset on every focusable element, and keep text at 12.5 px or larger.
