@@ -1,15 +1,18 @@
 //! The command line (M3 spec §4 `cli`): `run`, the default; `init`, which writes a config to edit
 //! (M4 hosting spec §3.6); and the admin's subcommands for invites, accounts and backups (§3.12).
 //! Admin commands open the same database as a running server; SQLite's WAL and busy timeout let
-//! both write.
+//! both write. The host console's `invite`, `invites`, `accounts` and `revoke` share their code
+//! here (§3.3).
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use fenji_store::Store;
 
 use crate::clock::{Clock, Utc};
 use crate::config::{Config, Tls};
+use crate::invite::InviteBase;
 use crate::text::escape_hidden;
 
 /// `--expires`'s durations, which the console's `maintenance on` takes too.
@@ -23,6 +26,10 @@ pub struct Cli {
     /// working directory, which the server writes on its first run
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
+    /// The console as plain lines, in a terminal too: commands from stdin, answers on stdout and
+    /// the log on stderr, for screen readers and simple terminals
+    #[arg(long, global = true)]
+    pub plain: bool,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -87,12 +94,131 @@ fn parse_keep(s: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("{s:?}: a number above 0"))
 }
 
-fn time(ms: i64) -> String {
+/// A moment as the CLI and the console show it: `YYYY-MM-DD HH:MM UTC`.
+pub(crate) fn time(ms: i64) -> String {
     let t = Utc::from_ms(ms);
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02} UTC",
         t.year, t.month, t.day, t.hour, t.minute
     )
+}
+
+/// `lasts` after `now` (Unix ms), as `--expires` and `maintenance on` compute it: a duration too
+/// long for the clock ends at its last moment.
+pub(crate) fn ms_after(now: i64, lasts: Duration) -> i64 {
+    now.saturating_add(i64::try_from(lasts.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// What `invite create` and the console's `invite` say of a new invite with `code`: a link for each
+/// of `bases`, the code, and what links need where there are none, or how they go further. `pin` is
+/// the server's own key's, and `ports` the gate's and the API's.
+pub(crate) fn invite_lines(
+    cfg: &Config,
+    pin: Option<&str>,
+    [gate_port, api_port]: [u16; 2],
+    bases: &[(String, InviteBase)],
+    code: &str,
+    expires_at: Option<i64>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (label, base) in bases {
+        let link = base.invite_link(code);
+        lines.push(format!("link ({}): {link}", escape_hidden(label)));
+    }
+    lines.push(format!("code: {code}"));
+    let s = &cfg.server;
+    let own_key = s.tls == Some(Tls::OwnKey);
+    if own_key && pin.is_none() {
+        lines.push(format!(
+            "link: none yet; the server makes its key in {} when it first starts with \
+             tls = \"self\", and links carry the key's pin",
+            crate::tls::folder(&cfg.store.path).display()
+        ));
+    } else if bases.is_empty() {
+        lines.push(format!("link: none; {}", crate::invite::NO_LINKS));
+    } else if !own_key && cfg.invite_base(None).is_none() {
+        // Links for this computer alone, from an API that listens beyond it.
+        lines.push(format!("other computers: {}", crate::invite::NO_LINKS));
+    } else if own_key
+        && s.public_api.is_none()
+        && s.public_host.is_none()
+        && !s.api_bind.ip().to_canonical().is_loopback()
+    {
+        // A link for each of the machine's addresses (HA4), and how to go beyond them.
+        lines.push(format!(
+            "friends over the internet: open ports {gate_port} and {api_port} on your router, or \
+             use a VPN: see docs/hosting.md"
+        ));
+    }
+    if let Some(at) = expires_at {
+        lines.push(format!("expires: {}", time(at)));
+    }
+    lines
+}
+
+/// `invite list`'s rows at `now`, never the codes: its header, then each invite's.
+pub(crate) async fn invite_rows(store: &Store, now: i64) -> anyhow::Result<Vec<Vec<String>>> {
+    let mut rows = vec![row(["id", "label", "created", "status"])];
+    for i in store.list_invites().await? {
+        let status = match (&i.redeemed_at, &i.revoked_at, i.expires_at) {
+            (Some(_), _, _) => match &i.redeemed_by {
+                Some(name) => format!("redeemed by {name}"),
+                None => "redeemed (account deleted)".into(),
+            },
+            (None, Some(_), _) => "revoked".into(),
+            (None, None, Some(at)) if at <= now => "expired".into(),
+            _ => "open".into(),
+        };
+        // Labels from M3 were never checked, so one may hold hidden characters.
+        let label = i.label.as_deref().map_or_else(|| "-".into(), escape_hidden);
+        rows.push(vec![i.id.to_string(), label, time(i.created_at), status]);
+    }
+    Ok(rows)
+}
+
+/// `account list`'s rows: its header, then each account's.
+pub(crate) async fn account_rows(store: &Store) -> anyhow::Result<Vec<Vec<String>>> {
+    let mut rows = vec![row([
+        "id",
+        "username",
+        "created",
+        "last sign-in",
+        "characters",
+    ])];
+    for a in store.list_accounts().await? {
+        rows.push(vec![
+            a.id.to_string(),
+            a.username,
+            time(a.created_at),
+            a.last_sign_in_at.map_or_else(|| "-".into(), time),
+            a.characters.to_string(),
+        ]);
+    }
+    Ok(rows)
+}
+
+/// Revokes unused invite `id` at `now`: whether it did, and what `invite revoke` says.
+pub(crate) async fn revoke(store: &Store, id: i64, now: i64) -> anyhow::Result<(bool, String)> {
+    Ok(if store.revoke_invite(id, now).await? {
+        (true, format!("revoked invite {id}"))
+    } else {
+        (
+            false,
+            format!("nothing to revoke: invite {id} is unknown, used or revoked"),
+        )
+    })
+}
+
+fn row<const N: usize>(cells: [&str; N]) -> Vec<String> {
+    cells.map(String::from).to_vec()
+}
+
+/// Writes `rows` as the CLI prints a list: one line each, the cells apart by tabs.
+fn write_rows(out: &mut dyn Write, rows: &[Vec<String>]) -> std::io::Result<()> {
+    for row in rows {
+        writeln!(out, "{}", row.join("\t"))?;
+    }
+    Ok(())
 }
 
 /// Runs one admin command against the configured database, writing plain lines to `out`.
@@ -110,108 +236,32 @@ pub async fn admin(
         Command::Invite {
             cmd: InviteCmd::Create { label, expires },
         } => {
-            let expires_at = expires
-                .map(|d| now.saturating_add(i64::try_from(d.as_millis()).unwrap_or(i64::MAX)));
+            let expires_at = expires.map(|d| ms_after(now, d));
             // The pin from the certificate alone, and no key made here: this may run as another
             // user than the server, which couldn't then read a key made here.
-            let tls = crate::tls::folder(&cfg.store.path);
-            let own_key = cfg.server.tls == Some(Tls::OwnKey);
-            let pin = if own_key {
-                crate::tls::pin_in(&tls)?
+            let pin = if cfg.server.tls == Some(Tls::OwnKey) {
+                crate::tls::pin_in(&crate::tls::folder(&cfg.store.path))?
             } else {
                 None
             };
-            let api_port = cfg.server.api_bind.port();
-            let bases = crate::invite::bases(cfg, pin.as_deref(), api_port);
+            let ports = [cfg.server.login_bind.port(), cfg.server.api_bind.port()];
+            let bases = crate::invite::bases(cfg, pin.as_deref(), ports[1]);
             let made =
                 crate::invite::create(&store, None, label.as_deref(), now, expires_at).await?;
-            for (label, base) in &bases {
-                let link = base.invite_link(&made.code);
-                writeln!(out, "link ({}): {link}", escape_hidden(label))?;
-            }
-            writeln!(out, "code: {}", made.code)?;
-            let s = &cfg.server;
-            if own_key && pin.is_none() {
-                writeln!(
-                    out,
-                    "link: none yet; the server makes its key in {} when it first starts with \
-                     tls = \"self\", and links carry the key's pin",
-                    tls.display()
-                )?;
-            } else if bases.is_empty() {
-                writeln!(out, "link: none; {}", crate::invite::NO_LINKS)?;
-            } else if !own_key && cfg.invite_base(None).is_none() {
-                // Links for this computer alone, from an API that listens beyond it.
-                writeln!(out, "other computers: {}", crate::invite::NO_LINKS)?;
-            } else if own_key
-                && s.public_api.is_none()
-                && s.public_host.is_none()
-                && !s.api_bind.ip().to_canonical().is_loopback()
-            {
-                // A link for each of the machine's addresses (HA4), and how to go beyond them.
-                writeln!(
-                    out,
-                    "friends over the internet: open ports {} and {api_port} on your router, or \
-                     use a VPN: see docs/hosting.md",
-                    s.login_bind.port()
-                )?;
-            }
-            if let Some(at) = expires_at {
-                writeln!(out, "expires: {}", time(at))?;
+            let lines = invite_lines(cfg, pin.as_deref(), ports, &bases, &made.code, expires_at);
+            for line in lines {
+                writeln!(out, "{line}")?;
             }
         }
         Command::Invite {
             cmd: InviteCmd::List,
-        } => {
-            writeln!(out, "id\tlabel\tcreated\tstatus")?;
-            for i in store.list_invites().await? {
-                let status = match (&i.redeemed_at, &i.revoked_at, i.expires_at) {
-                    (Some(_), _, _) => match &i.redeemed_by {
-                        Some(name) => format!("redeemed by {name}"),
-                        None => "redeemed (account deleted)".into(),
-                    },
-                    (None, Some(_), _) => "revoked".into(),
-                    (None, None, Some(at)) if at <= now => "expired".into(),
-                    _ => "open".into(),
-                };
-                // Labels from M3 were never checked, so one may hold hidden characters.
-                writeln!(
-                    out,
-                    "{}\t{}\t{}\t{status}",
-                    i.id,
-                    i.label.as_deref().map_or_else(|| "-".into(), escape_hidden),
-                    time(i.created_at)
-                )?;
-            }
-        }
+        } => write_rows(out, &invite_rows(&store, now).await?)?,
         Command::Invite {
             cmd: InviteCmd::Revoke { id },
-        } => {
-            if store.revoke_invite(*id, now).await? {
-                writeln!(out, "revoked invite {id}")?;
-            } else {
-                writeln!(
-                    out,
-                    "nothing to revoke: invite {id} is unknown, used or revoked"
-                )?;
-            }
-        }
+        } => writeln!(out, "{}", revoke(&store, *id, now).await?.1)?,
         Command::Account {
             cmd: AccountCmd::List,
-        } => {
-            writeln!(out, "id\tusername\tcreated\tlast sign-in\tcharacters")?;
-            for a in store.list_accounts().await? {
-                writeln!(
-                    out,
-                    "{}\t{}\t{}\t{}\t{}",
-                    a.id,
-                    a.username,
-                    time(a.created_at),
-                    a.last_sign_in_at.map_or_else(|| "-".into(), time),
-                    a.characters
-                )?;
-            }
-        }
+        } => write_rows(out, &account_rows(&store).await?)?,
         Command::Account {
             cmd: AccountCmd::Delete { username },
         } => {
@@ -261,6 +311,22 @@ mod tests {
         }
         let cli = Cli::try_parse_from(["fenji-server"]).unwrap();
         assert!(cli.config.is_none() && cli.command.is_none());
+    }
+
+    #[test]
+    fn plain_goes_before_or_after_the_command_and_is_off_by_default() {
+        // M4 hosting spec §3.1: the start scripts pass their arguments on, so `--plain` works
+        // without a command too.
+        for args in [
+            &["fenji-server", "--plain"][..],
+            &["fenji-server", "run", "--plain"],
+            &["fenji-server", "--plain", "run"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(cli.plain, "{args:?}");
+            assert!(matches!(cli.command, None | Some(Command::Run)), "{args:?}");
+        }
+        assert!(!Cli::try_parse_from(["fenji-server"]).unwrap().plain);
     }
 
     #[test]

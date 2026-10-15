@@ -1,12 +1,16 @@
 //! Running the server (M3 spec D5; M4 world spec §3.9): one process with the game gate, the world,
 //! the account API, and the purge of expired sessions and tokens at start-up and every hour. Its
 //! changing facts, maintenance mode among them, are its [`Status`] (M4 hosting spec §3.8, §3.9).
-//! With `tls = "self"` the account API speaks TLS with the server's own key (§3.10).
+//! With `tls = "self"` the account API speaks TLS with the server's own key (§3.10). The host
+//! console's commands run in its [`ConsoleService`], and `fenji-server run` gives the terminal it
+//! started in the full-screen console, or plain lines (§3.1).
+use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use fenji_console::{Colours, Ending, Mode};
 use fenji_store::Store;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -16,6 +20,9 @@ use crate::accounts::Accounts;
 use crate::api::{Addrs, AppState, ServerInfo, router};
 use crate::clock::{Clock, SystemClock};
 use crate::config::{self, Config, Loaded, Tls};
+use crate::console::log::LogHub;
+use crate::console::service::{self, ConsoleService, Parts, WORLD_WAIT};
+use crate::console::{self, Front};
 pub use crate::gate::GateLimits;
 use crate::gate::{self, Gate, Places, accept_loop};
 use crate::listen::{ConnLimits, PlainListener};
@@ -40,15 +47,22 @@ pub struct RunningServer {
     api: AppState,
     world: RunningWorld,
     gate: Arc<Gate>,
+    /// The host console's commands and status.
+    console: Arc<ConsoleService>,
     /// The gate's listener, which hands back the connections still open when it stops.
     listener: JoinHandle<JoinSet<()>>,
-    /// The account API and the purge.
+    /// The account API, the purge and the console's status.
     tasks: Vec<JoinHandle<()>>,
 }
 
 impl RunningServer {
     pub fn accounts(&self) -> Arc<Accounts> {
         Arc::clone(&self.accounts)
+    }
+
+    /// The host console's commands and status, which every console shares.
+    pub fn console(&self) -> Arc<ConsoleService> {
+        Arc::clone(&self.console)
     }
 
     /// The pin of the key the account API serves TLS with, under `tls = "self"`, which invite and
@@ -77,14 +91,21 @@ impl RunningServer {
         self.world.report()
     }
 
-    /// Serves until `stop` completes, or until the world's thread or its services task ends by
-    /// itself, then shuts down: what `fenji-server run` awaits. Either ending early takes the
-    /// server with it, so that no login waits for a world that isn't there (Ruling R9) or plays
-    /// in one that can't save (Ruling R13), and the error makes `fenji-server run` exit non-zero
-    /// for systemd to restart it.
+    /// Serves until `stop` completes or the console's `stop` asks it to, or until the world's
+    /// thread or its services task ends by itself, then shuts down: what `fenji-server run` awaits.
+    /// Either ending early takes the server with it, so that no login waits for a world that isn't
+    /// there (Ruling R9) or plays in one that can't save (Ruling R13), and the error makes
+    /// `fenji-server run` exit non-zero for systemd to restart it.
     pub async fn serve_until(mut self, stop: impl Future<Output = ()>) -> anyhow::Result<()> {
+        let mut stopping = self.console.stopping();
         let failed = tokio::select! {
             () = stop => None,
+            seen = stopping.wait_for(|stopping| *stopping) => {
+                // Let go of the value at once: the shutdown sets it again.
+                drop(seen);
+                tracing::info!("shutting down, as the console asked");
+                None
+            }
             what = self.world.ended() => {
                 tracing::error!("{what} has ended: stopping the server");
                 Some(what)
@@ -101,8 +122,10 @@ impl RunningServer {
     /// with the shutdown reason and saves them, and their connections get the gate's grace to
     /// write their closes before what is left is ended. Then the world stops once its last saves
     /// are written, and the store closes. An error is the world's (`RunningWorld::stop`): its
-    /// thread failed, or saves were lost.
+    /// thread failed, or saves were lost. Consoles see the server stopping throughout, and are told
+    /// goodbye at the end.
     pub async fn shutdown(self) -> anyhow::Result<()> {
+        self.console.begin_stopping();
         for t in &self.tasks {
             t.abort();
         }
@@ -121,6 +144,7 @@ impl RunningServer {
         gate::finish(conns, self.gate.limits.grace()).await;
         let stopped = self.world.stop().await;
         self.accounts.store().close().await;
+        self.console.end();
         stopped
     }
 }
@@ -249,6 +273,18 @@ pub async fn start(
         host: cfg.server.host.clone(),
     };
     let online = Arc::new(Online::new(limits.max_players));
+    let console = ConsoleService::new(Parts {
+        cfg: cfg.clone(),
+        store: accounts.store().clone(),
+        status: Arc::clone(&status),
+        online: Arc::clone(&online),
+        world: world.handle(),
+        clock: Arc::clone(&clock),
+        pin: pin.clone(),
+        gate_port: login_addr.port(),
+        api_port: api_addr.port(),
+        world_wait: WORLD_WAIT,
+    });
     let gate = Arc::new(Gate {
         accounts: Arc::clone(&accounts),
         online: Arc::clone(&online),
@@ -297,6 +333,7 @@ pub async fn start(
                 }
             }
         }),
+        tokio::spawn(service::keep_fresh(Arc::downgrade(&console))),
     ];
     Ok(RunningServer {
         login_addr,
@@ -307,14 +344,22 @@ pub async fn start(
         api: state,
         world,
         gate,
+        console,
         listener,
         tasks,
     })
 }
 
-/// `fenji-server run`: serves until Ctrl-C or SIGTERM. A first run (M4 hosting spec §3.6) says what
-/// it wrote before it starts, and what's next once it runs.
-pub async fn run(loaded: Loaded) -> anyhow::Result<()> {
+/// `fenji-server run`: serves until Ctrl-C, SIGTERM or the console's `stop`, with `front` in the
+/// terminal it started in (M4 hosting spec §3.1), `hub` being the log's. A first run (§3.6) says
+/// what it wrote before it starts, and what's next once it runs.
+/// - [`Front::Full`]: the full-screen console holds the terminal while the server runs on a task
+///   of its own; Ctrl-C there is `stop`. However the console ends, a panic included, it gives the
+///   terminal back first (Review Focus 2). One that ends while the server runs leaves it running,
+///   and says so, until a signal stops it. Then `run` waits for the server's end.
+/// - [`Front::Plain`]: commands from stdin and answers on stdout, the log being on stderr. The end
+///   of stdin leaves the server running.
+pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()> {
     let (cfg, first_run) = match loaded {
         Loaded::Existing(cfg) => (cfg, None),
         Loaded::FirstRun(cfg) => {
@@ -325,15 +370,96 @@ pub async fn run(loaded: Loaded) -> anyhow::Result<()> {
     if let Some([wrote, ..]) = &first_run {
         tracing::info!("{wrote}");
     }
-    let server = start(&cfg, Arc::new(SystemClock), GateLimits::from_config(&cfg)).await?;
+    let server = match start(&cfg, Arc::new(SystemClock), GateLimits::from_config(&cfg)).await {
+        Ok(server) => server,
+        Err(e) => {
+            // The full-screen console's log went to its file alone: what a first run wrote, and
+            // any warning, come with the error.
+            if front == Front::Full {
+                for line in hub.subscribe().backlog {
+                    say(&line.to_string());
+                }
+            }
+            return Err(e);
+        }
+    };
     let stop = signalled();
     tracing::info!(gate = %server.login_addr, api = %server.api_addr, "Fenji is running");
-    if let Some([_, next @ ..]) = &first_run {
-        for line in next {
-            tracing::info!("{line}");
+    match &first_run {
+        Some([_, next @ ..]) => {
+            for line in next {
+                tracing::info!("{line}");
+            }
+        }
+        None => no_one_yet(&server).await,
+    }
+    let console = server.console();
+    let served = tokio::spawn(server.serve_until(stop));
+    let session = service::session(&console, &hub);
+    match front {
+        Front::Full => {
+            let ended = fenji_console::run_tui(session, Mode::InProcess, Colours::from_env()).await;
+            // The terminal is the host's again, whatever ended the console.
+            let logs = console::log::folder(&cfg.store.path);
+            if let Some(why) = still_serving(&ended) {
+                say(&format!(
+                    "The console has closed ({why}). The server runs on until Ctrl-C or SIGTERM \
+                     stops it; its log is in {}. `fenji-server --plain` gives the console as plain \
+                     lines, for a terminal the full-screen one doesn't suit.",
+                    logs.display()
+                ));
+            }
+            let served = joined(served).await;
+            say(&format!(
+                "Fenji has stopped. Its log is in {}.",
+                logs.display()
+            ));
+            served
+        }
+        Front::Plain => {
+            let input = tokio::io::BufReader::new(tokio::io::stdin());
+            let (out, err) = (std::io::stdout(), std::io::stderr());
+            if let Err(e) = fenji_console::run_plain(session, input, out, err, false).await {
+                tracing::warn!(error = %e, "the console's lines have stopped: the server runs on");
+            }
+            joined(served).await
         }
     }
-    server.serve_until(stop).await
+}
+
+/// Why the full-screen console ended while the server may run on; `None` once the server said
+/// goodbye, having stopped.
+fn still_serving(ended: &std::io::Result<Ending>) -> Option<String> {
+    match ended {
+        Ok(Ending::ServerStopped(_)) => None,
+        Ok(Ending::InputClosed) => Some("its keys ended".into()),
+        Ok(Ending::Lost | Ending::Detached) => Some("it lost the server".into()),
+        Err(e) => Some(e.to_string()),
+    }
+}
+
+/// The server's result, once its task has ended.
+async fn joined(served: JoinHandle<anyhow::Result<()>>) -> anyhow::Result<()> {
+    served
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("the server's task failed: {e}")))
+}
+
+/// A line for the host's terminal, outside the log: on stderr, and never a panic when it's gone.
+fn say(text: &str) {
+    let _ = writeln!(std::io::stderr(), "{text}");
+}
+
+/// With no account in the store, says how to invite the first player: a server whose first run
+/// couldn't start runs as an ordinary one after, and never said so (carry-forward 3).
+async fn no_one_yet(server: &RunningServer) {
+    match server.accounts().store().list_accounts().await {
+        Ok(accounts) if accounts.is_empty() => {
+            tracing::info!("No one has an account yet: type `invite` for a link to send a friend.");
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "can't list the accounts"),
+    }
 }
 
 /// Ctrl-C or SIGTERM. SIGTERM is caught from this call on, not from the future's first poll, so

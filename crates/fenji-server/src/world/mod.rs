@@ -14,6 +14,12 @@ pub mod types;
 // holds the codec's limit to it: the codec refuses a longer line before it reaches the world,
 // which checks again (#280).
 pub(crate) use chat::MAX_BYTES as MAX_LINE_BYTES;
+// The most characters in a line, as the client counts them: the console's maintenance
+// announcement is cut to it.
+pub(crate) use chat::MAX_CHARS as MAX_LINE_CHARS;
+/// What a thread logs, for the tests of the console's commands too.
+#[cfg(test)]
+pub(crate) use ecs::test_util::logged;
 pub use ecs::{Rules, WorldCore};
 pub use thread::{RunningWorld, SAVE_WAIT, THREAD_WAIT, TickReport, WorldHandle, start};
 pub use types::*;

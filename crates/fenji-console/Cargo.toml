@@ -11,7 +11,7 @@ license.workspace = true
 default = ["tui"]
 # The front ends: the full-screen console and plain lines. Without it, the crate is the wire protocol
 # and the text checks, which the server and the launcher share (M4 hosting plan, Ruling HP3).
-tui = ["dep:crossterm", "dep:futures-util", "dep:ratatui", "dep:tokio"]
+tui = ["dep:crossterm", "dep:futures-util", "dep:ratatui", "dep:rustix", "dep:tokio"]
 
 [dependencies]
 crossterm = { workspace = true, optional = true }
@@ -21,6 +21,10 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
+
+# Stderr pointed away from the terminal while the full-screen console holds it (tui.rs).
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["stdio"], optional = true }
 
 [dev-dependencies]
 tokio.workspace = true

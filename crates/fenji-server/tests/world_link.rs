@@ -1154,3 +1154,85 @@ async fn a_ban_closes_the_accounts_connection_in_the_lobby_and_in_the_world() {
     assert!(s.status().names().is_empty(), "{:?}", s.status().names());
     s.shutdown().await.unwrap();
 }
+
+// --- The host console through the gate (M4 hosting spec §3.3, §3.9; §8, HA5).
+
+#[tokio::test]
+async fn the_consoles_online_names_who_is_in_the_lobby_and_who_is_in_the_world() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (_in_the_lobby, _) = in_lobby(&s, "aaa", "Lin").await;
+    let (mut in_the_world, mai) = in_lobby(&s, "bbb", "Mai").await;
+    select(&mut in_the_world, mai).await;
+    enter(&mut in_the_world, mai).await;
+    let online = s.console().run_line("online").await;
+    assert!(online.ok, "{online:?}");
+    assert_eq!(
+        online.lines,
+        [
+            "account  character  scene  since",
+            "aaa      lobby      -      2027-01-15 08:00 UTC",
+            "bbb      Mai        7      2027-01-15 08:00 UTC",
+        ]
+    );
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_consoles_ban_closes_the_accounts_connection_wherever_it_is() {
+    // Carry-forwards 2 and 12: the registry closes the lobby's connection, and the world's, with
+    // the ban's reason; the world hears its player leave.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut in_the_lobby, _) = in_lobby(&s, "aaa", "Lin").await;
+    let (mut in_the_world, mai) = in_lobby(&s, "bbb", "Mai").await;
+    select(&mut in_the_world, mai).await;
+    enter(&mut in_the_world, mai).await;
+    let c = s.console();
+    let banned = c.run_line("ban aaa").await;
+    assert!(banned.ok, "{banned:?}");
+    assert_eq!(in_the_lobby.expect_closed().await, BANNED.as_bytes());
+    let banned = c.run_line("ban BBB Griefing").await;
+    assert_eq!(
+        banned.lines,
+        ["banned bbb", "bbb was online, and was let go"]
+    );
+    assert_eq!(in_the_world.expect_closed().await, BANNED.as_bytes());
+    for _ in 0..100 {
+        if s.status().names().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(s.status().names().is_empty(), "{:?}", s.status().names());
+    assert_eq!(c.run_line("online").await.lines, ["nobody is online"]);
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn maintenance_from_the_console_is_announced_to_players_in_the_world() {
+    // M4 hosting spec §3.9: on the marquee, when it starts and when it ends.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    select(&mut bot, pid).await;
+    enter(&mut bot, pid).await;
+    let c = s.console();
+    let on = c.run_line("maintenance on 30m Updating").await;
+    assert_eq!(
+        on.lines.last().map(String::as_str),
+        Some("announced to the one player in the game"),
+        "{on:?}"
+    );
+    assert_eq!(
+        heard(&mut bot).await,
+        line(chat::channel::MARQUEE, "", "Maintenance: Updating", "")
+    );
+    let off = c.run_line("maintenance off").await;
+    assert!(off.ok, "{off:?}");
+    assert_eq!(
+        heard(&mut bot).await,
+        line(chat::channel::MARQUEE, "", "Maintenance is over.", "")
+    );
+    s.shutdown().await.unwrap();
+}

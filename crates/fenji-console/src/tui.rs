@@ -1,10 +1,11 @@
 //! The full-screen console in the host's terminal (M4 hosting spec §3.1, §3.2). It takes the
 //! terminal over and gives it back on every way out, a panic included (Review Focus 2).
+use std::cell::Cell;
 use std::io;
 use std::panic::{self, PanicHookInfo};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{Event, EventStream, KeyEvent};
@@ -31,6 +32,19 @@ const BATCH: usize = 256;
 /// Whether a panic, on any thread, gave the terminal back while the console held it.
 static PANICKED: AtomicBool = AtomicBool::new(false);
 
+/// Whether the console is drawing a frame. A panic on another thread waits for it before it gives
+/// the terminal back: the rest of the frame would land on the main screen, under the panic's
+/// message.
+static DRAWING: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Whether this thread is the one drawing: a panic in the drawing doesn't wait for itself.
+    static DRAWS_HERE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// How long a panic on another thread waits for a frame being drawn.
+const FRAME_WAIT: Duration = Duration::from_secs(1);
+
 /// The full-screen console, until the host leaves it or the server goes. It draws on every
 /// message and key, and every second for the uptime. Ctrl-C sends `stop` in-process, and leaves
 /// when attached.
@@ -50,13 +64,14 @@ pub async fn run_tui(session: Session, mode: Mode, colours: Colours) -> io::Resu
     second.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_id = 0;
     loop {
-        if PANICKED.load(Ordering::SeqCst) {
+        let Some(drawing) = Drawing::begin() else {
             // The panic hook gave the terminal back: drawing now would scribble on the shell.
             return Err(io::Error::other(
                 "a panic ended the console; its message is above",
             ));
-        }
+        };
         terminal.draw(|frame| view.draw(frame, &palette, now_ms()))?;
+        drop(drawing);
         tokio::select! {
             msg = from_server.recv() => {
                 if let Some(ending) = take_messages(&mut view, msg, &mut from_server) {
@@ -137,8 +152,43 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// The terminal, taken over: raw mode, the alternate screen and a hidden cursor. Dropping it
-/// gives the terminal back, and so does a panic on any thread while it's held.
+/// A frame being drawn, from the check that no panic has given the terminal back to the frame's
+/// end. The flags are sequentially consistent on both sides: the drawing marks itself, then looks
+/// for a panic; a panic marks itself, then looks for a drawing. One sees the other.
+struct Drawing;
+
+impl Drawing {
+    /// `None` once a panic has given the terminal back: nothing more may be drawn.
+    fn begin() -> Option<Drawing> {
+        DRAWS_HERE.set(true);
+        DRAWING.store(true, Ordering::SeqCst);
+        let drawing = Drawing;
+        (!PANICKED.load(Ordering::SeqCst)).then_some(drawing)
+    }
+}
+
+impl Drop for Drawing {
+    fn drop(&mut self) {
+        DRAWING.store(false, Ordering::SeqCst);
+        DRAWS_HERE.set(false);
+    }
+}
+
+/// Waits, [`FRAME_WAIT`] at most, for the frame another thread is drawing, so that none of it lands
+/// on the main screen once the terminal is given back. A panic in the drawing itself goes on.
+fn wait_for_the_frame() {
+    if DRAWS_HERE.try_with(Cell::get).unwrap_or(false) {
+        return;
+    }
+    let until = Instant::now() + FRAME_WAIT;
+    while DRAWING.load(Ordering::SeqCst) && Instant::now() < until {
+        std::thread::yield_now();
+    }
+}
+
+/// The terminal, taken over: raw mode, the alternate screen, a hidden cursor and stderr pointed
+/// away from it. Dropping it gives the terminal back, and so does a panic on any thread while it's
+/// held.
 struct Screen {
     _hook: PanicHook,
 }
@@ -151,7 +201,11 @@ impl Screen {
             _hook: PanicHook::install(give_back),
         };
         enable_raw_mode()?;
+        RAW.store(true, Ordering::SeqCst);
+        // Marked first: the switch may be written even if the call then fails.
+        ALTERNATE.store(true, Ordering::SeqCst);
         execute!(io::stdout(), EnterAlternateScreen, Hide)?;
+        quiet_stderr();
         Ok(screen)
     }
 }
@@ -162,17 +216,83 @@ impl Drop for Screen {
     }
 }
 
-/// Gives the terminal back: the main screen, a cursor and cooked mode. Running it twice is
-/// harmless.
+/// Whether the console has the terminal in raw mode.
+static RAW: AtomicBool = AtomicBool::new(false);
+
+/// Whether the console has the terminal on its alternate screen, with the cursor hidden.
+static ALTERNATE: AtomicBool = AtomicBool::new(false);
+
+/// Gives the terminal back: stderr first, so that what is printed next, a panic's message among
+/// it, reaches the terminal; then the main screen, a cursor and cooked mode. Each is given back
+/// once, so running it again, as a panic's hook and then the console's end do, changes nothing: a
+/// second switch to the main screen would move the cursor back to where it was when the console
+/// began, and what's printed next would overwrite the panic's message.
 fn give_back() {
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
-    let _ = disable_raw_mode();
+    give_back_to(&mut io::stdout());
 }
+
+/// [`give_back`], writing the switch to the main screen to `terminal`.
+fn give_back_to(terminal: &mut impl io::Write) {
+    loud_stderr();
+    if ALTERNATE.swap(false, Ordering::SeqCst) {
+        let _ = execute!(terminal, LeaveAlternateScreen, Show);
+    }
+    if RAW.swap(false, Ordering::SeqCst) {
+        let _ = disable_raw_mode();
+    }
+}
+
+/// Where stderr pointed before the console took the terminal, while it holds it.
+#[cfg(unix)]
+static STDERR: std::sync::Mutex<Option<std::os::fd::OwnedFd>> = std::sync::Mutex::new(None);
+
+/// Points stderr at `/dev/null` while the console holds the terminal: a line a library prints
+/// there, such as the log file's writer's when a day's file can't be made, would draw over the
+/// console. Whatever the console's process logs reaches its pane through the log instead. Where
+/// it can't, stderr stays as it is.
+#[cfg(unix)]
+fn quiet_stderr() {
+    use std::os::fd::AsFd;
+    let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") else {
+        return;
+    };
+    let mut saved = STDERR.lock().unwrap_or_else(|e| e.into_inner());
+    if saved.is_some() {
+        return;
+    }
+    let Ok(stderr) = rustix::io::fcntl_dupfd_cloexec(io::stderr().as_fd(), 0) else {
+        return;
+    };
+    if rustix::stdio::dup2_stderr(&null).is_ok() {
+        *saved = Some(stderr);
+    }
+}
+
+/// Points stderr back where it was before [`quiet_stderr`].
+#[cfg(unix)]
+fn loud_stderr() {
+    let mut saved = match STDERR.try_lock() {
+        Ok(saved) => saved,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        // Being pointed away on another thread, which a panic interrupted: nothing to give back.
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
+    if let Some(stderr) = saved.take() {
+        let _ = rustix::stdio::dup2_stderr(&stderr);
+    }
+}
+
+#[cfg(not(unix))]
+fn quiet_stderr() {}
+
+#[cfg(not(unix))]
+fn loud_stderr() {}
 
 type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Sync + Send + 'static>;
 
 /// A panic hook that runs `give_back` before the hook it replaced prints the panic, so the message
-/// lands on the main screen, readable. The replaced hook comes back when this is dropped.
+/// lands on the main screen, readable, once a frame another thread is drawing is done. The
+/// replaced hook comes back when this is dropped.
 struct PanicHook {
     previous: Option<Arc<Hook>>,
 }
@@ -183,6 +303,7 @@ impl PanicHook {
         let chained = Arc::clone(&previous);
         panic::set_hook(Box::new(move |info| {
             PANICKED.store(true, Ordering::SeqCst);
+            wait_for_the_frame();
             give_back();
             (*chained)(info);
         }));
@@ -237,9 +358,89 @@ mod tests {
             .is_err()
     }
 
+    /// Held by each test that changes what the process shares: its panic hook, its stderr, and the
+    /// flags of what the console holds of the terminal. One test at a time.
+    static HOOKS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn the_terminal_is_given_back_once() {
+        // Found by the M4 hosting plan's Task 10's by-hand check: after a panic, the hook gives
+        // the terminal back, then the console's end does. A second switch to the main screen moves
+        // the cursor back to where the console began (xterm, VTE and tmux restore the cursor saved
+        // as it began at every switch), and the console's note then overwrote the panic's message.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        ALTERNATE.store(true, Ordering::SeqCst);
+        let mut first = Vec::new();
+        give_back_to(&mut first);
+        let first = String::from_utf8(first).unwrap();
+        assert!(
+            first.contains("\u{1b}[?1049l") && first.contains("\u{1b}[?25h"),
+            "{first:?}"
+        );
+        let mut again = Vec::new();
+        give_back_to(&mut again);
+        assert!(again.is_empty(), "{again:?}");
+    }
+
+    /// The hook the tests had, back in place of `before`'s replacement.
+    fn restore(before: Arc<Hook>) {
+        drop(panic::take_hook());
+        match Arc::try_unwrap(before) {
+            Ok(hook) => panic::set_hook(hook),
+            Err(shared) => panic::set_hook(Box::new(move |info| (*shared)(info))),
+        }
+    }
+
+    #[test]
+    fn a_panic_elsewhere_waits_for_the_frame_being_drawn() {
+        // Review Focus 2, as the by-hand check of the M4 hosting plan's Task 10 found it: a panic
+        // on another thread while the console draws a frame. Given back at once, the terminal
+        // would get the rest of the frame on its main screen, under the panic's message.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        PANICKED.store(false, Ordering::SeqCst);
+        static SEEN: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+        let before: Arc<Hook> = Arc::new(panic::take_hook());
+        let others = Arc::clone(&before);
+        panic::set_hook(Box::new(move |info| {
+            if on_hook_test_thread() {
+                SEEN.lock().unwrap().push("the previous hook");
+            } else {
+                (*others)(info);
+            }
+        }));
+        {
+            let _hook = PanicHook::install(|| {
+                if on_hook_test_thread() {
+                    SEEN.lock().unwrap().push("the terminal given back");
+                }
+            });
+            let drawing = Drawing::begin().expect("no panic yet");
+            let panicking = std::thread::Builder::new()
+                .name(HOOK_TEST.into())
+                .spawn(|| panic!("while a frame is drawn"))
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            SEEN.lock().unwrap().push("the frame drawn");
+            drop(drawing);
+            assert!(panicking.join().is_err());
+            assert!(Drawing::begin().is_none(), "no frame after the panic");
+        }
+        PANICKED.store(false, Ordering::SeqCst);
+        restore(before);
+        assert_eq!(
+            *SEEN.lock().unwrap(),
+            [
+                "the frame drawn",
+                "the terminal given back",
+                "the previous hook"
+            ]
+        );
+    }
+
     #[test]
     fn a_panic_gives_the_terminal_back_before_the_previous_hook_prints() {
         // Review Focus 2.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
         static SEEN: Mutex<Vec<&str>> = Mutex::new(Vec::new());
         let before: Arc<Hook> = Arc::new(panic::take_hook());
         let others = Arc::clone(&before);
@@ -260,12 +461,7 @@ mod tests {
         }
         // Gone with its guard: the previous hook alone.
         assert!(panics_on_hook_test_thread("after the console"));
-        // The hook the tests had, back.
-        drop(panic::take_hook());
-        match Arc::try_unwrap(before) {
-            Ok(hook) => panic::set_hook(hook),
-            Err(shared) => panic::set_hook(Box::new(move |info| (*shared)(info))),
-        }
+        restore(before);
         assert_eq!(
             *SEEN.lock().unwrap(),
             [
@@ -274,6 +470,26 @@ mod tests {
                 "the previous hook"
             ]
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stderr_points_away_while_the_console_holds_the_terminal_and_back_after() {
+        // Carry-forward 4 of the M4 hosting plan's Task 10: tracing-appender prints to stderr when
+        // a day's log file can't be made, which would draw over the console.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        let stderr = || std::fs::read_link("/proc/self/fd/2").unwrap();
+        let before = stderr();
+        quiet_stderr();
+        let during = stderr();
+        // Twice is harmless, either way.
+        quiet_stderr();
+        loud_stderr();
+        let after = stderr();
+        loud_stderr();
+        assert_eq!(during, std::path::Path::new("/dev/null"));
+        assert_eq!(after, before);
+        assert_eq!(stderr(), before);
     }
 
     fn press(code: KeyCode) -> KeyEvent {

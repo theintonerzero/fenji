@@ -30,7 +30,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use crate::accounts;
 use crate::gate::{self, Gate};
 use crate::lobby::stored_appearance;
-use crate::online::Closing;
+use crate::online::{Closing, Playing};
 use crate::world::{
     ActorId, ChatChannel, ChatIn, ChatOut, ChatRefusal, ConnId, KickReason, Location, Look,
     MAX_LINE_BYTES, MoveStep, Player, Pos, Speaker, WhisperTarget, WorldHandle, WorldIn, WorldOut,
@@ -82,6 +82,7 @@ pub(crate) async fn play(
 ) -> anyhow::Result<()> {
     let deadline = gate.limits.write_deadline;
     let pid = character.pid;
+    let name = character.name.clone();
     let (tx, mut rx) = mpsc::channel(OUTBOUND);
     // `[access].admins` or an op (M4 hosting spec §8, HA5). A store that can't say enters the
     // player without an admin's commands.
@@ -165,6 +166,12 @@ pub(crate) async fn play(
                     return kicked(sock, peer, gate, server, account, reason).await;
                 }
                 Some(msg) => {
+                    // Where the console's `online` says the character plays: the scene it enters,
+                    // or one a teleport takes it to.
+                    if let WorldOut::LoadScene { at, .. } = &msg {
+                        let character = name.clone();
+                        gate.online.playing(account.id, conn, Playing { character, scene: at.scene });
+                    }
                     let now = u64::try_from(gate.clock.now_ms()).unwrap_or(0);
                     let Some(bytes) = encode(server, pid, now, msg)? else { continue };
                     if !gate::send_or_replaced(sock, &bytes, deadline, replaced).await? {

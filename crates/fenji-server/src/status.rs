@@ -64,16 +64,20 @@ pub struct Status {
 
 impl Status {
     /// The state `store` keeps, for a server that started at `started_ms` (Unix ms) with
-    /// `file_motd` as its `[server] motd`. A stored maintenance mode this version can't read keeps
-    /// the server in maintenance, with the default message, since `started_ms`: the host meant it
-    /// shut, and can turn it off from the console.
+    /// `file_motd` as its `[server] motd`. What players would read is checked again as it's read
+    /// back ([`check_message`]), since a hand edit or another version may have written it:
+    /// - a stored maintenance mode this version can't read keeps the server in maintenance, with
+    ///   the default message, since `started_ms`, and one whose message fails the check keeps its
+    ///   times with the default message: the host meant it shut, and can turn it off from the
+    ///   console;
+    /// - a stored MOTD that fails the check gives way to the file's.
     pub async fn load(
         store: &Store,
         started_ms: i64,
         file_motd: &str,
     ) -> anyhow::Result<Arc<Status>> {
         let maintenance = store.state(MAINTENANCE_KEY).await?.map(|json| {
-            serde_json::from_str(&json).unwrap_or_else(|e| {
+            let mut m = serde_json::from_str(&json).unwrap_or_else(|e| {
                 tracing::warn!(
                     error = %e,
                     "the stored maintenance mode can't be read: the server stays in maintenance"
@@ -83,12 +87,27 @@ impl Status {
                     since_ms: started_ms,
                     until_ms: None,
                 }
-            })
+            });
+            if check_message(&m.message).is_err() {
+                tracing::warn!(
+                    "the stored maintenance message isn't plain text of at most {MESSAGE_MAX} \
+                     characters: the server stays in maintenance, with the default message"
+                );
+                m.message = DEFAULT_MESSAGE.into();
+            }
+            m
         });
-        let motd = store
-            .state(MOTD_KEY)
-            .await?
-            .unwrap_or_else(|| file_motd.to_owned());
+        let motd = match store.state(MOTD_KEY).await? {
+            Some(motd) if check_message(&motd).is_ok() => motd,
+            Some(_) => {
+                tracing::warn!(
+                    "the stored MOTD isn't plain text of at most {MESSAGE_MAX} characters: the \
+                     config's is the MOTD, and the console's `motd` sets another"
+                );
+                file_motd.to_owned()
+            }
+            None => file_motd.to_owned(),
+        };
         Ok(Arc::new(Status {
             started_ms,
             file_motd: file_motd.to_owned(),
@@ -308,6 +327,39 @@ mod tests {
                 until_ms: None,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn a_stored_motd_or_message_that_isnt_plain_is_never_shown() {
+        // A hand edit, or another version's: what `check_message` refuses never reaches players.
+        // The MOTD falls back to the file's; maintenance stays on with the default message, so a
+        // server the host shut stays shut.
+        let (_d, store) = store().await;
+        for (motd, message) in [
+            ("a\u{1b}[2Jb".to_string(), "back \u{202E}soon".to_string()),
+            ("x".repeat(201), "y".repeat(201)),
+        ] {
+            store.set_state("motd", &motd).await.unwrap();
+            let m = Maintenance {
+                message,
+                since_ms: 5,
+                until_ms: Some(9),
+            };
+            store
+                .set_state("maintenance", &serde_json::to_string(&m).unwrap())
+                .await
+                .unwrap();
+            let s = Status::load(&store, NOW, "From the file").await.unwrap();
+            assert_eq!(s.motd(), "From the file", "{motd:?}");
+            assert_eq!(
+                s.maintenance(),
+                Some(Maintenance {
+                    message: DEFAULT_MESSAGE.into(),
+                    since_ms: 5,
+                    until_ms: Some(9),
+                })
+            );
+        }
     }
 
     #[tokio::test]
