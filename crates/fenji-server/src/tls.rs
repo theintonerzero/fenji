@@ -9,7 +9,8 @@
 //! handshake runs on a task of its own within a time limit (Review Focus 3), so connections that
 //! never finish theirs hold their network's places for the limit at most, and keep no other
 //! network from the account API. A finished one is handed to axum in a [`Conn`], which keeps its
-//! open place and ends it once it has sent nothing for the idle time (`crate::listen`).
+//! open place and ends it once no byte has come in or gone out for the idle time
+//! (`crate::listen`).
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -679,23 +680,26 @@ mod tests {
     }
 
     /// A TLS listener on a free loopback port under `limits` and `conns`, serving a router whose
-    /// `/` says `ok` when the connection's own address reached it: its address.
+    /// `/` says `ok` when the connection's own address reached it, and whose `/big` answers with
+    /// a mebibyte: its address.
     async fn serving(dir: &std::path::Path, limits: TlsLimits, conns: ConnLimits) -> SocketAddr {
         let key = ServerKey::load_or_make(&dir.join("tls"), "127.0.0.1").unwrap();
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();
         let listener = TlsListener::new(tcp, &key, limits, conns, &[]).unwrap();
         assert_eq!(axum::serve::Listener::local_addr(&listener).unwrap(), addr);
-        let app = Router::new().route(
-            "/",
-            get(move |ConnectInfo(a): ConnectInfo<Addrs>| async move {
-                if a.local == addr && a.peer != addr {
-                    "ok"
-                } else {
-                    "not this connection's addresses"
-                }
-            }),
-        );
+        let app = Router::new()
+            .route(
+                "/",
+                get(move |ConnectInfo(a): ConnectInfo<Addrs>| async move {
+                    if a.local == addr && a.peer != addr {
+                        "ok"
+                    } else {
+                        "not this connection's addresses"
+                    }
+                }),
+            )
+            .route("/big", get(|| async { vec![b'.'; 1 << 20] }));
         let service = app.into_make_service_with_connect_info::<Addrs>();
         tokio::spawn(axum::serve(listener, service).into_future());
         addr
@@ -991,6 +995,57 @@ mod tests {
             served_again(addr).await,
             "after a client that left mid-handshake"
         );
+    }
+
+    /// Whether a new connection to `addr` is served now, within a second, by a client that
+    /// closes it after its one request.
+    async fn served_now(addr: SocketAddr) -> bool {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::Client::builder()
+            .tls_danger_accept_invalid_certs(true)
+            .pool_max_idle_per_host(0)
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+        match client.get(format!("https://{addr}/")).send().await {
+            Ok(answer) => answer.text().await.is_ok_and(|body| body == "ok"),
+            Err(_) => false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_that_never_reads_its_answers_gives_its_place_back() {
+        // Ruling HP10 over TLS, where rustls takes an answer's bytes until its own buffer is full,
+        // and the writes wait after that: as for the plain listener (the test of the same name in
+        // `crate::listen`), the deadline ends the connection.
+        let dir = tempfile::tempdir().unwrap();
+        let conns = ConnLimits {
+            open_per_network: 1,
+            idle: Duration::from_millis(300),
+            request: Duration::from_millis(300),
+            ..ConnLimits::default()
+        };
+        let addr = serving(dir.path(), TlsLimits::default(), conns).await;
+        let tls = handshaken(TcpStream::connect(addr).await.unwrap()).await;
+        let (unread, mut wr) = tokio::io::split(tls);
+        let pipelined = b"GET /big HTTP/1.1\r\nHost: x\r\n\r\n".repeat(3000);
+        let pipeliner = tokio::spawn(async move {
+            let _ = wr.write_all(&pipelined).await;
+            // Its half stays open: dropping it would close the connection.
+            std::future::pending::<()>().await;
+        });
+        let started = Instant::now();
+        assert!(!served_now(addr).await, "its place is held at first");
+        while !served_now(addr).await {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the place is still held after {:?}",
+                started.elapsed()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        pipeliner.abort();
+        drop(unread);
     }
 
     #[test]

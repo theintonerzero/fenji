@@ -1,12 +1,13 @@
 //! The account API's connections (M4 hosting spec §3.10; Ruling HP9). Both of its listeners, plain
 //! and TLS, accept every connection, then give it one of the open connections' places, counted
 //! by the peer's network as the gate counts its own (M3 spec D17), or close it at once; and they
-//! hand axum each one in a [`Conn`], which keeps its place until it closes and ends it once it has
-//! sent nothing for the idle time, or taken longer than the request time over a request. axum
-//! gives hyper no timer, so hyper's own limit on reading a request's head never applies: without
-//! these, connections that send nothing, or a byte now and then, would stay open until the
-//! process ran out of file descriptors, for the gate as for the API. Out of descriptors anyway,
-//! the listeners' accept is axum's, which waits a second between tries.
+//! hand axum each one in a [`Conn`], which keeps its place until it closes and ends it once no
+//! byte has come in or gone out for the idle time, or a request has taken longer than the request
+//! time. axum gives hyper no timer, so hyper's own limit on reading a request's head never
+//! applies: without these, connections that send nothing, a byte now and then, or never read
+//! their answers, would stay open until the process ran out of file descriptors, for the gate as
+//! for the API. Out of descriptors anyway, the listeners' accept is axum's, which waits a second
+//! between tries.
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
@@ -28,7 +29,8 @@ pub struct ConnLimits {
     /// Of those, from one network: an IPv4 address or an IPv6 /64. A trusted proxy's count toward
     /// `open` alone.
     pub open_per_network: usize,
-    /// No byte from a connection for this long closes it, whatever it was waiting for.
+    /// No byte in or out of a connection for this long closes it, whatever it was waiting for: a
+    /// request from its client, or its client to read an answer.
     pub idle: Duration,
     /// A request must come in whole within this long of its first byte.
     pub request: Duration,
@@ -72,10 +74,11 @@ impl ApiPlaces {
 }
 
 /// An open connection, as axum gets it: the stream, the address it came in on, and its place
-/// among the open connections, given back when it drops. A read fails, which ends the
-/// connection, once nothing has come for the idle time, or once a request has taken longer than
-/// the request time: from its first byte to the server's answer, as a request that trickles in
-/// a byte at a time never idles. Each answer starts both times afresh.
+/// among the open connections, given back when it drops. A read or a write that waits fails,
+/// which ends the connection, once no byte has come in or gone out for the idle time, or once a
+/// request has taken longer than the request time: from its first byte to the server's answer,
+/// as a request that trickles in a byte at a time never idles. Each answer starts both times
+/// afresh.
 pub struct Conn<S> {
     inner: S,
     local: SocketAddr,
@@ -111,8 +114,8 @@ impl<S> Conn<S> {
         &self.inner
     }
 
-    /// When a read that waits fails: the idle time after the last activity, or the request
-    /// time after the request's first byte, whichever comes first.
+    /// When a read or a write that waits fails: the idle time after the last activity, or the
+    /// request time after the request's first byte, whichever comes first.
     fn due(&self) -> Instant {
         let idle = self.active + self.limits.idle;
         self.request_from
@@ -135,9 +138,36 @@ impl<S> Conn<S> {
         {
             "the request took longer than the request time"
         } else {
-            "nothing came for the idle time"
+            "no byte came in or went out for the idle time"
         };
         io::Error::new(io::ErrorKind::TimedOut, why)
+    }
+
+    /// A read or a write the stream keeps waiting: it fails once the deadline has passed. The
+    /// deadline's timer wakes the connection's task then, as the stream may never do: a client
+    /// that sends nothing, or reads nothing.
+    fn wait<T>(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<T>> {
+        match self.deadline.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(self.too_slow())),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    /// A write's outcome: bytes that went out answer the request read, and a write the stream
+    /// keeps waiting waits within the deadline.
+    fn wrote(
+        &mut self,
+        cx: &mut Context<'_>,
+        wrote: Poll<io::Result<usize>>,
+    ) -> Poll<io::Result<usize>> {
+        match wrote {
+            Poll::Ready(Ok(n)) if n > 0 => {
+                self.answered();
+                Poll::Ready(Ok(n))
+            }
+            Poll::Pending => self.wait(cx),
+            ready => ready,
+        }
     }
 }
 
@@ -171,14 +201,16 @@ impl<S: AsyncRead + Unpin> AsyncRead for Conn<S> {
             }
             // The end, or an error: nothing came.
             Poll::Ready(read) => Poll::Ready(read),
-            Poll::Pending => match this.deadline.as_mut().poll(cx) {
-                Poll::Ready(()) => Poll::Ready(Err(this.too_slow())),
-                Poll::Pending => Poll::Pending,
-            },
+            Poll::Pending => this.wait(cx),
         }
     }
 }
 
+/// Writes wait within the same deadline as reads (Ruling HP10), as the gate's writes do within
+/// theirs: a client that pipelines requests and never reads the answers backs the server's writes
+/// up, and hyper, with requests still in its buffer, then reads no more, so a deadline polled by
+/// reads alone would never come. Flushes and closes wait within it too: over TLS they write, the
+/// records rustls holds and its closing alert.
 impl<S: AsyncWrite + Unpin> AsyncWrite for Conn<S> {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -187,20 +219,23 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Conn<S> {
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
         let wrote = Pin::new(&mut this.inner).poll_write(cx, buf);
-        if let Poll::Ready(Ok(n)) = wrote
-            && n > 0
-        {
-            this.answered();
-        }
-        wrote
+        this.wrote(cx, wrote)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_flush(cx) {
+            Poll::Pending => this.wait(cx),
+            flushed => flushed,
+        }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_shutdown(cx) {
+            Poll::Pending => this.wait(cx),
+            closed => closed,
+        }
     }
 
     fn poll_write_vectored(
@@ -210,12 +245,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Conn<S> {
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
         let wrote = Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
-        if let Poll::Ready(Ok(n)) = wrote
-            && n > 0
-        {
-            this.answered();
-        }
-        wrote
+        this.wrote(cx, wrote)
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -282,8 +312,8 @@ mod tests {
     use crate::api::Addrs;
 
     /// A plain listener under `limits`, trusting `proxies`, whose `/` says `ok` when the
-    /// connection's own address reached it, and whose `/echo` reads a body and says its length:
-    /// its address.
+    /// connection's own address reached it, whose `/echo` reads a body and says its length, and
+    /// whose `/big` answers with a mebibyte: its address.
     async fn serving(limits: ConnLimits, proxies: &[IpAddr]) -> SocketAddr {
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();
@@ -303,7 +333,8 @@ mod tests {
             .route(
                 "/echo",
                 post(|body: String| async move { format!("got {}", body.len()) }),
-            );
+            )
+            .route("/big", get(|| async { vec![b'.'; 1 << 20] }));
         let service = app.into_make_service_with_connect_info::<Addrs>();
         tokio::spawn(axum::serve(listener, service).into_future());
         addr
@@ -418,6 +449,148 @@ mod tests {
         .await;
         assert!(!answer.contains("got"), "{answer}");
         assert!(took >= limits.idle, "{took:?}");
+    }
+
+    /// Whether a new connection to `addr` is served now: answered `200` within a second.
+    async fn served_now(addr: SocketAddr) -> bool {
+        let ask = async {
+            let mut conn = TcpStream::connect(addr).await?;
+            conn.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                .await?;
+            let mut answer = String::new();
+            conn.read_to_string(&mut answer).await?;
+            std::io::Result::Ok(answer)
+        };
+        matches!(
+            tokio::time::timeout(Duration::from_secs(1), ask).await,
+            Ok(Ok(answer)) if answer.starts_with("HTTP/1.1 200")
+        )
+    }
+
+    #[tokio::test]
+    async fn a_client_that_never_reads_its_answers_gives_its_place_back() {
+        // Ruling HP10, the review's probe: 3,000 pipelined requests whose answers the client never
+        // reads. Once the answers outgrow what the sockets' buffers take (2.6 MiB on the Linux
+        // machine this was written on, so a mebibyte each), the server's writes wait, and with
+        // requests still in hyper's buffer it reads no more: only the writes' own deadline ends
+        // the connection, and gives its network's one place back.
+        let limits = ConnLimits {
+            open_per_network: 1,
+            idle: Duration::from_millis(300),
+            request: Duration::from_millis(300),
+            ..ConnLimits::default()
+        };
+        let addr = serving(limits, &[]).await;
+        let (unread, mut wr) = TcpStream::connect(addr).await.unwrap().into_split();
+        let pipelined = b"GET /big HTTP/1.1\r\nHost: x\r\n\r\n".repeat(3000);
+        let pipeliner = tokio::spawn(async move {
+            let _ = wr.write_all(&pipelined).await;
+            // Its half stays open: dropping it would close the connection.
+            std::future::pending::<()>().await;
+        });
+        let started = Instant::now();
+        assert!(!served_now(addr).await, "its place is held at first");
+        while !served_now(addr).await {
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the place is still held after {:?}",
+                started.elapsed()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        pipeliner.abort();
+        drop(unread);
+    }
+
+    /// A stream that never takes a byte or gives one, and never wakes a task that waits on it: a
+    /// client that sends nothing, and whose window stays shut.
+    struct Stuck;
+
+    impl AsyncRead for Stuck {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for Stuck {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_write_vectored(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &[io::IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            true
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn every_wait_on_a_stuck_connection_ends_at_the_idle_time() {
+        // Ruling HP10: however the server writes, a write that waits fails once the deadline has
+        // passed, as a read does. Over TLS a flush or a close waits on the socket as a write does.
+        let limits = ConnLimits {
+            idle: Duration::from_millis(200),
+            ..ConnLimits::default()
+        };
+        let started = Instant::now();
+        let places = ApiPlaces::new(5, 5, &[]);
+        let stuck = || {
+            let place = places.take(IpAddr::from([10, 0, 0, 1])).unwrap();
+            Conn::new(
+                Stuck,
+                SocketAddr::from(([127, 0, 0, 1], 7801)),
+                place,
+                limits,
+            )
+        };
+        let (mut reading, mut writing, mut vectored) = (stuck(), stuck(), stuck());
+        let (mut flushing, mut closing) = (stuck(), stuck());
+        let (mut byte, answer) = ([0; 1], [io::IoSlice::new(b"an answer")]);
+        let ends = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(
+                reading.read(&mut byte),
+                writing.write(b"an answer"),
+                vectored.write_vectored(&answer),
+                flushing.flush(),
+                closing.shutdown(),
+            )
+        })
+        .await
+        .expect("every wait ends within its time");
+        let took = started.elapsed();
+        assert!(took >= limits.idle, "not before the idle time: {took:?}");
+        let (read, wrote, wrote_vectored, flushed, closed) = ends;
+        let kinds = [
+            read.map(drop),
+            wrote.map(drop),
+            wrote_vectored.map(drop),
+            flushed,
+            closed,
+        ]
+        .map(|end| end.map_err(|e| e.kind()));
+        assert_eq!(kinds, [Err(io::ErrorKind::TimedOut); 5]);
     }
 
     #[tokio::test]
