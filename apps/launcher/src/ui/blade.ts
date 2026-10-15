@@ -8,7 +8,8 @@ import { percent as percentText } from "../words";
 
 export type BladeState =
   | { kind: "unlit" }
-  | { kind: "climbing"; percent: number; label: string }
+  /** `value` is the readout's first line when a count says more than the percentage does. */
+  | { kind: "climbing"; percent: number; label: string; value?: string }
   | { kind: "lit" }
   | { kind: "bloom" };
 
@@ -105,11 +106,11 @@ function art(state: BladeState, ground: Ground, id: string): SVGElement {
 }
 
 /** The readout left of the blade while it climbs: the percentage and what's being counted. */
-function readout(state: { percent: number; label: string }): HTMLElement {
+function readout(state: { percent: number; label: string; value?: string }): HTMLElement {
   return h(
     "div",
     { class: "readout", style: `top: ${Math.round(lightAt(state.percent)) - 12}px` },
-    h("div", { class: "readout-value" }, percentText(state.percent)),
+    h("div", { class: "readout-value" }, state.value ?? percentText(state.percent)),
     h("div", { class: "readout-label" }, state.label),
   );
 }
@@ -130,7 +131,7 @@ export function blade(state: BladeState, ground: Ground = "cool"): HTMLElement &
       el.setAttribute("aria-valuemin", "0");
       el.setAttribute("aria-valuemax", "100");
       el.setAttribute("aria-valuenow", String(now));
-      el.setAttribute("aria-valuetext", `${now}%, ${to.label}`);
+      el.setAttribute("aria-valuetext", `${to.value ?? `${now}%`}, ${to.label}`);
       el.replaceChildren(art(to, on, id), readout(to));
     } else {
       el.setAttribute("aria-hidden", "true");
