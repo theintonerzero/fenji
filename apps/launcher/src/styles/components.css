@@ -585,6 +585,576 @@
   line-height: 18px;
 }
 
+/* The hero composition (DESIGN.md, Layout): the blade at x 150, the text from x 250, 120 px
+ * down (96 px on Welcome), at most 520 px wide (480 on Welcome). */
+.hero {
+  position: relative;
+  max-width: 770px;
+  padding: 120px 0 0 250px;
+}
+
+.hero-welcome {
+  max-width: 730px;
+  padding-top: 96px;
+}
+
+.hero > .status-line {
+  margin-top: 14px;
+}
+
+.hero-welcome > .status-line {
+  margin-top: 12px;
+  font-size: var(--type-body-size);
+}
+
+.hero > .notice {
+  margin-top: 22px;
+}
+
+.hero > .lede {
+  margin-top: 16px;
+}
+
+.form-invite {
+  max-width: 480px;
+  margin-top: var(--space-32);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  margin-top: 34px;
+}
+
+.actions-form {
+  gap: var(--space-24);
+  margin-top: var(--space-24);
+}
+
+/* Two buttons sit 12 px apart; the text button after them, 24 px. */
+.actions-form > .btn:not(.btn-link) + .btn:not(.btn-link) {
+  margin-left: calc(var(--space-12) - var(--space-24));
+}
+
+.play-meta > .meta,
+.play-meta > .running {
+  margin-top: var(--space-16);
+}
+
+.meta .btn-link {
+  font-size: inherit;
+}
+
+.icon-ok {
+  color: var(--ok);
+}
+
+.icon-info {
+  color: var(--info);
+}
+
+/* Offline: what to try (Lists, Bullets), or the one sentence a key needs. */
+.try-heading {
+  margin-top: 30px;
+  font-size: var(--type-body-size);
+  font-weight: 600;
+}
+
+.bullets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  margin-top: var(--space-12);
+  color: var(--text-prose);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line-height);
+}
+
+.bullets li {
+  display: flex;
+  gap: var(--space-12);
+}
+
+.bullets li::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 10px;
+  border-radius: var(--rounded-dot);
+  background: var(--faint);
+}
+
+.trouble-words {
+  margin-top: 22px;
+}
+
+/* A text button inside a sentence: gold, underlined 3 px below (DESIGN.md, Link). */
+.inline-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link-color);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.inline-link:hover {
+  color: var(--gold-100);
+}
+
+.running {
+  display: flex;
+  gap: var(--space-8);
+}
+
+.running > .icon {
+  flex: none;
+  margin-top: 5px;
+}
+
+.running-title {
+  font-size: var(--type-body-size);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.running-line {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+  line-height: var(--type-secondary-line-height);
+}
+
+/* Off Linux: why Play stays closed, and the action rows (Lists) of what still works. */
+.unsupported {
+  margin-top: var(--space-20);
+  padding: 18px 20px 12px;
+}
+
+.unsupported-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: var(--type-title-size);
+  font-weight: var(--type-title-weight);
+  line-height: 1.4;
+}
+
+.unsupported-title > .icon {
+  flex: none;
+  margin-top: 3px;
+}
+
+.unsupported-lede {
+  margin: 10px 0 8px 28px;
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+}
+
+.action-rows {
+  margin-left: 28px;
+}
+
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  border-top: 1px solid var(--line);
+}
+
+.action-row-item {
+  flex: 1;
+  color: var(--text-prose);
+  font-size: var(--type-body-size);
+}
+
+.action-row .btn-link {
+  gap: var(--space-4);
+  font-size: var(--type-secondary-size);
+}
+
+/* The notice: the last thing that went wrong, or a word from the shell. */
+.notice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 520px;
+  margin-top: 22px;
+  padding: 12px 8px 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--rounded-card);
+  background: var(--ink-850);
+  color: var(--text-prose);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.notice-card > .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--info);
+}
+
+.notice-card-error > .icon {
+  color: var(--danger);
+}
+
+.notice-card-body {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.notice-card-body .btn-link {
+  margin-top: 6px;
+  font-size: var(--type-secondary-size);
+}
+
+.notice-card-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -4px 0;
+  border: 0;
+  border-radius: var(--rounded-chip);
+  background: transparent;
+  color: var(--muted);
+}
+
+.notice-card-close:hover {
+  background: var(--ink-800);
+  color: var(--text);
+}
+
+/* The page composition (DESIGN.md, Layout): 48 px down, 64 px in, a 45 px title on one line,
+ * then cards and forms 420 to 640 px wide. */
+.page {
+  padding: 48px 64px 0;
+}
+
+.page-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lede {
+  margin-top: var(--space-12);
+  color: var(--text-2);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line-height);
+}
+
+.hero > .lede {
+  color: var(--text-prose);
+}
+
+.form-narrow {
+  max-width: 420px;
+  margin-top: var(--space-32);
+}
+
+.form-wide {
+  max-width: 480px;
+  margin-top: 28px;
+}
+
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+
+.field-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-16);
+}
+
+.hint {
+  margin-top: var(--space-8);
+  color: var(--muted);
+  font-size: var(--type-small-size);
+  line-height: var(--type-small-line-height);
+}
+
+.form-error {
+  margin-top: var(--space-16);
+}
+
+.form-narrow > .actions-form {
+  margin-top: 28px;
+}
+
+.remember {
+  margin-top: var(--space-20);
+}
+
+/* The checkbox (DESIGN.md, Checkbox): 20 px, 6 px radius, the gold check, its label clickable. */
+.checkbox {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.checkbox-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.checkbox-box {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--field-line);
+  border-radius: var(--rounded-chip);
+  background: var(--ink-800);
+  color: var(--gold-300);
+}
+
+.checkbox-input:not(:checked) + .checkbox-box .icon {
+  visibility: hidden;
+}
+
+.checkbox-input:focus-visible + .checkbox-box {
+  outline: 2px solid var(--ember-500);
+  outline-offset: 2px;
+}
+
+/* A line led by a small icon: Welcome's assurances, the notes under a form. */
+.icon-line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+}
+
+.icon-line > .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.page .icon-line {
+  max-width: 480px;
+  margin-top: var(--space-20);
+  color: var(--muted);
+  font-size: var(--type-small-size);
+  line-height: var(--type-small-line-height);
+}
+
+.assurances {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: var(--space-40);
+  padding-top: var(--space-20);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+  line-height: var(--type-secondary-line-height);
+}
+
+.assurances .icon-line {
+  gap: 10px;
+}
+
+/* Create your account: the invite the model holds. */
+.invite {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  max-width: 480px;
+  margin-top: var(--space-24);
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--rounded-card);
+  background: var(--ink-850);
+}
+
+.invite-tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--rounded-control);
+  background: var(--ink-800);
+  color: var(--text-2);
+}
+
+.invite-server {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.invite-name {
+  overflow: hidden;
+  font-size: var(--type-body-size);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.invite-address {
+  color: var(--muted);
+  font-size: var(--type-data-size);
+}
+
+.invite-code {
+  text-align: right;
+  line-height: 1.35;
+}
+
+.invite-ok {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  color: var(--text-2);
+  font-size: var(--type-secondary-size);
+  font-weight: 600;
+}
+
+.invite-ok > .icon {
+  color: var(--ok);
+}
+
+.invite-code > .mono {
+  color: var(--muted);
+  font-size: var(--type-mono-size);
+}
+
+/* Your account */
+.account-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+  max-width: 640px;
+  margin-top: var(--space-32);
+}
+
+.account-who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+}
+
+.avatar-large {
+  width: 48px;
+  height: 48px;
+  font-size: 16px;
+}
+
+.account-text {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.account-name {
+  font-size: var(--type-title-size);
+  font-weight: 600;
+}
+
+.account-line {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.person-gold {
+  color: var(--gold-300);
+  font-weight: 600;
+}
+
+.account-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 640px;
+  margin-top: var(--space-24);
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+  line-height: 1.6;
+}
+
+.account-note > .icon {
+  flex: none;
+  margin-top: 3px;
+}
+
+.account-note .inline-link {
+  font-weight: 400;
+}
+
+/* The column's text: its sections' paragraphs, the server card's one line, the client. */
+.column-text {
+  color: var(--text-2);
+  font-size: var(--type-secondary-size);
+  line-height: 1.6;
+}
+
+.column-text + .column-text {
+  margin-top: 10px;
+}
+
+.column-text.muted {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.column-text.notice {
+  color: var(--text-prose);
+}
+
+.column-card > .column-text:last-child {
+  margin-bottom: var(--space-12);
+}
+
+.fact-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.client-fact {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--text-2);
+  font-size: var(--type-secondary-size);
+}
+
+.client-note {
+  margin: 6px 0 0 21px;
+  color: var(--muted);
+  font-size: var(--type-secondary-size);
+  line-height: 1.5;
+}
+
 /* A screen that comes with a later task. */
 .placeholder {
   position: relative;

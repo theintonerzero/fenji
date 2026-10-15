@@ -7,33 +7,57 @@ export interface Field {
   el: HTMLElement;
   /** The error under the field, or none. */
   setError(text: string | null): void;
+  setLabel(text: string): void;
 }
 
 let next = 0;
 
+/** A field. A hint the input already names in `aria-describedby` stays named beside an error. */
 export function field(label: string, input: HTMLInputElement): Field {
   next += 1;
   const id = input.id || `field-${next}`;
   const errorId = `${id}-error`;
+  const hint = input.getAttribute("aria-describedby");
   input.id = id;
   input.classList.add("input");
   const words = h("span", {});
   const error = h("p", { class: "field-error", id: errorId, hidden: true }, icons.error(14), words);
-  const el = h("div", { class: "field" }, h("label", { class: "field-label", for: id }, label), input, error);
+  const name = h("label", { class: "field-label", for: id }, label);
+  const el = h("div", { class: "field" }, name, input, error);
   return {
     el,
     setError(text) {
       if (text === null) {
         input.removeAttribute("aria-invalid");
-        input.removeAttribute("aria-describedby");
+        if (hint === null) {
+          input.removeAttribute("aria-describedby");
+        } else {
+          input.setAttribute("aria-describedby", hint);
+        }
         error.hidden = true;
         words.textContent = "";
       } else {
         input.setAttribute("aria-invalid", "true");
-        input.setAttribute("aria-describedby", errorId);
+        input.setAttribute("aria-describedby", hint === null ? errorId : `${errorId} ${hint}`);
         words.textContent = text;
         error.hidden = false;
       }
     },
+    setLabel(text) {
+      name.textContent = text;
+    },
   };
+}
+
+/** A checkbox (DESIGN.md, Checkbox): a 20 px box with the gold check, its label clickable. */
+export function checkbox(label: string, checked: boolean): { el: HTMLLabelElement; input: HTMLInputElement } {
+  const input = h("input", { class: "checkbox-input", type: "checkbox", checked });
+  const el = h(
+    "label",
+    { class: "checkbox" },
+    input,
+    h("span", { class: "checkbox-box", "aria-hidden": "true" }, icons.check(12)),
+    label,
+  );
+  return { el, input };
 }

@@ -23,3 +23,17 @@ test("the header has four tabs, the active one marked, and no maximise", () => {
   (el.querySelector('[aria-label="Minimise"]') as HTMLElement).click();
   expect(sent).toEqual([{ type: "minimize" }]);
 });
+
+test("signed out, the pill offers Sign in, except on the screens that are the sign-in", () => {
+  const ctx: Ctx = { tab: "play", setTab() {}, send: async () => null };
+  const pill = (name: string, tab: Ctx["tab"]) => {
+    ctx.tab = tab;
+    return header(ctx, golden(name)).querySelector<HTMLButtonElement>(".pill")!;
+  };
+  expect(pill("play-signed-out", "play").hidden).toBe(false);
+  expect(pill("play-signed-out", "play").textContent).toBe("Sign in");
+  expect(pill("play-signed-out", "account").hidden).toBe(true);
+  expect(pill("welcome", "play").hidden).toBe(true);
+  expect(pill("redeem", "play").hidden).toBe(true);
+  expect(pill("play-ready", "account").hidden).toBe(false);
+});
