@@ -16,8 +16,9 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{Builder, Rotation};
 use tracing_subscriber::EnvFilter;
 
+use crate::updates::Updates;
+
 const NOT_OURS: &str = "Fenji only opens its own pages and your servers' source code.";
-const UPDATES_LATER: &str = "Updates come with a later version.";
 /// The launcher's log keeps this many days (the plan's Global Constraints).
 const LOG_DAYS: usize = 7;
 
@@ -66,10 +67,11 @@ pub fn route(intent: &Intent) -> Route {
     }
 }
 
-/// What the shell keeps: the model, and where its log is.
+/// What the shell keeps: the model, where its log is, and the updater's state.
 struct Shell {
     model: App,
     logs: PathBuf,
+    updates: Updates,
 }
 
 /// Holds the log writer's thread until the launcher ends, so the last lines are written.
@@ -130,8 +132,13 @@ impl Shell {
                 app.exit(0);
                 Ok(())
             }
-            Intent::CheckUpdate | Intent::InstallUpdate | Intent::DismissUpdate => {
-                self.model.note(UPDATES_LATER.into(), false);
+            Intent::CheckUpdate => {
+                check_update(app.clone(), true);
+                Ok(())
+            }
+            Intent::InstallUpdate => self.updates.install(app, &self.model),
+            Intent::DismissUpdate => {
+                self.updates.dismiss(&self.model);
                 Ok(())
             }
             other => self.model.intent(other).await.map_err(|e| e.to_string()),
@@ -215,8 +222,16 @@ fn start(app: &mut tauri::App, cfg: AppConfig) -> Result<(), Box<dyn std::error:
             }
         }
     });
-    app.manage(Shell { model, logs });
+    let auto_update = model.snapshot().settings.auto_update;
+    app.manage(Shell {
+        model,
+        logs,
+        updates: Updates::default(),
+    });
     app.manage(LogGuard(guard));
+    if auto_update {
+        check_update(app.handle().clone(), false);
+    }
     let window = app
         .config()
         .app
@@ -226,6 +241,15 @@ fn start(app: &mut tauri::App, cfg: AppConfig) -> Result<(), Box<dyn std::error:
         .clone();
     tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?.build()?;
     Ok(())
+}
+
+/// Checks for a launcher update in the background (spec §3.8): at start with "Update
+/// automatically" on, or when the player asks.
+fn check_update(app: AppHandle, asked: bool) {
+    tauri::async_runtime::spawn(async move {
+        let shell = app.state::<Shell>();
+        shell.updates.check(&app, &shell.model, asked).await;
+    });
 }
 
 pub fn run() {
@@ -240,6 +264,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![intent, snapshot])
         .setup(|app| {
             match config() {

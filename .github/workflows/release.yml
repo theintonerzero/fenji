@@ -1,11 +1,14 @@
 name: Release
 
 # fenji-server's release archives (M4 hosting spec §3.7, H3): one for each target, from its own
-# runner, packed by scripts/package-server.sh. A v* tag attaches them, with SHA256SUMS, to the tag's
-# draft release, which the release steps in docs/development.md check and publish. A pull request
-# that changes this workflow, the packaging script, what it packs (deploy/start, deploy/archive) or
-# the pinned tools builds them without publishing (Ruling HP4), as does a run by hand; its archives
-# stay with the run.
+# runner, packed by scripts/package-server.sh. And the desktop launcher's bundles (launcher spec
+# §3.8): the AppImage, the Windows installer and the macOS app, each from its own runner and, on a
+# tag, signed for the updater with Fenji's release key, with the updater's latest.json. A v* tag
+# attaches them all, with SHA256SUMS, to the tag's draft release, which the release steps in
+# docs/development.md check and publish. A pull request that changes this workflow, the packaging
+# scripts, what they pack (deploy/start, deploy/archive, the launcher's bundle settings) or the
+# pinned tools builds everything without signing or publishing (Ruling HP4), as does a run by hand;
+# its files stay with the run.
 on:
   push:
     tags: ['v*']
@@ -14,7 +17,9 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/package-server.sh
+      - scripts/launcher-latest-json.sh
       - scripts/versions.env
+      - apps/launcher/src-tauri/tauri.conf.json
       - deploy/start/**
       - deploy/archive/**
   workflow_dispatch:
@@ -131,24 +136,153 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  launcher:
+    name: launcher (${{ matrix.bundle }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bundle: appimage
+            runner: ubuntu-24.04
+          - bundle: nsis
+            runner: windows-2025
+          - bundle: app
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUNDLE: ${{ matrix.bundle }}
+    steps:
+      - name: Check out with the repository's line ends
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain from rust-toolchain.toml
+        run: |
+          rustup set profile minimal
+          rustup toolchain install
+          rustc -vV
+      - name: Tauri's Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # Before tauri-cli's install: the cache brings back ~/.cargo/bin, and cargo install then
+      # finds the pinned version there.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/launcher/src-tauri
+          key: ${{ matrix.bundle }}
+      - name: pnpm and tauri-cli, at the versions scripts/versions.env pins
+        run: |
+          source scripts/versions.env
+          npm install -g "pnpm@$PNPM_VERSION"
+          cargo install --locked tauri-cli --version "$TAURI_CLI_VERSION"
+          cargo tauri --version
+      - name: The view's packages
+        working-directory: apps/launcher
+        run: pnpm install --frozen-lockfile
+      - name: Build the bundle
+        working-directory: apps/launcher/src-tauri
+        env:
+          # A tag's bundles are signed for the updater with Fenji's release key (spec §3.8, L5). Any
+          # other run's are unsigned and make no updater files, and never see the key.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            if [[ $GITHUB_REF_NAME != "v$version" ]]; then
+              echo "::error::The tag $GITHUB_REF_NAME doesn't match the launcher's version, $version."
+              exit 1
+            fi
+            if [[ -z $TAURI_SIGNING_PRIVATE_KEY ]]; then
+              echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret isn't set, so the update can't be signed."
+              exit 1
+            fi
+            cargo tauri build --bundles "$BUNDLE" --ci
+          else
+            cargo tauri build --bundles "$BUNDLE" --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          fi
+      - name: Collect the bundle
+        working-directory: apps/launcher/src-tauri/target/release/bundle
+        run: |
+          out=$GITHUB_WORKSPACE/dist-launcher
+          mkdir -p "$out"
+          case $BUNDLE in
+            appimage) found=(appimage/*.AppImage) ;;
+            nsis) found=(nsis/*-setup.exe) ;;
+            app)
+              # Unsigned, the app makes no updater tarball: pack it for the run's files.
+              if [[ $GITHUB_REF_TYPE != tag ]]; then tar -czf macos/Fenji.app.tar.gz -C macos Fenji.app; fi
+              found=(macos/*.app.tar.gz) ;;
+          esac
+          if [[ ${#found[@]} != 1 || ! -f ${found[0]} ]]; then
+            echo "::error::Want one $BUNDLE bundle, found: ${found[*]}"
+            exit 1
+          fi
+          cp -- "${found[0]}" "$out/"
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            if [[ ! -f ${found[0]}.sig ]]; then
+              echo "::error::${found[0]} has no updater signature."
+              exit 1
+            fi
+            cp -- "${found[0]}.sig" "$out/"
+          fi
+          ls -l "$out"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fenji-launcher-${{ matrix.bundle }}
+          path: dist-launcher/
+          if-no-files-found: error
+
   publish:
     name: Attach to the draft release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: build
+    needs: [build, launcher]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write # makes the draft release and uploads its files
     steps:
+      # The whole history, for the changelog's section in latest.json's notes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: fenji-server-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-launcher-*
+          path: launcher
+          merge-multiple: true
+      - name: Install git-cliff, for the update's notes
+        run: |
+          source scripts/versions.env
+          cargo install --locked git-cliff --version "$GIT_CLIFF_VERSION"
+      - name: Write the updater's latest.json
+        run: |
+          git cliff --latest --strip all > "$RUNNER_TEMP/notes.md"
+          scripts/launcher-latest-json.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/notes.md" launcher
+          cat launcher/latest.json
+          mv -- launcher/* dist/
       - name: Write SHA256SUMS
         working-directory: dist
         run: |
-          sha256sum -- fenji-server-* > SHA256SUMS
+          files=(*)
+          sha256sum -- "${files[@]}" > SHA256SUMS
           cat SHA256SUMS
       - name: Attach the archives and SHA256SUMS
         env:
