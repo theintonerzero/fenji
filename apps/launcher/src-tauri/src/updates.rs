@@ -192,7 +192,10 @@ mod tests {
             ..found.clone()
         };
         assert!(!view("0.5.0", true, false, Some(&downloading), None, false).show_dialog);
-        assert_eq!(view("0.5.0", false, false, None, None, false).available, None);
+        assert_eq!(
+            view("0.5.0", false, false, None, None, false).available,
+            None
+        );
     }
 
     /// The finish review's fix 6: the board's "Launcher 0.5.0 · up to date", after a check found

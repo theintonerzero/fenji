@@ -52,9 +52,12 @@ test("About: the version, the licence, the contributors, no telemetry, and two l
   expect(version.querySelector(".dot-ok")).not.toBeNull();
   press(root, "Read the privacy page");
   press(root, "Source code");
+  // The bundle's third-party notices (#341), which the shell opens from its resources.
+  press(root, "Third-party notices");
   expect(sent).toEqual([
     { type: "openUrl", url: "https://github.com/theintonerzero/fenji/blob/main/PRIVACY.md" },
     { type: "openUrl", url: "https://github.com/theintonerzero/fenji" },
+    { type: "openNotices" },
   ]);
 });
 

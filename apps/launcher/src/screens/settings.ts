@@ -185,6 +185,7 @@ export function settings(root: HTMLElement, ctx: Ctx): Screen {
                 ["Made by", "The Fenji contributors"],
               ]),
               button.link(["Source code", icons.external(13)], () => void ctx.send({ type: "openUrl", url: REPOSITORY })),
+              button.link("Third-party notices", () => void ctx.send({ type: "openNotices" })),
             ),
             h(
               "section",

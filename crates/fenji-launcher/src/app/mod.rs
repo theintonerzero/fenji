@@ -285,6 +285,7 @@ impl App {
             Intent::PickFolder { .. }
             | Intent::OpenUrl { .. }
             | Intent::OpenLogFolder
+            | Intent::OpenNotices
             | Intent::Minimize
             | Intent::Close
             | Intent::CheckUpdate
