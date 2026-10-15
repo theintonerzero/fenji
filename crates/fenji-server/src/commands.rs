@@ -123,7 +123,8 @@ pub const LABEL_MAX: usize = 64;
 
 /// The console's commands as `help` lists them, §3.3's then Amendment A's: each one's word, its
 /// usage, which for a command without arguments is its word, and what it does. The palette shows
-/// that beside the usages, so on an 80-column terminal, beside `maintenance`'s, it has 27 columns.
+/// that beside the usages: on an 80-column terminal, beside `maintenance`'s and before the list's
+/// padding column at the right, it has 26 columns.
 const CONSOLE: [(&str, &str, &str); 19] = [
     ("tp", TP_CONSOLE, "take a player to another"),
     ("kick", KICK, "disconnect a player"),
@@ -308,7 +309,8 @@ pub fn parse_console(line: &str) -> Result<ConsoleCommand, CommandError> {
 }
 
 /// `maintenance`'s arguments: none, to show it; `off`; or `on`, then a duration if the next word
-/// is one, then the message.
+/// is one, its unit in any case, then the message. A word written as a duration that isn't one,
+/// such as `0m`, is refused, so that players aren't shown it as the message.
 fn maintenance(args: &str) -> Result<MaintenanceArg, CommandError> {
     let (switch, rest) = split_word(args);
     match switch.to_ascii_lowercase().as_str() {
@@ -316,8 +318,12 @@ fn maintenance(args: &str) -> Result<MaintenanceArg, CommandError> {
         "off" if rest.is_empty() => Ok(MaintenanceArg::Off),
         "on" => {
             let (first, after) = split_word(rest);
-            let (lasts, message) = match parse_duration(first) {
+            let first = first.to_ascii_lowercase();
+            let (lasts, message) = match parse_duration(&first) {
                 Ok(lasts) => (Some(lasts), after),
+                Err(_) if written_as_duration(&first) => {
+                    return Err(CommandError::Usage(MAINTENANCE));
+                }
                 Err(_) => (None, rest),
             };
             check_text(message, MAINTENANCE)?;
@@ -328,6 +334,13 @@ fn maintenance(args: &str) -> Result<MaintenanceArg, CommandError> {
         }
         _ => Err(CommandError::Usage(MAINTENANCE)),
     }
+}
+
+/// Whether `word`, in lower case, is written as a duration: digits, then `m`, `h` or `d`.
+/// [`parse_duration`] still refuses a zero, or more digits than it can hold.
+fn written_as_duration(word: &str) -> bool {
+    word.strip_suffix(['m', 'h', 'd'])
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The command `help <word>` asks about, as [`console_help`] names it: `word` in lower case, or
@@ -813,24 +826,37 @@ mod tests {
                 message: message.map(Into::into),
             }))
         };
-        assert_eq!(parse_console("MAINTENANCE ON 2h"), on(Some(7200), None));
-        assert_eq!(
-            parse_console("maintenance on 1d  Moving to a new  machine "),
-            on(Some(86_400), Some("Moving to a new  machine"))
-        );
-        // A duration is the first word, in `invite create`'s syntax; anything else is the message.
-        assert_eq!(
-            parse_console("maintenance on Back in 30m"),
-            on(None, Some("Back in 30m"))
-        );
-        assert_eq!(
-            parse_console("maintenance on 2 hours"),
-            on(None, Some("2 hours"))
-        );
-        assert_eq!(
-            parse_console("maintenance Off"),
-            Ok(ConsoleCommand::Maintenance(MaintenanceArg::Off))
-        );
+        let refused = Err(CommandError::Usage(MAINTENANCE));
+        for (line, parsed) in [
+            ("MAINTENANCE ON 2h", on(Some(7200), None)),
+            (
+                "maintenance on 1d  Moving to a new  machine ",
+                on(Some(86_400), Some("Moving to a new  machine")),
+            ),
+            // A duration's unit is in any case too.
+            ("maintenance on 2H", on(Some(7200), None)),
+            (
+                "maintenance on 30M Back soon",
+                on(Some(1800), Some("Back soon")),
+            ),
+            // Written as a duration, but not one: a slip, which players mustn't read as the message.
+            ("maintenance on 0m", refused.clone()),
+            ("maintenance on 0H Back soon", refused.clone()),
+            ("maintenance on 99999999999999999999d", refused.clone()),
+            // A duration is the first word, in `invite create`'s syntax; anything else is the
+            // message.
+            ("maintenance on Back in 30m", on(None, Some("Back in 30m"))),
+            ("maintenance on 2 hours", on(None, Some("2 hours"))),
+            ("maintenance on 2nd", on(None, Some("2nd"))),
+            ("maintenance on 30min", on(None, Some("30min"))),
+            ("maintenance on Back at 9", on(None, Some("Back at 9"))),
+            (
+                "maintenance Off",
+                Ok(ConsoleCommand::Maintenance(MaintenanceArg::Off)),
+            ),
+        ] {
+            assert_eq!(parse_console(line), parsed, "{line}");
+        }
     }
 
     #[test]
@@ -864,8 +890,9 @@ mod tests {
                 "{h:?}"
             );
             assert!(h.usage.starts_with(&h.name) && !h.about.is_empty(), "{h:?}");
-            // What the palette shows of it on an 80-column terminal, beside `maintenance`'s usage.
-            assert!(h.about.chars().count() <= 27, "{h:?}");
+            // The palette's room for it on an 80-column terminal, beside `maintenance`'s usage and
+            // before the list's padding column.
+            assert!(h.about.chars().count() <= 26, "{h:?}");
         }
         let about = |name: &str| &all.iter().find(|h| h.name == name).unwrap().about;
         assert!(about("announce").contains("say"), "the aliases are named");
