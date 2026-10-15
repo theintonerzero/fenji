@@ -8,12 +8,14 @@ import { activeServer, bladeFor, groundFor, playVariant, type PlayVariant, type 
 import type { Intent, ServerView, Snapshot } from "../types";
 import { blade } from "../ui/blade";
 import { button, setPlay, type PlayState } from "../ui/button";
+import type { Dialog } from "../ui/dialog";
 import { section } from "../ui/column";
 import { icons } from "../ui/icons";
 import { people } from "../ui/people";
 import { statusMark } from "../ui/status";
 import { clientLine, clock, statusLine, versionLine } from "../words";
 import { contextColumn, noticeSlot, renew, serverCard, type Fact } from "./parts";
+import { addDialog } from "./servers";
 
 function playState(variant: PlayVariant): PlayState {
   switch (variant) {
@@ -66,7 +68,8 @@ function bullet(...words: Child[]): HTMLLIElement {
   return h("li", {}, h("span", {}, ...words));
 }
 
-/** What to try when the server doesn't answer (the Offline board), or what its key needs (§3.12). */
+/** What to try when the server doesn't answer (the Offline board), or what a server this launcher
+ * can't play on needs (§3.12): the words under the status line, which don't repeat it. */
 function trouble(v: ServerView, ctx: Ctx): Child[] {
   const host = v.host ?? "your host";
   switch (v.status.kind) {
@@ -84,21 +87,36 @@ function trouble(v: ServerView, ctx: Ctx): Child[] {
         ),
       ];
     case "keyChanged":
-      return [h("p", { class: "prose trouble-words" }, `${v.name}'s key has changed. Ask ${host} for a new link.`)];
+      return [h("p", { class: "prose trouble-words" }, `Ask ${host} for the new invite link, then add it here.`)];
     case "ownKey":
-      return [h("p", { class: "prose trouble-words" }, `${v.name} uses its own key. Open the link ${host} sent you.`)];
+      return [h("p", { class: "prose trouble-words" }, `Add the invite link ${host} sent you: it carries the server's key.`)];
     case "incompatible":
       return [
         h(
           "p",
           { class: "prose trouble-words" },
           v.status.newer
-            ? `${v.name} runs a newer Fenji. Update the launcher.`
-            : `${v.name} expects a different build of the game than this launcher checks.`,
+            ? `Update the launcher to play on ${v.name}.`
+            : `Check for a launcher update, or ask ${host} which build to use.`,
         ),
       ];
     default:
       return [];
+  }
+}
+
+/** The one thing to do on a server this launcher can't play on (the finish review's fix 1): a new
+ * link for its key, or a launcher update for its version. "Try again" would never cure either. */
+function cure(v: ServerView): string | null {
+  switch (v.status.kind) {
+    case "keyChanged":
+      return "Add the new link";
+    case "ownKey":
+      return "Add the link";
+    case "incompatible":
+      return "Check for updates";
+    default:
+      return null;
   }
 }
 
@@ -158,6 +176,7 @@ function meta(variant: PlayVariant, s: Snapshot, v: ServerView, ctx: Ctx): Child
       return v.status.kind === "offline"
         ? [h("p", { class: "meta" }, icons.clock(14), `No answer from ${v.address}`)]
         : [];
+    case "blocked":
     case "unsupported":
       return [];
     case "notReady":
@@ -200,19 +219,35 @@ function unsupportedCard(ctx: Ctx): HTMLElement {
  * while the server can't be played on. */
 function columnSections(variant: PlayVariant, s: Snapshot, v: ServerView, ctx: Ctx): Child[] {
   const now = Date.now();
-  const closed = variant === "maintenance" || variant === "offline";
+  const closed = variant === "maintenance" || variant === "offline" || variant === "blocked";
+  // "Playing now" heads the list itself (plan LP5); over a sentence saying why there's no list, a
+  // heading that claims one would contradict it (the finish review's fix 8).
+  const host = v.host ?? "your host";
   const playing =
     variant === "maintenance"
-      ? section("Playing now", h("p", { class: "people-empty" }, `The lobby is closed while ${v.name} is in maintenance.`))
+      ? section("Who's playing", h("p", { class: "people-empty" }, `The lobby is closed while ${v.name} is in maintenance.`))
       : variant === "offline"
-        ? section("Playing now", h("p", { class: "people-empty" }, `Who's online shows again once ${v.name} answers.`))
-        : people(v.signedIn ? s.lobby : null, v.username, v.host);
+        ? section("Who's playing", h("p", { class: "people-empty" }, `Who's online shows again once ${v.name} answers.`))
+        : variant === "blocked"
+          ? section(
+              "Who's playing",
+              h(
+                "p",
+                { class: "people-empty" },
+                v.status.kind === "incompatible"
+                  ? `Who's online shows once this launcher can play on ${v.name}.`
+                  : `Who's online shows once you've added ${host}'s ${v.status.kind === "keyChanged" ? "new " : ""}link.`,
+              ),
+            )
+          : people(v.signedIn ? s.lobby : null, v.username, v.host);
   const rows: Fact[] =
     variant === "maintenance"
       ? ["status", "back", "address", "version"]
       : variant === "offline"
         ? ["status", "lastSeen", "address", "version"]
-        : ["address", "version", "players"];
+        : variant === "blocked"
+          ? ["status", "address", "version"]
+          : ["address", "version", "players"];
   const verified = s.client.check.kind === "verified";
   const client = closed
     ? section(
@@ -262,6 +297,20 @@ export function play(root: HTMLElement, ctx: Ctx): Screen {
   const slot = noticeSlot(ctx);
   const playButton = button.play({ kind: "disabled" }, () => void ctx.send({ type: "play" }));
   const retry = button.primary("Try again", () => void ctx.send({ type: "refresh" }));
+  // A server this launcher can't play on: Add server opens here, or the launcher checks for updates.
+  let open: Dialog | null = null;
+  let blockedBy: ServerView["status"]["kind"] | null = null;
+  const fix = button.primary("", () => {
+    if (blockedBy === "incompatible") {
+      void ctx.send({ type: "checkUpdate" });
+    } else if (blockedBy !== null) {
+      open?.close();
+      open = addDialog(ctx, slot, () => {
+        open = null;
+      });
+      document.body.append(open.el);
+    }
+  });
   let besideIntent: Intent | null = null;
   const beside = button.secondary("", () => {
     if (besideIntent !== null) {
@@ -284,7 +333,7 @@ export function play(root: HTMLElement, ctx: Ctx): Screen {
         host,
         troubleEl,
         slot.el,
-        h("div", { class: "actions" }, playButton, retry, beside),
+        h("div", { class: "actions" }, playButton, retry, fix, beside),
         why,
         unsupported,
       ),
@@ -305,15 +354,16 @@ export function play(root: HTMLElement, ctx: Ctx): Screen {
       renew(status, `${v?.status.kind}\n${line}`, () => [statusMark(v), line]);
 
       const notice =
-        v === undefined || variant === "offline" || variant === "unsupported"
+        v === undefined || variant === "offline" || variant === "blocked" || variant === "unsupported"
           ? ""
           : v.status.kind === "maintenance" && v.status.message !== ""
             ? v.status.message
             : v.motd;
       host.hidden = notice === "";
       renew(host, `${v?.host}\n${notice}`, () => [v?.host ? [h("strong", {}, `${v.host}:`), " "] : null, notice]);
-      renew(troubleEl, variant === "offline" && v ? JSON.stringify([v.status, v.name, v.host, v.address]) : "", () =>
-        variant === "offline" && v ? trouble(v, ctx) : [],
+      const troubled = (variant === "offline" || variant === "blocked") && v !== undefined;
+      renew(troubleEl, troubled ? JSON.stringify([v.status, v.name, v.host, v.address]) : "", () =>
+        troubled ? trouble(v, ctx) : [],
       );
       slot.update(
         s,
@@ -323,9 +373,16 @@ export function play(root: HTMLElement, ctx: Ctx): Screen {
       );
 
       setPlay(playButton, v === undefined ? { kind: "disabled" } : playState(variant));
-      playButton.hidden = variant === "offline";
+      playButton.hidden = variant === "offline" || variant === "blocked";
       retry.hidden = variant !== "offline";
       retry.disabled = variant !== "offline";
+      const fixWords = variant === "blocked" && v !== undefined ? cure(v) : null;
+      blockedBy = fixWords === null || v === undefined ? null : v.status.kind;
+      fix.hidden = fixWords === null;
+      fix.disabled = fixWords === null;
+      if (fixWords !== null && fix.textContent !== fixWords) {
+        fix.textContent = fixWords;
+      }
       const next = v === undefined ? null : besidePlay(variant, s);
       beside.hidden = next === null;
       besideIntent = next?.[1] ?? null;
@@ -355,6 +412,7 @@ export function play(root: HTMLElement, ctx: Ctx): Screen {
       );
     },
     destroy() {
+      open?.close();
       root.replaceChildren();
     },
   };

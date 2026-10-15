@@ -61,6 +61,8 @@ export type PlayVariant =
   | "running"
   | "maintenance"
   | "offline"
+  // The server answered, but this launcher can't play there: its key, or its version.
+  | "blocked"
   | "notReady"
   | "ready";
 
@@ -78,6 +80,9 @@ export function playVariant(s: Snapshot): PlayVariant {
   const status = activeServer(s)?.status.kind;
   if (status === "maintenance") {
     return "maintenance";
+  }
+  if (status === "keyChanged" || status === "ownKey" || status === "incompatible") {
+    return "blocked";
   }
   if (status !== "online") {
     return "offline";

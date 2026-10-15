@@ -69,8 +69,9 @@ function row(v: ServerView, s: Snapshot, ctx: Ctx, now: number): HTMLElement {
   );
 }
 
-/** The Add dialog (the AddServer board): an address or an invite link, a refusal under the field. */
-function addDialog(ctx: Ctx, slot: NoticeSlot, done: () => void): Dialog {
+/** Add server (the AddServer board): an address or an invite link, its refusal under the field. Play
+ * opens it too, for a server whose link must be added again. */
+export function addDialog(ctx: Ctx, slot: NoticeSlot, done: () => void): Dialog {
   let refusedHere = false;
   const input = h("input", { type: "text", class: "mono", autocomplete: "off", spellcheck: "false" });
   const box = field("Address or invite link", input);

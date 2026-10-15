@@ -30,7 +30,7 @@ test.each([
   ["play-running", "running"],
   ["play-maintenance", "maintenance"],
   ["play-offline", "offline"],
-  ["play-key-changed", "offline"],
+  ["play-key-changed", "blocked"],
   ["play-unsupported", "unsupported"],
   ["client-setup", "notReady"],
 ])("%s plays as %s", (file, variant) => {
