@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fenji launcher, Ember Sword</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&amp;family=Geist:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@700&amp;text=%E7%84%9A%E5%AF%82&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0b0e}
+a{color:#f2b365}a:hover{color:#ffd9ad}
+button{font:inherit;color:inherit;cursor:pointer}
+::selection{background:#e4572e;color:#fff}
+</style>
+</helmet>
+<div style="width: 1200px; height: 720px; display: flex; flex-direction: column; overflow: hidden; font-family: 'Geist', system-ui, sans-serif; color: #f2efe9; background: #0c0c0f">
+
+<header style="height: 56px; flex: none; display: flex; align-items: center; padding: 0 0 0 24px; border-bottom: 1px solid rgba(255, 255, 255, 0.07)">
+<div style="display: flex; align-items: center; gap: 10px">
+<span aria-hidden="true" style="width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; background: #c8431f; font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 14px; color: #fff">焚</span>
+<span style="font-family: 'Cinzel', serif; font-weight: 700; font-size: 19px; letter-spacing: 0.26em">FENJI</span>
+</div>
+<nav aria-label="Main" style="display: flex; gap: 28px; margin-left: 48px; height: 56px; font-size: 14px; font-weight: 600">
+<a href="#play" style="display: flex; align-items: center; color: #f2efe9; text-decoration: none; border-bottom: 2px solid #e4572e; padding-top: 2px">Play</a>
+<a href="#server" style="display: flex; align-items: center; color: #a8a196; text-decoration: none">Server</a>
+<a href="#account" style="display: flex; align-items: center; color: #a8a196; text-decoration: none">Account</a>
+<a href="#client" style="display: flex; align-items: center; color: #a8a196; text-decoration: none">Client</a>
+</nav>
+<div style="margin-left: auto; display: flex; align-items: center; gap: 8px">
+<button style="height: 36px; display: flex; align-items: center; gap: 9px; padding: 0 12px 0 4px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 18px; background: #141418; font-size: 13.5px; font-weight: 600"><span aria-hidden="true" style="width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: #2a1712; color: #f2b365; font-size: 11px; font-weight: 700">LY</span>lin_yue</button>
+<button aria-label="Settings" style="width: 46px; height: 32px; border: 0; background: transparent; display: grid; place-items: center; color: #a8a196"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"></path><circle cx="16" cy="6" r="2"></circle><circle cx="10" cy="12" r="2"></circle><circle cx="18" cy="18" r="2"></circle></svg></button>
+<button aria-label="Minimise" style="width: 46px; height: 32px; border: 0; background: transparent; display: grid; place-items: center; color: #a8a196"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><path d="M1 6h10" stroke="currentColor" stroke-width="1.4"></path></svg></button>
+<button aria-label="Close" style="width: 46px; height: 32px; border: 0; background: transparent; display: grid; place-items: center; color: #a8a196"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.4"></path></svg></button>
+</div>
+</header>
+
+<div style="flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0">
+<main style="position: relative; overflow: hidden">
+<svg aria-hidden="true" width="860" height="664" viewBox="0 0 860 664" style="position: absolute; inset: 0">
+<defs>
+<radialGradient id="vig" cx="160" cy="140" r="700" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#2a1510"></stop>
+<stop offset="0.45" stop-color="#140d0c"></stop>
+<stop offset="1" stop-color="#0c0c0f"></stop>
+</radialGradient>
+<linearGradient id="lit" x1="0" y1="1" x2="0" y2="0">
+<stop offset="0" stop-color="#e4572e" stop-opacity="0.15"></stop>
+<stop offset="0.7" stop-color="#ff7a45"></stop>
+<stop offset="1" stop-color="#ffd9ad"></stop>
+</linearGradient>
+<radialGradient id="tip" cx="150" cy="96" r="70" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#ffb070" stop-opacity="0.75"></stop>
+<stop offset="1" stop-color="#ff6a3d" stop-opacity="0"></stop>
+</radialGradient>
+</defs>
+<rect width="860" height="664" fill="url(#vig)"></rect>
+<circle cx="150" cy="96" r="70" fill="url(#tip)"></circle>
+<polygon points="146.5,520 153.5,520 152,104 150,88 148,104" fill="url(#lit)"></polygon>
+<rect x="128" y="520" width="44" height="5" rx="2.5" fill="#c9a36a"></rect>
+<rect x="147.5" y="525" width="5" height="44" rx="1.5" fill="#5a3b26"></rect>
+<circle cx="150" cy="574" r="5" fill="#c9a36a"></circle>
+<g fill="#ffb070"><circle cx="172" cy="128" r="1.6" opacity="0.8"></circle><circle cx="132" cy="150" r="1.2" opacity="0.6"></circle><circle cx="186" cy="84" r="1" opacity="0.7"></circle><circle cx="118" cy="104" r="1.4" opacity="0.5"></circle><circle cx="164" cy="60" r="1" opacity="0.6"></circle></g>
+</svg>
+<div style="position: relative; padding: 120px 0 0 250px; max-width: 520px">
+<h1 style="margin: 0; font-family: 'Cinzel', serif; font-weight: 600; font-size: 54px; line-height: 1.05; letter-spacing: 0.03em; max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">Moonward</h1>
+<p style="margin: 14px 0 0; display: flex; align-items: center; gap: 9px; font-size: 15.5px; color: #c9c2b7"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #7fd38f"></span>Online · 3 friends in the lobby · hosted by Wen</p>
+<p style="margin: 22px 0 0; font-size: 15px; line-height: 1.6; color: #d8d2c8"><strong style="color: #f2b365; font-weight: 600">Wen:</strong> the lobby is open. Make your characters now; the world opens with Fenji 0.5.</p>
+<div style="margin-top: 34px; display: flex; gap: 12px">
+<button style="width: 200px; height: 56px; border: 0; border-radius: 8px; background: #c8431f; color: #ffffff; font-weight: 700; font-size: 17px; letter-spacing: 0.2em; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5)">PLAY</button>
+<button style="height: 56px; padding: 0 22px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.16); background: transparent; font-weight: 600; font-size: 14.5px">Check files</button>
+</div>
+<p style="margin: 16px 0 0; display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: #a8a196"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 12 12"><path d="M2 6.4l2.6 2.4L10 3.4" fill="none" stroke="#7fd38f" stroke-width="1.8"></path></svg>Client verified · build 10015727 · 210 files</p>
+</div>
+</main>
+
+<aside style="display: flex; flex-direction: column; gap: 22px; padding: 24px 22px; background: #111115; border-left: 1px solid rgba(255, 255, 255, 0.07)">
+<section>
+<h2 style="margin: 0 0 12px; font-size: 14px; font-weight: 600">In the lobby</h2>
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px">
+<li style="display: flex; align-items: center; gap: 12px"><span aria-hidden="true" style="width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #2a1712; color: #f2b365; font-size: 12px; font-weight: 700">W</span><div style="line-height: 1.35"><div style="font-size: 14px; font-weight: 600">Wen</div><div style="font-size: 12.5px; color: #a8a196">Host · online</div></div></li>
+<li style="display: flex; align-items: center; gap: 12px"><span aria-hidden="true" style="width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #172028; color: #9cc3e4; font-size: 12px; font-weight: 700">S</span><div style="line-height: 1.35"><div style="font-size: 14px; font-weight: 600">Shu</div><div style="font-size: 12.5px; color: #a8a196">Online</div></div></li>
+<li style="display: flex; align-items: center; gap: 12px"><span aria-hidden="true" style="width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #1d2416; color: #b9d98f; font-size: 12px; font-weight: 700">K</span><div style="line-height: 1.35"><div style="font-size: 14px; font-weight: 600">Kai</div><div style="font-size: 12.5px; color: #a8a196">Creating a character</div></div></li>
+</ul>
+</section>
+<section style="padding: 16px 16px 4px; border-radius: 12px; background: #16161b; border: 1px solid rgba(255, 255, 255, 0.07)">
+<h2 style="margin: 0 0 10px; font-size: 14px; font-weight: 600">Server</h2>
+<dl style="margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; font-size: 13px">
+<dt style="color: #a8a196">Address</dt><dd style="margin: 0">moonward.example.net</dd>
+<dt style="color: #a8a196">Version</dt><dd style="margin: 0">Fenji 0.4.0</dd>
+<dt style="color: #a8a196">Players</dt><dd style="margin: 0 0 12px">3 of 10</dd>
+</dl>
+</section>
+<p style="margin: auto 0 0; font-size: 12.5px; color: #8c867c">Launcher 0.4.0 · up to date</p>
+</aside>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1200,"height":720}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fenji launcher, Welcome</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&amp;family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@700&amp;text=%E7%84%9A%E5%AF%82&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0b0e}
+a{color:#f2b365}a:hover{color:#ffd9ad}
+button{font:inherit;color:inherit;cursor:pointer}
+::selection{background:#e4572e;color:#fff}
+</style>
+</helmet>
+<div style="width: 1200px; height: 720px; display: flex; flex-direction: column; overflow: hidden; font-family: 'Geist', system-ui, sans-serif; color: #f2efe9; background: #0c0c0f">
+
+<header style="height: 56px; flex: none; display: flex; align-items: center; padding: 0 0 0 24px; border-bottom: 1px solid rgba(255, 255, 255, 0.07)">
+<div style="display: flex; align-items: center; gap: 10px">
+<span aria-hidden="true" style="width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; background: #c8431f; font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 14px; color: #fff">焚</span>
+<span style="font-family: 'Cinzel', serif; font-weight: 700; font-size: 19px; letter-spacing: 0.26em">FENJI</span>
+</div>
+<nav aria-label="Main" style="display: flex; gap: 28px; margin-left: 48px; height: 56px; font-size: 14px; font-weight: 600">
+<a href="#play" style="display: flex; align-items: center; color: #a8a196; text-decoration: none">Play</a>
+<a href="#server" style="display: flex; align-items: center; color: #a8a196; text-decoration: none">Server</a>
+<a href="#account" aria-current="page" style="display: flex; align-items: center; color: #f2efe9; text-decoration: none; border-bottom: 2px solid #e4572e; padding-top: 2px">Account</a>
+<a href="#client" style="display: flex; align-items: center; color: #a8a196; text-decoration: none">Client</a>
+</nav>
+<div style="margin-left: auto; display: flex; align-items: center; gap: 8px">
+<button aria-label="Settings" style="width: 46px; height: 32px; border: 0; background: transparent; display: grid; place-items: center; color: #a8a196"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"></path><circle cx="16" cy="6" r="2"></circle><circle cx="10" cy="12" r="2"></circle><circle cx="18" cy="18" r="2"></circle></svg></button>
+<button aria-label="Minimise" style="width: 46px; height: 32px; border: 0; background: transparent; display: grid; place-items: center; color: #a8a196"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><path d="M1 6h10" stroke="currentColor" stroke-width="1.4"></path></svg></button>
+<button aria-label="Close" style="width: 46px; height: 32px; border: 0; background: transparent; display: grid; place-items: center; color: #a8a196"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.4"></path></svg></button>
+</div>
+</header>
+
+<div style="flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0">
+<main style="position: relative; overflow: hidden">
+<svg aria-hidden="true" width="860" height="664" viewBox="0 0 860 664" style="position: absolute; inset: 0">
+<defs>
+<radialGradient id="welcome-vig" cx="160" cy="140" r="700" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#17171c"></stop>
+<stop offset="0.45" stop-color="#111114"></stop>
+<stop offset="1" stop-color="#0c0c0f"></stop>
+</radialGradient>
+</defs>
+<rect width="860" height="664" fill="url(#welcome-vig)"></rect>
+<polygon points="146.5,520 153.5,520 152,104 150,88 148,104" fill="#3a3a42"></polygon>
+<rect x="128" y="520" width="44" height="5" rx="2.5" fill="#c9a36a"></rect>
+<rect x="147.5" y="525" width="5" height="44" rx="1.5" fill="#5a3b26"></rect>
+<circle cx="150" cy="574" r="5" fill="#c9a36a"></circle>
+</svg>
+<div style="position: relative; padding: 96px 0 0 250px; max-width: 480px">
+<h1 style="margin: 0; font-family: 'Cinzel', serif; font-weight: 600; font-size: 45px; line-height: 1.1; letter-spacing: 0.03em; white-space: nowrap">Welcome to Fenji</h1>
+<p style="margin: 12px 0 0; display: flex; align-items: center; gap: 8px; font-size: 15px; color: #c9c2b7"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #8c867c"></span>No server yet</p>
+<p style="margin: 16px 0 0; font-size: 15px; line-height: 1.6; color: #d8d2c8">Play Swords of Legends Online on a private server that a friend hosts for your group. To start, paste the invite they sent you.</p>
+<div style="margin-top: 32px">
+<label for="invite" style="display: block; margin-bottom: 8px; font-size: 13.5px; font-weight: 500; color: #c9c2b7">Invite link or code</label>
+<input id="invite" type="text" autocomplete="off" spellcheck="false" style="box-sizing: border-box; width: 100%; height: 44px; padding: 0 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.12); background: #1c1c22; color: #f2efe9; font-family: inherit; font-size: 15px; outline: 2px solid #e4572e; outline-offset: 2px">
+</div>
+<div style="margin-top: 24px; display: flex; align-items: center; gap: 24px">
+<button style="height: 56px; min-width: 200px; padding: 0 32px; border: 0; border-radius: 8px; background: #c8431f; color: #ffffff; font-weight: 700; font-size: 16px; letter-spacing: 0.02em; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5)">Continue</button>
+<a href="#sign-in" style="font-size: 14.5px; font-weight: 600; text-decoration: none">I already have an account</a>
+</div>
+<div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, 0.07); display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; line-height: 1.5; color: #a8a196">
+<p style="margin: 0; display: flex; align-items: flex-start; gap: 10px"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 2px"><path d="M3 7.5L12 3l9 4.5v9L12 21l-9-4.5z"></path><path d="M3 7.5l9 4.5 9-4.5M12 12v9"></path></svg><span>You need your own copy of Swords of Legends Online, from Steam or the Gameforge launcher.</span></p>
+<p style="margin: 0; display: flex; align-items: flex-start; gap: 10px"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 2px"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg><span>Fenji never asks for your Steam or Gameforge password.</span></p>
+</div>
+</div>
+</main>
+
+<aside style="display: flex; flex-direction: column; gap: 22px; padding: 24px 22px; background: #111115; border-left: 1px solid rgba(255, 255, 255, 0.07)">
+<section style="padding: 16px; border-radius: 12px; background: #16161b; border: 1px solid rgba(255, 255, 255, 0.07)">
+<h2 style="margin: 0 0 10px; font-size: 14px; font-weight: 600">Server</h2>
+<p style="margin: 0; font-size: 13.5px; line-height: 1.5; color: #a8a196">Not set. Paste the invite your host sent you.</p>
+</section>
+<section>
+<h2 style="margin: 0 0 10px; font-size: 14px; font-weight: 600">About Fenji</h2>
+<p style="margin: 0; font-size: 13.5px; line-height: 1.6; color: #c9c2b7">The official servers for Swords of Legends Online closed on 30 June 2023. With Fenji, a friend can host a private server for the people they invite.</p>
+<p style="margin: 10px 0 0; font-size: 13.5px; line-height: 1.6; color: #c9c2b7">Nothing to buy, no payments, no tracking.</p>
+</section>
+<p style="margin: auto 0 0; font-size: 12.5px; color: #8c867c">Launcher 0.4.0 · up to date</p>
+</aside>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1200,"height":720}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
