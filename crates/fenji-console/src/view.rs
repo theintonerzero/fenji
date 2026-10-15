@@ -882,8 +882,9 @@ fn char_width(c: char) -> usize {
     usize::from(c.encode_utf8(&mut [0; 4]).cell_width())
 }
 
-/// The columns `text` takes.
-fn width(text: &str) -> usize {
+/// The columns `text` takes in a terminal, as ratatui counts them: two for a wide character, such
+/// as most Chinese ones. The server's lists line up by it.
+pub fn width(text: &str) -> usize {
     text.chars().map(char_width).sum()
 }
 

@@ -9,7 +9,8 @@ use common::*;
 use fenji_server::commands::Command;
 use fenji_server::server::{GateLimits, RunningServer};
 use fenji_server::world::{
-    ChatChannel, ChatIn, ChatOut, KickReason, Location, Look, Player, Pos, WorldIn, WorldOut,
+    ChatChannel, ChatIn, ChatOut, ConsoleReply, KickReason, Location, Look, Player, Pos, WorldIn,
+    WorldOut,
 };
 use fenji_store::{Character, NewCharacter, Place, Store};
 use tokio::sync::{mpsc, oneshot};
@@ -272,8 +273,11 @@ async fn the_consoles_commands_run_in_the_world_and_answer_on_their_channel() {
     })
     .await;
     assert!(
-        made.starts_with("invite link: https://play.example.net/#invite="),
-        "{made}"
+        made.ok
+            && made
+                .text
+                .starts_with("invite link: https://play.example.net/#invite="),
+        "{made:?}"
     );
     let invites = s.accounts().store().list_invites().await.unwrap();
     assert!(
@@ -286,8 +290,26 @@ async fn the_consoles_commands_run_in_the_world_and_answer_on_their_channel() {
         name: "TESTERC".into(),
     })
     .await;
-    assert_eq!(kicked, "testerc was kicked");
+    assert_eq!(
+        kicked,
+        ConsoleReply {
+            ok: true,
+            text: "testerc was kicked".into()
+        }
+    );
     assert_eq!(next(&mut rx).await, WorldOut::Kicked(KickReason::Kicked));
+    // Nothing to kick: refused, which the console's answer says.
+    let refused = ask(Command::Kick {
+        name: "testerc".into(),
+    })
+    .await;
+    assert_eq!(
+        refused,
+        ConsoleReply {
+            ok: false,
+            text: "no one called testerc is in the game".into()
+        }
+    );
     s.shutdown().await.unwrap();
 }
 

@@ -41,9 +41,9 @@ pub const SERVER_STOPPING: &str = "error server-not-running";
 /// The client's key for an admin's kick: its text says the player is offline and may log in again,
 /// accusing them of nothing, unlike `error kick-by-gm` (world.md 10.2–10.3).
 pub const KICKED: &str = "error kick-by-user";
-/// The client's key for a banned account's connection, in the lobby or the world (M4 hosting spec
-/// §8, HA5): an admin's kick's, which the world's ban gives too (`KickReason::Kicked`). The
-/// launcher names the ban's reason when the player next signs in.
+/// The client's key for a banned account's connection, at the login, in the lobby or in the world
+/// (M4 hosting spec §8, HA5): an admin's kick's, which the world's ban gives too
+/// (`KickReason::Kicked`). The launcher names the ban's reason when the player next signs in.
 pub const BANNED: &str = KICKED;
 /// The client's close-reason table has no key for a full server, so this shows as "Internal
 /// server error: server full" (run m2-r3b showed that form).
@@ -329,7 +329,10 @@ async fn serve(
             return refuse(sock, &mut server, reason, gate.limits.linger).await;
         }
     };
-    let (conn, mut replaced) = match gate.online.join(account.id) {
+    let joined = gate
+        .online
+        .join(account.id, &account.username, gate.clock.now_ms());
+    let (conn, mut replaced) = match joined {
         Join::Joined(id, rx) => (id, rx),
         Join::Full => {
             tracing::info!(%peer, account = %account.username, "login refused: the server is full");
@@ -337,12 +340,19 @@ async fn serve(
         }
     };
     drop(place);
-    // Gives the online place back however the lobby loop ends, a panic included.
+    // Gives the online place back however this ends, a panic included.
     let _online = Leave {
         online: &gate.online,
         account: account.id,
         conn,
     };
+    if let Some(reason) = banned_since_login(gate, &account).await {
+        // Said and lingered over only within a waiting place, as a replaced connection's close.
+        let refusal = server.reject(reason.as_bytes(), &StoredCodec)?;
+        let place = gate.waiting.take(peer.ip());
+        close_replaced(sock, &refusal, place, gate.limits.linger).await;
+        return Ok(());
+    }
     lobby_loop(sock, peer, gate, &mut server, &account, conn, &mut replaced).await
 }
 
@@ -424,7 +434,8 @@ async fn read_auth(
 }
 
 /// The account the auth's ticket names, or the close reason to refuse it with. The ticket is
-/// spent even when the account name doesn't match.
+/// spent even when the account name doesn't match. The store doesn't spend a banned account's
+/// ticket (M4 hosting spec §8, HA5), so one issued before the ban is refused here too.
 async fn login(auth: &AuthMessage, accounts: &Accounts) -> Result<Account, &'static str> {
     let Some((ticket, name)) = login_fields(&auth.payload) else {
         return Err(AUTH_FAILED);
@@ -435,6 +446,25 @@ async fn login(auth: &AuthMessage, accounts: &Accounts) -> Result<Account, &'sta
         Err(e) => {
             tracing::error!(error = %e, "checking a ticket");
             Err(SERVER_ERROR)
+        }
+    }
+}
+
+/// Why `account`, which has just taken its online place, must go after all: a ban stored since
+/// its ticket was spent. The console's `ban` stores the ban, then tells the registry, which closes
+/// the account's connection; one that takes its place in between is closed by the registry or
+/// finds the ban here, whichever comes second (carry-forward 11). A store that can't say refuses
+/// it with the server's error, as the world's door does.
+async fn banned_since_login(gate: &Gate, account: &Account) -> Option<&'static str> {
+    match gate.accounts.store().ban_of(account.id).await {
+        Ok(None) => None,
+        Ok(Some(_)) => {
+            tracing::info!(account = %account.username, "login refused: banned as it came in");
+            Some(BANNED)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, account = %account.username, "checking for a ban at login");
+            Some(SERVER_ERROR)
         }
     }
 }
@@ -921,6 +951,58 @@ mod tests {
             assert_eq!(login_fields(&pickle::encode(&bad).unwrap()), None);
         }
         assert_eq!(login_fields(&[0xFF, 0, 0]), None);
+    }
+
+    #[tokio::test]
+    async fn a_ban_stored_as_the_account_came_in_turns_it_away() {
+        // Carry-forward 11: the store spends no banned account's ticket, but a ban may land
+        // between the ticket and the online place, where the registry had no connection to close.
+        // A store that can't say turns it away too.
+        use crate::world::{Location, Pos, WorldHandle};
+        let dir = tempfile::tempdir().unwrap();
+        let store = fenji_store::Store::open(&dir.path().join("fenji.db"))
+            .await
+            .unwrap();
+        store.create_invite(&[1; 32], None, 0, None).await.unwrap();
+        let id = store
+            .redeem_invite(&[1; 32], "mai", "$phc", 0)
+            .await
+            .unwrap();
+        let account = store.account_by_id(id).await.unwrap().unwrap();
+        let clock: Arc<dyn Clock> = Arc::new(crate::clock::TestClock::at(0));
+        let (world, _inbox) = WorldHandle::fake();
+        let gate = Gate {
+            accounts: Arc::new(Accounts::new(
+                store.clone(),
+                crate::config::AuthConfig::default(),
+                Arc::clone(&clock),
+            )),
+            online: Arc::new(Online::new(4)),
+            lobby: LobbyLimits { max_characters: 9 },
+            limits: GateLimits::default(),
+            waiting: Places::new(8, 8),
+            clock,
+            world,
+            start: Location {
+                scene: 5,
+                pos: Pos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    yaw: 0.0,
+                },
+            },
+            admins: Vec::new(),
+            stopping: watch::Sender::new(false),
+        };
+        assert_eq!(banned_since_login(&gate, &account).await, None);
+        assert!(store.ban(id, "Griefing", 0).await.unwrap());
+        assert_eq!(banned_since_login(&gate, &account).await, Some(BANNED));
+        store.break_bans().await.unwrap();
+        assert_eq!(
+            banned_since_login(&gate, &account).await,
+            Some(SERVER_ERROR)
+        );
     }
 
     #[test]

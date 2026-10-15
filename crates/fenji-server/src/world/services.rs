@@ -6,7 +6,7 @@ use std::sync::Arc;
 use fenji_store::{Place, Store};
 use tokio::sync::mpsc;
 
-use super::types::{Service, WorldIn};
+use super::types::{ConsoleReply, Service, WorldIn};
 use crate::clock::Clock;
 use crate::invite::InviteBase;
 
@@ -48,15 +48,18 @@ pub(super) async fn run(
             }
             Service::CreateInvite { conn, label } => {
                 let base = invite_base.as_ref();
-                let text = invite(&store, base, label.as_deref(), &*clock, "!invite").await;
+                let made = invite(&store, base, label.as_deref(), &*clock, "!invite").await;
                 if let Some(world) = world.upgrade() {
-                    let _ = world.send(WorldIn::Tell { conn, text });
+                    let _ = world.send(WorldIn::Tell {
+                        conn,
+                        text: made.text,
+                    });
                 }
             }
             Service::CreateInviteFor { reply, label } => {
                 let base = invite_base.as_ref();
-                let text = invite(&store, base, label.as_deref(), &*clock, "console").await;
-                let _ = reply.send(text);
+                let made = invite(&store, base, label.as_deref(), &*clock, "console").await;
+                let _ = reply.send(made);
             }
         }
     }
@@ -70,12 +73,18 @@ async fn invite(
     label: Option<&str>,
     clock: &dyn Clock,
     by: &'static str,
-) -> String {
+) -> ConsoleReply {
     match crate::invite::create(store, base, label, clock.now_ms(), None).await {
-        Ok(made) => made.to_string(),
+        Ok(made) => ConsoleReply {
+            ok: true,
+            text: made.to_string(),
+        },
         Err(e) => {
             tracing::error!(error = %e, by, "making an invite");
-            "the invite couldn't be made; the server's log says why".into()
+            ConsoleReply {
+                ok: false,
+                text: "the invite couldn't be made; the server's log says why".into(),
+            }
         }
     }
 }
@@ -156,12 +165,18 @@ mod tests {
         run(store.clone(), Some(base), clock, jobs, world.downgrade()).await;
         let made = made.await.unwrap();
         assert!(
-            made.starts_with("invite link: https://play.example.net/#invite="),
-            "{made}"
+            made.ok
+                && made
+                    .text
+                    .starts_with("invite link: https://play.example.net/#invite="),
+            "{made:?}"
         );
         assert_eq!(
             refused.await.unwrap(),
-            "the invite couldn't be made; the server's log says why"
+            ConsoleReply {
+                ok: false,
+                text: "the invite couldn't be made; the server's log says why".into()
+            }
         );
         let invites = store.list_invites().await.unwrap();
         assert_eq!(invites.len(), 1, "{invites:?}");

@@ -439,6 +439,34 @@ async fn a_client_that_stops_reading_is_closed() {
 }
 
 #[tokio::test]
+async fn a_ticket_from_before_a_ban_is_refused_at_the_gate() {
+    // M4 hosting spec §8, HA5: a ticket lives for a minute, so the account banned meanwhile is
+    // refused at the gate's door as at the API's: the store doesn't spend its ticket. A store
+    // that can't say whether it's banned refuses it with the server's error key: it fails closed.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    account(&s, "other").await;
+    let t = ticket(&s, "tester").await;
+    let other = ticket(&s, "other").await;
+    let store = s.accounts().store().clone();
+    let id = store
+        .account_by_username("tester")
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    assert!(store.ban(id, "Griefing", NOW).await.unwrap());
+    let mut bot = Bot::connect(s.login_addr, payload(&t, "tester", false)).await;
+    assert_eq!(bot.expect_rejected().await, AUTH_FAILED.as_bytes());
+    assert_eq!(s.api_state().online.count(), 0, "it never took a place");
+    store.break_bans().await.unwrap();
+    let mut bot = Bot::connect(s.login_addr, payload(&other, "other", false)).await;
+    assert_eq!(bot.expect_rejected().await, SERVER_ERROR.as_bytes());
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_store_failure_refuses_with_the_server_error_key() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;

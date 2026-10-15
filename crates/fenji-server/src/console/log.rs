@@ -31,12 +31,18 @@ use crate::config::private_folder;
 /// The lines a console gets when it attaches.
 const BACKLOG: usize = 500;
 /// The lines a subscriber may fall behind by before it loses some: a console's queue.
-const QUEUE: usize = 1024;
+pub(crate) const QUEUE: usize = 1024;
 /// The log files kept, one a day.
 const FILES_KEPT: usize = 14;
 /// The fields whose values name someone, a character or an account: consoles show them in gold
 /// (spec §3.2). The server's own fields name an account as `account`.
 const NAMES: [&str; 5] = ["character", "player", "username", "name", "account"];
+
+/// Where the full-screen console's log files go: `logs` in the data folder, the directory of
+/// `[store] path`, which the server keeps owner-only. The files name players and their addresses.
+pub fn folder(store_path: &Path) -> PathBuf {
+    store_path.parent().unwrap_or(Path::new(".")).join("logs")
+}
 
 /// Sets up the process's log: the levels `RUST_LOG` names, or `info`, to `sinks`. Returns the hub,
 /// which gets the lines when [`Sink::Hub`] is one of them.
@@ -114,7 +120,7 @@ impl LogHub {
     }
 
     /// Keeps `line` and sends it to the subscribers, without waiting for any.
-    fn publish(&self, line: LogLine) {
+    pub(crate) fn publish(&self, line: LogLine) {
         let mut inner = self.lock();
         // With no subscriber, the line is the backlog's alone.
         let _ = inner.lines.send(line.clone());
@@ -154,6 +160,16 @@ impl LogSubscription {
             Ok(line) => Some(LogItem::Line(line)),
             Err(broadcast::error::RecvError::Lagged(lost)) => Some(LogItem::Skipped(lost)),
             Err(broadcast::error::RecvError::Closed) => None,
+        }
+    }
+
+    /// [`LogSubscription::next`] without waiting: `None` when no line is waiting, or once the hub
+    /// is gone.
+    pub fn try_next(&mut self) -> Option<LogItem> {
+        match self.lines.try_recv() {
+            Ok(line) => Some(LogItem::Line(line)),
+            Err(broadcast::error::TryRecvError::Lagged(lost)) => Some(LogItem::Skipped(lost)),
+            Err(_) => None,
         }
     }
 }

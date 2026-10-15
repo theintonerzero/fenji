@@ -650,6 +650,15 @@ pub enum Loaded {
     FirstRun(Config),
 }
 
+impl Loaded {
+    /// The configuration, either way.
+    pub fn config(&self) -> &Config {
+        match self {
+            Loaded::Existing(cfg) | Loaded::FirstRun(cfg) => cfg,
+        }
+    }
+}
+
 /// The configuration `run` serves with (M4 hosting spec §3.6, H9):
 /// - `path`, which must exist, so that a mistyped path under systemd never starts a server with a
 ///   fresh, empty database;
