@@ -37,3 +37,19 @@ test("signed out, the pill offers Sign in, except on the screens that are the si
   expect(pill("redeem", "play").hidden).toBe(true);
   expect(pill("play-ready", "account").hidden).toBe(false);
 });
+
+test("an account task marks Account, whichever tab routed to it, as the Welcome, Redeem and SignIn boards do", () => {
+  // The finish review's fix 5: route() shows these screens over the tab that was clicked.
+  for (const [state, tab] of [
+    ["welcome", "play"],
+    ["redeem", "client"],
+    ["play-signed-out", "account"],
+  ] as const) {
+    const ctx: Ctx = { tab, setTab() {}, send: async () => null };
+    const el = header(ctx, golden(state));
+    expect(el.querySelector('[aria-current="page"]')!.textContent, `${state} on ${tab}`).toBe("Account");
+  }
+  // A screen of the clicked tab's own keeps its tab.
+  const ctx: Ctx = { tab: "client", setTab() {}, send: async () => null };
+  expect(header(ctx, golden("play-ready")).querySelector('[aria-current="page"]')!.textContent).toBe("Client");
+});
