@@ -1,6 +1,6 @@
 # The launcher's boards
 
-The owner approved these boards on 2026-10-13: the "Ember Sword" direction, the seventh version of its design canvas. Each is a 1200 × 720 HTML file, one per state of the launcher, plus the host's console and the brand-token sheet. [`DESIGN.md`](../../../DESIGN.md) at the repository's root is the design system they share. The launcher's spec, [`2026-10-15-m4-launcher-design.md`](../../superpowers/specs/2026-10-15-m4-launcher-design.md), says what the launcher builds from them and which three gaps it fixes.
+The owner approved these boards on 2026-10-13: the "Ember Sword" direction, the seventh version of its design canvas. The two Servers boards were added on 2026-10-15 in the same language, under the owner's pre-approval of that day, for the server list the hosting spec's HA6 asks for. Each is a 1200 × 720 HTML file, one per state of the launcher, plus the host's console and the brand-token sheet. [`DESIGN.md`](../../../DESIGN.md) at the repository's root is the design system they share. The launcher's spec, [`2026-10-15-m4-launcher-design.md`](../../superpowers/specs/2026-10-15-m4-launcher-design.md), says what the launcher builds from them and which three gaps it fixes.
 
 Open a board in a browser to see it. The boards were drawn in a design canvas:
 - the `<x-dc>` and `<helmet>` wrappers, `support.js` and the script at the end belong to that tool and do nothing here;
@@ -16,7 +16,9 @@ Open a board in a browser to see it. The boards were drawn in a design canvas:
 | [`Welcome.dc.html`](boards/Welcome.dc.html) | Welcome · first run |
 | [`Redeem.dc.html`](boards/Redeem.dc.html) | Account · create from an invite |
 | [`SignIn.dc.html`](boards/SignIn.dc.html) | Account · sign in |
-| [`ServerTab.dc.html`](boards/ServerTab.dc.html) | Server · details and address (the spec turns it into the Servers list) |
+| [`ServerTab.dc.html`](boards/ServerTab.dc.html) | Server · details and address (superseded by `Servers.dc.html`) |
+| [`Servers.dc.html`](boards/Servers.dc.html) | Servers · the list (added 2026-10-15, launcher plan Task 1) |
+| [`AddServer.dc.html`](boards/AddServer.dc.html) | Servers · the Add server dialog, with a refusal (added 2026-10-15) |
 | [`AccountTab.dc.html`](boards/AccountTab.dc.html) | Account · signed in |
 | [`ClientSetup.dc.html`](boards/ClientSetup.dc.html) | Client · set up the game |
 | [`Downloading.dc.html`](boards/Downloading.dc.html) | Client · downloading from Steam |

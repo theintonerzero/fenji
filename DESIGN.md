@@ -9,6 +9,7 @@ colors:
   line: "rgba(255, 255, 255, 0.07)"
   line-strong: "rgba(255, 255, 255, 0.12)"
   outline: "rgba(255, 255, 255, 0.16)"
+  field-line: "#706b63"
   scrim: "rgba(6, 6, 8, 0.86)"
   text: "#f2efe9"
   text-prose: "#d8d2c8"
@@ -326,6 +327,7 @@ A warm-neutral ink palette with a single ember voice, a gold accent for people a
 - **Line** (line, white 7%): hairlines, dividers, card borders, the header's bottom edge.
 - **Line Strong** (line-strong, white 12%): input borders and the dialog border.
 - **Outline** (outline, white 16%): secondary button borders and checkbox borders.
+- **Field Line** (field-line): the border of inputs and fields: 3.2:1 against the ink-800 fill and 3.4:1 or more against the grounds around it, so a field's edge meets the 3:1 non-text floor. Added 2026-10-15 with the Servers boards, fixing the boards' input boundaries.
 - **Paper** (text): titles and primary text (17:1 on ink-950).
 - **Prose** (text-prose): running sentences in the main area: the host's notice, bullet lists, "What's new" (13:1). Used on every board but missing from the token sheet; recorded here because the build uses it consistently.
 - **Parchment** (text-2): secondary text, field labels, the status line (11:1).
@@ -418,9 +420,9 @@ Lines are 1 px everywhere except the active tab's 2 px ember underline and the 2
 - **Link / text button:** gold-300, Geist 600 14.5 px (13.5 px inline), no underline in action rows, underlined with a 3 px offset inside sentences; gold-100 on hover.
 
 ### Inputs / Fields
-- **Style:** 44 px tall, ink-800 fill, 1 px line-strong border, 8 px radius, 14 px padding, Body type in text colour. Paths and readonly locations use Geist Mono 14 px.
+- **Style:** 44 px tall, ink-800 fill, 1 px field-line border, 8 px radius, 14 px padding, Body type in text colour. Paths, addresses being typed and readonly locations use Geist Mono 14 px.
 - **Label:** always visible above, 13.5 px 500 in text-2, 8 px gap.
-- **Boundary:** the white-12% border reads at about 1.4:1 against ink-950 and the ink-800 fill at about 1.15:1, under the 3:1 non-text contrast floor. That is an open accessibility gap in the approved boards, not a target: the visible label is what identifies the field today, and the boundary should be raised when the launcher is built.
+- **Boundary:** the field-line border meets the 3:1 non-text floor against the fill and every ground. The approved boards of 2026-10-13 drew it in line-strong (about 1.15:1 against the fill); the build uses field-line, as the Add server board shows.
 - **Focus:** a 2 px ember-500 outline with a 2 px offset.
 - **Error:** a 1 px danger border, `aria-invalid`, and a message below in danger with the circled-exclamation icon, written as what happened and what to try.
 - **Checkbox:** 20 px, 6 px radius, outline border on ink-800, with its label clickable. **Switch:** 40 × 24 track, gold-300 when on, an ink-950 18 px knob; a real checkbox with `role="switch"` underneath.
@@ -436,6 +438,14 @@ Lines are 1 px everywhere except the active tab's 2 px ember underline and the 2
 - **Bullets:** 6 px faint dots, Prose type, 10 to 12 px apart.
 - **Action rows:** 40 px rows with hairline tops, an ok check, the item in 15 px Prose and a gold "Tab name ›" link at the right.
 
+### Server rows
+The Servers tab (the boards `Servers` and `AddServer`) lists the player's servers in one ink-850 list: 12 px radius, a 1 px line border, rows split by hairlines, 14 by 16 px padding, in the order they were added.
+- **Anatomy:** a 40 px ink-950 tile (8 px radius, a line border) with the server's initial in Cinzel 600 18 px; the name in Cinzel 600 22 px, with the address beside it in 12.5 px muted (a lock and "own key" when the server is pinned); the status line in 13.5 px text-2 with its dot, the ping in tabular numerals; and the host's notice on one line, led by the host's name in gold.
+- **Selected:** the server Play opens. Ink-800 with a 1 px line-strong inset outline (11 px top corners, inside the list's 12), and a compact PLAY on the right: 44 px tall, at least 128 px wide, Geist 700 15 px tracked 0.2em, ember-600 with the primary lift. It is the page's one ember action. A selected server that can't take players shows no PLAY; its status line says why.
+- **Other rows:** no button, and ink-800 on hover. A click selects.
+- **Title row:** the page title "Servers" with one line under it ("The server you choose is the one Play opens."), then Refresh (a gold text button with its icon) and Add server (secondary, 44 px) on the right.
+- **Context column:** the selected server's name as its heading, a facts card (Address, Version, Players, Ping, Hosted by, then a gold "Source code" link), Playing now, and "Remove <name> from the list" (a text button in text-2 with its icon) above the launcher's version.
+
 ### Status
 - **Status line:** an 8 px dot (ok, warn, faint for offline or no server) or, for errors, a 16 px danger icon, then plain words separated by " · " in Status type: "Online · 3 friends in the lobby · hosted by Wen", "In maintenance · back around 21:00 · hosted by Wen", "Can't reach Moonward · last seen today at 18:42".
 - **Host notice:** Prose type, led by the host's name in gold 600 and a colon.
@@ -446,10 +456,11 @@ Lines are 1 px everywhere except the active tab's 2 px ember underline and the 2
 - **The bar:** 4 px tall, ink-800 track, ember-500 fill, 2 px radius, with a 12.5 px label row above (what, and a Geist Mono count on the right). Only where the blade isn't shown.
 
 ### The context column
-Ink-900, 340 px, 24 by 22 px padding, sections 22 px apart with 14 px 600 headings: In the lobby, Server (a card of facts), Your client, Host notice, What's next, About Fenji. It explains state when the main area cannot: "The lobby is closed while Moonward is in maintenance." The launcher version sits at the foot in 12.5 px faint.
+Ink-900, 340 px, 24 by 22 px padding, sections 22 px apart with 14 px 600 headings: Playing now (who's on the server; the boards of 2026-10-13 say "In the lobby", true only before the world), Server (a card of facts), Your client, Host notice, What's next, About Fenji. It explains state when the main area cannot: "The lobby is closed while Moonward is in maintenance." The launcher version sits at the foot in 12.5 px faint.
 
 ### Dialogs
 480 px wide, ink-850, a 1 px line-strong border, 12 px radius, 28 px padding (24 px at the foot), the dialog shadow, over the scrim; `role="dialog"` with `aria-modal`. A 40 px icon tile and a 21.6 px title, a 15 px description, hairline-divided content, and the actions bottom right: secondary first, then the primary.
+- **Add a server** (the board `AddServer`): the 40 px tile with a gold servers icon, "Add a server", one line on what to paste, a hairline, the field "Address or invite link" in Geist Mono with its error below it, then Cancel and Add server (the one ember).
 
 ### The blade (signature component)
 A single vertical sword drawn in vector: a steel blade (blade-steel), a brass guard and pommel, and a leather-dark grip (blade-grip). Its states:

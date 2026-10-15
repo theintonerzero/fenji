@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-13T03:27:08+00:00",
+  "generatedAt": "2026-10-15T06:39:21+00:00",
   "title": "Design System: Fenji",
   "extensions": {
     "colorMeta": {
@@ -89,6 +89,12 @@
         "displayName": "Outline",
         "purpose": "Secondary button and checkbox borders.",
         "canonical": "rgba(255, 255, 255, 0.16)"
+      },
+      "field-line": {
+        "role": "neutral",
+        "displayName": "Field Line",
+        "purpose": "The border of inputs and fields, at 3:1 or more against the ink-800 fill and every ground (the 3:1 non-text floor).",
+        "canonical": "#706b63"
       },
       "scrim": {
         "role": "neutral",
