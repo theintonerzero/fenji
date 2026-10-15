@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use fenji_server::cli::{AccountCmd, Command, InviteCmd, admin};
 use fenji_server::clock::TestClock;
-use fenji_server::config::Config;
+use fenji_server::config::{Config, FIRST_RUN, template};
 
 fn config(dir: &Path) -> Config {
     Config::parse(
@@ -61,16 +61,76 @@ fn fenji_server_in(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// A running `fenji-server`, killed if the test ends before it stops, so that none outlives a
-/// failed test holding its ports.
-struct Running(std::process::Child);
+/// `fenji-server` started in `dir` with `args`, stdin closed and its log in a file of its own. It's
+/// killed if the test ends first, so that none outlives a failed test holding its ports.
+struct Running {
+    child: std::process::Child,
+    log: tempfile::NamedTempFile,
+}
 
 impl Running {
+    fn start(dir: &Path, args: &[&str]) -> Self {
+        let log = tempfile::NamedTempFile::new().unwrap();
+        let child = std::process::Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+            .current_dir(dir)
+            .args(args)
+            .env("RUST_LOG", "info")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(log.reopen().unwrap())
+            .spawn()
+            .unwrap();
+        Self { child, log }
+    }
+
+    /// What it has logged so far.
+    fn said(&self) -> String {
+        String::from_utf8_lossy(&std::fs::read(self.log.path()).unwrap()).into_owned()
+    }
+
+    /// Waits until it has logged `text`. Panics if it stops first, or after 60 s.
+    fn wait_for(&mut self, text: &str) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !self.said().contains(text) {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                let said = self.said();
+                let hint = if said.contains("Address already in use") {
+                    "; is another fenji-server on 7800/7801?"
+                } else {
+                    ""
+                };
+                panic!("it stopped ({status}) before logging {text:?}{hint}\n{said}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no {text:?} within 60 s:\n{}",
+                self.said()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Its exit status once it stops: within 30 s.
+    fn wait(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "still running after 30 s:\n{}",
+                self.said()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Stops it as systemd would, with SIGTERM, on Unix; kills it elsewhere. Its exit status.
     fn stop(&mut self) -> ExitStatus {
         #[cfg(unix)]
         {
-            let pid = self.0.id().to_string();
+            let pid = self.child.id().to_string();
             let sent = std::process::Command::new("kill")
                 .args(["-s", "TERM", &pid])
                 .status()
@@ -78,25 +138,15 @@ impl Running {
             assert!(sent.success(), "kill -s TERM {pid}: {sent}");
         }
         #[cfg(not(unix))]
-        self.0.kill().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if let Some(status) = self.0.try_wait().unwrap() {
-                return status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "still running 30 s after the stop"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        self.child.kill().unwrap();
+        self.wait()
     }
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -107,39 +157,36 @@ fn first_run_writes_the_config_and_data_then_starts() {
     // which must be free) and says so. A child process, as the default path is the working
     // directory's.
     let dir = tempfile::tempdir().unwrap();
-    let log = tempfile::NamedTempFile::new().unwrap();
-    let mut server = Running(
-        std::process::Command::new(env!("CARGO_BIN_EXE_fenji-server"))
-            .current_dir(dir.path())
-            .env("RUST_LOG", "info")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(log.reopen().unwrap())
-            .spawn()
-            .unwrap(),
+    let mut server = Running::start(dir.path(), &[]);
+    let [wrote, next, last] = FIRST_RUN;
+    let (wrote, _) = wrote.split_once("<folder>").unwrap();
+    // The last line comes once the server catches SIGTERM.
+    server.wait_for(last);
+    let said = server.said();
+    let at = |text: &str| {
+        said.find(text)
+            .unwrap_or_else(|| panic!("no {text:?}:\n{said}"))
+    };
+    // What it wrote comes before the start, so that a first run that can't start still says; what
+    // to do next comes once it runs.
+    assert!(at(wrote) < at("Fenji is running"), "{said}");
+    assert!(at("Fenji is running") < at(next), "{said}");
+    let folder = dir.path().file_name().unwrap().to_str().unwrap();
+    let line = said[at(wrote)..].lines().next().unwrap();
+    assert!(
+        line.contains(&format!("{folder}.")),
+        "names its folder: {line}"
     );
-    let said = || String::from_utf8_lossy(&std::fs::read(log.path()).unwrap()).into_owned();
-    let db = dir.path().join("data/fenji.db");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while !(db.is_file() && said().contains("First run: wrote fenji.toml")) {
-        if let Some(status) = server.0.try_wait().unwrap() {
-            panic!(
-                "the server stopped ({status}) before its first run:\n{}",
-                said()
-            );
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no first run within 60 s:\n{}",
-            said()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(dir.path().join("data/fenji.db").is_file());
     let status = server.stop();
-    assert!(cfg!(not(unix)) || status.success(), "{status}:\n{}", said());
+    assert!(
+        cfg!(not(unix)) || status.success(),
+        "{status}:\n{}",
+        server.said()
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("fenji.toml")).unwrap(),
-        fenji_server::config::template()
+        template()
     );
     #[cfg(unix)]
     {
@@ -154,9 +201,55 @@ fn first_run_writes_the_config_and_data_then_starts() {
 }
 
 #[test]
+fn an_existing_config_at_the_default_path_is_used_as_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let mine = "[server]\nname = \"Mine\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n\
+                [store]\npath = \"mine.db\"\n";
+    std::fs::write(dir.path().join("fenji.toml"), mine).unwrap();
+    let mut server = Running::start(dir.path(), &[]);
+    server.wait_for("Fenji is running");
+    let status = server.stop();
+    let said = server.said();
+    assert!(cfg!(not(unix)) || status.success(), "{status}:\n{said}");
+    assert!(!said.contains("First run"), "{said}");
+    let now = std::fs::read(dir.path().join("fenji.toml")).unwrap();
+    assert_eq!(now, mine.as_bytes(), "the file stays byte for byte");
+    assert!(dir.path().join("mine.db").is_file());
+    assert!(!dir.path().join("data").exists(), "no first run's data/");
+}
+
+#[test]
+fn run_with_a_config_path_that_is_missing_says_how_to_write_one_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut server = Running::start(dir.path(), &["--config", "missing.toml", "run"]);
+    let status = server.wait();
+    let said = server.said();
+    assert!(!status.success(), "{said}");
+    assert!(
+        said.contains("`fenji-server --config missing.toml init`"),
+        "{said}"
+    );
+    let left = std::fs::read_dir(dir.path()).unwrap().count();
+    assert_eq!(left, 0, "nothing is written: {said}");
+}
+
+#[test]
+fn admin_commands_need_a_config_and_make_no_first_run() {
+    let dir = tempfile::tempdir().unwrap();
+    for args in [&["invite", "list"][..], &["backup"]] {
+        let out = fenji_server_in(dir.path(), args);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}: {said}");
+        assert!(said.contains("fenji.toml"), "{args:?}: {said}");
+        let left = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(left, 0, "{args:?}: nothing is written");
+    }
+}
+
+#[test]
 fn init_writes_the_template_here_or_at_the_config_path_and_never_over_a_file() {
     let dir = tempfile::tempdir().unwrap();
-    let template = fenji_server::config::template();
+    let written = template();
     let out = fenji_server_in(dir.path(), &["init"]);
     assert!(
         out.status.success(),
@@ -164,7 +257,7 @@ fn init_writes_the_template_here_or_at_the_config_path_and_never_over_a_file() {
         String::from_utf8_lossy(&out.stderr)
     );
     let here = std::fs::read_to_string(dir.path().join("fenji.toml")).unwrap();
-    assert_eq!(here, template);
+    assert_eq!(here, written);
     // For a VPS: a path whose folders don't exist yet, given after the command or before it.
     let path = dir.path().join("etc/fenji/fenji.toml");
     let p = path.to_str().unwrap();
@@ -175,7 +268,7 @@ fn init_writes_the_template_here_or_at_the_config_path_and_never_over_a_file() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains(p));
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), template);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
     std::fs::write(&path, "[server]\nname = \"Mine\"\n").unwrap();
     let out = fenji_server_in(dir.path(), &["--config", p, "init"]);
     let said = String::from_utf8_lossy(&out.stderr);

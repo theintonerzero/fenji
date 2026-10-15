@@ -13,7 +13,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::accounts::Accounts;
 use crate::api::{AppState, ServerInfo, router};
 use crate::clock::{Clock, SystemClock};
-use crate::config::{Config, FIRST_RUN, Loaded};
+use crate::config::{self, Config, Loaded};
 pub use crate::gate::GateLimits;
 use crate::gate::{self, Gate, Places, accept_loop};
 use crate::lobby::LobbyLimits;
@@ -99,12 +99,19 @@ impl RunningServer {
     }
 }
 
-/// Opens the store, binds both listeners (port 0 takes a free port) and starts serving.
+/// Makes the data folder if it's missing, opens the store, binds both listeners (port 0 takes a
+/// free port) and starts serving.
 pub async fn start(
     cfg: &Config,
     clock: Arc<dyn Clock>,
     limits: GateLimits,
 ) -> anyhow::Result<RunningServer> {
+    // The data folder is the database's. `init` writes a config without it, and SQLite makes no
+    // folders.
+    if let Some(data) = cfg.store.path.parent() {
+        config::private_folder(data)
+            .with_context(|| format!("can't make the data folder {}", data.display()))?;
+    }
     let store = Store::open(&cfg.store.path)
         .await
         .with_context(|| format!("opening {}", cfg.store.path.display()))?;
@@ -198,23 +205,25 @@ pub async fn start(
     })
 }
 
-/// `fenji-server run`: serves until Ctrl-C or SIGTERM. Once it has started, a first run (M4 hosting
-/// spec §3.6) says what it wrote and what's next.
+/// `fenji-server run`: serves until Ctrl-C or SIGTERM. A first run (M4 hosting spec §3.6) says what
+/// it wrote before it starts, and what's next once it runs.
 pub async fn run(loaded: Loaded) -> anyhow::Result<()> {
     let (cfg, first_run) = match loaded {
-        Loaded::Existing(cfg) => (cfg, false),
-        Loaded::FirstRun(cfg) => (cfg, true),
+        Loaded::Existing(cfg) => (cfg, None),
+        Loaded::FirstRun(cfg) => {
+            let here = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            (cfg, Some(config::first_run_lines(&here)))
+        }
     };
+    if let Some([wrote, ..]) = &first_run {
+        tracing::info!("{wrote}");
+    }
     let server = start(&cfg, Arc::new(SystemClock), GateLimits::from_config(&cfg)).await?;
     let stop = signalled();
     tracing::info!(gate = %server.login_addr, api = %server.api_addr, "Fenji is running");
-    if first_run {
-        let folder = std::env::current_dir().map_or_else(
-            |_| "the working directory".to_string(),
-            |d| d.display().to_string(),
-        );
-        for line in FIRST_RUN {
-            tracing::info!("{}", line.replace("<folder>", &folder));
+    if let Some([_, next @ ..]) = &first_run {
+        for line in next {
+            tracing::info!("{line}");
         }
     }
     server.serve_until(stop).await
@@ -339,6 +348,36 @@ mod tests {
             links.push(link);
         }
         links
+    }
+
+    #[tokio::test]
+    async fn a_config_from_init_starts_and_makes_its_data_folder() {
+        // `init` writes the template, whose database is in data/, but not that folder, and SQLite
+        // makes no folders: the start makes it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.toml");
+        config::init(&path).unwrap();
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\"127.0.0.1:7800\"", "\"127.0.0.1:0\"")
+            .replace("\"127.0.0.1:7801\"", "\"127.0.0.1:0\"");
+        std::fs::write(&path, text).unwrap();
+        let cfg = Config::load(&path).unwrap();
+        let ports = (cfg.server.login_bind.port(), cfg.server.api_bind.port());
+        assert_eq!(ports, (0, 0), "the binds are free ports");
+        let clock = Arc::new(TestClock::at(NOW));
+        let server = start(&cfg, clock, GateLimits::default()).await.unwrap();
+        let data = dir.path().join("data");
+        assert!(data.join("fenji.db").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&data).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "data/ is owner-only");
+        }
+        TcpStream::connect(server.login_addr).await.unwrap();
+        TcpStream::connect(server.api_addr).await.unwrap();
+        server.shutdown().await.unwrap();
     }
 
     /// The error a server serving in `served` stops with by itself (30 s at most).

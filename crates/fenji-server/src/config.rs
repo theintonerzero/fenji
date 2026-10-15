@@ -353,12 +353,20 @@ pub const EXAMPLE: &str = include_str!("../fenji.example.toml");
 /// Where the configuration is without `--config`: in the working directory.
 pub const DEFAULT_PATH: &str = "fenji.toml";
 
-/// What `run` logs at `info` once a first run has started, `<folder>` being the working directory.
+/// What a first run says, at `info`, `<folder>` being where it wrote: the first line before the
+/// server starts, so that a first run that can't start still explains its new files, and the
+/// others once it runs.
 pub const FIRST_RUN: [&str; 3] = [
     "First run: wrote fenji.toml and data/ in <folder>.",
     "Type `invite` to make your first invite link.",
     "Only this computer can join until you set public_host: see docs/hosting.md.",
 ];
+
+/// [`FIRST_RUN`]'s lines for a first run in `folder`, for `run` and the host console to show.
+pub fn first_run_lines(folder: &Path) -> [String; 3] {
+    let folder = folder.display().to_string();
+    FIRST_RUN.map(|line| line.replace("<folder>", &folder))
+}
 
 // `[store] path` in the example, and in the template: as wide as each other, so that the comment
 // after it stays in line.
@@ -405,8 +413,12 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Makes `dir` and any folders above it that are missing, owner-only (0700) on Unix: the data
-/// folder and the folders in it hold the database, its backups and the server's key.
+/// folder and the folders in it hold the database, its backups and the server's key. An empty
+/// `dir`, a bare file name's parent, is the working directory, which is there.
 pub(crate) fn private_folder(dir: &Path) -> std::io::Result<()> {
+    if dir.as_os_str().is_empty() {
+        return Ok(());
+    }
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -501,6 +513,16 @@ mod tests {
             "{text}"
         );
         assert!(!path.exists(), "nothing is written for an explicit path");
+    }
+
+    #[test]
+    fn the_first_run_lines_name_the_folder() {
+        let lines = first_run_lines(Path::new("/srv/fenji"));
+        assert_eq!(
+            lines[0],
+            "First run: wrote fenji.toml and data/ in /srv/fenji."
+        );
+        assert_eq!(lines[1..], FIRST_RUN[1..]);
     }
 
     #[test]
