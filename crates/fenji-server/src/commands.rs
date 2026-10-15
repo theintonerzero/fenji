@@ -7,6 +7,7 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// `tp <name>` takes the admin to a player; `tp <name> <name>` takes the first to the second.
+    /// Within one scene only, for now: a player in another scene is refused (#280).
     Tp { who: Option<String>, to: String },
     /// `kick <name>`.
     Kick { name: String },

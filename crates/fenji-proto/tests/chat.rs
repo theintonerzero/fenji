@@ -461,6 +461,39 @@ fn a_line_that_isnt_text_is_invalid() {
 }
 
 #[test]
+fn an_oversized_text_or_name_is_too_long_before_it_is_decoded() {
+    // #280: a text's size is checked against the client's own 2,048 bytes (chat.md 1.5), and a
+    // whisper's name against 64, before either is copied or read as UTF-8. Bytes that aren't
+    // UTF-8 show the order: an oversized string of them is too long, not invalid.
+    let line = |text: Value| chat::parse_transmit(&[Value::Int(0), text, Value::Nil]);
+    assert_eq!(line(Value::Str(vec![0xff; 2_049])), Err(Refusal::TooLong));
+    assert_eq!(line(Value::Str(vec![b'a'; 2_049])), Err(Refusal::TooLong));
+    assert_eq!(
+        line(Value::Str(vec![b'a'; 2_048])).map(|t| t.text.len()),
+        Ok(2_048),
+        "the longest the client sends"
+    );
+    let whisper = |name: Value| {
+        chat::parse_transmit(&[Value::Int(1), s("psst"), table(vec![(s("name"), name)])])
+    };
+    assert_eq!(whisper(Value::Str(vec![0xff; 65])), Err(Refusal::TooLong));
+    assert_eq!(whisper(Value::Str(vec![b'n'; 65])), Err(Refusal::TooLong));
+    assert_eq!(
+        whisper(Value::Str(vec![b'n'; 64])).map(|t| t.to),
+        Ok(Some(Target::Name("n".repeat(64))))
+    );
+    // A pid wins, and the name beside it is never read.
+    let clicked = table(vec![
+        (s("pid"), Value::Int(300)),
+        (s("name"), Value::Str(vec![0xff; 65])),
+    ]);
+    assert_eq!(
+        chat::parse_transmit(&[Value::Int(1), s("psst"), clicked]).map(|t| t.to),
+        Ok(Some(Target::Pid(300)))
+    );
+}
+
+#[test]
 fn channels_have_the_clients_numbers() {
     assert_eq!(Channel::Nearby.number(), channel::NEARBY);
     assert_eq!(Channel::Whisper.number(), channel::WHISPER);

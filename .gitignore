@@ -2,6 +2,14 @@
 /target/
 **/*.rs.bk
 
+# fenji-oodle's fuzz target, outside the workspace: its build, lockfile, corpus, crashes and
+# coverage stay local (crates/fenji-oodle/fuzz/README.md).
+/crates/fenji-oodle/fuzz/target/
+/crates/fenji-oodle/fuzz/Cargo.lock
+/crates/fenji-oodle/fuzz/corpus/
+/crates/fenji-oodle/fuzz/artifacts/
+/crates/fenji-oodle/fuzz/coverage/
+
 # Local reverse-engineering workspace: Ghidra/REA sessions, evidence bundles, decompiled output,
 # extracted scripts, sandbox runs and stub logs. NEVER commit.
 /re/
@@ -56,3 +64,9 @@ fenji.local.toml
 .DS_Store
 .idea/
 .vscode/
+
+# The impeccable skill's local state: its cache, its init interview, and the rejected first-round sketches
+.impeccable/hook.cache.json
+.impeccable/config.json
+.impeccable/questions/
+.impeccable/mocks/

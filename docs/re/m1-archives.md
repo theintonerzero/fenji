@@ -23,7 +23,7 @@ In short:
 - **Spike-0's puzzle:** it read only the first index block and took deleted records for live ones, which is why its records didn't tile the parts. Read whole, the chains account for all but 0.37% of the bytes (§2). **Observed**.
 - **Codecs:** 209,595 files are Oodle, 14,437 stored, and none LZ4 (§2). **Observed**.
 - **Stored files:** mostly Bink videos and FMOD Studio banks, plus 14,041 files in a format we don't know yet (§4). **Observed** and **Inferred**.
-- **What Oodle would unlock:** the paths of the archives' files and the content of 93.6% of them. The exe's own scripts don't need it, since they are complete (§5). **Inferred**.
+- **What Oodle unlocked:** Fenji's own decoder reads all 463,470 Oodle blocks of the pinned build, every one matching the client's DLL, so the content of 93.6% of the files reads without it. The exe's own scripts don't need Oodle, since they are complete (§5). **Observed**, and the scripts **Inferred**.
 
 ## 1. Part layout
 
@@ -108,12 +108,19 @@ A container's layout (4.3):
 | Listing | Plain text: one `<sha1 hex>\t<path>` line per file |
 | Records | One 32-byte record per file in the part layout, with offsets relative to the container's content |
 
-## 5. What Oodle would unlock
+## 5. What Oodle unlocked
 
-**Inferred:**
-- **Path names.** `_index` names the paths of the archives' 224,032 live files. With it, `archive` could list every file by name, and extract the stored ones by path.
-- **Content.** 93.6% of the files, including the game's assets and whatever tables the server must share with the client.
-- **Not missing scripts.** The exe's embedded scripts are complete ([`m1-script-format.md`](m1-script-format.md) §5.2), so they don't need Oodle. Any script copies in the archives would be shadowed, since the embedded copies win (same document, 1.13). Whether any exist is Unknown until `_index` is readable.
+Fenji reads the game's Oodle data with its own decoder, `fenji-oodle`: a safe Rust port of the open-source `ooz`'s Kraken, the only Oodle codec the pinned client uses (3.7). The full check (the Oodle decoder plan's Task 8) decoded every Oodle block of the pinned build with it, and compared each block with what the client's own `oo2core_6_win64.dll` makes of it, run inside the sandbox (ground rule 6).
+
+| # | Finding | Tag | Evidence |
+|---|---|---|---|
+| 5.1 | `fenji-oodle` decodes all 463,470 Oodle blocks of the pinned build: `_index`'s 49 (one file), the two containers' 16,176 (16,162 files, 4.3) and the parts' 447,245 (209,595 live records). Every block has the length and SHA-256 that the client's DLL gives it. None differs, none fails in either decoder, and no block or DLL hash is left over. | **Observed** | AT |
+| 5.2 | That is 148,807 MB of decoded data, in 317 s on one core of the game box (469 MB/s). The DLL's pass, under Wine in the sandbox, took 3 minutes. | **Observed** | AT |
+| 5.3 | Neither of the decoder's two departures from `ooz` occurs in the pinned build: no chunk matches 1 to 7 bytes back, and no entropy-only chunk is a single stored block (the Oodle decoder plan's Rulings O13 to O15). | **Observed** | AT |
+| 5.4 | So every Oodle-compressed file of the pinned build, 93.6% of its files, reads without the DLL: Fenji's tools, and a host's server (#180), can use the open decoder wherever Epic's library can't go. | **Inferred** from 5.1 | AT |
+
+**Inferred, from M1 and still open:**
+- **Not missing scripts.** The exe's embedded scripts are complete ([`m1-script-format.md`](m1-script-format.md) §5.2), so they don't need Oodle. Any script copies in the archives would be shadowed, since the embedded copies win (same document, 1.13). Whether any exist hasn't been checked.
 
 **Unknown:**
 - **The unidentified stored files.** What the 14,041 are.
@@ -136,6 +143,7 @@ Paths are relative to the repo root. `re/` is git-ignored, so these files exist 
 | AQ | `re/m2/archive-paths.txt` (the summary of `archive paths --out re/m2/archive`), `re/m2/archive/paths.tsv`; `re/m2/archive-paths-stats.txt`, `re/m2/missing-keys.txt`, `re/m2/deleted-keys.txt` and `re/m2/container-keys.txt` (probe `re/m2/probes/paths_stats.sh`); `re/m2/unfound-on-disk.txt` (probe `re/m2/probes/unfound_on_disk.py`); `re/m2/loose-files.txt` (probe `re/m2/probes/loose_files.py`) | The paths mapped to records, the 96 that are loose files, and the loose files `_index` doesn't name | 3.5 |
 | AR | `re/oodle-census/summary.tsv` (`archive census-oodle`) | Every live Oodle record's chunk headers, counted by decoder, mode and checksums; the files and blocks walked, the blocks whose `u32` raw length disagrees with the blob header, and the walk's errors | 3.6 |
 | AS | `re/oodle-census/beyond-parts.tsv` (probe `re/oodle-census/probes/beyond_parts/`, a Cargo project on `fenji-data` and `fenji-oodle`: `cargo run --release --manifest-path re/oodle-census/probes/beyond_parts/Cargo.toml` with `FENJI_CLIENT_PATH` set) | The two containers' records and `_index`, their chunk headers walked as the census walks the parts | 3.7 |
+| AT | `re/oodle-verify/dll.tsv` and `hash-parts.log` (`scripts/spike/run-oodle-helper.sh --hash-parts re/oodle-verify/dll.tsv`, in the sandbox); `summary.txt`, `mismatches.tsv`, `departures.tsv` and `verify.log` (`cargo run --release -p fenji-archive -- verify-oodle --dll-hashes re/oodle-verify/dll.tsv`) | Every Oodle block's key, block number, raw length and SHA-256 from the client's DLL; the native decode compared with them, its counts, time and departures | 5.1–5.4 |
 | G1 | FUN_1400BF780, magic at 0x142EFC778; FUN_1400C0A90 (`%s/data%03u` at 0x142EFC7E8) | Opens part N and checks or writes `ZFS\0`; builds the part paths | 1.1 |
 | G2 | FUN_1400C0FE0, FUN_1400BFF10; `[IX]` at 0x142EFC77C; CRC table 0x142EF7EC0; messages at 0x142EFC788, 0x142EFC7A8, 0x142EFC7C8 | Loads every part's index chain: record fields, CRC, status, the key table | 1.2, 1.4–1.6 |
 | G3 | FUN_1400BE960, FUN_1400BE4A0 | Loads `_index` through the blob stream and parses its lines | 1.7, 3.2, 3.3 |

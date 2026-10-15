@@ -53,6 +53,18 @@ fn run(world: &mut World, admin: Entity, order: Command) -> Option<String> {
                 return Some(format!("{} is still loading", name_of(world, mover)));
             }
             let at = world.get::<Here>(target)?.0;
+            // A teleport to another scene waits for a local run (#280, Ruling R24; `teleport`).
+            // With one name the admin is the mover, so the answer names the target alone.
+            if world.get::<Here>(mover)?.0.scene != at.scene {
+                return Some(match who {
+                    None => format!("{} is in another scene", name_of(world, target)),
+                    Some(_) => format!(
+                        "{} and {} are in different scenes",
+                        name_of(world, mover),
+                        name_of(world, target)
+                    ),
+                });
+            }
             teleport(world, mover, at);
             Some(format!(
                 "{} is with {}",
@@ -110,8 +122,8 @@ fn absent(name: &str) -> String {
 }
 
 /// Moves `e`, which stands in the world, to `at`. Its viewers forget it, and see it again where it
-/// lands at their next interest pass. Within its scene it is moved (`Teleport`); another scene is
-/// loaded as on entering.
+/// lands at their next interest pass. Within its scene it is moved (`Teleport`), near or far.
+/// Another scene would be loaded as on entering, but [`run`] refuses that for now (#280).
 fn teleport(world: &mut World, e: Entity, at: Location) {
     let now = world.resource::<Now>().0;
     let (Some(actor), Some(here)) = (world.get::<Actor>(e), world.get::<Here>(e)) else {
@@ -129,6 +141,12 @@ fn teleport(world: &mut World, e: Entity, at: Location) {
         send(world, e, WorldOut::Teleport { pos: at.pos });
         return;
     }
+    // Unreachable for now: `run` refuses a teleport to another scene (#280, Ruling R24), since no
+    // run has tried this path. A local run must verify it first: a 772 to a client already in the
+    // world, then, on its type 3, a second 7 and 8 for the player's own pid, where world.md 1.1
+    // reads that a later 7 for an existing id only resets that actor's properties. And before the
+    // 772 this branch must send the mover a 9 for each player in its view (`Sight`), which it now
+    // clears without telling the client.
     if let Some(mut stage) = world.get_mut::<Stage>(e) {
         *stage = Stage::Loading;
     }
@@ -235,7 +253,9 @@ mod tests {
     }
 
     #[test]
-    fn tp_to_another_scene_loads_it() {
+    fn tp_across_scenes_is_refused_and_nothing_moves() {
+        // #280, Ruling R24: no run has tried the client's side of a teleport to another scene, so
+        // the world refuses one, whoever moves, until a local run has.
         let mut h = admins_world();
         let elsewhere = Location {
             scene: SCENE + 1,
@@ -243,31 +263,35 @@ mod tests {
         };
         h.enter(player(4, "Kai", elsewhere));
         h.push(bang(1, "!tp Kai"));
+        h.push(bang(1, "!tp Kai Ren"));
+        h.push(bang(1, "!tp Mai Kai"));
+        h.tick(50);
+        // One name is the admin's own move; with two, either may be the one elsewhere.
+        assert_eq!(
+            h.take(1),
+            vec![
+                system("Kai is in another scene"),
+                system("Kai and Ren are in different scenes"),
+                system("Mai and Kai are in different scenes")
+            ]
+        );
+        // The next tick's interest pass would show anyone who had moved.
+        h.tick(50);
+        for c in 1..=4 {
+            assert!(h.take(c).is_empty(), "{c}: nobody moved");
+        }
+        // Within its scene, the admin still goes as before.
+        h.push(bang(1, "!tp Ren"));
         h.tick(50);
         assert_eq!(
             h.take(1),
             vec![
-                WorldOut::LoadScene {
-                    pid: 1,
-                    at: elsewhere
+                WorldOut::Teleport {
+                    pos: at(50_000.0, 0.0).pos
                 },
-                system("Lin is with Kai")
+                system("Lin is with Ren")
             ]
         );
-        assert_eq!(
-            h.take(2),
-            vec![WorldOut::Leave { pids: vec![1] }],
-            "the old scene's viewer hears Lin left, that tick"
-        );
-        h.push(WorldIn::Loaded { conn: 1 });
-        h.tick(50);
-        assert!(matches!(
-            h.take(1).as_slice(),
-            [
-                WorldOut::SelfEnter { .. },
-                WorldOut::Announce { pid: 4, .. }
-            ]
-        ));
     }
 
     #[test]
@@ -296,39 +320,6 @@ mod tests {
             }],
             "where it was going"
         );
-    }
-
-    #[test]
-    fn an_admin_moved_twice_in_a_tick_is_still_loading_for_the_second() {
-        let mut h = admins_world();
-        let elsewhere = Location {
-            scene: SCENE + 1,
-            ..at(0.0, 0.0)
-        };
-        h.enter(player(4, "Kai", elsewhere));
-        h.push(bang(1, "!tp Kai"));
-        h.push(bang(1, "!tp Ren"));
-        h.tick(50);
-        assert_eq!(
-            h.take(1),
-            vec![
-                WorldOut::LoadScene {
-                    pid: 1,
-                    at: elsewhere
-                },
-                system("Lin is with Kai"),
-                system("Lin is still loading")
-            ]
-        );
-        h.push(WorldIn::Loaded { conn: 1 });
-        h.tick(50);
-        assert!(matches!(
-            h.take(1).as_slice(),
-            [
-                WorldOut::SelfEnter { pos, .. },
-                WorldOut::Announce { pid: 4, .. }
-            ] if *pos == elsewhere.pos
-        ));
     }
 
     #[test]
