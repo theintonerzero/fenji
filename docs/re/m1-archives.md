@@ -7,7 +7,7 @@
 - **Ghidra:** queried read-only through the shared project (no renames, comments, scripts or debugger) for the engine's own part reader.
 - **`archive`** (`tools/archive`) reads each part's index blocks and the 32-byte blob headers its records point at, and extracts stored files.
 - **Python probes** (standard library) measured what the tool doesn't print.
-- **Nothing was decompressed:** Oodle (codec 4) waits on gate #39.
+- **Nothing was decompressed:** Oodle (codec 4) waited on gate #39. Since #284, `fenji-oodle` decodes all of it (§5).
 
 | Tag | Meaning |
 |---|---|
@@ -88,7 +88,7 @@ What the census and the probe walked:
 | 4.1 | The 14,437 stored files (23.8 GB) sort by their first bytes into the five kinds in the table below. Nothing starts like a Lua chunk, XML, text or a common image or archive format. | **Observed** (first bytes); the formats **Inferred** from their magics | AK |
 | 4.2 | So the stored files are media the packer didn't compress, plus a large set we haven't identified. | **Inferred** | AK |
 | 4.3 | Two stored files are containers (`data093`: 13,179 files and a 1,089,311-byte listing; `data099`: 2,983 files and 248,064 bytes). Each has the layout in the second table below. Every header CRC and every record checks, and every record's key appears in its listing. | **Observed** (layout and checks); meanings **Inferred** | AC, G4 |
-| 4.4 | All 16,162 files inside the containers are Oodle-compressed. Most are under `asset/avatar` (11,948 of `data093`'s) and `asset/materials` (2,972 of `data099`'s). These listings name 16,162 paths today, but the files' contents wait on gate #39 too. | **Observed** | AC |
+| 4.4 | All 16,162 files inside the containers are Oodle-compressed. Most are under `asset/avatar` (11,948 of `data093`'s) and `asset/materials` (2,972 of `data099`'s). These listings name 16,162 paths; in M1 the files' contents waited on gate #39 too, and `fenji-oodle` reads them now (5.1). | **Observed** | AC |
 
 The five kinds of stored file (4.1):
 

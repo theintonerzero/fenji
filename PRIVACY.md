@@ -34,7 +34,7 @@ Like any server, it sees the IP address you connect from, and its logs may recor
 
 ## The game connection
 
-The game client's connection to a Fenji server is readable and unauthenticated. Anyone on the network path between you and the server can read what crosses it, and could pose as the server. That is how the game client was built, and Fenji can't change it without changing the client, which it never does. So:
+The game client's connection to a Fenji server is readable and unauthenticated. Anyone on the network path between you and the server can read what crosses it, and could pose as the server. That is how the game client was built, and only a change to the client could fix it. Fenji runs your copy of the client unmodified today. A later version may patch it, only ever so that it talks to Fenji alone, and such a patch could close this gap. Until then:
 - **No password crosses it.** Your password goes only to the server's account API; the game connection carries a ticket that works once, for one account, and expires after 60 seconds by default.
 - **Someone on that path could still take over your session.** If that matters to you, play over a VPN with your friends, or on a network you trust.
 
