@@ -16,7 +16,7 @@ test("no ember action; the switch, Check now and the log folder send their inten
 
 test("the client card: the game folder, Change and Check every file", () => {
   const { root, sent } = mount(settings, golden("settings"), undefined, "settings");
-  expect(root.querySelector<HTMLInputElement>("#settings-folder")!.value).toBe("/home/player/Games/SoLO");
+  expect(root.querySelector<HTMLInputElement>("#settings-folder")!.value).toBe("~/Games/SoLO");
   expect(root.textContent).toContain("Verified · build 10015727 · 210 files");
   press(root, "Change");
   press(root, "Check every file");
