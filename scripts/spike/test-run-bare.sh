@@ -477,6 +477,8 @@ says 2 "--password-file is under $TESTROOT/ns" "a password file the namespace wo
 
 # --- the verdict
 says 7 "didn't start the client" "fenji-launch stopping before the start is exit 7" -- bare_verdict 0 95 0 "$TESTROOT/out"
+launcher_verdict() { local app=$APP; bare_verdict "$@"; }
+says 7 "the desktop launcher didn't start the game" "a launcher run that never starts the game is exit 7, in its own words" -- launcher_verdict 0 95 0 "$TESTROOT/out"
 says 3 "GATE EVENT" "a watchdog trigger is a gate event" -- bare_verdict 3 137 1 "$TESTROOT/out"
 says 5 "never armed" "a watchdog that never armed is exit 5" -- bare_verdict 0 98 0 "$TESTROOT/out"
 guard

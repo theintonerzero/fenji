@@ -949,7 +949,13 @@ bare_verdict() {
   fi
   if [ "$wdrc" = 0 ] && [ "$ran" != 1 ]; then
     case "$wrc" in
-      95) echo "fenji-launch didn't start the client (see $out/io/launch.err)" >&2; return 7 ;;
+      95)
+        if [ -n "${app:-}" ]; then
+          echo "the desktop launcher didn't start the game (see its logs in $out/launcher and $out/io/launcher.err)" >&2
+        else
+          echo "fenji-launch didn't start the client (see $out/io/launch.err)" >&2
+        fi
+        return 7 ;;
       96) echo "fenji-server wasn't ready (see $out/server.log); the client was not started" >&2; return 7 ;;
       98) echo "the watchdog never armed; the client was not started" >&2; return 5 ;;
       *) echo "the namespace ended before the client ran (exit $wrc); see $out/namespace.out" >&2; return 6 ;;
