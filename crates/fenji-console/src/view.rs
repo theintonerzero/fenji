@@ -5,6 +5,7 @@
 //! [`clean`].
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
@@ -71,6 +72,35 @@ enum Row {
     Note(String),
 }
 
+/// A row of the scrollback, with the lines it takes on screen at the width it was last measured
+/// at, so a draw adds up the log's lines without wrapping every row again.
+#[derive(Debug)]
+struct Entry {
+    row: Row,
+    lines: Cell<Option<(usize, usize)>>,
+}
+
+impl Entry {
+    fn new(row: Row) -> Entry {
+        Entry {
+            row,
+            lines: Cell::new(None),
+        }
+    }
+
+    /// The lines the row takes at `width` columns.
+    fn lines(&self, width: usize) -> usize {
+        match self.lines.get() {
+            Some((at, lines)) if at == width => lines,
+            _ => {
+                let lines = row_height(&self.row, width);
+                self.lines.set(Some((width, lines)));
+                lines
+            }
+        }
+    }
+}
+
 /// The console's state: what it shows, the line being typed, the palette and the history.
 #[derive(Debug)]
 pub struct View {
@@ -78,8 +108,9 @@ pub struct View {
     commands: Vec<CommandHelp>,
     mode: Mode,
     status: Option<Status>,
-    rows: VecDeque<Row>,
-    /// How far the log is scrolled back: the rows hidden below its bottom.
+    rows: VecDeque<Entry>,
+    /// How far the log is scrolled back: the lines hidden below its bottom, on screen at the last
+    /// draw's width. PgUp, PgDn and the hairline's note count the same lines.
     scroll: usize,
     input: String,
     /// The cursor, as a byte offset into `input` at the start of a character.
@@ -97,7 +128,10 @@ pub struct View {
     draft: String,
     /// The log's height at the last draw, for PgUp and PgDn's pages.
     page: Cell<usize>,
-    /// How far back the log could scroll at the last draw: until its oldest rows fill it.
+    /// The log's width at the last draw, which a row added while scrolled back is measured at.
+    log_width: Cell<usize>,
+    /// How far back the log could scroll at the last draw, in lines: until the oldest row's first
+    /// line is at the top.
     furthest: Cell<usize>,
 }
 
@@ -119,6 +153,7 @@ impl View {
             recall: None,
             draft: String::new(),
             page: Cell::new(1),
+            log_width: Cell::new(0),
             furthest: Cell::new(0),
         }
     }
@@ -247,14 +282,18 @@ impl View {
         self.draw_prompt(frame, prompt, palette);
     }
 
-    /// Adds a row to the log. A log scrolled back stays on the rows it shows.
+    /// Adds a row to the log. A log scrolled back stays on the lines it shows: the new row's
+    /// lines join those hidden below.
     fn push(&mut self, row: Row) {
-        self.rows.push_back(row);
+        let entry = Entry::new(row);
+        if self.scroll > 0 {
+            self.scroll = self
+                .scroll
+                .saturating_add(entry.lines(self.log_width.get()));
+        }
+        self.rows.push_back(entry);
         if self.rows.len() > SCROLLBACK {
             self.rows.pop_front();
-        }
-        if self.scroll > 0 {
-            self.scroll = (self.scroll + 1).min(self.rows.len() - 1);
         }
     }
 
@@ -509,35 +548,35 @@ impl View {
         );
     }
 
-    /// The log, anchored to the bottom and scrolled back as far as asked, or as far as it goes.
-    /// Returns how far back that is.
+    /// The log, anchored to the bottom and scrolled back as far as asked, or as far as it goes:
+    /// until the oldest row's first line is at the top. Returns how far back that is, in lines.
     fn draw_log(&self, frame: &mut Frame<'_>, area: Rect, p: &Palette) -> usize {
         let (height, width) = (usize::from(area.height), usize::from(area.width));
         self.page.set(height);
-        let mut filled = 0;
-        let mut fit = 0;
-        for row in &self.rows {
-            filled += row_lines(row, width, p).len();
-            if filled > height {
-                break;
-            }
-            fit += 1;
-        }
-        let furthest = self.rows.len() - fit;
+        self.log_width.set(width);
+        let total: usize = self.rows.iter().map(|entry| entry.lines(width)).sum();
+        let furthest = total.saturating_sub(height);
         self.furthest.set(furthest);
         let scroll = self.scroll.min(furthest);
-        // From the newest row shown upwards, until the log is full.
+        // The lines shown, counted up from the newest: a row taller than the log shows in part.
+        let shown = scroll..scroll + height;
         let mut lines = Vec::with_capacity(height);
-        for row in self.rows.range(..self.rows.len() - scroll).rev() {
-            let mut row = row_lines(row, width, p);
-            while lines.len() < height
-                && let Some(line) = row.pop()
-            {
-                lines.push(line);
-            }
-            if lines.len() == height {
+        let mut below = 0;
+        for entry in self.rows.iter().rev() {
+            if below >= shown.end {
                 break;
             }
+            let count = entry.lines(width);
+            if below + count > shown.start {
+                let row = row_lines(&entry.row, width, p);
+                debug_assert_eq!(row.len(), count, "{:?}", entry.row);
+                for (at, line) in (below..).zip(row.into_iter().rev()) {
+                    if shown.contains(&at) {
+                        lines.push(line);
+                    }
+                }
+            }
+            below += count;
         }
         lines.resize(height, Line::default());
         lines.reverse();
@@ -736,53 +775,33 @@ fn row_lines(row: &Row, width: usize, p: &Palette) -> Vec<Line<'static>> {
     }
 }
 
-/// `pieces`, each a text and its style, after `head`, broken into lines of `width` columns with
-/// one to spare: at a space where there is one, else where the line is full. The lines after the
-/// first are indented to `indent`, `head`'s width.
+/// How many lines a row takes at `width` columns: as many as [`row_lines`] draws, from the same
+/// text and the same breaks.
+fn row_height(row: &Row, width: usize) -> usize {
+    let (indent, text) = match row {
+        Row::Log(line) => (MESSAGE_AT, line.message()),
+        Row::Command(text) | Row::Answer { text, .. } => (LINE_AT, clean(text).into_owned()),
+        Row::Note(text) => (MESSAGE_AT, clean(text).into_owned()),
+    };
+    let widths: Vec<_> = text.chars().map(|c| (c, char_width(c))).collect();
+    breaks(&widths, room(indent, width)).len()
+}
+
+/// `pieces`, each a text and its style, after `head`, broken into lines of `width` columns
+/// ([`breaks`]). The lines after the first are indented to `indent`, `head`'s width.
 fn wrap(
     head: Vec<Span<'static>>,
     indent: usize,
     pieces: Vec<(String, Style)>,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let room = width.saturating_sub(indent + 1).max(1);
-    let chars: Vec<(char, Style, usize)> = pieces
+    let chars: Vec<(char, Style)> = pieces
         .iter()
-        .flat_map(|(text, style)| text.chars().map(|c| (c, *style, char_width(c))))
+        .flat_map(|(text, style)| text.chars().map(|c| (c, *style)))
         .collect();
-    let mut spans = Vec::new();
-    let (mut start, mut used, mut space) = (0, 0, None);
-    let mut i = 0;
-    while i < chars.len() {
-        let (c, _, w) = chars[i];
-        if used + w <= room || i == start {
-            used += w;
-            if c == ' ' {
-                space = Some(i);
-            }
-            i += 1;
-            continue;
-        }
-        if c == ' ' {
-            // The space that doesn't fit ends the line.
-            spans.push(start..i);
-            i += 1;
-            start = i;
-            used = 0;
-        } else if let Some(s) = space.filter(|&s| s > start) {
-            spans.push(start..s);
-            start = s + 1;
-            used = chars[start..i].iter().map(|&(_, _, w)| w).sum();
-        } else {
-            spans.push(start..i);
-            start = i;
-            used = 0;
-        }
-        space = None;
-    }
-    spans.push(start..chars.len());
+    let widths: Vec<_> = chars.iter().map(|&(c, _)| (c, char_width(c))).collect();
     let mut head = Some(head);
-    spans
+    breaks(&widths, room(indent, width))
         .into_iter()
         .map(|range| {
             let mut line = head
@@ -794,12 +813,56 @@ fn wrap(
         .collect()
 }
 
+/// The columns a message has on each line at `width`: what's left after its indent, less one
+/// to spare.
+fn room(indent: usize, width: usize) -> usize {
+    width.saturating_sub(indent + 1).max(1)
+}
+
+/// Where a message, each character with the columns it takes, breaks into lines of `room`
+/// columns: at a space where there is one, which the break drops, else where the line is full.
+/// Each line is a range of the characters; an empty message is one empty line.
+fn breaks(chars: &[(char, usize)], room: usize) -> Vec<Range<usize>> {
+    let mut lines = Vec::new();
+    let (mut start, mut used, mut space) = (0, 0, None);
+    let mut i = 0;
+    while i < chars.len() {
+        let (c, w) = chars[i];
+        if used + w <= room || i == start {
+            used += w;
+            if c == ' ' {
+                space = Some(i);
+            }
+            i += 1;
+            continue;
+        }
+        if c == ' ' {
+            // The space that doesn't fit ends the line.
+            lines.push(start..i);
+            i += 1;
+            start = i;
+            used = 0;
+        } else if let Some(s) = space.filter(|&s| s > start) {
+            lines.push(start..s);
+            start = s + 1;
+            used = chars[start..i].iter().map(|&(_, w)| w).sum();
+        } else {
+            lines.push(start..i);
+            start = i;
+            used = 0;
+        }
+        space = None;
+    }
+    lines.push(start..chars.len());
+    lines
+}
+
 /// Characters as spans, one for each run of the same style.
-fn runs(chars: &[(char, Style, usize)]) -> Vec<Span<'static>> {
+fn runs(chars: &[(char, Style)]) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut text = String::new();
     let mut style = None;
-    for &(c, s, _) in chars {
+    for &(c, s) in chars {
         if style != Some(s) {
             if let Some(previous) = style {
                 spans.push(Span::styled(std::mem::take(&mut text), previous));
@@ -1284,7 +1347,7 @@ pub(crate) mod tests {
             view.on_server(log(Level::Info, &[(&format!("line {n}"), false)]));
         }
         assert!(rows_of(&drawn(&view, 80, 24, Colours::True))[21].contains("line 99"));
-        // A page is the log's 20 rows, less one kept for context.
+        // A page is the log's 20 lines, less one kept for context.
         press(&mut view, KeyCode::PageUp);
         let rows = rows_of(&drawn(&view, 80, 24, Colours::True));
         assert!(rows[21].contains("line 80"), "{rows:#?}");
@@ -1306,6 +1369,142 @@ pub(crate) mod tests {
         assert!(rows[21].contains("line 19 "), "{rows:#?}");
     }
 
+    /// The rows whose first line shows in the log at 80 × 24, by their `rowNNN` names.
+    fn shown_rows(view: &View) -> Vec<String> {
+        rows_of(&drawn(view, 80, 24, Colours::True))[2..22]
+            .iter()
+            .filter_map(|r| r.find("row").map(|at| r[at..at + 6].to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn paging_reaches_every_row_when_rows_wrap() {
+        // Review Important 1: the scroll, its step and the hairline all count screen lines.
+        let mut view = View::new("F".into(), help(), Mode::InProcess);
+        for n in 0..100 {
+            // 87 characters in the message's 63 columns: two lines each.
+            let text = format!("row{n:03} {}", "x ".repeat(40));
+            view.on_server(log(Level::Info, &[(&text, false)]));
+        }
+        let names = |range: std::ops::RangeInclusive<usize>| {
+            range.map(|n| format!("row{n:03}")).collect::<Vec<_>>()
+        };
+        assert_eq!(shown_rows(&view), names(90..=99));
+        // A page up keeps the top line of the page before in sight: row 090's first line.
+        press(&mut view, KeyCode::PageUp);
+        assert_eq!(shown_rows(&view), names(81..=90));
+        let rows = rows_of(&drawn(&view, 80, 24, Colours::True));
+        assert!(
+            rows[2].trim_start().starts_with('x'),
+            "row 080's second line: {rows:#?}"
+        );
+        assert!(rows[22].contains("19 newer lines below"), "{:?}", rows[22]);
+        // Every row is on some page, all the way back to the oldest.
+        let mut seen: std::collections::BTreeSet<String> = shown_rows(&view).into_iter().collect();
+        for _ in 0..20 {
+            press(&mut view, KeyCode::PageUp);
+            seen.extend(shown_rows(&view));
+        }
+        assert_eq!(shown_rows(&view), names(0..=9));
+        assert_eq!(seen.len(), 91, "{seen:?}");
+        // And down again to the newest.
+        for _ in 0..20 {
+            press(&mut view, KeyCode::PageDown);
+        }
+        assert_eq!(shown_rows(&view), names(90..=99));
+        assert!(!rows_of(&drawn(&view, 80, 24, Colours::True))[22].contains("newer"));
+    }
+
+    #[test]
+    fn a_rows_height_is_the_lines_it_draws() {
+        let p = Palette::of(Colours::True);
+        let long = format!(
+            "Mai\u{1b}[2J {} 你好 {}",
+            "word ".repeat(30),
+            "x".repeat(150)
+        );
+        let rows = [
+            Row::Log(LogLine {
+                at_ms: 0,
+                level: Level::Warn,
+                parts: vec![
+                    Part {
+                        text: "entered ".into(),
+                        name: false,
+                    },
+                    Part {
+                        text: long.clone(),
+                        name: true,
+                    },
+                ],
+            }),
+            Row::Command(long.clone()),
+            Row::Answer {
+                ok: false,
+                text: long.clone(),
+            },
+            Row::Note(long),
+            Row::Note(String::new()),
+        ];
+        for row in &rows {
+            for width in (MIN_WIDTH..=200).step_by(7) {
+                let width = usize::from(width);
+                assert_eq!(
+                    row_height(row, width),
+                    row_lines(row, width, &p).len(),
+                    "{row:?} at {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_row_taller_than_the_log_shows_in_part_never_as_a_blank_log() {
+        // Review Important 1: the oldest row is far taller than the log's 20 lines.
+        let mut view = View::new("F".into(), help(), Mode::InProcess);
+        let tall = format!("row000 {}", "y ".repeat(1200));
+        view.on_server(log(Level::Info, &[(&tall, false)]));
+        for n in 1..60 {
+            view.on_server(log(Level::Info, &[(&format!("row{n:03}"), false)]));
+        }
+        drawn(&view, 80, 24, Colours::True);
+        for _ in 0..20 {
+            press(&mut view, KeyCode::PageUp);
+        }
+        // As far back as it goes: the tall row's first line at the top, and its next ones below.
+        let rows = rows_of(&drawn(&view, 80, 24, Colours::True));
+        assert!(
+            rows[2].starts_with(" 00:00:00 INFO  row000 y y"),
+            "{rows:#?}"
+        );
+        assert!(rows[2..22].iter().all(|r| r.contains("y y")), "{rows:#?}");
+        // Paging down goes through the rest of it, and the log is never blank.
+        for _ in 0..10 {
+            press(&mut view, KeyCode::PageDown);
+            let rows = rows_of(&drawn(&view, 80, 24, Colours::True));
+            assert!(
+                rows[2..22].iter().all(|r| !r.trim().is_empty()),
+                "{rows:#?}"
+            );
+        }
+        assert_eq!(
+            shown_rows(&view),
+            (40..60).map(|n| format!("row{n:03}")).collect::<Vec<_>>()
+        );
+        // The newest row taller than the log shows its last lines.
+        let mut view = View::new("F".into(), help(), Mode::InProcess);
+        view.on_server(log(
+            Level::Info,
+            &[(&format!("{}end", "z ".repeat(1200)), false)],
+        ));
+        let rows = rows_of(&drawn(&view, 80, 24, Colours::True));
+        assert!(rows[21].trim_end().ends_with("z end"), "{rows:#?}");
+        assert!(
+            rows[2].starts_with(&format!("{}z z", " ".repeat(16))),
+            "{rows:#?}"
+        );
+    }
+
     #[test]
     fn the_log_keeps_5000_lines_and_the_history_100_commands() {
         let mut view = View::new("F".into(), help(), Mode::InProcess);
@@ -1313,7 +1512,7 @@ pub(crate) mod tests {
             view.on_server(log(Level::Info, &[(&format!("line {n}"), false)]));
         }
         assert_eq!(view.rows.len(), SCROLLBACK);
-        assert!(matches!(&view.rows[0], Row::Log(l) if l.parts[0].text == "line 100"));
+        assert!(matches!(&view.rows[0].row, Row::Log(l) if l.parts[0].text == "line 100"));
         for n in 0..150 {
             type_text(&mut view, &format!("announce {n}"));
             assert_eq!(
