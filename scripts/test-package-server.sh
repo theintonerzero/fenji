@@ -185,6 +185,11 @@ holds "start-server.bat's lines end in CR LF" crlf "$T/bat"
 tr -d '\r' < "$T/bat" > "$T/bat-lf"
 tr -d '\r' < "$REPO/deploy/start/start-server.bat" > "$T/bat-repo"
 holds "start-server.bat is deploy/start's" cmp -s "$T/bat-lf" "$T/bat-repo"
+# A crash ends with a negative NTSTATUS code (0xC0000005, 0xC00000FD), which `if errorlevel 1`
+# misses, so the window would close on the error.
+same "start-server.bat's commands: its folder, a network share's too; the server; a pause on any failure" \
+  "$(grep -v -i -E '^(@echo off|rem( |$))' "$T/bat-lf")" "$(printf '%s\n' 'pushd "%~dp0"' 'fenji-server.exe %*' \
+  'if %errorlevel% neq 0 pause')"
 unzip -p "$T/out/$W.zip" "$W/SOURCE.txt" > "$T/source"
 holds "the zip's SOURCE.txt names the version's source code" grep -qxF "$src" "$T/source"
 unzip -p "$T/out/$W.zip" "$W/THIRD-PARTY-NOTICES.txt" > "$T/win-notices"
