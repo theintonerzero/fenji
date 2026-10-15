@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use common::*;
 use fenji_launcher::api::{ApiClient, ApiError, MaintenanceInfo, Players, ServerInfo, ServerState};
+use fenji_launcher::pin::ServerAddr;
 use fenji_server::server::GateLimits;
 use fenji_server::status::Maintenance;
 use serde_json::json;
@@ -21,7 +22,8 @@ async fn the_launcher_registers_signs_in_and_gets_a_ticket_the_gate_takes() {
         .create_invite(&code.hash(), None, NOW, None)
         .await
         .unwrap();
-    let api = ApiClient::new(&format!("http://{}", s.api_addr)).unwrap();
+    let api =
+        ApiClient::new(&ServerAddr::parse(&format!("http://{}", s.api_addr)).unwrap()).unwrap();
     let info = api.server_info().await.unwrap();
     assert_eq!((info.gate_port, info.api_version), (s.login_addr.port(), 1));
     api.register(&code.display(), "tester", "a long password")
@@ -68,7 +70,8 @@ async fn the_launcher_reads_maintenance_and_the_servers_facts() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
     account(&s, "tester").await;
-    let api = ApiClient::new(&format!("http://{}", s.api_addr)).unwrap();
+    let api =
+        ApiClient::new(&ServerAddr::parse(&format!("http://{}", s.api_addr)).unwrap()).unwrap();
     let until = NOW + 1_800_000;
     s.status()
         .set_maintenance(
@@ -141,7 +144,8 @@ async fn the_launcher_names_a_ban_with_its_reason_and_lists_who_is_in_the_world(
     let dir = tempfile::tempdir().unwrap();
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
     account(&s, "tester").await;
-    let api = ApiClient::new(&format!("http://{}", s.api_addr)).unwrap();
+    let api =
+        ApiClient::new(&ServerAddr::parse(&format!("http://{}", s.api_addr)).unwrap()).unwrap();
     let session = api.sign_in("tester", "a long password").await.unwrap();
     assert!(api.players(&session).await.unwrap().is_empty());
     s.status()
@@ -169,5 +173,32 @@ async fn the_launcher_names_a_ban_with_its_reason_and_lists_who_is_in_the_world(
     assert!(matches!(e, ApiError::Banned { .. }), "{e:?}");
     let e = api.players(&session).await.unwrap_err();
     assert!(matches!(e, ApiError::Banned { .. }), "{e:?}");
+    s.shutdown().await.unwrap();
+}
+
+/// A server serving the account API over TLS with its own key (hosting spec §3.10).
+async fn started_with_own_key(dir: &std::path::Path) -> fenji_server::server::RunningServer {
+    let extra = "tls = \"self\"\npublic_host = \"127.0.0.1\"\n";
+    server(dir, extra, GateLimits::default()).await.0
+}
+
+#[tokio::test]
+async fn the_launcher_trusts_exactly_the_pinned_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = started_with_own_key(dir.path()).await;
+    let origin = format!("https://127.0.0.1:{}", s.api_addr.port());
+    let right = ServerAddr::parse(&format!("{origin}/#pin={}", s.pin().unwrap())).unwrap();
+    let wrong = ServerAddr::parse(&format!("{origin}/#pin={}", "A".repeat(43))).unwrap();
+    let bare = ServerAddr::parse(&origin).unwrap();
+
+    assert!(ApiClient::new(&right).unwrap().server_info().await.is_ok());
+    assert!(matches!(
+        ApiClient::new(&wrong).unwrap().server_info().await,
+        Err(ApiError::KeyChanged)
+    ));
+    assert!(matches!(
+        ApiClient::new(&bare).unwrap().server_info().await,
+        Err(ApiError::OwnKey)
+    ));
     s.shutdown().await.unwrap();
 }

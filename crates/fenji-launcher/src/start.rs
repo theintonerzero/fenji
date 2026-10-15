@@ -12,6 +12,7 @@ use crate::api::ApiClient;
 use crate::launch::{LaunchSpec, Platform, base_spec, resolve_ipv4, umu_env};
 use crate::login_path::available;
 use crate::manifest::Manifest;
+use crate::pin::ServerAddr;
 use crate::settings::Os;
 use crate::verify::{Level, verify};
 
@@ -243,7 +244,7 @@ pub fn take_ticket(
     check_os(os)?;
     let paths = available();
     let path = paths.first().context("this build has no login path")?;
-    let api = ApiClient::new(login.server)?;
+    let api = ApiClient::new(&ServerAddr::parse(login.server)?)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
