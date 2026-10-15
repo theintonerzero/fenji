@@ -35,7 +35,7 @@ They keep a list of servers, as on Minecraft's multiplayer screen (HA6), and see
 ### 3.1 A Rust core and a thin view (L1)
 
 - **`crates/fenji-launcher` gains the launcher's model:** the server list, probes, account sessions, the client's checks, the download and repair runner, Play and update state. It owns all state and every secret. It is a library in the Cargo workspace, tested by `cargo test` without a webview.
-- **`apps/launcher/src-tauri` is a thin Tauri 2 shell.** It holds the model, exposes one command per intent, and pushes a snapshot of the state to the view whenever it changes. It sits outside the Cargo workspace, with its own `[workspace]`, lockfile and CI job, because building a webview needs system libraries that the workspace's other jobs and the cloud agents shouldn't need. The root `Cargo.toml` excludes it.
+- **`apps/launcher/src-tauri` is a thin Tauri 2 shell.** It holds the model, exposes one command that takes every intent (the plan's LP1), and pushes a snapshot of the state to the view whenever it changes. It sits outside the Cargo workspace, with its own `[workspace]`, lockfile and CI job, because building a webview needs system libraries that the workspace's other jobs and the cloud agents shouldn't need. The root `Cargo.toml` excludes it.
 - **`apps/launcher/src` is the view:** TypeScript modules that render a snapshot into screens and send intents. Its only state is what's on screen: the tab, the form fields and an open dialog.
 - **The contract** between them is a `Snapshot` (JSON, from serde) and the intents. Golden snapshots, one for each state a board shows, are written by Rust tests and rendered by the view's tests. A change on either side fails the other's tests.
 - **Secrets:**
@@ -114,7 +114,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
 
 - **The folder** is chosen in the system's folder dialog. A download's default is `~/Games/SoLO`.
 - **Checks** run against the pinned manifest the launcher ships, which holds hashes only (M3):
-  - **quick**, every file's size, when the launcher starts, after a folder is chosen, and before Play;
+  - **quick**, every file's size and the hashes of `bin64`'s executables (M3 D15), when the launcher starts, after a folder is chosen, and before Play;
   - **full**, every file's SHA-256, after a download or a repair, and when the player asks ("Check every file").
 
   A check runs off the interface's thread, shows its progress on the blade, and can be stopped.
@@ -170,7 +170,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
 - With "Update automatically" off, nothing is checked until the player presses "Check now" in Settings.
 - **What a release builds:** the Linux AppImage (x86_64), the Windows NSIS installer (x86_64, per user) and the macOS app (arm64), each with its updater signature, and `latest.json`. No other Linux package is built, since the updater can't update one.
 - **No OS vendor signs them:** no Authenticode, no notarization (L6). The release notes say how to open the launcher the first time on Windows and macOS.
-- **The key (L5)** is made with Tauri's signer on the owner's game box when the release workflow first needs it.
+- **The key (L5)** was made with Tauri's signer on the owner's game box on 2026-10-15, when the plan needed its public half (key ID 02D8621117AE26ED).
   - Its private half stays outside every repository, in `~/.config/fenji/release-key/` (owner-only), and in the repository's Actions secrets.
   - Its public half is committed in `tauri.conf.json`.
 
@@ -178,8 +178,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
 
 - **The window** is 1200 × 720: not resizable, no maximise. It's undecorated, with the header as the drag region and its own Minimise and Close.
 - **One instance:** starting the launcher again brings the running one forward.
-- **What the view may do.** The webview loads only the app's own files. Tauri's capabilities give the view only:
-  - the launcher's commands;
+- **What the view may do.** The webview loads only the app's own files. Tauri's capabilities give the view only the launcher's command, its snapshot event and dragging the window. The shell does the rest when the view asks through an intent (the plan's LP10):
   - the window's Minimise and Close;
   - the folder dialog;
   - opening links in the system browser, for the repository's pages and each server's `source` address only.
