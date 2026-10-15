@@ -113,6 +113,8 @@ jobs:
         run: scripts/test-check-no-session-links.sh
       - name: Release packaging tests
         run: scripts/test-package-server.sh
+      - name: The launcher's latest.json tests
+        run: scripts/test-launcher-latest-json.sh
       - name: No session links in the PR's title, description or new commits
         # In this job, not pr-title, because this one is a required check on dev and main.
         if: github.event_name == 'pull_request'

@@ -298,6 +298,17 @@ for out in 'printf "gj_ticket=fenji1-aa\000bb\n"' 'printf "gj_ticket=fenji1-aa\n
   fi
 done
 
+# The screenshots' times: the first five minutes' fixed ones; a run that asks for a shot after every
+# input (run-bare.sh's --launcher-app, whose game starts minutes in) adds one every 30 s to the end.
+got=$(shot_times 400 | tr '\n' ' ')
+if [ "$got" = "5 10 30 60 90 120 150 180 210 240 270 295 " ]; then ok "a run's screenshots: the fixed five minutes"; else bad "shot_times: $got"; fi
+got=$(shot_after_inputs=1 shot_times 400 | tr '\n' ' ')
+if [ "$got" = "5 10 30 60 90 120 150 180 210 240 270 295 330 360 390 " ]; then
+  ok "a launcher run's screenshots go on every 30 s to its end"
+else
+  bad "shot_times with shot_after_inputs: $got"
+fi
+
 # xkey.py refuses bad input before it opens any display; a display that can't exist proves it never types.
 XK=$HERE/xkey.py
 for a in "--type=$(printf 'a\tb')" "--type=é" "--key=NoSuchKeysym"; do
@@ -308,6 +319,28 @@ done
 python3 -I "$XK" --display :9999 --type=-x > /dev/null 2>&1
 rc=$?
 if [ "$rc" = 1 ]; then ok "xkey.py takes text that starts with a dash"; else bad "xkey.py takes text that starts with a dash: exit $rc"; fi
+# --type-file types a file's first line, so a password never sits on a command line (launcher
+# Task 16); its line is checked as --type's text is, before any display is opened.
+KF=$(mktemp -d)
+printf 'a long password\nsecond line\n' > "$KF/good"
+printf 'a\tb\n' > "$KF/tab"
+printf '\n' > "$KF/empty"
+printf '\303\251\n' > "$KF/accent"
+for a in "--type-file=$KF/none" "--type-file=$KF/tab" "--type-file=$KF/empty" "--type-file=$KF/accent"; do
+  python3 -I "$XK" --display :9999 "$a" > /dev/null 2>&1
+  rc=$?
+  if [ "$rc" = 2 ]; then ok "xkey.py refuses ${a#--type-file="$KF"/}"; else bad "xkey.py refuses $a: exit $rc"; fi
+done
+python3 -I "$XK" --display :9999 "--type-file=$KF/good" > /dev/null 2>&1
+rc=$?
+if [ "$rc" = 1 ]; then ok "xkey.py takes a file's first line as text to type"; else bad "xkey.py --type-file: exit $rc"; fi
+python3 -I "$XK" --display :9999 "--type-file=$KF/good" --hold=100 > /dev/null 2>&1
+rc=$?
+if [ "$rc" = 2 ]; then ok "xkey.py holds keys, not a file's text"; else bad "xkey.py --type-file --hold: exit $rc"; fi
+python3 -I "$XK" --display :9999 "--type-file=$KF/good" --type=x > /dev/null 2>&1
+rc=$?
+if [ "$rc" = 2 ]; then ok "xkey.py types a file or text, not both"; else bad "xkey.py --type-file --type: exit $rc"; fi
+rm -rf -- "$KF"
 # A hold is a key's alone, from 1 ms to a minute; a good one gets as far as opening the display.
 for a in "--hold=0" "--hold=60001" "--hold=x" "--hold=-5"; do
   python3 -I "$XK" --display :9999 --key=w "$a" > /dev/null 2>&1

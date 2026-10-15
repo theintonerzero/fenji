@@ -8,6 +8,8 @@ libXtst). It sends input to that display and nothing else; it never touches the 
                                              the same, held down 1,500 ms (1 to 60,000), as a player
                                              holds a movement key; SIGTERM releases it first
     xkey.py --display :99 --type "Lin Two"   printable ASCII, one key at a time, Shift as needed
+    xkey.py --display :99 --type-file FILE   the same for FILE's first line, so a password typed
+                                             into a form never sits on a command line
 """
 import argparse
 import ctypes
@@ -28,8 +30,16 @@ def main():
     what = ap.add_mutually_exclusive_group(required=True)
     what.add_argument("--key")
     what.add_argument("--type")
+    what.add_argument("--type-file", metavar="FILE")
     ap.add_argument("--hold", type=int, metavar="MS")
     a = ap.parse_args()
+    if a.type_file is not None:
+        try:
+            with open(a.type_file, encoding="ascii") as f:
+                a.type = f.readline().rstrip("\r\n")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"xkey: --type-file: {e.__class__.__name__}", file=sys.stderr)
+            return 2
     if a.type is not None and not (a.type and all(" " <= c <= "~" for c in a.type)):
         print("xkey: --type takes printable ASCII only", file=sys.stderr)
         return 2

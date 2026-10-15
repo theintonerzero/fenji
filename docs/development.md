@@ -91,11 +91,14 @@ git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md apps/launcher/package.json 
 git commit -m "chore(release): vX.Y.Z"
 # PR release/vX.Y.Z → main, merge commit, then:
 git switch main && git pull && git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
-# wait for the release workflow, which attaches the server's archives and SHA256SUMS to the tag's draft release
+# wait for the release workflow, which attaches the server's archives, the launcher's bundles with
+# their updater signatures, latest.json and SHA256SUMS to the tag's draft release
 until run=$(gh run list --workflow release.yml --branch vX.Y.Z --json databaseId --jq '.[0].databaseId // empty') &&
   [ -n "$run" ]; do sleep 5; done
 gh run watch "$run" --exit-status
-# check the draft: an archive for each of the workflow's four targets, and SHA256SUMS, which matches them
+# check the draft: an archive for each of the server's four targets; the launcher's AppImage,
+# Windows installer (-setup.exe) and Fenji.app.tar.gz, each with its .sig; latest.json, which names
+# all three; and SHA256SUMS, which matches them all
 draft=$(mktemp -d) && gh release download vX.Y.Z --dir "$draft" && ls -l "$draft"
 (cd "$draft" && sha256sum -c SHA256SUMS)   # macOS: shasum -a 256 -c SHA256SUMS
 # merge main back into dev
@@ -103,6 +106,10 @@ git switch dev && git merge --no-ff main && git push
 # release notes: a line naming the pinned build (from docs/re/pinned-build.md), then the changelog section
 notes=$(mktemp)
 { echo "Pinned SoLO client: build <build ID>, bin64/gujianol.exe SHA-256 <exe SHA-256> (docs/re/pinned-build.md)."
+  echo
+  echo "The launcher isn't signed by Microsoft or Apple (launcher spec L6). To open it the first time:"
+  echo "on Windows, choose More info, then Run anyway; on macOS, open Fenji once, then choose Open Anyway"
+  echo "in System Settings, Privacy & Security."
   echo
   git cliff --latest --strip all; } > "$notes"
 # publish the draft, with its notes
@@ -113,7 +120,11 @@ m=$(gh api 'repos/{owner}/{repo}/milestones' --jq '.[] | select(.title == "<mile
 gh api -X PATCH "repos/{owner}/{repo}/milestones/$m" -f state=closed
 ```
 
-The release workflow (`.github/workflows/release.yml`) builds `fenji-server` for four targets, each on a runner of its own system: Linux on x86_64 and arm64 (static, with musl), Windows on x86_64, and macOS on Apple silicon. `scripts/package-server.sh` packs each build with its system's start script (`deploy/start/`), `fenji.example.toml`, `README.txt` (`deploy/archive/`), `LICENSE`, `SOURCE.txt` and `THIRD-PARTY-NOTICES.txt`, and `scripts/test-package-server.sh` checks what it packs. The notices are the licences of every crate the target's build links, which cargo-about (pinned in `scripts/versions.env`) collects from the locked dependency graph, and, for the static Linux builds, musl's notice (`deploy/archive/musl-COPYRIGHT`). cargo-about's `deploy/archive/about.toml` accepts exactly the licences `deny.toml` allows, and the test fails while the two lists differ. Each build job checks its archive's entries with its own system's tools, and the publish job attaches nothing unless the tag still points at the run's commit. A pull request that changes the workflow, the packaging script, what it packs (`deploy/start/`, `deploy/archive/`) or `scripts/versions.env` runs it as a dry run: it builds every archive and publishes nothing, and the archives stay with the run. So does a run by hand from the Actions tab.
+The release workflow (`.github/workflows/release.yml`) builds `fenji-server` for four targets, each on a runner of its own system: Linux on x86_64 and arm64 (static, with musl), Windows on x86_64, and macOS on Apple silicon. `scripts/package-server.sh` packs each build with its system's start script (`deploy/start/`), `fenji.example.toml`, `README.txt` (`deploy/archive/`), `LICENSE`, `SOURCE.txt` and `THIRD-PARTY-NOTICES.txt`, and `scripts/test-package-server.sh` checks what it packs. The notices are the licences of every crate the target's build links, which cargo-about (pinned in `scripts/versions.env`) collects from the locked dependency graph, and, for the static Linux builds, musl's notice (`deploy/archive/musl-COPYRIGHT`). cargo-about's `deploy/archive/about.toml` accepts exactly the licences `deny.toml` allows, and the test fails while the two lists differ. Each build job checks its archive's entries with its own system's tools, and the publish job attaches nothing unless the tag still points at the run's commit. A pull request that changes the workflow, the packaging scripts, what they pack (`deploy/start/`, `deploy/archive/`, the launcher's `tauri.conf.json`) or `scripts/versions.env` runs it as a dry run: it builds every archive and bundle, unsigned, and publishes nothing, and the files stay with the run. So does a run by hand from the Actions tab.
+
+The same workflow builds the desktop launcher's bundles, each on its own runner: the AppImage on Linux (x86_64), the NSIS installer on Windows (x86_64) and the app on macOS (Apple silicon), with `cargo tauri build --bundles <bundle>`. On a tag, the tag must match the launcher's version, and Tauri signs each bundle for the updater with Fenji's release key (launcher spec §3.8, L5). The publish job then writes the updater's `latest.json` with `scripts/launcher-latest-json.sh`, whose notes are the tag's changelog section, and attaches it beside the bundles and their `.sig` files. The installed launchers read `latest.json` from the latest release, so the draft must be published, not just made, before players get the update. `scripts/test-launcher-latest-json.sh` checks the script.
+
+**The release key.** Its private half lives only on the owner's game box, in `~/.config/fenji/release-key/` (readable by the owner only), and in the repository's Actions secrets `TAURI_SIGNING_PRIVATE_KEY` (the key file's text) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. It never goes into any repository, and only a tag's run reads the secrets. Its public half is in `apps/launcher/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`, key ID 02D8621117AE26ED). A launcher only installs updates signed with that key, so losing the private half means a new key, a release that carries the new public half, and players updating by hand once.
 
 ## Checks before a PR
 
