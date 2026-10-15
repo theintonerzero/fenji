@@ -233,7 +233,7 @@ pub struct ApiClient {
 }
 
 /// rustls with the `ring` provider (M3 spec D20), installed once per process.
-fn crypto() {
+pub(crate) fn crypto() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         // Another part of the process may have installed one already; either is fine.
@@ -242,7 +242,7 @@ fn crypto() {
 }
 
 /// A loopback host: `localhost`, 127.0.0.0/8 or `::1`.
-fn loopback(url: &Url) -> bool {
+pub(crate) fn loopback(url: &Url) -> bool {
     match url.host_str() {
         Some("localhost") => true,
         Some(h) => h
