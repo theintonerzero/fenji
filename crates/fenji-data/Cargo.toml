@@ -10,7 +10,9 @@ license.workspace = true
 [features]
 default = ["oodle"]
 # Decodes Oodle (codec 4) with fenji-oodle, which is GPL-3.0-or-later. tools/oodle-helper, the
-# program that loads the client's own Oodle DLL, turns it off, so it links no GPL code.
+# program that loads the client's own Oodle DLL, turns it off, so it links no GPL code. Cargo
+# turns it back on for every package that one command builds, so the helper's Windows build
+# refuses to compile with it on (`OODLE_DECODER`, Ruling O16).
 oodle = ["dep:fenji-oodle"]
 # Synthetic PE images and blobs for tests in this and other crates: never game bytes.
 test-util = []
