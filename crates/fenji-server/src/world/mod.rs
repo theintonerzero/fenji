@@ -10,6 +10,10 @@ mod services;
 mod thread;
 pub mod types;
 
+// The most bytes of a chat line's text, after the client's own escaping (chat.md 1.5). The link
+// holds the codec's limit to it: the codec refuses a longer line before it reaches the world,
+// which checks again (#280).
+pub(crate) use chat::MAX_BYTES as MAX_LINE_BYTES;
 pub use ecs::{Rules, WorldCore};
 pub use thread::{RunningWorld, SAVE_WAIT, THREAD_WAIT, TickReport, WorldHandle, start};
 pub use types::*;

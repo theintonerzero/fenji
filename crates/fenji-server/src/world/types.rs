@@ -187,8 +187,8 @@ pub enum WorldIn {
 /// What the world tells a connection task.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorldOut {
-    /// Load this scene and stand here (772): the first message after a join, and after a
-    /// teleport to another scene.
+    /// Load this scene and stand here (772): the first message after a join. A teleport to
+    /// another scene would send it too, but the world refuses one for now (#280).
     LoadScene { pid: ActorId, at: Location },
     /// The player's own actor, once its client has loaded (type 7, then its speed, then 8).
     SelfEnter {

@@ -95,7 +95,7 @@ Script message ids are numbers. In a shipping client, `data/core/share/enums.lua
 | 556 | S→C | `PROTOS2C_GM_SCRIPT_INVOKE` | The server sends a chunk of Lua bytecode; the client runs it and answers with 278 (`PROTOC2S_GM_SCRIPT_REPORT`) and the chunk's MD5. Never sent | `schema` | **Observed** (the name), **Inferred** (the effect) | `data/core/client/net_manager.luac` `0.14`, `0.15`; [`packets/lobby.md`](packets/lobby.md) 2.3 |
 | 627 | S→C | `PROTOG2C_SHEET_HOTPATCH` | Patches the client's content tables. Never sent | `named` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
 | 729 | S→C | `PROTOG2C_USER_DETAIL` | Writes a file to the player's disk. Never sent | `named` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
-| 720 | S→C | `PROTOS2C_CUSTOMER_FEEDBACK_URL` | A URL the client opens in the default browser. Never sent | `schema` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
+| 720 | S→C | `PROTOS2C_CUSTOMER_FEEDBACK_URL` | A URL the client opens with `ShellExecuteW`, which can name a program or a document as well as a web page. Never sent | `schema` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
 | 598 | S→C | `PROTOS2C_GAMEFORGE_SEND_RECHARGE_URL` | A URL the client opens in the Gameforge overlay. Never sent | `schema` | **Observed** (the name), **Inferred** (the effect) | [`packets/lobby.md`](packets/lobby.md) 2.3 |
 
 ## REA Evidence IDs
