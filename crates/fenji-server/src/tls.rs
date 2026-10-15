@@ -352,7 +352,7 @@ impl TlsListener {
         };
         let (done, finished) = mpsc::channel(limits.in_flight.max(1));
         let tls = TlsAcceptor::from(Arc::new(config));
-        tokio::spawn(accept(tcp, tls, limits, conns.idle, places, done));
+        tokio::spawn(accept(tcp, tls, limits, conns, places, done));
         Ok(TlsListener { local, finished })
     }
 }
@@ -367,12 +367,16 @@ struct Places {
 /// Accepts on `tcp` while the listener holds `done`'s other end. Every connection is accepted at
 /// once, never kept waiting for a place, and closed at once without both of its places; with them,
 /// its handshake runs on a task of its own, within the time limit, and its stream is handed over
-/// in a [`Conn`] that ends it after `idle` without a byte.
+/// in a [`Conn`] under `conns`. Each place is a guard, given back when dropped: when a handshake
+/// fails, runs out of time or panics, when its stream can't be handed over, when the connection
+/// ends, and when the listener goes, which ends this task and with it the handshakes' tasks. The
+/// handshakes that ended are reaped at every turn, so the set holds no more than those in flight
+/// and those that ended since; the channel to axum holds as many as there are handshake places.
 async fn accept(
     mut tcp: TcpListener,
     tls: TlsAcceptor,
     limits: TlsLimits,
-    idle: Duration,
+    conns: ConnLimits,
     places: Places,
     done: mpsc::Sender<Finished>,
 ) {
@@ -399,7 +403,7 @@ async fn accept(
             match tokio::time::timeout(limits.handshake, tls.accept(stream)).await {
                 Ok(Ok(stream)) => {
                     let _ = done
-                        .send((Conn::new(stream, local, open, idle), peer))
+                        .send((Conn::new(stream, local, open, conns), peer))
                         .await;
                 }
                 Ok(Err(e)) => tracing::debug!(%peer, error = %e, "a TLS handshake failed"),
@@ -736,14 +740,14 @@ mod tests {
             .collect()
     }
 
-    /// Whether the server has closed `conn` within `within`: a read that ends, empty, reset or cut
-    /// short, rather than one still waiting.
+    /// Whether the server has closed `conn` within `within`: reading on comes to its end, empty,
+    /// reset or cut short, past whatever came first (such as an alert for a failed handshake),
+    /// rather than still waiting.
     async fn closed_within<S: AsyncRead + Unpin>(conn: &mut S, within: Duration) -> bool {
-        let mut byte = [0; 1];
-        matches!(
-            tokio::time::timeout(within, conn.read(&mut byte)).await,
-            Ok(Ok(0) | Err(_))
-        )
+        let mut rest = Vec::new();
+        tokio::time::timeout(within, conn.read_to_end(&mut rest))
+            .await
+            .is_ok()
     }
 
     /// A certificate verifier that takes any certificate, but checks the handshake's signatures:
@@ -921,6 +925,72 @@ mod tests {
             "no HTTP over the TLS port"
         );
         get_ok(&client(), addr).await;
+    }
+
+    /// Whether a fresh connection to `addr` is served within 3 s, by a client that closes it after
+    /// its one request; then a moment for the close to reach the server.
+    async fn served_again(addr: SocketAddr) -> bool {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::Client::builder()
+            .tls_danger_accept_invalid_certs(true)
+            .pool_max_idle_per_host(0)
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if let Ok(answer) = client.get(format!("https://{addr}/")).send().await
+                && answer.text().await.is_ok_and(|body| body == "ok")
+            {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn every_place_comes_back_however_its_connection_ends() {
+        // One place of each kind, so each step needs the one before to have given both back.
+        let dir = tempfile::tempdir().unwrap();
+        let limits = TlsLimits {
+            handshake: Duration::from_millis(300),
+            in_flight: 1,
+            in_flight_per_network: 1,
+        };
+        let conns = ConnLimits {
+            open: 1,
+            open_per_network: 1,
+            idle: Duration::from_millis(300),
+            ..ConnLimits::default()
+        };
+        let addr = serving(dir.path(), limits, conns).await;
+        assert!(
+            served_again(addr).await,
+            "served, then closed by its client"
+        );
+        let mut failed = TcpStream::connect(addr).await.unwrap();
+        failed
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        assert!(closed_within(&mut failed, Duration::from_secs(2)).await);
+        assert!(served_again(addr).await, "after a handshake that failed");
+        let mut silent = TcpStream::connect(addr).await.unwrap();
+        assert!(closed_within(&mut silent, Duration::from_secs(3)).await);
+        assert!(served_again(addr).await, "after a handshake out of time");
+        let mut idle = handshaken(TcpStream::connect(addr).await.unwrap()).await;
+        assert!(closed_within(&mut idle, Duration::from_secs(3)).await);
+        assert!(
+            served_again(addr).await,
+            "after a connection ended for idling"
+        );
+        drop(TcpStream::connect(addr).await.unwrap());
+        assert!(
+            served_again(addr).await,
+            "after a client that left mid-handshake"
+        );
     }
 
     #[test]

@@ -2,9 +2,11 @@
 //! and TLS, accept every connection, then give it one of the open connections' places, counted
 //! by the peer's network as the gate counts its own (M3 spec D17), or close it at once; and they
 //! hand axum each one in a [`Conn`], which keeps its place until it closes and ends it once it has
-//! sent nothing for the idle time. axum gives hyper no timer, so hyper's own limit on reading a
-//! request's head never applies: without these, connections that send nothing would stay open
-//! until the process ran out of file descriptors, for the gate as for the API.
+//! sent nothing for the idle time, or taken longer than the request time over a request. axum
+//! gives hyper no timer, so hyper's own limit on reading a request's head never applies: without
+//! these, connections that send nothing, or a byte now and then, would stay open until the
+//! process ran out of file descriptors, for the gate as for the API. Out of descriptors anyway,
+//! the listeners' accept is axum's, which waits a second between tries.
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
@@ -28,6 +30,8 @@ pub struct ConnLimits {
     pub open_per_network: usize,
     /// No byte from a connection for this long closes it, whatever it was waiting for.
     pub idle: Duration,
+    /// A request must come in whole within this long of its first byte.
+    pub request: Duration,
 }
 
 impl Default for ConnLimits {
@@ -36,6 +40,7 @@ impl Default for ConnLimits {
             open: 256,
             open_per_network: 16,
             idle: Duration::from_secs(30),
+            request: Duration::from_secs(30),
         }
     }
 }
@@ -67,23 +72,32 @@ impl ApiPlaces {
 }
 
 /// An open connection, as axum gets it: the stream, the address it came in on, and its place
-/// among the open connections, given back when it drops. A read that waits longer than the idle
-/// time fails, which ends the connection; each byte that comes puts the time off.
+/// among the open connections, given back when it drops. A read fails, which ends the
+/// connection, once nothing has come for the idle time, or once a request has taken longer than
+/// the request time: from its first byte to the server's answer, as a request that trickles in
+/// a byte at a time never idles. Each answer starts both times afresh.
 pub struct Conn<S> {
     inner: S,
     local: SocketAddr,
-    idle: Duration,
+    limits: ConnLimits,
+    /// When a byte last came, or the server last answered, or the connection opened.
+    active: Instant,
+    /// When the request being read began: its first byte since the server last answered.
+    request_from: Option<Instant>,
     deadline: Pin<Box<Sleep>>,
     _place: Place,
 }
 
 impl<S> Conn<S> {
-    pub(crate) fn new(inner: S, local: SocketAddr, place: Place, idle: Duration) -> Self {
+    pub(crate) fn new(inner: S, local: SocketAddr, place: Place, limits: ConnLimits) -> Self {
+        let active = Instant::now();
         Self {
             inner,
             local,
-            idle,
-            deadline: Box::pin(tokio::time::sleep(idle)),
+            limits,
+            active,
+            request_from: None,
+            deadline: Box::pin(tokio::time::sleep_until(active + limits.idle)),
             _place: place,
         }
     }
@@ -95,6 +109,35 @@ impl<S> Conn<S> {
 
     pub fn get_ref(&self) -> &S {
         &self.inner
+    }
+
+    /// When a read that waits fails: the idle time after the last activity, or the request
+    /// time after the request's first byte, whichever comes first.
+    fn due(&self) -> Instant {
+        let idle = self.active + self.limits.idle;
+        self.request_from
+            .map_or(idle, |from| idle.min(from + self.limits.request))
+    }
+
+    /// The server wrote: the request it read is answered.
+    fn answered(&mut self) {
+        self.active = Instant::now();
+        self.request_from = None;
+        let due = self.due();
+        self.deadline.as_mut().reset(due);
+    }
+
+    /// The error that ends a connection past its time.
+    fn too_slow(&self) -> io::Error {
+        let why = if self
+            .request_from
+            .is_some_and(|from| Instant::now() >= from + self.limits.request)
+        {
+            "the request took longer than the request time"
+        } else {
+            "nothing came for the idle time"
+        };
+        io::Error::new(io::ErrorKind::TimedOut, why)
     }
 }
 
@@ -112,16 +155,24 @@ impl<S: AsyncRead + Unpin> AsyncRead for Conn<S> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
+        let before = buf.filled().len();
         match Pin::new(&mut this.inner).poll_read(cx, buf) {
-            Poll::Ready(read) => {
-                this.deadline.as_mut().reset(Instant::now() + this.idle);
-                Poll::Ready(read)
+            Poll::Ready(Ok(())) if buf.filled().len() > before => {
+                let now = Instant::now();
+                this.active = now;
+                let from = *this.request_from.get_or_insert(now);
+                // Bytes that keep coming past the request time don't buy it more.
+                if now >= from + this.limits.request {
+                    return Poll::Ready(Err(this.too_slow()));
+                }
+                let due = this.due();
+                this.deadline.as_mut().reset(due);
+                Poll::Ready(Ok(()))
             }
+            // The end, or an error: nothing came.
+            Poll::Ready(read) => Poll::Ready(read),
             Poll::Pending => match this.deadline.as_mut().poll(cx) {
-                Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "nothing came for the idle time",
-                ))),
+                Poll::Ready(()) => Poll::Ready(Err(this.too_slow())),
                 Poll::Pending => Poll::Pending,
             },
         }
@@ -134,7 +185,14 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Conn<S> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+        let this = self.get_mut();
+        let wrote = Pin::new(&mut this.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = wrote
+            && n > 0
+        {
+            this.answered();
+        }
+        wrote
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -150,7 +208,14 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Conn<S> {
         cx: &mut Context<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
+        let this = self.get_mut();
+        let wrote = Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
+        if let Poll::Ready(Ok(n)) = wrote
+            && n > 0
+        {
+            this.answered();
+        }
+        wrote
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -164,7 +229,7 @@ pub struct PlainListener {
     tcp: TcpListener,
     local: SocketAddr,
     places: ApiPlaces,
-    idle: Duration,
+    limits: ConnLimits,
 }
 
 impl PlainListener {
@@ -174,7 +239,7 @@ impl PlainListener {
             local: tcp.local_addr()?,
             tcp,
             places: ApiPlaces::new(limits.open, limits.open_per_network, proxies),
-            idle: limits.idle,
+            limits,
         })
     }
 }
@@ -190,7 +255,7 @@ impl axum::serve::Listener for PlainListener {
             match self.places.take(peer.ip()) {
                 Some(place) => {
                     let local = local_of(&tcp);
-                    return (Conn::new(tcp, local, place, self.idle), peer);
+                    return (Conn::new(tcp, local, place, self.limits), peer);
                 }
                 None => tracing::debug!(%peer, "closed at once: no place free for it"),
             }
@@ -209,7 +274,7 @@ mod tests {
 
     use axum::Router;
     use axum::extract::ConnectInfo;
-    use axum::routing::get;
+    use axum::routing::{get, post};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
@@ -217,22 +282,28 @@ mod tests {
     use crate::api::Addrs;
 
     /// A plain listener under `limits`, trusting `proxies`, whose `/` says `ok` when the
-    /// connection's own address reached it: its address.
+    /// connection's own address reached it, and whose `/echo` reads a body and says its length:
+    /// its address.
     async fn serving(limits: ConnLimits, proxies: &[IpAddr]) -> SocketAddr {
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();
         let listener = PlainListener::new(tcp, limits, proxies).unwrap();
         assert_eq!(axum::serve::Listener::local_addr(&listener).unwrap(), addr);
-        let app = Router::new().route(
-            "/",
-            get(move |ConnectInfo(a): ConnectInfo<Addrs>| async move {
-                if a.local == addr && a.peer != addr {
-                    "ok"
-                } else {
-                    "not this connection's addresses"
-                }
-            }),
-        );
+        let app = Router::new()
+            .route(
+                "/",
+                get(move |ConnectInfo(a): ConnectInfo<Addrs>| async move {
+                    if a.local == addr && a.peer != addr {
+                        "ok"
+                    } else {
+                        "not this connection's addresses"
+                    }
+                }),
+            )
+            .route(
+                "/echo",
+                post(|body: String| async move { format!("got {}", body.len()) }),
+            );
         let service = app.into_make_service_with_connect_info::<Addrs>();
         tokio::spawn(axum::serve(listener, service).into_future());
         addr
@@ -248,12 +319,134 @@ mod tests {
     }
 
     #[test]
-    fn the_limits_default_to_256_open_16_from_a_network_and_30_seconds_idle() {
+    fn the_limits_default_to_256_open_16_from_a_network_and_30_seconds_idle_or_for_a_request() {
         let d = ConnLimits::default();
         assert_eq!(
-            (d.open, d.open_per_network, d.idle),
-            (256, 16, Duration::from_secs(30))
+            (d.open, d.open_per_network, d.idle, d.request),
+            (256, 16, Duration::from_secs(30), Duration::from_secs(30))
         );
+    }
+
+    /// Sends `head`, then `trickle` a byte every 100 ms, on a task of its own that keeps its half
+    /// of the connection open after (dropping it would close it), and returns what the server
+    /// answers before it closes the connection (within `within`), and when that was.
+    async fn trickled(
+        addr: SocketAddr,
+        head: &'static [u8],
+        trickle: &'static [u8],
+        within: Duration,
+    ) -> (String, Duration) {
+        let started = Instant::now();
+        let (mut rd, mut wr) = TcpStream::connect(addr).await.unwrap().into_split();
+        tokio::spawn(async move {
+            wr.write_all(head).await?;
+            for byte in trickle {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                wr.write_all(&[*byte]).await?;
+            }
+            std::future::pending::<()>().await;
+            std::io::Result::Ok(())
+        });
+        let mut answer = Vec::new();
+        let _ = tokio::time::timeout(within, rd.read_to_end(&mut answer))
+            .await
+            .expect("closed within the time given");
+        (
+            String::from_utf8_lossy(&answer).into_owned(),
+            started.elapsed(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_head_that_trickles_in_past_the_request_time_is_cut_off() {
+        // Never idle for the idle time, but the request as a whole takes longer than it may.
+        let limits = ConnLimits {
+            idle: Duration::from_millis(300),
+            request: Duration::from_millis(800),
+            ..ConnLimits::default()
+        };
+        let addr = serving(limits, &[]).await;
+        let (answer, took) = trickled(
+            addr,
+            b"GET / HTTP/1.1\r\n",
+            b"Host: x\r\nX-Slow: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\r\n",
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(!answer.contains("200 OK"), "{answer}");
+        assert!(
+            took >= limits.request && took < Duration::from_secs(3),
+            "{took:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_that_trickles_in_past_the_request_time_is_cut_off() {
+        let limits = ConnLimits {
+            idle: Duration::from_millis(300),
+            request: Duration::from_millis(800),
+            ..ConnLimits::default()
+        };
+        let addr = serving(limits, &[]).await;
+        let (answer, took) = trickled(
+            addr,
+            b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 40\r\n\r\n",
+            b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(!answer.contains("got 40"), "{answer}");
+        assert!(
+            took >= limits.request && took < Duration::from_secs(3),
+            "{took:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stops_is_cut_off_after_the_idle_time() {
+        let limits = ConnLimits {
+            idle: Duration::from_millis(300),
+            ..ConnLimits::default()
+        };
+        let addr = serving(limits, &[]).await;
+        let (answer, took) = trickled(
+            addr,
+            b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 40\r\n\r\naaaa",
+            b"",
+            Duration::from_secs(3),
+        )
+        .await;
+        assert!(!answer.contains("got"), "{answer}");
+        assert!(took >= limits.idle, "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn requests_answered_in_time_keep_their_connection() {
+        // Each answer starts the request time afresh: a connection that asks quickly, again and
+        // again, for longer in all than the request time, is never cut off.
+        let limits = ConnLimits {
+            idle: Duration::from_millis(500),
+            request: Duration::from_millis(500),
+            ..ConnLimits::default()
+        };
+        let addr = serving(limits, &[]).await;
+        let mut conn = TcpStream::connect(addr).await.unwrap();
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            conn.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+                .await
+                .unwrap();
+            let mut answer = [0; 1024];
+            let n = tokio::time::timeout(Duration::from_secs(2), conn.read(&mut answer))
+                .await
+                .expect("an answer")
+                .unwrap();
+            let answer = String::from_utf8_lossy(&answer[..n]);
+            assert!(
+                answer.starts_with("HTTP/1.1 200") && answer.ends_with("ok"),
+                "{answer}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -273,9 +466,10 @@ mod tests {
     #[tokio::test]
     async fn each_byte_that_comes_puts_the_idle_time_off() {
         // A request trickling in a byte at a time, slower in all than the idle time but never
-        // idle that long, is answered.
+        // idle that long, and within the request time, is answered.
         let limits = ConnLimits {
             idle: Duration::from_millis(300),
+            request: Duration::from_secs(20),
             ..ConnLimits::default()
         };
         let addr = serving(limits, &[]).await;
