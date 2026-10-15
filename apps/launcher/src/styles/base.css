@@ -1,0 +1,166 @@
+/* The launcher's base (DESIGN.md): its fonts, the fixed window, and the browser's own surfaces
+ * (focus, selection, the caret, scrollbars, numerals) drawn from the palette. No readable text is
+ * smaller than 12.5 px. */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../fonts/Geist.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('../fonts/GeistMono.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'Cinzel';
+  src: url('../fonts/Cinzel.woff2') format('woff2');
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Subset to the two glyphs of the name, 焚寂. */
+@font-face {
+  font-family: 'Noto Serif SC';
+  src: url('../fonts/NotoSerifSC-fenji.woff2') format('woff2');
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: block;
+  unicode-range: U+5BC2, U+711A;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  width: 1200px;
+  height: 720px;
+  overflow: hidden;
+  background: var(--ink-950);
+  color: var(--text);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line-height);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  caret-color: var(--ember-500);
+  scrollbar-color: var(--ink-800) transparent;
+}
+
+h1,
+h2,
+h3,
+p,
+ul,
+ol,
+dl,
+dd,
+figure {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* The window's chrome isn't text to copy. */
+header,
+nav,
+button,
+[aria-hidden='true'] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+a {
+  color: var(--gold-300);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--gold-100);
+}
+
+/* One focus ring everywhere: 2 px ember-500, 2 px off the element. */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ember-500);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--ember-500);
+  color: var(--on-ember);
+}
+
+::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ink-800);
+  border: 2px solid transparent;
+  border-radius: var(--rounded-control);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--outline);
+}
+
+/* Data lines up: build numbers, counts, pings, percentages. */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: var(--type-mono-family);
+  font-feature-settings: var(--type-mono-features);
+}

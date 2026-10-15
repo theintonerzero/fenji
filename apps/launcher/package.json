@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && node scripts/check-no-html.mjs",
     "test": "vitest run"
   },
   "dependencies": {
