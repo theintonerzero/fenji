@@ -775,8 +775,11 @@ fi
 got=$(cut -d' ' -f2- "$F/log/two/inputs")
 want=$(printf '%s\n' "click --display :99 10 10" "press --display :99 --key=w --hold=3000" "press --display :98 --key=Return" \
   "press --display :98 --type=hi" "click --display :98 20 20")
-got_sorted=$(sort -k1,1n "$F/log/two/inputs" | cut -d' ' -f2-)
-if [ "$(sort <<< "$got")" = "$(sort <<< "$want")" ] && [ "$(sed -n 1p <<< "$got_sorted")" = "click --display :99 10 10" ]; then
+# Client 1's click and key are both due at 1 s, from loops of their own, so either can be logged
+# first (#323); client 2's inputs, due from 3 s, come after both.
+first_two=$(sort -k1,1n "$F/log/two/inputs" | cut -d' ' -f2- | sed -n 1,2p | sort)
+want_first=$(printf '%s\n' "click --display :99 10 10" "press --display :99 --key=w --hold=3000" | sort)
+if [ "$(sort <<< "$got")" = "$(sort <<< "$want")" ] && [ "$first_two" = "$want_first" ]; then
   ok "client 2's inputs go to its display, in time with client 1's"
 else
   bad "inputs: $got"
