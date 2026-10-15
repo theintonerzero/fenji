@@ -32,7 +32,7 @@ use crate::gate::{self, Gate};
 use crate::lobby::stored_appearance;
 use crate::world::{
     ActorId, ChatChannel, ChatIn, ChatOut, ChatRefusal, ConnId, KickReason, Location, Look,
-    MoveStep, Player, Pos, Speaker, WhisperTarget, WorldHandle, WorldIn, WorldOut,
+    MAX_LINE_BYTES, MoveStep, Player, Pos, Speaker, WhisperTarget, WorldHandle, WorldIn, WorldOut,
 };
 
 /// The world's messages a connection may hold unwritten; one more and the world lets go of it
@@ -42,6 +42,11 @@ use crate::world::{
 pub(crate) const OUTBOUND: usize = 256;
 // No later slice may shrink it: it is the slack for a client that pauses its reads for a moment.
 const _: () = assert!(OUTBOUND >= 256);
+
+/// The most bytes of a whisper target's name that the link passes to the world (#280). A
+/// character's name is at most 24 bytes ([`lobby::NAME_BYTES`]), and a typed target carries `@`
+/// and a server's name after it, `@Unknown` in M4 (chat.md 1.4).
+const MAX_TARGET_NAME_BYTES: usize = 64;
 
 /// Whether byte `i` of type 3 describes the player's machine (world.md §3): the Windows version
 /// (9–12) or the parent-process flag (17). The trace log masks them.
@@ -329,13 +334,14 @@ fn on_message(gate: &Gate, conn: ConnId, ty: u8, body: &[u8]) -> Step {
             }) => Step::End("the client is quitting (392)"),
             // A line of chat, which an admin's command rides on (chat.md §1). The world checks the
             // text and routes it; the link refuses at once, as it answers a time sync, only what
-            // the world can't take: a channel M4 doesn't carry, or a "line" that isn't text. Its
-            // log says that a line came and on which channel, never what it said or to whom.
+            // the world can't take: a channel M4 doesn't carry, a "line" that isn't text, and one
+            // too long for the world (`bounded`). Its log says that a line came and on which
+            // channel, never what it said or to whom.
             Ok(Up::Script {
                 id: Value::Int(chat::CHAT_TRANSMIT),
                 args,
                 ..
-            }) => match chat::parse_transmit(&args) {
+            }) => match chat::parse_transmit(&args).and_then(bounded) {
                 Ok(t) => {
                     tracing::debug!(
                         channel = t.channel.number(),
@@ -529,6 +535,19 @@ fn encode(
             Ok(None)
         }
     }
+}
+
+/// A 115 the world can take, for its size (#280): a text of at most [`MAX_LINE_BYTES`], the
+/// client's own limit (chat.md 1.5), and a whisper to a name of at most
+/// [`MAX_TARGET_NAME_BYTES`]. A longer one is refused at once as too long, before it reaches the
+/// world. A whisper whose target has a pid carries no name to the world (chat.md 1.4).
+fn bounded(t: chat::Transmit) -> Result<chat::Transmit, chat::Refusal> {
+    let long_name =
+        matches!(&t.to, Some(chat::Target::Name(name)) if name.len() > MAX_TARGET_NAME_BYTES);
+    if t.text.len() > MAX_LINE_BYTES || long_name {
+        return Err(chat::Refusal::TooLong);
+    }
+    Ok(t)
 }
 
 /// The world's line for a 115 the codec read (chat.md §1).
@@ -1783,6 +1802,69 @@ mod tests {
                 assert_eq!(
                     pickle::decode(&got[0].body).unwrap(),
                     [Value::Int(lobby::ERROR_CODE), Value::Int(code)]
+                );
+            }
+            still_open(&mut l).await;
+            assert!(l.inbox.try_recv().is_err(), "the world got something");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_line_or_a_name_too_long_for_the_world_is_a_270_at_the_link() {
+        // #280: the link bounds what reaches the world. A text over the client's own 2,048 bytes
+        // (chat.md 1.5), or a whisper to a name over 64 bytes, comes back at once as too long;
+        // the longest of each still reaches the world, which checks it.
+        linked(|mut l| async move {
+            let named = |name: &str| {
+                Value::Table(Table {
+                    array: Vec::new(),
+                    hash: vec![(s("name"), s(name))],
+                })
+            };
+            let longest = "a".repeat(2_048);
+            let name = "n".repeat(64);
+            for (args, want) in [
+                (
+                    vec![Value::Int(0), s(&longest), Value::Nil],
+                    ChatIn {
+                        channel: ChatChannel::Nearby,
+                        text: longest.clone(),
+                        to: None,
+                    },
+                ),
+                (
+                    vec![Value::Int(1), s("psst"), named(&name)],
+                    ChatIn {
+                        channel: ChatChannel::Whisper,
+                        text: "psst".into(),
+                        to: Some(WhisperTarget::Name(name.clone())),
+                    },
+                ),
+            ] {
+                l.send(Cts::Script.to_u8(), &transmit(&args)).await;
+                let WorldIn::Chat { conn, line } = told(&mut l.inbox).await else {
+                    panic!("a line for the world")
+                };
+                assert_eq!((conn, line), (1, want));
+            }
+            // Bytes count, not characters: 1,025 é are 2,050 bytes.
+            for args in [
+                vec![Value::Int(0), s(&format!("{longest}a")), Value::Nil],
+                vec![Value::Int(5), s(&"é".repeat(1_025)), Value::Nil],
+                vec![Value::Int(1), s("psst"), named(&format!("{name}n"))],
+                vec![Value::Int(1), s("psst"), named(&"é".repeat(33))],
+            ] {
+                l.send(Cts::Script.to_u8(), &transmit(&args)).await;
+                let got = l.messages(1).await;
+                assert_eq!(got.len(), 1, "{got:?}");
+                assert_eq!(got[0].ty, Stc::Script.to_u8());
+                assert_eq!(
+                    pickle::decode(&got[0].body).unwrap(),
+                    [
+                        Value::Int(lobby::ERROR_CODE),
+                        Value::Int(chat::code::CHAT_MAX_CHAR)
+                    ]
                 );
             }
             still_open(&mut l).await;
