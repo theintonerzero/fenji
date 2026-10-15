@@ -28,8 +28,8 @@ fn every_fixture_of_a_ported_codec_decodes_to_its_input() {
 #[test]
 fn counting_departures_changes_no_fixture_and_finds_none() {
     // The fixtures hold LZ chunks of both offset codings, but the DLL's encoder made no match 1 to
-    // 7 back in the new one, and no stored block in an entropy-only chunk, from these inputs: so
-    // the fixtures can't decide Rulings O13 and O14, and Task 8's full check counts them instead.
+    // 7 back in either, and no stored block in an entropy-only chunk, from these inputs: so
+    // the fixtures can't decide Rulings O13 to O15, and Task 8's full check counts them instead.
     for f in fixtures()
         .iter()
         .filter(|f| PORTED.contains(&decoder_of(f.compressor)))

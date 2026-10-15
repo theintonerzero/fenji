@@ -26,13 +26,14 @@ pub fn decompress(src: &[u8], raw_len: usize) -> Result<Vec<u8>, Error> {
 }
 
 /// How often one decode took the two paths where this port's output departs from ooz's (Rulings
-/// O13 and O14), so that a check against the client's own Oodle DLL can count them. Counting
+/// O13 to O15), so that a check against the client's own Oodle DLL can count them. Counting
 /// changes nothing in the output.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Departures {
-    /// Kraken LZ chunks whose offsets are coded the new way (the flag byte before them at 0x80 or
-    /// more) and that match 1 to 7 bytes back. There ooz's 8-byte copies read bytes they haven't
-    /// written yet; this port repeats the last bytes, as LZ does (`lz.rs`).
+    /// Kraken LZ chunks that match 1 to 7 bytes back, in either offset coding: the new one names
+    /// such offsets, and the traditional one can when a crafted distance code's sum wraps. There
+    /// ooz's 8-byte copies read bytes they haven't written yet; this port repeats the last bytes,
+    /// as LZ does (`lz.rs`).
     pub near_match_chunks: usize,
     /// Kraken entropy-only chunks (bit 23 of the chunk header clear) of one stored block: those
     /// whose first byte is 0x00 to 0x02. ooz leaves the block's output unwritten; this port writes

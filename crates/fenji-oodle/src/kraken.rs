@@ -40,8 +40,6 @@ struct LzTable {
     cmd: Range<usize>,
     offs: Vec<i32>,
     lens: Vec<i32>,
-    /// Whether the offsets are coded the new way, for [`Departures`].
-    new_coding: bool,
 }
 
 /// Port of `Kraken_DecodeQuantum` (kraken.cpp:2678): fills `dst[start..]` from `src`, one quantum
@@ -117,8 +115,9 @@ fn decode_chunk(
         let table = read_lz_table(mode, body, dst, pos, dst_count, scratch)?;
         process_lz_runs(mode, dst, pos, &table, scratch)?;
         // Every offset in the table is some match's (`process_lz_runs` uses them all), and the
-        // recent offsets hold only these and -8: so a match 1 to 7 back is one of these.
-        if table.new_coding && table.offs.iter().any(|o| (-7..=-1).contains(o)) {
+        // recent offsets hold only these and -8: so a match 1 to 7 back is one of these, in either
+        // offset coding (Ruling O15).
+        if table.offs.iter().any(|o| (-7..=-1).contains(o)) {
             departures.near_match_chunks += 1;
         }
     } else if src_used > dst_count || mode != 0 {
@@ -225,7 +224,6 @@ fn read_lz_table(
         cmd,
         offs,
         lens,
-        new_coding: offs_scaling != 0,
     })
 }
 
@@ -352,7 +350,7 @@ fn distance(offset: i32) -> Result<usize, Error> {
 
 /// A run of literals at `pos`: copied (mode 1), or each added to the byte `last_offset` back
 /// (mode 0), as ooz's `COPY_64_ADD` (kraken.cpp:449) does 8 at a time. For a last offset under 8,
-/// which only the new offset coding can give, the two differ as [`copy_match`]'s note says.
+/// the two differ as [`copy_match`]'s note says.
 fn copy_literals(
     dst: &mut [u8],
     pos: usize,
@@ -574,8 +572,30 @@ mod tests {
         want
     }
 
+    /// `new_coding_chunk`'s stream with the traditional offset coding instead. Its one distance
+    /// code, 0xFF, takes 19 bits and then 12 more, and `BitReader::distance`'s 32-bit sum wraps,
+    /// as ooz's does, so it names `distance` back, 1 to 7.
+    fn wrapped_traditional_chunk(distance: u8) -> Vec<u8> {
+        let mut body = b"ABCDEFGH".to_vec();
+        body.extend([0x00, 0x00, 0x09, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        body.extend([0x80, 0x01, 0xFF]);
+        // The packed offsets, with no flag byte: a stored block of one code, 0xFF.
+        body.extend([0x00, 0x00, 0x01, 0xFF]);
+        body.extend([0x80, 0x02, 4, 20]);
+        // The bits. Forwards, 19 bits that make 0xFF810 under the code's leading 1, so
+        // 0x7EFF00 + (0xFF810 << 12) is −256 in 32 bits; then 12 bits of 256 + the distance, so
+        // the sum wraps to the distance. Backwards, the last byte's top bit is the gamma code for
+        // no 32-bit lengths, and the two reads meet there.
+        body.extend([0xFF, 0x02, 0x02, distance << 1, 0x80]);
+        let used = body.len() as u8;
+        let mut s = vec![0x8C, 0x06, 0x00, 0x00, used + 3 - 1];
+        s.extend([0x80 | 1 << 3, 0x00, used]);
+        s.extend(body);
+        s
+    }
+
     #[test]
-    fn a_match_1_to_7_back_in_the_new_offset_coding_is_counted() {
+    fn a_match_1_to_7_back_is_counted_in_either_offset_coding() {
         // Ruling O14 (a): ooz's 8-byte copy and the port's exact one differ there (lz.rs).
         let (out, d) = crate::decompress_counting(&new_coding_chunk(1, 1, 0), 54).unwrap();
         assert_eq!(out, new_coding_output(1));
@@ -589,6 +609,13 @@ mod tests {
         let (out, d) = crate::decompress_counting(&new_coding_chunk(1, 7, 0), 54).unwrap();
         assert_eq!(out, new_coding_output(7));
         assert_eq!(d.near_match_chunks, 1);
+        // Ruling O15: the traditional coding too, where a crafted code wraps.
+        for distance in [1, 3, 7] {
+            let s = wrapped_traditional_chunk(distance);
+            let (out, d) = crate::decompress_counting(&s, 54).unwrap();
+            assert_eq!(out, new_coding_output(usize::from(distance)), "{distance}");
+            assert_eq!(d.near_match_chunks, 1, "{distance}");
+        }
     }
 
     #[test]
@@ -597,7 +624,7 @@ mod tests {
         let (out, d) = crate::decompress_counting(&new_coding_chunk(2, 7, 1), 54).unwrap();
         assert_eq!(out, new_coding_output(15));
         assert_eq!(d, crate::Departures::default());
-        // The traditional coding never names fewer than 8.
+        // `one_lz_chunk` matches 8 back, the first recent offset, with no offset of its own.
         for mode in [0, 1] {
             let (_, d) = crate::decompress_counting(&one_lz_chunk(mode), 28).unwrap();
             assert_eq!(d, crate::Departures::default(), "mode {mode}");

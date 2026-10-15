@@ -1113,10 +1113,11 @@ fn verify_oodle_matches_every_block_with_the_dlls_hash() {
         ),
         "{text}"
     );
-    // Ruling O14: each departure from ooz, counted, and listed with what the DLL made of it.
+    // Rulings O14 and O15: each departure from ooz, counted, and listed with what the DLL made of
+    // it.
     assert!(
         text.contains(
-            "1 chunks in 1 blocks match 1 to 7 bytes back in the new offset coding, and \
+            "(Rulings O13 to O15): 1 chunks in 1 blocks match 1 to 7 bytes back, and \
              1 chunks in 1 blocks are one stored block in an entropy-only chunk; \
              2 of those 2 blocks match the DLL"
         ),

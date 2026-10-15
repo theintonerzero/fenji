@@ -65,7 +65,7 @@ impl Decompressor for BuiltinCodecs {
 }
 
 /// Decodes one Oodle block as [`BuiltinCodecs`] does, and counts the chunks in it where
-/// fenji-oodle's output departs from ooz's, for `archive verify-oodle` (Rulings O13 and O14).
+/// fenji-oodle's output departs from ooz's, for `archive verify-oodle` (Rulings O13 to O15).
 ///
 /// A block of more than [`MAX_OODLE_BLOCK`] raw bytes is refused before any decoding (the Oodle
 /// decoder plan's Review Focus 5): fenji-oodle's output grows only as the stream backs it, but a

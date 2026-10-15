@@ -106,7 +106,7 @@ enum Command {
     /// scripts/spike/run-oodle-helper.sh --hash-parts writes: one `key, block, raw length, SHA-256`
     /// line per block. Writes OUT/summary.txt, OUT/mismatches.tsv (each block that doesn't match,
     /// and why) and OUT/departures.tsv (each block with chunks where fenji-oodle departs from ooz,
-    /// Rulings O13 and O14). Exit 0 only when every block matches.
+    /// Rulings O13 to O15). Exit 0 only when every block matches.
     VerifyOodle {
         #[arg(long)]
         dll_hashes: PathBuf,
@@ -578,8 +578,8 @@ struct Verified {
     raw_bytes: u64,
     /// Files and blocks walked, by where they lie.
     walked: BTreeMap<OodleSource, (u64, u64)>,
-    /// Chunks, and blocks with any, where fenji-oodle departs from ooz: matches 1 to 7 back in the
-    /// new offset coding, and stored blocks in entropy-only chunks.
+    /// Chunks, and blocks with any, where fenji-oodle departs from ooz: matches 1 to 7 back, in
+    /// either offset coding, and stored blocks in entropy-only chunks.
     near: (u64, u64),
     stored: (u64, u64),
     /// Blocks with either, and how many of them match the DLL.
@@ -707,9 +707,9 @@ fn verify_oodle(client: &Path, dll_hashes: &Path, out: &Path) -> Result<ExitCode
          and {} DLL hashes match no block; {mb:.1} MB decoded in {secs:.1} s ({:.0} MB/s)\n\
          walked {} files and {} blocks in _index, {} files and {} blocks in the containers, \
          {} files and {} blocks in the parts\n\
-         where fenji-oodle departs from ooz (Rulings O13, O14): {} chunks in {} blocks match 1 to 7 \
-         bytes back in the new offset coding, and {} chunks in {} blocks are one stored block in \
-         an entropy-only chunk; {} of those {} blocks match the DLL\n",
+         where fenji-oodle departs from ooz (Rulings O13 to O15): {} chunks in {} blocks match 1 \
+         to 7 bytes back, and {} chunks in {} blocks are one stored block in an entropy-only \
+         chunk; {} of those {} blocks match the DLL\n",
         v.same,
         v.differ,
         v.native_failed,
