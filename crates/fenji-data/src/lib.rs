@@ -14,7 +14,9 @@ pub mod re_dir;
 pub mod test_util;
 
 pub use blob::{BlobHeader, Block, Codec, FIXED_LEN, blocks, decode as decode_blob};
-pub use codec::{BuiltinCodecs, Decompressor, oodle_payload};
+#[cfg(feature = "oodle")]
+pub use codec::decode_oodle_block;
+pub use codec::{BuiltinCodecs, Decompressor, MAX_OODLE_BLOCK, oodle_payload};
 pub use error::{Error, Result};
 pub use exe_fs::{ExeEntry, ExeFs, PIECE_LEN};
 pub use pe::{PeImage, Section};
@@ -26,10 +28,12 @@ pub const PINNED_EXE_SHA256: &str =
 /// Lowercase hex SHA-256 of `bytes`.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hex(&Sha256::digest(bytes))
+}
+
+/// `bytes` in lowercase hex, as the archives' keys are written.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

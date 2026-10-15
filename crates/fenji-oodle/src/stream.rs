@@ -16,7 +16,34 @@ pub(crate) const SCRATCH: usize = 0x6C000;
 
 /// Port of `Kraken_Decompress` (kraken.cpp:4130): `src`, one whole Oodle stream, decoded into
 /// exactly `raw_len` bytes.
+///
+/// The output grows a quantum at a time, as the stream backs it, never to `raw_len` up front. But
+/// a memset quantum backs 256 KiB with 6 bytes of stream, about 43,690 times its size, so a small
+/// stream can still ask for a huge output: callers must bound `raw_len` themselves. fenji-data's
+/// archive blocks are at most 512 KiB.
 pub fn decompress(src: &[u8], raw_len: usize) -> Result<Vec<u8>, Error> {
+    decompress_counting(src, raw_len).map(|(out, _)| out)
+}
+
+/// How often one decode took the two paths where this port's output departs from ooz's (Rulings
+/// O13 to O15), so that a check against the client's own Oodle DLL can count them. Counting
+/// changes nothing in the output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Departures {
+    /// Kraken LZ chunks that match 1 to 7 bytes back, in either offset coding: the new one names
+    /// such offsets, and the traditional one can when a crafted distance code's sum wraps. There
+    /// ooz's 8-byte copies read bytes they haven't written yet; this port repeats the last bytes,
+    /// as LZ does (`lz.rs`).
+    pub near_match_chunks: usize,
+    /// Kraken entropy-only chunks (bit 23 of the chunk header clear) of one stored block: those
+    /// whose first byte is 0x00 to 0x02. ooz leaves the block's output unwritten; this port writes
+    /// it.
+    pub stored_entropy_chunks: usize,
+}
+
+/// [`decompress`], which also counts the chunks where this port departs from ooz.
+pub fn decompress_counting(src: &[u8], raw_len: usize) -> Result<(Vec<u8>, Departures), Error> {
+    let mut departures = Departures::default();
     let mut out = Vec::new();
     let mut scratch = Vec::new();
     let mut at = 0;
@@ -59,9 +86,15 @@ pub fn decompress(src: &[u8], raw_len: usize) -> Result<Vec<u8>, Error> {
                     if scratch.is_empty() {
                         scratch.resize(SCRATCH, 0);
                     }
-                    let used =
-                        decode_quantum(h.decoder, &mut out[..done + n], done, data, &mut scratch)
-                            .map_err(|e| counted_from_the_stream(e, at))?;
+                    let used = decode_quantum(
+                        h.decoder,
+                        &mut out[..done + n],
+                        done,
+                        data,
+                        &mut scratch,
+                        &mut departures,
+                    )
+                    .map_err(|e| counted_from_the_stream(e, at))?;
                     if used != size {
                         return Err(Error::Corrupt {
                             at,
@@ -79,7 +112,7 @@ pub fn decompress(src: &[u8], raw_len: usize) -> Result<Vec<u8>, Error> {
             left: src.len() - at,
         });
     }
-    Ok(out)
+    Ok((out, departures))
 }
 
 /// A codec's error for the quantum whose data starts at `at`: the codec counts a corrupt chunk's
@@ -95,18 +128,19 @@ fn counted_from_the_stream(e: Error, at: usize) -> Error {
 }
 
 /// The quantum decoders, by stream decoder number. Each fills `dst[start..]` from `src`, reading
-/// earlier output in `dst[..start]` for matches, and returns how many bytes of `src` it read.
-/// Kraken is the only codec Task 2's census found; Mermaid and Selkie (10) and Leviathan (12)
-/// aren't ported.
+/// earlier output in `dst[..start]` for matches, counts its [`Departures`], and returns how many
+/// bytes of `src` it read. Kraken is the only codec Task 2's census found; Mermaid and Selkie (10)
+/// and Leviathan (12) aren't ported.
 pub(crate) fn decode_quantum(
     decoder: u8,
     dst: &mut [u8],
     start: usize,
     src: &[u8],
     scratch: &mut [u8],
+    departures: &mut Departures,
 ) -> Result<usize, Error> {
     match decoder {
-        6 => crate::kraken::decode_quantum(dst, start, src, scratch),
+        6 => crate::kraken::decode_quantum(dst, start, src, scratch, departures),
         _ => Err(Error::Unsupported { decoder }),
     }
 }

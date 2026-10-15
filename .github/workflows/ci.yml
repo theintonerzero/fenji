@@ -26,6 +26,15 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # tools/oodle-helper's dll.rs, the workspace's only unsafe code, builds for Windows only.
       - run: cargo clippy -p fenji-oodle-helper --target x86_64-pc-windows-gnu --locked -- -D warnings
+      # fenji-data without its `oodle` feature, as tools/oodle-helper builds it.
+      - run: cargo clippy -p fenji-data --no-default-features --all-targets --locked -- -D warnings
+      - name: The program that loads Epic's Oodle DLL links no GPL code (fenji-oodle)
+        run: |
+          deps=$(cargo tree -p fenji-oodle-helper --target x86_64-pc-windows-gnu -e normal --prefix none --locked)
+          if grep -q '^fenji-oodle v' <<< "$deps"; then
+            echo "fenji-oodle (GPL-3.0-or-later) is in tools/oodle-helper's build" >&2
+            exit 1
+          fi
       - run: cargo test --workspace --locked
 
   deny:

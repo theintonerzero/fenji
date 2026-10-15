@@ -1365,11 +1365,11 @@ fn verify_oodle(client: &Path, dll_hashes: &Path, out: &Path) -> Result<ExitCode
 - Modify: `docs/re/m1-archives.md` (§5, and the evidence table)
 
 - [ ] **Step 1: The DLL's hashes.** Run `source ~/.config/fenji/env.sh && scripts/spike/run-oodle-helper.sh --hash-parts re/oodle-verify/dll.tsv`, inside the sandbox. It writes one line per Oodle block. Its FAILED lines are counted, and are a finding if there are any.
-- [ ] **Step 2: The comparison.** Run `cargo run --release -p archive -- verify-oodle --dll-hashes re/oodle-verify/dll.tsv`.
+- [ ] **Step 2: The comparison.** Run `cargo run --release -p fenji-archive -- verify-oodle --dll-hashes re/oodle-verify/dll.tsv`.
   - **Expected:** every block matches; 0 differ, 0 failed natively, 0 have no DLL hash. The exit status is 0.
   - **If anything differs,** it's a port bug. Report the keys and blocks (they're in `re/oodle-verify/mismatches.tsv`), and the controller opens a fix task on the codec. The bar is zero.
 - [ ] **Step 3: Record it** in `m1-archives.md` §5, "What Oodle unlocked":
-  - the counts, the decoded megabytes, the wall time and the throughput, tagged **Observed**, with the evidence key `AS` (`re/oodle-verify/`);
+  - the counts, the decoded megabytes, the wall time and the throughput, tagged **Observed**, with the evidence key `AT` (`re/oodle-verify/`);
   - the containers' files, per Task 2's finding.
 - [ ] **Step 4: The commit and the PR.** Commit as `docs(re): every Oodle block in the pinned client decodes natively, matching its DLL`, with `Closes #<Task 8 issue>`.
 

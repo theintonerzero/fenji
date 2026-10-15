@@ -64,6 +64,21 @@ expect 1 "can't overlap" "an output inside the input is refused" -- --compress r
 expect 1 "can't overlap" "an input inside the output is refused" -- --compress re/fx/in re/fx 8 4
 expect 1 "GE-Proton not found" "siblings that share a prefix don't overlap" -- --compress re/fx re/fx2 8 4
 
+# hash-parts: one file, in a directory inside re/ that stays apart from the Wine prefix and the
+# client copy.
+expect 1 "GE-Proton not found" "hash-parts inside re/ passes the guards" -- --hash-parts re/oodle-verify/dll.tsv
+expect 1 "needs OUT_TSV" "hash-parts without a file is refused" -- --hash-parts
+expect 1 "the hashes' directory must be inside re/" "a TSV right in re/ is refused" -- --hash-parts re/dll.tsv
+expect 1 "the hashes' directory must be inside re/" "a TSV outside the repo is refused" -- --hash-parts /tmp/fenji-dll.tsv
+expect 1 "the hashes' directory must be inside re/" "a TSV that climbs out of re/ is refused" -- --hash-parts re/../docs/dll.tsv
+expect 1 "the hashes' directory can't be inside the Wine prefix" "a TSV in the Wine prefix is refused" -- --hash-parts re/oodle-prefix/dll.tsv
+expect 2 "usage" "hash-parts and the probe together are a usage error" -- --probe --hash-parts re/v/dll.tsv
+expect 2 "usage" "hash-parts and a spool together are a usage error" -- --hash-parts re/v/dll.tsv --spool re/s
+# A client copy inside re/: its data is bound read-only, the TSV's directory read-write.
+FENJI_CLIENT_PATH=$REPO/re/fake-client expect 1 "can't overlap the client" "a TSV inside the client is refused" -- --hash-parts re/fake-client/v/dll.tsv
+FENJI_CLIENT_PATH=$REPO/re/v/fake-client expect 1 "can't overlap the client" "a TSV beside the client's data is refused" -- --hash-parts re/v/dll.tsv
+FENJI_CLIENT_PATH=$REPO/re/fake-client expect 1 "GE-Proton not found" "a TSV apart from a client in re/ passes the guards" -- --hash-parts re/v/dll.tsv
+
 # A link inside re/ that leads out of it: the guards compare the resolved paths.
 link="$REPO/re/.test-oodle-helper-$$"
 mkdir -p "$REPO/re"
@@ -71,6 +86,7 @@ ln -s /tmp "$link"
 expect 1 "must be inside re/" "a spool through a link out of re/ is refused" -- --spool "re/${link##*/}/spool"
 expect 1 "the input must be inside re/" "an input through a link out of re/ is refused" -- --compress "re/${link##*/}/in" re/out 8 4
 expect 1 "the output must be inside re/" "an output through a link out of re/ is refused" -- --compress re/in "re/${link##*/}/out" 8 4
+expect 1 "the hashes' directory must be inside re/" "a TSV through a link out of re/ is refused" -- --hash-parts "re/${link##*/}/v/dll.tsv"
 rm -f -- "$link"
 
 # The binds, through a copy of the script in a fake repository: GE-Proton, the client and the helper
@@ -121,6 +137,15 @@ want=("${base[@]}" --ro-bind "$FAKE/re/fx/in" --bind "$FAKE/re/fx/out" -- "${win
   compress "Z:$FAKE/re/fx/in" "Z:$FAKE/re/fx/out" 8 -4)
 binds "compress binds IN read-only and OUT read-write, and passes the numbers on" -- --compress re/fx/in re/fx/out 8 -4
 if [ -d "$FAKE/re/fx/out" ]; then ok "compress makes its output"; else bad "compress makes its output"; fi
+
+expect 1 "no client data" "hash-parts needs the client's data/" -- --hash-parts re/v/dll.tsv
+if [ ! -e "$FAKE/re/v" ]; then ok "a refused hash-parts makes no directory"; else bad "a refused hash-parts makes no directory"; fi
+mkdir -p "$FAKE/client/data" "$FAKE/re/w/dll.tsv"
+expect 1 "is a directory" "a TSV that is a directory is refused" -- --hash-parts re/w/dll.tsv
+want=("${base[@]}" --ro-bind "$FAKE/client/data" --bind "$FAKE/re/v" -- "${wine[@]}"
+  hash-parts "Z:$FAKE/client" "Z:$FAKE/re/v/dll.tsv")
+binds "hash-parts binds the client's data read-only and the TSV's directory read-write" -- --hash-parts re/v/dll.tsv
+if [ -d "$FAKE/re/v" ]; then ok "hash-parts makes the TSV's directory"; else bad "hash-parts makes the TSV's directory"; fi
 
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"

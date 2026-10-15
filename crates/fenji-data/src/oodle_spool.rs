@@ -1,7 +1,9 @@
 //! Codec 4 (Oodle LZ) through a spool that `tools/oodle-helper` works on inside the sandbox (M2
-//! spec §6; gate #39, route c). A missing block is written to `in/<name>`; the helper writes
-//! `out/<name>`. The name binds the input's SHA-1 and the raw length, so an output can only be
-//! used for the block it was made from, and only at the right length.
+//! spec §6; gate #39, route c), with the client's own DLL. [`BuiltinCodecs`] decodes Oodle itself
+//! now; the spool stays as a dev-only cross-check (`archive --spool`). A missing block is written
+//! to `in/<name>`; the helper writes `out/<name>`. The name binds the input's SHA-1 and the raw
+//! length, so an output can only be used for the block it was made from, and only at the right
+//! length.
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
