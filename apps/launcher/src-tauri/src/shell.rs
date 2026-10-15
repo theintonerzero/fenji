@@ -149,7 +149,7 @@ impl Shell {
                 .minimize()
                 .map_err(|e| e.to_string()),
             Intent::Close => {
-                app.exit(0);
+                self.updates.close(app, &self.model);
                 Ok(())
             }
             Intent::CheckUpdate => {

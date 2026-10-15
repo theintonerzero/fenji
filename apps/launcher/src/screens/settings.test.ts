@@ -67,3 +67,13 @@ test("off Linux there is no umu-run card", () => {
   const { root } = mount(settings, s, undefined, "settings");
   expect(root.querySelector("#settings-umu-run")).toBeNull();
 });
+
+test("a ready update can be installed from About, after Later too", () => {
+  // The final review's Important 1: "Later" left no way to install it.
+  const s = golden("update-ready");
+  s.update.showDialog = false;
+  const { root, sent } = mount(settings, s, undefined, "settings");
+  expect(root.querySelector(".about-version")!.textContent).toContain("0.5.1 ready");
+  press(root, "Restart and update");
+  expect(sent).toEqual([{ type: "installUpdate" }]);
+});

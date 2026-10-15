@@ -45,9 +45,96 @@ pub fn view(
     }
 }
 
-/// The updater's state in the shell: whether a check is under way, what it found, the found
-/// update's bytes once they're here, and whether the last check found nothing newer. A check that
-/// fails leaves that as it was.
+/// What the updater knows apart from the update and its bytes: the moves a check, a download,
+/// "Later" and closing make, kept pure so their sequences are tested (the final review's
+/// Important 1, which the view alone didn't catch).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct State {
+    checking: bool,
+    found: Option<Found>,
+    up_to_date: bool,
+    /// The player asked for this check ("Check now", or Play's "Check for updates"): its update's
+    /// dialog shows even for a version they said "Later" to.
+    asked: bool,
+}
+
+impl State {
+    /// A check begins, unless one is running.
+    fn begin(&mut self) -> bool {
+        !std::mem::replace(&mut self.checking, true)
+    }
+
+    /// The check found nothing newer.
+    fn current(&mut self) {
+        self.checking = false;
+        self.up_to_date = true;
+    }
+
+    /// The check failed: what was found before stays.
+    fn failed(&mut self) {
+        self.checking = false;
+    }
+
+    /// The check found `version`. Whether it must download: not when the bytes this run holds are
+    /// that version's already.
+    fn found(&mut self, version: &str, notes: Option<String>, asked: bool) -> bool {
+        self.checking = false;
+        self.up_to_date = false;
+        self.asked = asked;
+        let held = self
+            .found
+            .as_ref()
+            .is_some_and(|f| f.ready && f.version == version);
+        if !held {
+            self.found = Some(Found {
+                version: version.into(),
+                notes,
+                ready: false,
+            });
+        }
+        !held
+    }
+
+    /// The found version's bytes are here.
+    fn downloaded(&mut self) {
+        if let Some(found) = &mut self.found {
+            found.ready = true;
+        }
+    }
+
+    /// The download, or the install, failed: nothing is held.
+    fn lost(&mut self) {
+        self.found = None;
+    }
+
+    /// "Later" means not now: the version stays ready, for Settings' "Restart and update" and for
+    /// closing; its dialog shows again only when the player asks. Returns the version to mark seen.
+    fn dismissed(&mut self) -> Option<String> {
+        self.asked = false;
+        self.found.as_ref().map(|f| f.version.clone())
+    }
+
+    /// What the view shows, given the version whose dialog the player last saw.
+    fn view(&self, current: &str, auto: bool, seen: Option<&str>) -> UpdateView {
+        let seen = if self.asked { None } else { seen };
+        view(
+            current,
+            auto,
+            self.checking,
+            self.found.as_ref(),
+            seen,
+            self.up_to_date,
+        )
+    }
+
+    /// Closing installs a ready update when "Update automatically" is on: "Signed updates install
+    /// when you restart" (the Settings board).
+    fn installs_on_close(&self, auto: bool) -> bool {
+        auto && self.found.as_ref().is_some_and(|f| f.ready)
+    }
+}
+
+/// The updater in the shell: its [`State`], and the found update with its bytes once they're here.
 #[derive(Default)]
 pub struct Updates {
     inner: Mutex<Inner>,
@@ -55,10 +142,8 @@ pub struct Updates {
 
 #[derive(Default)]
 struct Inner {
-    checking: bool,
-    found: Option<Found>,
+    state: State,
     downloaded: Option<(Update, Vec<u8>)>,
-    up_to_date: bool,
 }
 
 impl Updates {
@@ -70,26 +155,20 @@ impl Updates {
     fn publish(&self, model: &App) {
         let snapshot = model.snapshot();
         let seen = model.update_seen();
-        let inner = self.lock();
-        model.set_update(view(
+        let view = self.lock().state.view(
             &snapshot.update.current,
             snapshot.settings.auto_update,
-            inner.checking,
-            inner.found.as_ref(),
             seen.as_deref(),
-            inner.up_to_date,
-        ));
+        );
+        model.set_update(view);
     }
 
-    /// Looks for a newer launcher and downloads it. Only the check the player asked for (`asked`)
-    /// says when it fails; at start, off-line, it's only logged (spec §3.8). One check at a time.
+    /// Looks for a newer launcher and downloads it, unless this run holds it already. Only the
+    /// check the player asked for (`asked`) says when it fails; at start, off-line, it's only
+    /// logged (spec §3.8). One check at a time.
     pub async fn check(&self, app: &AppHandle, model: &App, asked: bool) {
-        {
-            let mut inner = self.lock();
-            if inner.checking {
-                return;
-            }
-            inner.checking = true;
+        if !self.lock().state.begin() {
+            return;
         }
         self.publish(model);
         let checked = match app.updater() {
@@ -100,37 +179,30 @@ impl Updates {
             Ok(Some(update)) => update,
             Ok(None) => {
                 tracing::info!("the launcher is up to date");
-                let mut inner = self.lock();
-                inner.checking = false;
-                inner.up_to_date = true;
-                drop(inner);
+                self.lock().state.current();
                 return self.publish(model);
             }
             Err(e) => return self.failed(model, asked, &e),
         };
-        tracing::info!(version = %update.version, "a launcher update downloads");
-        {
-            let mut inner = self.lock();
-            inner.checking = false;
-            inner.up_to_date = false;
-            inner.found = Some(Found {
-                version: update.version.clone(),
-                notes: update.body.clone(),
-                ready: false,
-            });
-        }
+        let download = self
+            .lock()
+            .state
+            .found(&update.version, update.body.clone(), asked);
         self.publish(model);
+        if !download {
+            tracing::info!(version = %update.version, "the launcher update is ready already");
+            return;
+        }
+        tracing::info!(version = %update.version, "a launcher update downloads");
         match update.download(|_, _| {}, || {}).await {
             Ok(bytes) => {
                 tracing::info!(version = %update.version, "the launcher update is ready");
                 let mut inner = self.lock();
-                if let Some(found) = &mut inner.found {
-                    found.ready = true;
-                }
+                inner.state.downloaded();
                 inner.downloaded = Some((update, bytes));
             }
             Err(e) => {
-                self.lock().found = None;
+                self.lock().state.lost();
                 return self.failed(model, asked, &e);
             }
         }
@@ -139,7 +211,7 @@ impl Updates {
 
     fn failed(&self, model: &App, asked: bool, e: &tauri_plugin_updater::Error) {
         tracing::warn!(error = %e, "the update check failed");
-        self.lock().checking = false;
+        self.lock().state.failed();
         if asked {
             model.note(CHECK_FAILED.into(), true);
         }
@@ -154,7 +226,7 @@ impl Updates {
         };
         if let Err(e) = update.install(&bytes) {
             tracing::warn!(error = %e, "the launcher update didn't install");
-            self.lock().found = None;
+            self.lock().state.lost();
             model.note(INSTALL_FAILED.into(), true);
             self.publish(model);
             return Err(INSTALL_FAILED.into());
@@ -163,13 +235,38 @@ impl Updates {
         app.restart()
     }
 
-    /// "Later": the dialog doesn't show again for this version.
+    /// "Later": not now (see [`State::dismissed`]).
     pub fn dismiss(&self, model: &App) {
-        let version = self.lock().found.as_ref().map(|f| f.version.clone());
+        let version = self.lock().state.dismissed();
         if let Some(version) = version {
             model.mark_update_seen(&version);
         }
         self.publish(model);
+    }
+
+    /// Closing the launcher: a ready update installs first when "Update automatically" is on,
+    /// without starting the launcher again (Windows's installer included), then the launcher ends.
+    pub fn close(&self, app: &AppHandle, model: &App) {
+        let auto = model.snapshot().settings.auto_update;
+        let held = {
+            let mut inner = self.lock();
+            if inner.state.installs_on_close(auto) {
+                inner.downloaded.take()
+            } else {
+                None
+            }
+        };
+        if let Some((update, bytes)) = held {
+            let update = update.restart_after_install(false);
+            match update.install(&bytes) {
+                Ok(()) => tracing::info!(
+                    version = %update.version,
+                    "the launcher update is installed; the next start runs it"
+                ),
+                Err(e) => tracing::warn!(error = %e, "the launcher update didn't install on close"),
+            }
+        }
+        app.exit(0);
     }
 }
 
@@ -196,6 +293,64 @@ mod tests {
             view("0.5.0", false, false, None, None, false).available,
             None
         );
+    }
+
+    /// The final review's Important 1: "Later" meant never. Now it means not now: the update stays
+    /// ready for Settings' "Restart and update", and installs on close with automatic updates on.
+    #[test]
+    fn later_is_not_now_the_update_stays_ready_and_installs_on_close() {
+        let mut s = State::default();
+        assert!(s.begin());
+        assert!(s.found("0.5.1", None, false), "a new version downloads");
+        s.downloaded();
+        assert!(s.view("0.5.0", true, None).show_dialog);
+        assert_eq!(s.dismissed().as_deref(), Some("0.5.1"));
+        let v = s.view("0.5.0", true, Some("0.5.1"));
+        assert!(
+            !v.show_dialog && v.ready,
+            "dismissed, yet still ready to install"
+        );
+        assert!(s.installs_on_close(true));
+        assert!(
+            !s.installs_on_close(false),
+            "with automatic updates off, only when asked"
+        );
+    }
+
+    #[test]
+    fn a_check_the_player_asks_for_shows_a_dismissed_update_without_downloading_it_again() {
+        let mut s = State::default();
+        s.begin();
+        s.found("0.5.1", None, false);
+        s.downloaded();
+        s.dismissed();
+        // "Check now", or Play's "Check for updates" for a server that runs a newer Fenji.
+        assert!(s.begin());
+        assert!(
+            !s.found("0.5.1", None, true),
+            "the bytes this run holds are that version's"
+        );
+        assert!(s.view("0.5.0", true, Some("0.5.1")).show_dialog);
+        // A check nobody asked for keeps a dismissed dialog away.
+        s.dismissed();
+        assert!(s.begin());
+        assert!(!s.found("0.5.1", None, false));
+        assert!(!s.view("0.5.0", true, Some("0.5.1")).show_dialog);
+    }
+
+    #[test]
+    fn a_newer_version_than_the_one_held_downloads_and_one_check_runs_at_a_time() {
+        let mut s = State::default();
+        assert!(s.begin());
+        assert!(!s.begin(), "a second check while one runs");
+        s.found("0.5.1", None, false);
+        s.downloaded();
+        assert!(s.begin());
+        assert!(s.found("0.5.2", Some("Notes".into()), false));
+        assert!(!s.view("0.5.0", true, None).ready, "0.5.2 isn't here yet");
+        assert!(!s.installs_on_close(true));
+        s.lost();
+        assert_eq!(s.view("0.5.0", true, None).available, None);
     }
 
     /// The finish review's fix 6: the board's "Launcher 0.5.0 · up to date", after a check found
