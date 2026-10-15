@@ -878,6 +878,7 @@ dependencies = [
  "clap",
  "fenji-auth",
  "reqwest",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
