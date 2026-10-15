@@ -12,6 +12,7 @@ Our own written findings about the pinned client's network protocol. No decompil
 | `properties.md` | The synced-property (`prop_*`) schema, and how sync packets carry it (the blob's format is in [`packets/world.md`](packets/world.md) §4 for now) | M2–M4 |
 | [`packets/lobby.md`](packets/lobby.md) | The lobby's script messages: the character list, creating and deleting characters, error codes, close reasons, and what Fenji sends | M3 |
 | [`packets/world.md`](packets/world.md) | Entering the world: 772, the native types 3, 7, 8 and 23, the property blob, time syncs, actor ids, the creation outfit, and what Fenji sends; seeing each other (types 6, 5, 7, 8 and 9); two clients on one machine; moving (types 8, 13 and 20) | M4 |
+| [`packets/chat.md`](packets/chat.md) | Chat: a line said (115) and shown (378), the player link, the channels Fenji uses, chat's properties (389, 396), refusals (270) and their codes, and the admins' lines | M4 |
 | `packets/<area>.md` | Per-opcode payload tables (`login`, `lobby`, `world`, `combat`, …) | M2–M5 |
 
 ## Opcode ledger format (`opcodes.md`)
