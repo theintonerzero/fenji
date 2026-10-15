@@ -88,6 +88,13 @@ git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md   # + the launcher's tauri.
 git commit -m "chore(release): vX.Y.Z"
 # PR release/vX.Y.Z → main, merge commit, then:
 git switch main && git pull && git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+# wait for the release workflow, which attaches the server's archives and SHA256SUMS to the tag's draft release
+until run=$(gh run list --workflow release.yml --branch vX.Y.Z --json databaseId --jq '.[0].databaseId // empty') &&
+  [ -n "$run" ]; do sleep 5; done
+gh run watch "$run" --exit-status
+# check the draft: an archive for each of the workflow's four targets, and SHA256SUMS, which matches them
+draft=$(mktemp -d) && gh release download vX.Y.Z --dir "$draft" && ls -l "$draft"
+(cd "$draft" && sha256sum -c SHA256SUMS)   # macOS: shasum -a 256 -c SHA256SUMS
 # merge main back into dev
 git switch dev && git merge --no-ff main && git push
 # release notes: a line naming the pinned build (from docs/re/pinned-build.md), then the changelog section
@@ -95,12 +102,15 @@ notes=$(mktemp)
 { echo "Pinned SoLO client: build <build ID>, bin64/gujianol.exe SHA-256 <exe SHA-256> (docs/re/pinned-build.md)."
   echo
   git cliff --latest --strip all; } > "$notes"
-gh release create vX.Y.Z --title "vX.Y.Z" --notes-file "$notes"
+# publish the draft, with its notes
+gh release edit vX.Y.Z --draft=false --notes-file "$notes"
 # close the milestone's release issue (PRs into main don't auto-close it) and the milestone
 gh issue close <release issue>
 m=$(gh api 'repos/{owner}/{repo}/milestones' --jq '.[] | select(.title == "<milestone title>") | .number')
 gh api -X PATCH "repos/{owner}/{repo}/milestones/$m" -f state=closed
 ```
+
+The release workflow (`.github/workflows/release.yml`) builds `fenji-server` for four targets, each on a runner of its own system: Linux on x86_64 and arm64 (static, with musl), Windows on x86_64, and macOS on Apple silicon. `scripts/package-server.sh` packs each build with its system's start script (`deploy/start/`), `fenji.example.toml`, `README.txt` (`deploy/archive/`), `LICENSE` and `SOURCE.txt`, and `scripts/test-package-server.sh` checks what it packs. A pull request that changes the workflow, the packaging script or the start scripts runs it as a dry run: it builds every archive and publishes nothing, and the archives stay with the run. So does a run by hand from the Actions tab.
 
 ## Checks before a PR
 
