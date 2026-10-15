@@ -13,7 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 # Pure Rust, so it builds for the Windows target: the archives' walk for hash-parts. Without its
-# `oodle` feature, so the program that loads Epic's DLL links no GPL code (fenji-oodle).
+# `oodle` feature, so the program that loads Epic's DLL links no GPL code (fenji-oodle). Cargo
+# turns the feature on for every package that one command builds, so main.rs refuses a Windows
+# build with it on: build this package on its own.
 fenji-data = { path = "../../crates/fenji-data", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
