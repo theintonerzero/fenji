@@ -28,8 +28,45 @@ pub const DOWNLOAD_CANCELLED: &str = "The download was cancelled.";
 pub const WINDOW_CLOSED: &str =
     "DepotDownloader's window closed before the download finished. Try again.";
 pub const NOTHING_TO_REPAIR: &str = "Every file checked out last time: there's nothing to repair.";
-/// A check or repair with no game folder chosen.
-pub const NO_FOLDER: &str = "Choose your game folder first.";
+/// Play, a check or a repair with no game folder chosen (or one that's gone).
+pub const NO_FOLDER: &str =
+    "Fenji doesn't know where your game is yet. Set it up on the Client tab.";
+/// Play while the game starts or runs (spec L12: one game at a time).
+pub const RUNNING: &str = "The game is already running.";
+/// Play when the quick check finds files to repair.
+pub const NEEDS_REPAIR: &str = "Some game files need repair. The Client tab shows which.";
+/// `umu-run createprefix` didn't make the Wine prefix.
+pub const PREFIX_FAILED: &str =
+    "Proton couldn't make the game's Wine prefix. The log folder has the details.";
+
+/// The game ended with another code than 0 within its first seconds.
+pub fn couldnt_start(code: i32) -> String {
+    format!("The game couldn't start: umu-run ended with {code}. The log folder has the details.")
+}
+
+/// The game ended with another code than 0 after it had run a while.
+pub fn ended(code: i32) -> String {
+    format!("The game ended with code {code}. The log folder has the details.")
+}
+
+/// umu-run couldn't be run at all.
+pub fn couldnt_launch(why: &str) -> String {
+    sentence("The game couldn't start", why)
+}
+
+/// A server that answered, but that this launcher can't play on (spec §3.12).
+pub fn incompatible(server: &str, newer: bool) -> String {
+    if newer {
+        format!("{server} runs a newer Fenji. Update the launcher.")
+    } else {
+        format!("{server} expects a different build of the game than this launcher checks.")
+    }
+}
+
+/// A game token that couldn't be taken, for another reason than the server's own answer.
+pub fn no_ticket(server: &str, why: &str) -> String {
+    sentence(&format!("Fenji couldn't get a ticket from {server}"), why)
+}
 
 /// DepotDownloader ended with another status than 0.
 pub fn download_stopped(code: i32) -> String {

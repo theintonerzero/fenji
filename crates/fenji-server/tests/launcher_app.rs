@@ -1,18 +1,26 @@
 //! The launcher's model against a running server (launcher plan Task 8, LP2, LP3; spec §3.3, §3.4,
 //! §3.12 and the plan's Review Focus 1 and 3): a new player's way from an invite link to signed in,
 //! with no secret in any snapshot, the settings or the log; a silent server that holds up nothing
-//! else; maintenance and a ban in words; and what removing a server forgets.
+//! else; maintenance and a ban in words; and what removing a server forgets. Then Play (launcher
+//! plan Task 10; spec §3.7, LP8): the ticket reaches only the client, a sign-in carries Play on,
+//! one game at a time, and every refusal in words.
 mod common;
 
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use common::*;
-use fenji_launcher::app::{App, AppConfig, Intent, Secret, Snapshot, StatusView, Tab};
+use fenji_auth::invite::InviteCode;
+use fenji_launcher::app::{
+    App, AppConfig, CheckView, GameView, Intent, LevelView, Secret, Snapshot, StatusView, Tab,
+};
 use fenji_launcher::manifest::Manifest;
 use fenji_launcher::settings::Os;
+use fenji_server::clock::TestClock;
 use fenji_server::server::GateLimits;
+use fenji_server::server::RunningServer;
 use fenji_server::status::Maintenance;
 
 fn config(dir: &Path) -> AppConfig {
@@ -337,4 +345,269 @@ async fn a_server_signed_in_without_remember_stays_off_the_disk() {
         "{saved}"
     );
     s.shutdown().await.unwrap();
+}
+
+/// umu-run as Play uses it: `createprefix` makes the prefix's two marks; the game records its
+/// environment, waits, and ends as the test says.
+const FAKE_UMU_RUN: &str = r#"#!/bin/sh
+if [ "$1" = createprefix ]; then mkdir -p "$WINEPREFIX/drive_c/windows" && : > "$WINEPREFIX/system.reg"; exit 0; fi
+env > "$FENJI_TEST_RECORD"
+sleep "${FENJI_TEST_SLEEP:-1}"
+exit "${FENJI_TEST_EXIT:-0}"
+"#;
+
+/// A server with an invite, a client folder (`bin64/` with two small files) and its manifest, the
+/// fake umu-run, and an App that plays with them, its folder chosen and checked.
+struct PlayBed {
+    _dir: tempfile::TempDir,
+    s: RunningServer,
+    _c: TestClock,
+    app: App,
+    code: InviteCode,
+    client: PathBuf,
+    record: PathBuf,
+}
+
+impl PlayBed {
+    async fn new() -> PlayBed {
+        Self::build(Os::Linux, 1, 0).await
+    }
+
+    async fn with_sleep(secs: u32) -> PlayBed {
+        Self::build(Os::Linux, secs, 0).await
+    }
+
+    async fn with_exit(code: i32) -> PlayBed {
+        Self::build(Os::Linux, 1, code).await
+    }
+
+    async fn on(os: Os) -> PlayBed {
+        Self::build(os, 1, 0).await
+    }
+
+    async fn build(os: Os, sleep: u32, exit: i32) -> PlayBed {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, c) = server(dir.path(), "", GateLimits::default()).await;
+        let code = InviteCode::generate().unwrap();
+        s.accounts()
+            .store()
+            .create_invite(&code.hash(), None, NOW, None)
+            .await
+            .unwrap();
+        let client = dir.path().join("game");
+        std::fs::create_dir_all(client.join("bin64")).unwrap();
+        std::fs::write(client.join("bin64/a.dll"), b"a small library").unwrap();
+        std::fs::write(client.join("bin64/gujianol.exe"), b"a small program").unwrap();
+        let umu_run = dir.path().join("umu-run");
+        std::fs::write(&umu_run, FAKE_UMU_RUN).unwrap();
+        std::fs::set_permissions(&umu_run, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let record = dir.path().join("record");
+        let mut cfg = config(dir.path());
+        cfg.os = os;
+        cfg.manifest = Manifest::generate(&client).unwrap();
+        cfg.umu_run = Some(umu_run);
+        cfg.env.extend([
+            ("FENJI_TEST_RECORD".into(), record.clone().into()),
+            ("FENJI_TEST_SLEEP".into(), sleep.to_string().into()),
+            ("FENJI_TEST_EXIT".into(), exit.to_string().into()),
+        ]);
+        let app = App::start(cfg, tokio::runtime::Handle::current());
+        app.intent(Intent::ChooseFolder {
+            path: client.display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, |s| {
+            matches!(
+                s.client.check,
+                CheckView::Verified {
+                    level: LevelView::Quick,
+                    ..
+                }
+            )
+        })
+        .await;
+        PlayBed {
+            _dir: dir,
+            s,
+            _c: c,
+            app,
+            code,
+            client,
+            record,
+        }
+    }
+
+    /// The invite link added and redeemed, as a new player does.
+    async fn signed_in(&self) {
+        self.app
+            .intent(Intent::AddServer {
+                text: format!("http://{}/#invite={}", self.s.api_addr, self.code.display()),
+            })
+            .await
+            .unwrap();
+        self.app
+            .intent(Intent::Redeem {
+                code: None,
+                username: "tester".into(),
+                password: password(),
+            })
+            .await
+            .unwrap();
+        until(&self.app, |s| {
+            s.servers[0].signed_in && matches!(s.servers[0].status, StatusView::Online)
+        })
+        .await;
+    }
+
+    /// The account exists, and the server is in the list, but the launcher holds no session.
+    async fn added_without_signing_in(&self) {
+        account(&self.s, "tester").await;
+        self.app
+            .intent(Intent::AddServer {
+                text: format!("http://{}", self.s.api_addr),
+            })
+            .await
+            .unwrap();
+        until(&self.app, |s| {
+            matches!(s.servers[0].status, StatusView::Online)
+        })
+        .await;
+    }
+
+    /// Every snapshot published from now on, as JSON.
+    fn collect_snapshots(&self) -> Arc<Mutex<Vec<String>>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (keep, mut rx) = (seen.clone(), self.app.subscribe());
+        tokio::spawn(async move {
+            loop {
+                let json = serde_json::to_string(&*rx.borrow_and_update()).unwrap();
+                keep.lock().unwrap().push(json);
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+        seen
+    }
+
+    /// Maintenance on, through the server's status, and the launcher seeing it.
+    async fn maintenance_on(&self, message: &str) {
+        self.s
+            .status()
+            .set_maintenance(
+                self.s.accounts().store(),
+                Some(Maintenance {
+                    message: message.into(),
+                    since_ms: NOW,
+                    until_ms: None,
+                }),
+            )
+            .await
+            .unwrap();
+        self.app.intent(Intent::Refresh).await.unwrap();
+        until(&self.app, |s| {
+            matches!(s.servers[0].status, StatusView::Maintenance { .. })
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
+    let t = PlayBed::new().await;
+    t.signed_in().await;
+    let seen = t.collect_snapshots();
+    t.app.intent(Intent::Play).await.unwrap();
+    until(&t.app, |s| {
+        matches!(s.game, GameView::Starting { first_start: true })
+    })
+    .await;
+    until(&t.app, |s| matches!(s.game, GameView::Running { .. })).await;
+    until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+    let record = std::fs::read_to_string(&t.record).unwrap();
+    assert!(
+        record.lines().any(|l| l.starts_with("gj_ticket=fenji1-")),
+        "{record}"
+    );
+    assert!(record.contains("gj_uinfo=") && record.contains("gj_gates="));
+    for json in seen.lock().unwrap().iter() {
+        assert!(!json.contains("fenji1-"), "the ticket reached a snapshot");
+    }
+    t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn play_without_a_session_asks_for_one_then_carries_on() {
+    let t = PlayBed::new().await;
+    t.added_without_signing_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    assert!(t.app.snapshot().need_sign_in);
+    t.app
+        .intent(Intent::SignIn {
+            username: "tester".into(),
+            password: password(),
+            remember: true,
+        })
+        .await
+        .unwrap();
+    until(&t.app, |s| {
+        !s.need_sign_in && matches!(s.game, GameView::Running { .. } | GameView::Ended { .. })
+    })
+    .await;
+    t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn one_game_at_a_time_and_play_refuses_in_words() {
+    let t = PlayBed::with_sleep(5).await;
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    until(&t.app, |s| matches!(s.game, GameView::Running { .. })).await;
+    assert_eq!(
+        t.app.intent(Intent::Play).await.unwrap_err().to_string(),
+        "The game is already running."
+    );
+    let w = PlayBed::on(Os::Windows).await;
+    assert_eq!(
+        w.app.intent(Intent::Play).await.unwrap_err().to_string(),
+        "Fenji can't start the client on this system yet"
+    );
+    let m = PlayBed::new().await;
+    m.signed_in().await;
+    m.maintenance_on("Back at nine").await;
+    let err = m.app.intent(Intent::Play).await.unwrap_err().to_string();
+    assert!(
+        err.contains("in maintenance") && err.contains("Back at nine"),
+        "{err}"
+    );
+    for bed in [t, w, m] {
+        bed.s.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_client_that_fails_its_check_never_starts() {
+    let t = PlayBed::new().await;
+    t.signed_in().await;
+    std::fs::write(t.client.join("bin64/a.dll"), b"tampered").unwrap();
+    assert_eq!(
+        t.app.intent(Intent::Play).await.unwrap_err().to_string(),
+        "Some game files need repair. The Client tab shows which."
+    );
+    assert!(!t.record.exists(), "the client was started");
+    t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_client_that_dies_at_once_says_it_couldnt_start() {
+    let t = PlayBed::with_exit(7).await;
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    let s = until(&t.app, |s| matches!(s.game, GameView::Ended { .. })).await;
+    assert_eq!(
+        s.notice.unwrap().text,
+        "The game couldn't start: umu-run ended with 7. The log folder has the details."
+    );
+    t.s.shutdown().await.unwrap();
 }

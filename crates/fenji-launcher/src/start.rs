@@ -8,7 +8,7 @@ use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, bail};
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, ServerInfo, Session};
 use crate::launch::{LaunchSpec, Platform, base_spec, resolve_ipv4, umu_env};
 use crate::login_path::available;
 use crate::manifest::Manifest;
@@ -231,10 +231,29 @@ pub struct Login<'a> {
     pub password: &'a str,
 }
 
-/// The login path's environment for one game token: `gj_uinfo`, `gj_gates` and `gj_ticket`. The
-/// system is checked first ([`check_os`]), the gate before the password is sent (M3 spec §4),
-/// `ready` runs before the token is taken, and the session ends whatever happens; `note` hears
-/// about a failed sign-out.
+/// The login path's environment (`gj_uinfo`, `gj_gates` and `gj_ticket`) for one game token taken
+/// with `session`: the gate from `info` as a dotted IPv4 address, and a token that names another
+/// gate refused.
+pub async fn ticket_env(
+    api: &ApiClient,
+    session: &Session,
+    info: &ServerInfo,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let (host, port) = (info.gate_host.clone(), info.gate_port);
+    // A name's lookup may wait on the network, so not on the caller's thread.
+    let gate = tokio::task::spawn_blocking(move || resolve_ipv4(&host, port)).await??;
+    let grant = api.game_token(session).await?;
+    if (grant.gate_host.as_str(), grant.gate_port) != (info.gate_host.as_str(), info.gate_port) {
+        bail!("the server named one gate in its info and another in the game token");
+    }
+    let paths = available();
+    let path = paths.first().context("this build has no login path")?;
+    Ok(path.env(&grant, gate))
+}
+
+/// The login path's environment for one game token ([`ticket_env`]). The system is checked first
+/// ([`check_os`]), the gate before the password is sent (M3 spec §4), `ready` runs before the
+/// token is taken, and the session ends whatever happens; `note` hears about a failed sign-out.
 pub fn take_ticket(
     os: Os,
     login: &Login,
@@ -242,26 +261,20 @@ pub fn take_ticket(
     note: &mut dyn FnMut(&str),
 ) -> anyhow::Result<Vec<(String, String)>> {
     check_os(os)?;
-    let paths = available();
-    let path = paths.first().context("this build has no login path")?;
     let api = ApiClient::new(&ServerAddr::parse(login.server)?)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let info = rt.block_on(api.server_info())?;
-    let gate = resolve_ipv4(&info.gate_host, info.gate_port)?;
+    resolve_ipv4(&info.gate_host, info.gate_port)?;
     ready()?;
     let session = rt.block_on(api.sign_in(login.username, login.password))?;
-    let grant = rt.block_on(api.game_token(&session));
+    let pairs = rt.block_on(ticket_env(&api, &session, &info));
     // The ticket is all the client needs; the session ends here either way.
     if let Err(e) = rt.block_on(api.sign_out(session)) {
         note(&format!("signing out: {e}"));
     }
-    let grant = grant?;
-    if (grant.gate_host.as_str(), grant.gate_port) != (info.gate_host.as_str(), info.gate_port) {
-        bail!("the server named one gate in its info and another in the game token");
-    }
-    Ok(path.env(&grant, gate))
+    pairs
 }
 
 /// Starts the game as a player's launcher does: checks the system ([`check_os`]), checks `client`

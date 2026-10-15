@@ -24,6 +24,7 @@ mod client;
 #[cfg(test)]
 mod golden;
 mod intent;
+mod play;
 mod servers;
 mod snapshot;
 pub mod words;
@@ -95,6 +96,7 @@ struct State {
     tab: Tab,
     need_sign_in: bool,
     client: client::Client,
+    game: GameView,
     pending_invite: Option<(u32, InviteCode)>,
     key_change: Option<KeyChange>,
     notice: Option<Notice>,
@@ -165,6 +167,7 @@ impl App {
             tab: Tab::Play,
             need_sign_in: false,
             client: client::Client::default(),
+            game: GameView::Idle,
             pending_invite: None,
             key_change: None,
             notice: problem.map(|text| Notice { text, error: true }),
@@ -255,7 +258,11 @@ impl App {
                 Ok(())
             }
             Intent::Repair => self.repair(),
-            Intent::Play | Intent::PlayOn { .. } => Err(IntentError::NotYet),
+            Intent::Play => self.play().await,
+            Intent::PlayOn { id } => {
+                self.select_server(id);
+                self.play().await
+            }
             Intent::DismissNotice => {
                 self.change(|st| st.notice = None);
                 Ok(())
@@ -407,7 +414,7 @@ impl State {
                 manual_command,
             },
             job: self.client.job.clone(),
-            game: GameView::Idle,
+            game: self.game.clone(),
             update: UpdateView {
                 auto: self.settings.auto_update,
                 ..self.update.clone()
@@ -781,16 +788,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_shell_s_intents_and_later_ones_are_answered_without_a_notice() {
+    async fn the_shell_s_intents_are_answered_without_a_notice() {
         let dir = tempfile::tempdir().unwrap();
         let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
         assert!(matches!(
             app.intent(Intent::Minimize).await,
             Err(IntentError::ForTheShell)
-        ));
-        assert!(matches!(
-            app.intent(Intent::Play).await,
-            Err(IntentError::NotYet)
         ));
         assert_eq!(app.snapshot().notice, None);
         app.intent(Intent::SetAutoUpdate { on: false })
