@@ -21,7 +21,8 @@ use crate::settings::Os;
 use crate::start::{self, UmuOptions};
 use crate::tools;
 
-/// A failure this soon after the start means the game couldn't start (spec §3.12).
+/// An end this soon after the start means the game couldn't start, whatever its code (spec §3.12;
+/// #332).
 const STARTUP: Duration = Duration::from_secs(15);
 const UMU_LAUNCHER: &str = "umu-launcher";
 
@@ -186,14 +187,10 @@ impl App {
             }
         };
         info!(code, "the game ended");
+        let notice = end_notice(code, started.elapsed());
         self.change(|st| {
             st.game = GameView::Ended { code };
-            if code != 0 {
-                let text = if started.elapsed() < STARTUP {
-                    words::couldnt_start(code)
-                } else {
-                    words::ended(code)
-                };
+            if let Some(text) = notice {
                 st.notice = Some(Notice { text, error: true });
             }
         });
@@ -301,6 +298,23 @@ fn playing(st: &State) -> bool {
     )
 }
 
+/// What the player is told when the game ends with `code` after `lasted`. Within [`STARTUP`] it
+/// couldn't start, whatever the code, since umu-run 1.4 ends with 0 when it fails (#332); later,
+/// only a code other than 0 is worth a word.
+fn end_notice(code: i32, lasted: Duration) -> Option<String> {
+    if lasted < STARTUP {
+        Some(if code == 0 {
+            words::ENDED_AT_ONCE.into()
+        } else {
+            words::couldnt_start(code)
+        })
+    } else if code != 0 {
+        Some(words::ended(code))
+    } else {
+        None
+    }
+}
+
 fn env_var(
     env: &[(std::ffi::OsString, std::ffi::OsString)],
     name: &str,
@@ -314,4 +328,24 @@ fn game_log(data_dir: &Path) -> std::io::Result<std::fs::File> {
     let logs = data_dir.join("logs");
     std::fs::create_dir_all(&logs)?;
     std::fs::File::create(logs.join("game.log"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_game_that_ends_at_once_couldnt_start_whatever_its_code() {
+        // umu-run 1.4.4 logs its failure and ends with 0 (#332; rehearsal r6 for #302).
+        let soon = Duration::from_millis(190);
+        assert_eq!(end_notice(0, soon).as_deref(), Some(words::ENDED_AT_ONCE));
+        assert_eq!(end_notice(3, soon), Some(words::couldnt_start(3)));
+    }
+
+    #[test]
+    fn later_only_a_code_other_than_0_is_worth_a_word() {
+        let later = STARTUP + Duration::from_secs(1);
+        assert_eq!(end_notice(0, later), None);
+        assert_eq!(end_notice(3, later), Some(words::ended(3)));
+    }
 }
