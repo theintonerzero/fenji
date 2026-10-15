@@ -169,6 +169,7 @@ holds "a musl build's notices end with musl's COPYRIGHT" \
 holds "musl's notice says which musl" grep -qxF "musl 1.2.5, the C library the static Linux builds link in:" \
   "$X/THIRD-PARTY-NOTICES.txt"
 
+
 # Windows: a zip with start-server.bat, whose lines end in CR LF.
 W=fenji-server-$v-x86_64-pc-windows-msvc
 pack "$v" x86_64-pc-windows-msvc
@@ -211,6 +212,47 @@ tar -xzf "$T/out/$M.tar.gz" -C "$T/mac"
 holds "start-server.command is deploy/start's" cmp -s "$T/mac/$M/start-server.command" "$REPO/deploy/start/start-server.command"
 holds "a macOS build's notices are cargo about's, without musl's" cmp -s "$T/mac/$M/THIRD-PARTY-NOTICES.txt" "$T/notices"
 same "cargo about is asked for the macOS target's crates" "$(sed -n '/^--target$/{n;p;}' "$T/cargo-args.about")" aarch64-apple-darwin
+
+# The start scripts, with a stand-in server that reports its open-file limits, its folder and its
+# arguments. They raise the soft limit to 4,096, or as far as the hard limit allows, and never
+# lower either (Ruling HP11).
+# shellcheck disable=SC2016 # the stand-in's $(...) and $* are for it, not for this script
+reporter='#!/bin/sh
+echo "soft $(ulimit -Sn) hard $(ulimit -Hn) in $(pwd -P) with $# args: $*"'
+# started SCRIPT SOFT HARD ARGS...: SCRIPT's report, run from / in a shell whose soft open-file
+# limit is SOFT and whose hard limit is HARD (or as it is, when HARD is empty).
+started() {
+  local script=$1 soft=$2 hard=$3
+  shift 3
+  (ulimit -Sn "$soft" && { [ -z "$hard" ] || ulimit -Hn "$hard"; } && cd / && "$script" "$@") 2>&1
+}
+hard=$(ulimit -Hn)
+printf '%s\n' "$reporter" > "$X/fenji-server"
+for s in "$X/start-server.sh" "$T/mac/$M/start-server.command"; do
+  [ -e "$s" ] || continue
+  d=${s%/*}
+  [ "$d" = "$X" ] || printf '%s\n' "$reporter" > "$d/fenji-server"
+  n=${s##*/}
+  same "$n raises a soft limit of 256 to 4096, and leaves the hard limit" \
+    "$(started "$s" 256 "")" "soft 4096 hard $hard in $d with 0 args: "
+  same "$n raises the soft limit only as far as a hard limit of 1024" \
+    "$(started "$s" 256 1024)" "soft 1024 hard 1024 in $d with 0 args: "
+  if [ "$hard" = unlimited ] || [ "$hard" -ge 8192 ]; then
+    same "$n leaves a soft limit above 4096 as it is" \
+      "$(started "$s" 8192 "")" "soft 8192 hard $hard in $d with 0 args: "
+  else
+    echo "skip $n leaves a soft limit above 4096 as it is: the hard limit is $hard"
+  fi
+  same "$n starts the server in its own folder, with the arguments given" \
+    "$(started "$s" 4096 "" a "b c")" "soft 4096 hard $hard in $d with 2 args: a b c"
+  # A decoy folder of the same name, where an exported CDPATH points, doesn't catch its cd.
+  mkdir -p "$T/decoy-start/${d##*/}"
+  printf '#!/bin/sh\necho decoy\n' > "$T/decoy-start/${d##*/}/fenji-server"
+  chmod 0755 "$T/decoy-start/${d##*/}/fenji-server"
+  same "$n, run by a relative path with CDPATH set, starts its own server" \
+    "$(ulimit -Sn 4096 && cd "${d%/*}" && CDPATH=$T/decoy-start "${d##*/}/$n" 2>&1)" \
+    "soft 4096 hard $hard in $d with 0 args: "
+done
 
 # A release candidate's version.
 R=fenji-server-1.2.3-rc.1-x86_64-unknown-linux-musl
