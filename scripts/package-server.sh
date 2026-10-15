@@ -14,12 +14,15 @@
 #   - fenji-oodle/COPYING and fenji-oodle/NOTICE when the target's build links fenji-oodle, which is
 #     GPL-3.0-or-later (Oodle Ruling O16), as `cargo tree` says.
 # The folders and the two programs are 0755 and the rest 0644, and a tarball's entries are root's.
-# Nothing is written unless the archive is whole.
+# The archive is made in a staging folder inside the out-dir and renamed into place, so no archive
+# appears there until it's whole.
 #
 # Needs cargo, tar and gzip, and zip or 7-Zip for a Windows target (GitHub's Windows runners have
 # 7-Zip and no zip). Compatible with macOS's bash 3.2.
 set -euo pipefail
 export LC_ALL=C
+# A cd to a relative path goes where it says, not to a folder an exported CDPATH names.
+unset CDPATH
 
 usage() {
   echo "usage: $0 <version> <target> <binary> <out-dir>" >&2
@@ -69,7 +72,10 @@ gpl=no
 if grep -q '^fenji-oodle v' <<< "$deps"; then gpl=yes; fi
 
 name=fenji-server-$version-$target
-stage=$(mktemp -d)
+# Staged on the out-dir's own file system, so that the archive's last move is a rename.
+mkdir -p -- "$out"
+out=$(cd -- "$out" && pwd -P)
+stage=$(mktemp -d "$out/.stage.XXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
 dir=$stage/$name
 mkdir -- "$dir"
@@ -134,7 +140,5 @@ case $ext in
     fi ;;
 esac
 
-mkdir -p -- "$out"
 mv -f -- "$stage/$name.$ext" "$out/"
-out=$(cd -- "$out" && pwd -P)
 printf '%s\n' "$out/$name.$ext"

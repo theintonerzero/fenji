@@ -5,6 +5,7 @@
 #   scripts/test-package-server.sh
 set -uo pipefail
 export LC_ALL=C
+unset CDPATH
 HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
 REPO=$(cd -- "$HERE/.." && pwd -P)
 PACK=$HERE/package-server.sh
@@ -204,6 +205,26 @@ packs "a build with a crate named like fenji-oodle packs"
 same "a crate whose name only starts with fenji-oodle brings no GPL texts" "$(tar -tzf "$T/out/$L.tar.gz")" \
   "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt)"
 unset FAKE_OODLE
+
+# The archive is staged in a folder beside it, so that its last move is a rename on one file
+# system: a pack needs no temporary directory elsewhere, and leaves no staging folder behind.
+rm -rf "$T/out"
+got=$(cd "$T" && TMPDIR=$T/nowhere "$PACK" "$v" x86_64-unknown-linux-musl "in/with space/fake" out 2>&1)
+rc=$?
+same "with no usable TMPDIR, it packs into the out-dir and prints the path" "$rc $got" "0 $T/out/$L.tar.gz"
+same "it leaves no staging folder behind" "$(find "$T/out" -mindepth 1 -name '.stage.*' 2>&1)" ""
+
+# An exported CDPATH doesn't steer its cd: decoy scripts/ and out/ folders there don't catch it.
+mkdir -p "$T/decoy/scripts" "$T/decoy/out"
+rm -rf "$T/out"
+got=$(cd "$T" && CDPATH=$T/decoy "$PACK" "$v" x86_64-unknown-linux-musl "in/with space/fake" out 2> "$T/err")
+rc=$?
+same "with CDPATH set, a relative out-dir is the working directory's" "$rc $got" "0 $T/out/$L.tar.gz"
+same "nothing goes to CDPATH's out/" "$(find "$T/decoy/out" -mindepth 1)" ""
+got=$(cd "$REPO" && CDPATH=$T/decoy scripts/package-server.sh "$v" x86_64-unknown-linux-musl \
+  "$T/in/with space/fake" "$T/out" 2> "$T/err")
+rc=$?
+same "run by a relative path with CDPATH set, it finds its own repository" "$rc $got" "0 $T/out/$L.tar.gz"
 
 # refused WANT_RC PATTERN WHAT -- ARGS...: package-server.sh ARGS, run from $T, exits WANT_RC with
 # PATTERN in its message, and makes no out-dir.
