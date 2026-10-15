@@ -447,7 +447,7 @@ The Servers tab (the boards `Servers` and `AddServer`) lists the player's server
 - **Context column:** the selected server's name as its heading, a facts card (Address, Version, Players, Ping, Hosted by, then a gold "Source code" link), Playing now, and "Remove <name> from the list" (a text button in text-2 with its icon) above the launcher's version.
 
 ### Status
-- **Status line:** an 8 px dot (ok, warn, faint for offline or no server) or, for errors, a 16 px danger icon, then plain words separated by " · " in Status type: "Online · 3 friends in the lobby · hosted by Wen", "In maintenance · back around 21:00 · hosted by Wen", "Can't reach Moonward · last seen today at 18:42".
+- **Status line:** an 8 px dot (ok, warn, faint for no server or while checking) or, for errors and an unreachable server, a 16 px danger icon (a Servers row keeps the faint dot for an unreachable server, as the Servers board draws it), then plain words separated by " · " in Status type: "Online · 3 friends in the lobby · hosted by Wen", "In maintenance · back around 21:00 · hosted by Wen", "Can't reach Moonward · last seen today at 18:42".
 - **Host notice:** Prose type, led by the host's name in gold 600 and a colon.
 - **Meta line:** 13.5 px muted with a 13 to 16 px icon: "Client verified · build 10015727 · 210 files", "Last checked at 20:14 · Play opens when Wen ends maintenance".
 

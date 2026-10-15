@@ -6,23 +6,30 @@ import type { ServerView, Snapshot } from "../types";
 import { statusLine as words } from "../words";
 import { icons } from "./icons";
 
-/** An 8 px dot by state, or for an error the circled exclamation. */
-export function statusMark(v: ServerView | undefined): Element {
+/** An 8 px dot by state, or for an error the circled exclamation. A server that doesn't answer is an
+ * error on Play and in the column (the Offline board), and a faint dot in a Servers row (`row`, as
+ * the Servers board draws it). */
+export function statusMark(v: ServerView | undefined, row = false): Element {
   switch (v?.status.kind) {
     case "online":
       return h("span", { class: "dot dot-ok", "aria-hidden": "true" });
     case "maintenance":
       return h("span", { class: "dot dot-warn", "aria-hidden": "true" });
+    case "offline":
+      return row ? h("span", { class: "dot", "aria-hidden": "true" }) : errorMark();
     case "keyChanged":
     case "ownKey":
-    case "incompatible": {
-      const icon = icons.error(16);
-      icon.classList.add("status-icon");
-      return icon;
-    }
+    case "incompatible":
+      return errorMark();
     default:
       return h("span", { class: "dot", "aria-hidden": "true" });
   }
+}
+
+function errorMark(): Element {
+  const icon = icons.error(16);
+  icon.classList.add("status-icon");
+  return icon;
 }
 
 /** The active server's status line, which updates itself. */

@@ -60,7 +60,7 @@ function row(v: ServerView, s: Snapshot, ctx: Ctx, now: number): HTMLElement {
         h("button", { class: "server-name", type: "button", "aria-pressed": selected ? "true" : "false" }, v.name),
         address,
       ),
-      h("p", { class: "server-status" }, statusMark(v), h("span", {}, serverLine(v, s, now))),
+      h("p", { class: "server-status" }, statusMark(v, true), h("span", {}, serverLine(v, s, now))),
       notice === ""
         ? null
         : h("p", { class: "server-motd notice" }, v.host ? [h("strong", {}, `${v.host}:`), " "] : null, notice),

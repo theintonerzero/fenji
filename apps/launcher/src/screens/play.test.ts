@@ -163,6 +163,13 @@ test("a server this launcher can't play on offers the launcher's update check", 
   }
 });
 
+test("an unreachable server carries the danger mark on Play and in the column, as on the Offline board", () => {
+  // The finish review's fix 4: an error never reads as a neutral dot (DESIGN.md, Status).
+  const { root } = mount(play, golden("play-offline"));
+  expect(root.querySelector(".status-line .status-icon")).not.toBeNull();
+  expect(root.querySelector("aside .fact-status .status-icon")).not.toBeNull();
+});
+
 test("a closed server's column doesn't say Playing now over a sentence that denies it", () => {
   // The finish review's fix 8: the heading claimed what its own text denied.
   for (const state of ["play-maintenance", "play-offline"]) {
