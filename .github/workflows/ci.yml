@@ -215,6 +215,8 @@ jobs:
         run: scripts/test-check-no-session-links.sh
       - name: Release packaging tests
         run: scripts/test-package-server.sh
+      - name: Update script tests
+        run: scripts/test-update-server.sh
       - name: The launcher's third-party notices tests
         run: scripts/test-launcher-notices.sh
       - name: The launcher's latest.json tests
