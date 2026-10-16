@@ -204,8 +204,10 @@ impl ConsoleService {
         self.stopped.subscribe()
     }
 
-    /// The server is stopping, for whatever reason: its status says so, and `stop` answers so.
+    /// The server is stopping, for whatever reason: its status says so, `stop` answers so, and the
+    /// log's stderr waits on nothing from now on (#359).
     pub(crate) fn begin_stopping(&self) {
+        crate::console::log::stopping();
         self.stopping.send_replace(true);
         self.refresh();
     }
@@ -443,6 +445,8 @@ impl ConsoleService {
     }
 
     fn stop(&self) -> Answer {
+        // From here no line waits on the log's stderr, the stop's own among them (#359).
+        crate::console::log::stopping();
         if self.stopping.send_replace(true) {
             return Answer::line("the server is stopping already");
         }

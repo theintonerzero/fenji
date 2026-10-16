@@ -596,8 +596,8 @@ fn the_end_of_plain_lines_input_leaves_the_server_running() {
 #[test]
 fn plain_lines_whose_answers_go_unread_are_left_once_the_server_has_stopped() {
     // #359 (the hosting plan's Task 10, carry line 6): once the server has stopped, `run` waits
-    // 2 s at most for its full-screen console (#356), but it waited on its plain lines without a
-    // bound. With stdout taking no more, as a pipe nobody reads, the write of an answer waited for
+    // a few seconds at most for its full-screen console (#356), but it waited on its plain lines
+    // without a bound. With stdout taking no more, as a pipe nobody reads, the write of an answer waited for
     // ever, and so did `run`: the server stopped, and the process never ended.
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("fenji.toml");
@@ -637,6 +637,64 @@ fn plain_lines_whose_answers_go_unread_are_left_once_the_server_has_stopped() {
     assert!(said.contains("shutting down signal=SIGTERM"), "{said}");
     assert!(said.contains("it's left behind"), "{said}");
     assert!(!dir.path().join("fenji.db-wal").exists(), "{said}");
+}
+
+#[test]
+fn a_plain_server_whose_log_goes_unread_still_stops_on_sigterm() {
+    // #359 (Task 7's review, Important 1): under `--plain` the log goes to stderr, and each line
+    // was written there by the thread that logged it. A stderr that took no more, a terminal over
+    // a frozen link or a pipe nobody reads, held every thread that logged, the "shutting down"
+    // line after SIGTERM among them: the server never stopped, and `run` never ended. While it
+    // serves, a line still waits for stderr; once it's stopping, none does.
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("fenji.toml");
+    std::fs::write(
+        &config,
+        "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        .arg("--config")
+        .arg(&config)
+        .args(["run", "--plain"])
+        .env("RUST_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Held open, and never read.
+    let _stderr = child.stderr.take().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    // Up, and serving, with its signals caught.
+    let online = || {
+        Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+            .arg("--config")
+            .arg(&config)
+            .args(["console", "--run", "online"])
+            .output()
+            .unwrap()
+    };
+    until(|| online().status.success(), || "never answered".into());
+    // Each command logs a line: far more than the pipe holds (64 KiB on Linux), and than the
+    // log's own queue does, so that every thread that logs waits on stderr by the signal.
+    for _ in 0..5_000 {
+        writeln!(stdin, "online").unwrap();
+    }
+    stdin.flush().unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    kill_process(Pid::from_child(&child), Signal::TERM).unwrap();
+    let stopped = Instant::now();
+    let status = exit_of(&mut child, || "still running after SIGTERM".into());
+    let _ = child.kill();
+    assert!(status.success(), "{status}");
+    assert!(
+        stopped.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        stopped.elapsed()
+    );
+    // It stopped cleanly: the store closed.
+    assert!(!dir.path().join("fenji.db-wal").exists());
 }
 
 #[test]
@@ -743,8 +801,8 @@ fn closed_cleanly(mut window: Window, dir: &Path) {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_console_left_behind_gives_the_terminal_its_mode_back() {
-    // #359: once the server has stopped, `run` waits 2 s at most for a console that hasn't ended,
-    // then leaves it to its thread, caught in a write to a terminal that has stopped reading, as
+    // #359: once the server has stopped, `run` waits a few seconds at most for a console that
+    // hasn't ended, then leaves it to its thread, caught in a write to a terminal that has stopped reading, as
     // over a stalled SSH link. The terminal was left raw: once the link came back, the shell after
     // the server read no lines and echoed nothing, until `reset`. `run` gives it its mode back
     // before it leaves the console, without a write.

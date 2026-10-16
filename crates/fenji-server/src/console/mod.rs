@@ -1,8 +1,8 @@
 //! The host console's side in the server (M4 hosting spec §3): [`log`], the hub every log line goes
-//! through; [`service`], which runs the console's commands and feeds its front ends; `socket`,
-//! the console socket consoles attach to on Linux and macOS (§3.5); [`attach`], the console that
-//! attaches, `fenji-server console`; and which front end `fenji-server run` gives the terminal it
-//! started in (§3.1).
+//! through, and `stderr`, the log's stderr when that's one of its sinks; [`service`], which runs
+//! the console's commands and feeds its front ends; `socket`, the console socket consoles attach
+//! to on Linux and macOS (§3.5); [`attach`], the console that attaches, `fenji-server console`;
+//! and which front end `fenji-server run` gives the terminal it started in (§3.1).
 use std::path::Path;
 
 use self::log::Sink;
@@ -12,6 +12,7 @@ pub mod log;
 pub mod service;
 #[cfg(unix)]
 pub mod socket;
+mod stderr;
 
 /// The console `fenji-server run` shows in the terminal it started in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

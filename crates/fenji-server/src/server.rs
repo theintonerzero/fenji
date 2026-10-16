@@ -117,6 +117,8 @@ impl RunningServer {
                 None
             }
             failure = self.world.failed() => {
+                // Before the line: the log's stderr waits on nothing from here (#359).
+                crate::console::log::stopping();
                 tracing::error!("{failure}: stopping the server");
                 Some(failure)
             }
@@ -579,12 +581,13 @@ pub(crate) async fn held(
     }
 }
 
-/// How long `run` waits for its console, full-screen or plain lines, once the server has stopped.
-/// The console ends on the server's goodbye, unless it's caught in a write to a terminal that has
-/// stopped reading, as over a stalled SSH link (the fix pass's re-review, NB1), or to a stdout
-/// nobody reads (#359). The goodbye itself may wait `ANSWERS_WAIT` for an answer still due, from
-/// the same moment, so this is a second longer: a console is never left as its goodbye comes.
-const CONSOLE_GRACE: Duration =
+/// How long `run` waits for its console, full-screen or plain lines, once the server has stopped,
+/// and the process for the log's stderr as it exits ([`crate::console::log::finish`]). The console
+/// ends on the server's goodbye, unless it's caught in a write to a terminal that has stopped
+/// reading, as over a stalled SSH link (the fix pass's re-review, NB1), or to a stdout nobody reads
+/// (#359). The goodbye itself may wait `ANSWERS_WAIT` for an answer still due, from the same
+/// moment, so this is a second longer: a console is never left as its goodbye comes.
+pub const CONSOLE_GRACE: Duration =
     crate::console::service::ANSWERS_WAIT.saturating_add(Duration::from_secs(1));
 
 // The order the grace's doc promises.
@@ -727,6 +730,8 @@ fn signalled() -> impl Future<Output = ()> {
             () = caught(term) => "SIGTERM",
             () = caught(hangup) => "SIGHUP",
         };
+        // Before the line: the log's stderr waits on nothing from here (#359).
+        crate::console::log::stopping();
         tracing::info!(signal, "shutting down");
     }
 }
@@ -748,6 +753,8 @@ fn signalled() -> impl Future<Output = ()> {
             Some(()) = async { logoff?.recv().await } => "logging off",
             Some(()) = async { shutdown?.recv().await } => "the system shutting down",
         };
+        // Before the line: the log's stderr waits on nothing from here (#359).
+        crate::console::log::stopping();
         tracing::info!(event, "shutting down");
     }
 }

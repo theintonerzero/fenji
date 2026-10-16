@@ -1,7 +1,10 @@
 //! The log hub (M4 hosting spec §3.4, H10): one place every log line goes through. Each event
 //! becomes a [`LogLine`], every part of it cleaned of hidden characters ([`clean`]), for the sinks
 //! [`init`] is given:
-//! - [`Sink::Stderr`], as before the console, which systemd's journal keeps;
+//! - [`Sink::Stderr`], as before the console, which systemd's journal keeps. A thread of its own
+//!   writes it, through a queue: while the server serves, a line waits for room, so none is lost;
+//!   once it's stopping ([`stopping`]), none waits, so a stderr that takes no more never holds the
+//!   stop up (#359);
 //! - [`Sink::File`], a file a day, which a host attaches to a bug report;
 //! - [`Sink::Hub`], the [`LogHub`]: the last lines for a console that attaches, then each line as
 //!   it's logged.
@@ -12,7 +15,8 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use fenji_console::text::clean;
@@ -26,6 +30,7 @@ use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 
+use super::stderr::Stderr;
 use crate::clock::{Clock, SystemClock, Utc};
 use crate::config::private_folder;
 
@@ -55,17 +60,44 @@ pub fn folder(store_path: &Path) -> PathBuf {
 pub fn init(sinks: &[Sink]) -> anyhow::Result<LogHub> {
     let hub = LogHub::new(BACKLOG);
     let levels = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let layer = LogLayer::to(sinks, &hub)?;
+    let stderr = layer.stderr().cloned();
     tracing_subscriber::registry()
         .with(levels)
-        .with(LogLayer::to(sinks, &hub)?)
+        .with(layer)
         .try_init()?;
+    if let Some(stderr) = stderr {
+        let _ = STDERR.set(stderr);
+    }
     Ok(hub)
+}
+
+/// The process's log's stderr, when it's one of its sinks ([`init`]).
+static STDERR: OnceLock<Stderr> = OnceLock::new();
+
+/// The server is stopping, whatever stopped it: from now on no thread waits for the log's stderr.
+/// Called as the stop begins, before the line that says so is logged, so that a stderr that takes
+/// no more, a terminal over a frozen link or a pipe nobody reads, never holds the stop up. While
+/// the server serves, a line waits for it, and none is lost (#359).
+pub fn stopping() {
+    if let Some(stderr) = STDERR.get() {
+        stderr.stopping();
+    }
+}
+
+/// As the process exits: waits `grace` at most for the log's stderr to take what's queued, and
+/// what was skipped to be said, then leaves it. Nothing waits on it after that (#359).
+pub fn finish(grace: Duration) {
+    if let Some(stderr) = STDERR.get() {
+        stderr.finish(grace);
+    }
 }
 
 /// Where the log's lines go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sink {
     /// The process's stderr, a line each in the console's columns: `HH:MM:SS LEVEL message`.
+    /// Written by a thread of its own, through a queue ([`stopping`], [`finish`]).
     Stderr,
     /// A file a day in this folder, `fenji.<date>.log` in UTC, each line with its date in front;
     /// the last 14 are kept. The folder is made owner-only if it's missing, as the log names
@@ -228,7 +260,8 @@ pub struct LogLayer {
 /// A sink the layer writes text to.
 #[derive(Debug)]
 enum Writer {
-    Stderr,
+    /// Through its queue, which a thread of its own writes out ([`Stderr`]).
+    Stderr(Stderr),
     File(RollingFileAppender),
 }
 
@@ -238,7 +271,7 @@ impl LogLayer {
         let mut writers = Vec::new();
         for sink in sinks {
             match sink {
-                Sink::Stderr => writers.push(Writer::Stderr),
+                Sink::Stderr => writers.push(Writer::Stderr(Stderr::new()?)),
                 Sink::File(folder) => writers.push(Writer::File(daily_file(folder)?)),
                 Sink::Hub => {}
             }
@@ -264,14 +297,26 @@ impl<S: Subscriber> Layer<S> for LogLayer {
     }
 }
 
+impl LogLayer {
+    /// The stderr it writes to, if that's one of its sinks.
+    fn stderr(&self) -> Option<&Stderr> {
+        self.writers.iter().find_map(|writer| match writer {
+            Writer::Stderr(stderr) => Some(stderr),
+            Writer::File(_) => None,
+        })
+    }
+}
+
 impl Writer {
     /// Writes `line` as this sink shows it. A write that fails is dropped: the log never stops the
     /// server, and under the full-screen console nothing else may write to the terminal.
     fn write(&self, line: &LogLine) {
-        let _ = match self {
-            Writer::Stderr => std::io::stderr().write_all(format!("{line}\n").as_bytes()),
-            Writer::File(file) => file.make_writer().write_all(dated(line).as_bytes()),
-        };
+        match self {
+            Writer::Stderr(stderr) => stderr.send(format!("{line}\n")),
+            Writer::File(file) => {
+                let _ = file.make_writer().write_all(dated(line).as_bytes());
+            }
+        }
     }
 }
 

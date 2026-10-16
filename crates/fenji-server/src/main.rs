@@ -17,6 +17,9 @@ fn main() -> anyhow::Result<ExitCode> {
     // Without waiting for what's left: plain lines may leave a read of stdin that nothing can
     // cancel (`tokio::io::stdin`), and the server has stopped by now.
     runtime.shutdown_background();
+    // The log's last lines on stderr, which a thread of its own writes: a while for them, and no
+    // longer, as a stderr nobody reads would hold the exit for ever (#359).
+    console::log::finish(fenji_server::server::CONSOLE_GRACE);
     ran
 }
 
