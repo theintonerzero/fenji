@@ -136,7 +136,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
 scripts/check-forbidden-files.sh
+scripts/check-unsafe-allowed.sh
 ```
+
+The workspace forbids `unsafe_code`. The server and the Oodle helper deny it instead, so that one file each may allow it: `crates/fenji-server/src/unix.rs` and `tools/oodle-helper/src/dll.rs`. `scripts/check-unsafe-allowed.sh` refuses an allow anywhere else (CI's `repo-hygiene` job).
 
 A change under `apps/launcher/` also runs the launcher's checks (CI's `launcher` job), below.
 

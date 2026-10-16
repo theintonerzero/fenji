@@ -158,6 +158,10 @@ jobs:
           fetch-depth: 0   # a PR's commits, and dev's, for the session-link check
       - name: No game content or RE artefacts
         run: scripts/check-forbidden-files.sh
+      - name: Unsafe code only in unix.rs and dll.rs
+        run: scripts/check-unsafe-allowed.sh
+      - name: Unsafe-code check tests
+        run: scripts/test-check-unsafe-allowed.sh
       - name: Commit-subject check tests
         run: scripts/test-check-commit-subject.sh
       - name: Session-link check tests

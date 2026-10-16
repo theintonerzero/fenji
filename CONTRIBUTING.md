@@ -39,6 +39,7 @@ Building and testing needs only Rust (through rustup; `rust-toolchain.toml` pins
   cargo test --workspace
   cargo deny check
   scripts/check-forbidden-files.sh
+  scripts/check-unsafe-allowed.sh
   ```
 
 - **Review and merge.** A maintainer reviews, and once CI is green the PR is squash-merged into `dev`. Releases go to `main`, tagged, by the maintainer.
