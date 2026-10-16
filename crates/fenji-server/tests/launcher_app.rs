@@ -620,6 +620,39 @@ async fn a_game_a_closed_launcher_left_running_holds_play_in_the_next() {
 }
 
 #[tokio::test]
+async fn the_folder_and_downloads_wait_while_the_game_starts_or_runs() {
+    // #348: Play reads the folder again after the prefix and the ticket, so a folder changed during
+    // a first start launched one that was never checked; a download or repair would write into a
+    // copy the game was running from.
+    let t = PlayBed::with_sleep(5).await;
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    until(&t.app, |s| {
+        matches!(s.game, GameView::Starting { .. } | GameView::Running { .. })
+    })
+    .await;
+    let other = t.client.with_file_name("elsewhere").display().to_string();
+    for intent in [
+        Intent::ChooseFolder {
+            path: other.clone(),
+        },
+        Intent::Download {
+            folder: other.clone(),
+        },
+    ] {
+        assert_eq!(
+            t.app.intent(intent).await.unwrap_err().to_string(),
+            "Not while the game is starting or running. Try again once it has ended."
+        );
+    }
+    assert_eq!(
+        t.app.snapshot().client.folder.as_deref(),
+        Some(t.client.display().to_string().as_str())
+    );
+    t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_client_that_fails_its_check_never_starts() {
     let t = PlayBed::new().await;
     t.signed_in().await;

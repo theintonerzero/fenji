@@ -33,6 +33,9 @@ pub const NO_FOLDER: &str =
     "Fenji doesn't know where your game is yet. Set it up on the Client tab.";
 /// Play while the game starts or runs (spec L12: one game at a time).
 pub const RUNNING: &str = "The game is already running.";
+/// Choosing the game folder, a download or a repair while the game starts or runs (#348).
+pub const WHILE_PLAYING: &str =
+    "Not while the game is starting or running. Try again once it has ended.";
 /// Play when the quick check finds files to repair.
 pub const NEEDS_REPAIR: &str = "Some game files need repair. The Client tab shows which.";
 /// `umu-run createprefix` didn't make the Wine prefix.

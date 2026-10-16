@@ -404,7 +404,7 @@ fn process_start(pid: u32) -> Option<u64> {
 }
 
 /// Whether a game is starting or running (spec L12: one at a time).
-fn playing(st: &State) -> bool {
+pub(super) fn playing(st: &State) -> bool {
     matches!(
         st.game,
         GameView::Starting { .. } | GameView::Running { .. }

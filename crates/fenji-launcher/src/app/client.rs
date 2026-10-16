@@ -95,6 +95,15 @@ fn free(st: &State) -> Result<(), IntentError> {
     }
 }
 
+/// The game's folder stays as it is while the game starts or runs: Play reads it again after the
+/// prefix and the ticket, and the game runs from it (#348). A check, which only reads, may run.
+fn not_playing(st: &State) -> Result<(), IntentError> {
+    if super::play::playing(st) {
+        return Err(refused(words::WHILE_PLAYING));
+    }
+    Ok(())
+}
+
 fn waiting_for_steam(repair: bool) -> JobView {
     JobView::Downloading {
         repair,
@@ -111,6 +120,7 @@ impl App {
             return Err(refused(words::NO_FOLDER));
         }
         let job = self.change(|st| {
+            not_playing(st)?;
             free(st)?;
             st.settings.client = Some(PathBuf::from(&path));
             self.save(st);
@@ -334,9 +344,11 @@ impl App {
         if cfg.os != Os::Linux {
             return Err(refused(words::DOWNLOAD_LINUX_ONLY));
         }
+        not_playing(&self.inner.lock())?;
         let terminal = self.terminal().ok_or_else(|| refused(words::NO_TERMINAL))?;
         let repair = files.is_some();
         self.change(|st| {
+            not_playing(st)?;
             free(st)?;
             st.client.cancelled = false;
             st.client.job = Some(match cfg.depot_downloader {
