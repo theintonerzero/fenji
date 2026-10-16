@@ -26,6 +26,7 @@ test("each server is a seal with its state in a bar, the active one marked, then
     "Ember Peak, Offline",
   ]);
   expect(part.el.querySelector('button[aria-label="Add a server"]')).not.toBeNull();
+  expect(part.el.hasAttribute("data-tauri-drag-region")).toBe(true);
 });
 
 test("a server the launcher can't play on has a cinnabar bar", () => {

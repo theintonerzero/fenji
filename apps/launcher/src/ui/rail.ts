@@ -46,10 +46,11 @@ export function rail(ctx: Ctx): Rail {
     icons.plus(20),
   );
   const tip = h("div", { class: "tip", "aria-hidden": "true", hidden: true });
+  // Its empty space drags the window, as the top bar's does.
   const el = h(
     "nav",
-    { class: "rail", "aria-label": "Servers" },
-    h("div", { class: "brand", "aria-hidden": "true" }, "焚"),
+    { class: "rail", "aria-label": "Servers", "data-tauri-drag-region": true },
+    h("div", { class: "brand", "aria-hidden": "true", "data-tauri-drag-region": true }, "焚"),
     list,
     add,
     tip,
