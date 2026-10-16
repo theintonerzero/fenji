@@ -1133,7 +1133,10 @@ mod tests {
     #[test]
     fn every_line_is_logged_as_the_consoles_once() {
         // Each line the host typed, with `by = "console"`; a blank one is no command. The shared
-        // commands the world runs are logged there, as Task 9 has it, so once each too.
+        // commands the world runs are logged there, as Task 9 has it, so once each too: the
+        // world's line, on its own thread, is `world::admin`'s
+        // `each_console_command_is_logged_as_the_consoles`, and the console logs none here
+        // (#359, the hosting plan's Task 10).
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1145,6 +1148,7 @@ mod tests {
                 c.run_line("motd Hello").await;
                 c.run_line("dance").await;
                 c.run_line("  ").await;
+                c.run_line("kick Nobody").await;
             });
         });
         let runs: Vec<&str> = log
@@ -1171,23 +1175,42 @@ mod tests {
         assert_eq!(refused, failed(["no one called Nobody is in the game"]));
         assert!(!log.contains("didn't answer"), "{log}");
         rt.block_on(s.shutdown()).unwrap();
+        // Each warning says what and why, the command as an admin types it, as the world logs the
+        // commands it runs (#359, the hosting plan's Task 10).
+        let warned = |log: &str, command: &str, why: &str| {
+            let line = log
+                .lines()
+                .find(|l| l.contains("an admin's command the world didn't answer"))
+                .unwrap_or_else(|| panic!("no warning: {log}"));
+            assert!(
+                line.contains("WARN")
+                    && line.contains("by=\"console\"")
+                    && line.contains(&format!("command=\"{command}\""))
+                    && line.contains(&format!("why=\"{why}\"")),
+                "{line}"
+            );
+        };
         let dir = tempfile::tempdir().unwrap();
         let wait = Duration::from_millis(100);
-        let (c, world, _store, _online) = rt.block_on(with_fake_world(dir.path(), "", wait));
+        let (c, mut world, _store, _online) = rt.block_on(with_fake_world(dir.path(), "", wait));
+        // Taken, then dropped unanswered.
+        let ((dropped, ()), log) = logged(|| {
+            rt.block_on(async {
+                let unanswered = async { drop(world.recv().await) };
+                tokio::join!(c.run_line("tp Mai Lin"), unanswered)
+            })
+        });
+        let stopped = "the world stopped before it answered";
+        assert_eq!(dropped, failed([stopped]));
+        warned(&log, "tp Mai Lin", stopped);
         // Held past the wait, then gone.
         let (late, log) = logged(|| rt.block_on(c.run_line("kick Mai")));
         assert_eq!(late, failed(["the world didn't answer in time"]));
-        assert!(
-            log.contains("WARN") && log.contains("an admin's command the world didn't answer"),
-            "{log}"
-        );
+        warned(&log, "kick Mai", "the world didn't answer in time");
         drop(world);
         let (gone, log) = logged(|| rt.block_on(c.run_line("say Hello")));
         assert_eq!(gone, failed(["the world has stopped"]));
-        assert!(
-            log.contains("WARN") && log.contains("an admin's command the world didn't answer"),
-            "{log}"
-        );
+        warned(&log, "announce Hello", "the world has stopped");
     }
 
     #[tokio::test]
@@ -1988,6 +2011,52 @@ mod tests {
             more: false,
         };
         assert!(seen.contains(&kicked), "before the goodbye: {seen:?}");
+    }
+
+    #[tokio::test]
+    async fn the_goodbye_waits_for_an_answer_due_no_longer_than_answers_wait() {
+        // The hosting plan's Task 10 (#359): a command still running as the server stops, which
+        // the world never answers, holds the goodbye no longer than ANSWERS_WAIT, well within the
+        // world's own wait, and its answer never comes after the goodbye.
+        let dir = tempfile::tempdir().unwrap();
+        let (c, mut world, _store, _online) = with_fake_world(dir.path(), "", WORLD_WAIT).await;
+        let hub = LogHub::new(10);
+        let Session {
+            mut from_server,
+            to_server,
+            ..
+        } = session(&c, &hub);
+        while !matches!(next(&mut from_server).await, ServerMsg::Status { .. }) {}
+        let kick = ConsoleMsg::Run {
+            id: 1,
+            line: "kick Mai".into(),
+        };
+        to_server.send(kick).await.unwrap();
+        // The world takes it, and holds its reply without answering.
+        let Some(WorldIn::Console { reply: _held, .. }) = world.recv().await else {
+            panic!("the kick, for the world")
+        };
+        let stopped = tokio::time::Instant::now();
+        c.end();
+        let mut seen = Vec::new();
+        let reason = loop {
+            match next(&mut from_server).await {
+                ServerMsg::Bye { reason } => break reason,
+                msg => seen.push(msg),
+            }
+        };
+        let waited = stopped.elapsed();
+        assert_eq!(reason, STOPPING);
+        assert!(
+            waited >= ANSWERS_WAIT && waited < WORLD_WAIT,
+            "the goodbye came after {waited:?}"
+        );
+        assert!(
+            !seen.iter().any(|m| matches!(m, ServerMsg::Answer { .. })),
+            "{seen:?}"
+        );
+        let after = tokio::time::timeout(Duration::from_secs(30), from_server.recv()).await;
+        assert_eq!(after, Ok(None), "nothing after the goodbye");
     }
 
     #[tokio::test]

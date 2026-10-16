@@ -538,6 +538,36 @@ fn plain_lines_run_commands_and_stop_ends_the_server_with_its_input_still_open()
 }
 
 #[test]
+fn the_end_of_plain_lines_input_leaves_the_server_running() {
+    // The hosting plan's Task 10 (#359): the end of stdin ends the plain console, and the server
+    // runs on until it's stopped, as under `nohup … < /dev/null`, which the guide shows. Nothing
+    // had tried it through `fenji-server` itself.
+    let dir = tempfile::tempdir().unwrap();
+    let mut server = Plain::start(dir.path());
+    server.type_line("online");
+    assert_eq!(server.answer(), "nobody is online");
+    drop(server.stdin.take());
+    // A server its input's end stopped would be stopping by now, and an idle one stops in well
+    // under a second.
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        server.child.try_wait().unwrap().is_none(),
+        "it stopped:\n{}",
+        server.said()
+    );
+    let online = server.console(&["--run", "online"], "");
+    assert!(online.status.success(), "{online:?}");
+    assert_eq!(text(&online.stdout), "nobody is online\n");
+    kill_process(Pid::from_child(&server.child), Signal::TERM).unwrap();
+    let status = server.wait();
+    let said = server.said();
+    assert!(status.success(), "{status}:\n{said}");
+    assert!(said.contains("shutting down signal=SIGTERM"), "{said}");
+    // Its input's end is no failure of the console's.
+    assert!(!said.contains("the console's lines have stopped"), "{said}");
+}
+
+#[test]
 fn plain_lines_whose_answers_go_unread_are_left_once_the_server_has_stopped() {
     // #359 (the hosting plan's Task 10, carry line 6): once the server has stopped, `run` waits
     // 2 s at most for its full-screen console (#356), but it waited on its plain lines without a
