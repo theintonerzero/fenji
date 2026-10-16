@@ -115,7 +115,8 @@ case $1 in
   *) echo "stand-in systemctl: no $1 here" >&2; exit 1 ;;
 esac
 EOF
-# sudo -u USER [--] COMMAND...: runs COMMAND, as this user.
+# sudo -u USER [--] COMMAND...: runs COMMAND, as this user, but with USER's uid as id -u says it:
+# fenji's is 990, nobody's 65534, and anyone else's 1001.
 cat > "$T/bin/sudo" <<'EOF'
 #!/bin/sh
 printf 'sudo %s\n' "$*" >> "$FAKE_CALLS"
@@ -123,6 +124,13 @@ if [ "${1-}" != -u ] || [ -z "${2-}" ]; then
   echo "stand-in sudo: no -u <user>" >&2
   exit 1
 fi
+case $2 in
+  fenji) FAKE_UID=990 ;;
+  nobody) FAKE_UID=65534 ;;
+  root) FAKE_UID=0 ;;
+  *) FAKE_UID=1001 ;;
+esac
+export FAKE_UID
 shift 2
 [ "${1-}" != -- ] || shift
 exec "$@"
@@ -162,13 +170,13 @@ export FAKE_RELEASES=https://releases.example/fenji/releases FAKE_RELEASE_DIR=$T
 export FENJI_RELEASES=$FAKE_RELEASES TMPDIR=$T/tmp
 
 # program VERSION [REPORTS]: a stand-in fenji-server of VERSION, whose --version reports REPORTS,
-# VERSION unless given. It records each call with its version and its working directory. Its
-# console answers while $FAKE_RUNNING is there, as a running server's does, and its backups say
-# FAKE_BACKUP_TO, or fail when FAKE_BACKUP=fail. It writes nothing anywhere else.
+# VERSION unless given. It records each call with its version, the uid it runs as and its working
+# directory. Its console answers while $FAKE_RUNNING is there, as a running server's does, and its
+# backups say FAKE_BACKUP_TO, or fail when FAKE_BACKUP=fail. It writes nothing anywhere else.
 program() {
   printf '#!/bin/sh\nversion=%s\nreports=%s\n' "$1" "${2:-$1}"
   cat <<'EOF'
-printf 'fenji-server %s in %s: %s\n' "$version" "$(pwd -P)" "$*" >> "$FAKE_CALLS"
+printf 'fenji-server %s as %s in %s: %s\n' "$version" "$(id -u)" "$(pwd -P)" "$*" >> "$FAKE_CALLS"
 if [ "${1-}" = --config ]; then shift 2; fi
 case "$*" in
   --version) echo "fenji-server $reports" ;;
@@ -196,7 +204,9 @@ UNITS="fenji.service fenji-backup.service fenji-backup.timer"
 # target, laid out as scripts/package-server.sh lays it out, and SHA256SUMS over all its files, a
 # launcher's among them, as the release workflow attaches them. Its fenji-server is a stand-in of
 # VERSION, or a copy of the file PROGRAM. Its update script is this one, with a line of its own,
-# and each text says its release. The archives' files stay in $T/stage, to compare.
+# and each text says its release. The archives' files stay in $T/stage, to compare. With
+# ODD_UNITS set, a Linux archive's systemd/ also holds a unit that isn't Fenji's, extra.service,
+# and its fenji.service is writable by everyone.
 release() {
   local v=$1 from=${2:-} dir=$T/release/v$1 t name s start f u
   mkdir -p "$dir"
@@ -215,7 +225,11 @@ release() {
       *-linux-*)
         mkdir "$s/systemd" "$s/caddy"
         for u in $UNITS; do printf '# %s of release %s\n' "$u" "$v" > "$s/systemd/$u"; done
-        printf '# the Caddyfile of release %s\n' "$v" > "$s/caddy/Caddyfile" ;;
+        printf '# the Caddyfile of release %s\n' "$v" > "$s/caddy/Caddyfile"
+        if [ -n "${ODD_UNITS:-}" ]; then
+          printf '[Service]\nExecStart=/bin/sh -c "echo not Fenji"\n' > "$s/systemd/extra.service"
+          chmod 0666 "$s/systemd/fenji.service"
+        fi ;;
     esac
     (cd "$T/stage" && tar -czf "$dir/$name.tar.gz" "$name")
   done
@@ -293,18 +307,20 @@ fresh() {
 }
 
 # run SCRIPT [ARG...]: SCRIPT, from another folder (FROM, or $T/elsewhere), with CDPATH=RUN_CDPATH
-# when that's set. Sets rc, out, err and calls, what the stand-ins were asked, in order. A run that
-# leaves anything in the temporary folder is named in $dirty.
+# when that's set, and the umask RUN_UMASK when that is. Sets rc, out, err and calls, what the
+# stand-ins were asked, in order. A run that leaves anything in the temporary folder is named in
+# $dirty.
 dirty=
 run() {
-  local script=$1 from=${FROM:-$T/elsewhere}
+  local script=$1 from=${FROM:-$T/elsewhere} mask
   shift
   local cmd=("$script")
   [ -z "${TEST_SH:-}" ] || cmd=("$TEST_SH" "$script")
+  mask=${RUN_UMASK:-$(umask)}
   : > "$T/calls"
   rm -rf -- "$T/tmp"
   mkdir "$T/tmp"
-  (cd "$from" && env ${RUN_CDPATH:+"CDPATH=$RUN_CDPATH"} "${cmd[@]}" "$@") > "$T/out" 2> "$T/err"
+  (umask "$mask" && cd "$from" && env ${RUN_CDPATH:+"CDPATH=$RUN_CDPATH"} "${cmd[@]}" "$@") > "$T/out" 2> "$T/err"
   rc=$?
   out=$(cat "$T/out")
   err=$(cat "$T/err")
@@ -408,12 +424,15 @@ release 1.2.7
 printf 'damage' >> "$T/release/v1.2.7/fenji-server-1.2.7-x86_64-unknown-linux-musl.tar.gz"
 release 1.2.8
 grep -v x86_64-unknown-linux-musl "$T/release/v1.2.8/SHA256SUMS" > "$T/sums" && mv "$T/sums" "$T/release/v1.2.8/SHA256SUMS"
+# 1.3.1's Linux archives hold a unit that isn't Fenji's, and a fenji.service everyone may write.
+ODD_UNITS=yes release 1.3.1
 L=x86_64-unknown-linux-musl
 A=$T/stage/fenji-server-1.3.0-$L
 
 # A server's folder, with a space in its path, as a home folder may have.
 D="$T/home with space/fenji-server"
 me=$(id -un)
+uid=$("$REAL_ID" -u)
 
 # The folder: the latest release, on a computer whose fenji service runs another program.
 fresh
@@ -439,10 +458,12 @@ same "it fetches where the latest release leads, then its archive and SHA256SUMS
   "$FAKE_RELEASES/download/v1.3.0/SHA256SUMS")"
 same "each over HTTPS alone, redirects too, failing on an HTTP error" \
   "$(awk '$1 == "curl" && !(/ --proto =https/ && / --proto-redir =https/ && / -[a-zA-Z]*f/)' <<< "$calls")" ""
-asked "it asks the folder's own server whether it's running, in the folder" "fenji-server 1.2.3 in $D: console --run online"
+asked "it asks the folder's own server whether it's running, in the folder" \
+  "fenji-server 1.2.3 as $uid in $D: console --run online"
 before "before it downloads anything" "console --run online" "curl $FAKE_RELEASES/download/"
-asked "the backup is made by the old program, in the folder" "fenji-server 1.2.3 in $D: backup"
-before "once the download has checked out" "fenji-server 1.3.0" "fenji-server 1.2.3 in $D: backup"
+asked "the backup is made by the old program, in the folder" "fenji-server 1.2.3 as $uid in $D: backup"
+asked "the new program is checked as the folder's owner" "fenji-server 1.3.0 as $uid in "
+before "once the download has checked out" "fenji-server 1.3.0" "fenji-server 1.2.3 as $uid in $D: backup"
 says "it says where it updates, from and to which version" "Updating the server in $D from 1.2.3 to 1.3.0." "$out"
 says "it says the latest release" "The latest release is 1.3.0." "$out"
 says "it says the backup's name" "Backed up the database: data/backups/fenji-20261017-101500.db" "$out"
@@ -655,7 +676,12 @@ same "nothing else goes beside the program" "$(entries "$B")" "$(printf '%s\n' f
 same "nothing is left under a temporary name" "$(find "$S" -name '.*' -print)" ""
 asked "the backup is the console's, as the service's user, with its --config" \
   "sudo -u fenji -- $B/fenji-server --config $S/etc/fenji/fenji.toml console --run backup"
-asked "run from /, as systemd runs the server" "fenji-server 1.2.3 in /: --config $S/etc/fenji/fenji.toml console --run backup"
+asked "run from /, as systemd runs the server" \
+  "fenji-server 1.2.3 as 990 in /: --config $S/etc/fenji/fenji.toml console --run backup"
+asked "the new program is checked as the service's user, never root" "sudo -u fenji -- $B/.fenji-server.update --version"
+asked "which it runs as" "fenji-server 1.3.0 as 990 in /: --version"
+asked "and so is the old one" "fenji-server 1.2.3 as 990 in /: --version"
+never "no fenji-server runs as root" " as 0 in "
 before "made while the server runs" "console --run backup" "systemctl stop fenji"
 before "once the download has checked out" "fenji-server 1.3.0" "console --run backup"
 asked "the service is stopped, running the old program" "systemctl stop fenji (fenji-server 1.2.3)"
@@ -669,15 +695,40 @@ says "that the server runs the new version" "fenji is running 1.3.0." "$out"
 says "and ends with the versions" "Updated from 1.2.3 to 1.3.0." "$(tail -n 1 <<< "$out")"
 same "it says nothing on stderr" "$err" ""
 
-# A named version, for a service whose User is unset: it runs as root, and needs no sudo.
+# A named version, for a service whose User is unset: its server runs as root, and so does its
+# console's backup, without sudo; the programs' versions are still checked as nobody.
 fresh
 service 1.2.3
-export FAKE_UNIT_USER=
+export FAKE_UNIT_USER=''
 run "$B/fenji-update" 1.2.4
 exits "the service updates to a named version" 0
 same "its program is that version's" "$(version "$B/fenji-server")" "fenji-server 1.2.4"
-never "a service that runs as root needs no sudo" "sudo"
-asked "the backup is the console's, from /" "fenji-server 1.2.3 in /: --config $S/etc/fenji/fenji.toml console --run backup"
+asked "the backup is the console's, as root, from /" \
+  "fenji-server 1.2.3 as 0 in /: --config $S/etc/fenji/fenji.toml console --run backup"
+never "with no sudo" "sudo -u root"
+asked "the new program is checked as nobody" "fenji-server 1.2.4 as 65534 in /: --version"
+# Its console's socket is root's alone, so the new server's console is asked as root, but only once
+# systemd has started that server, as root.
+before "the new program runs as root only once systemd has started it so" "systemctl start fenji" "fenji-server 1.2.4 as 0 "
+same "and then only to ask its console whether it's up" \
+  "$(grep 'fenji-server 1.2.4 as 0 ' <<< "$calls" | grep -vc ': --config [^ ]* console --run online$')" 0
+
+# Only Fenji's three units are installed, by name, and with root's modes, whatever the archive holds.
+# A umask of 000 keeps the archive's modes as it's unpacked, as root's tar does.
+fresh
+service 1.2.3
+RUN_UMASK=000 run "$B/fenji-update" 1.3.1
+exits "an archive with a unit that isn't Fenji's updates" 0
+same "only Fenji's three units are installed" "$(entries "$S/etc/systemd/system")" \
+  "$(printf '%s\n' fenji-backup.service fenji-backup.timer fenji.service fenji.service.d other.service)"
+says "saying what it left out" "extra.service" "$out"
+holds "fenji.service is 1.3.1's" cmp -s "$S/etc/systemd/system/fenji.service" "$T/stage/fenji-server-1.3.1-$L/systemd/fenji.service"
+# shellcheck disable=SC2012 # the mode, as ls shows it on Linux and macOS alike
+same "a unit everyone could write in the archive is installed 0644" \
+  "$(ls -ln "$S/etc/systemd/system/fenji.service" | cut -c1-10)" "-rw-r--r--"
+# shellcheck disable=SC2012
+same "the program and the update script are 0755" "$(ls -ln "$B/fenji-server" "$B/fenji-update" | cut -c1-10 | sort -u)" \
+  "-rwxr-xr-x"
 
 # A service that doesn't come up shows its journal, and how to go back (HB9).
 fresh

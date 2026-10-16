@@ -10,7 +10,13 @@
 # until the new version's archive matches the release's SHA256SUMS and its program runs and reports
 # that version (HB4). The database is backed up first (HB6), and the old program stays as
 # fenji-server.previous (HB7). It never touches fenji.toml, the data folder, systemd's drop-ins or
-# Caddy's settings (HB8).
+# Caddy's settings (HB8). For a service, it installs Fenji's three units by name alone, as root's
+# files with root's modes, and never runs a fenji-server as root to check it: it runs them as the
+# service's user, or as nobody for a service that runs as root.
+#
+# It trusts the release as the manual steps do: it downloads over HTTPS from the repository's
+# GitHub release, and checks the archive against that release's SHA256SUMS, which proves the
+# download arrived whole, not who made it.
 #
 # Releases come from https://github.com/theintonerzero/fenji/releases, or from FENJI_RELEASES, for a
 # fork. It needs curl, tar, and sha256sum or macOS's shasum; for a service, systemctl, sudo and
@@ -21,6 +27,8 @@ unset CDPATH
 export LC_ALL=C
 
 me=${0##*/}
+# Fenji's own units, the only ones a service's update installs.
+UNITS='fenji.service fenji-backup.service fenji-backup.timer'
 
 # say LINE: one step's line. It never fails: a terminal gone with its SSH session mustn't stop an
 # update halfway.
@@ -76,9 +84,19 @@ compare() {
     }'
 }
 
+# said_version PROGRAM: what PROGRAM --version prints. In a service it runs as $checker, never as
+# root; in a folder, as the folder's owner, who runs this script.
+said_version() {
+  if [ "$service" = yes ]; then
+    (cd / && sudo -u "$checker" -- "$1" --version) 2> /dev/null
+  else
+    "$1" --version 2> /dev/null
+  fi
+}
+
 # version_of PROGRAM: the version that PROGRAM --version reports, which says "fenji-server 0.5.3".
 version_of() {
-  said=$("$1" --version 2> /dev/null) || return 1
+  said=$(said_version "$1") || return 1
   said=${said##* }
   is_version "$said" || return 1
   printf '%s\n' "$said"
@@ -118,12 +136,18 @@ sum256() {
 # swap renames it over PATH.
 staged() { printf '%s/.%s.update\n' "${1%/*}" "${1##*/}"; }
 
-# stage FILE PATH: FILE, copied beside PATH under PATH's temporary name, and kept track of, so that
-# a failure takes it away again.
+# stage FILE PATH [MODE]: FILE, copied beside PATH under PATH's temporary name, and kept track of,
+# so that a failure takes it away again. With MODE, the copy is a new file of this user's with that
+# mode, as root installs a service's files, whatever owner and mode the archive gave FILE; without,
+# it keeps the archive's modes.
 stage() {
   to=$(staged "$2")
   printf '%s\n' "$to" >> "$tmp/staged"
-  cp -p -- "$1" "$to" || fail "can't copy the new ${2##*/} into ${2%/*}, so nothing has changed"
+  if [ -n "${3-}" ]; then
+    rm -f -- "$to" && cp -- "$1" "$to" && chmod "$3" "$to"
+  else
+    cp -p -- "$1" "$to"
+  fi || fail "can't copy the new ${2##*/} into ${2%/*}, so nothing has changed"
 }
 
 # installs PATH: whether the archive's PATH is among what a folder's update replaces: all but the
@@ -247,9 +271,15 @@ fi
 # Who runs it (HB8): root for a service, which writes in /usr/local/bin and the units' folder; the
 # folder's owner for a folder, so that the files it puts there stay theirs.
 uid=$(id -u)
-running=no
+running=no checker=''
 if [ "$service" = yes ]; then
   [ "$uid" = 0 ] || fail "the fenji service runs $prog, and updating it takes root: run sudo $self"
+  # Who runs the programs' --version, never root: the service's user, or nobody for a service
+  # that runs as root.
+  checker=$user
+  if [ -z "$checker" ] || [ "$checker" = root ]; then checker=nobody; fi
+  command -v sudo > /dev/null 2>&1 ||
+    fail "updating the fenji service takes sudo, to run its programs as $checker rather than root: install it (apt install sudo)"
   case $state in
     active) running=yes ;;
     inactive | failed) running=no ;;
@@ -336,10 +366,10 @@ new=$tmp/new/fenji-server-$wanted-$target
 [ -f "$new/fenji-server" ] || fail "$archive has no fenji-server-$wanted-$target/fenji-server, so nothing has changed"
 
 # The new program waits beside the old one, where it's run to check it: the temporary folder may
-# not let programs run.
+# not let programs run, nor a service's user reach it.
 next=$(staged "$prog")
-stage "$new/fenji-server" "$prog"
-said=$("$next" --version 2> /dev/null) || fail "the new fenji-server doesn't run on this computer, so nothing has changed"
+if [ "$service" = yes ]; then stage "$new/fenji-server" "$prog" 0755; else stage "$new/fenji-server" "$prog"; fi
+said=$(said_version "$next") || fail "the new fenji-server doesn't run on this computer, so nothing has changed"
 said=${said##* }
 [ "$said" = "$wanted" ] || fail "the new fenji-server says it's ${said:-no version}, not $wanted, so nothing has changed"
 say "The new fenji-server runs, and reports $wanted."
@@ -369,11 +399,17 @@ if [ "$service" = no ]; then
     stage "$new/$f" "$here/$f"
   done < "$tmp/files"
 else
-  for u in "$new"/systemd/*; do
-    [ -f "$u" ] || continue
-    stage "$u" "$unitdir/${u##*/}"
+  # Fenji's own units, by name: an archive can't add one of its own.
+  for u in $UNITS; do
+    if [ -f "$new/systemd/$u" ]; then stage "$new/systemd/$u" "$unitdir/$u" 0644; fi
   done
-  if [ -f "$new/update-server.sh" ]; then stage "$new/update-server.sh" "$self"; fi
+  odd=''
+  for u in "$new"/systemd/*; do
+    [ -e "$u" ] || continue
+    case " $UNITS " in *" ${u##*/} "*) ;; *) odd="$odd${odd:+, }${u##*/}" ;; esac
+  done
+  [ -z "$odd" ] || say "Left out $odd, from the archive's systemd/: only Fenji's own three units are installed."
+  if [ -f "$new/update-server.sh" ]; then stage "$new/update-server.sh" "$self" 0755; fi
 fi
 
 # A backup first (HB6): the console's while a service's server runs, or the program's own.
@@ -429,12 +465,12 @@ if ! { mv -f -- "$kept" "$prog.previous" && mv -f -- "$next" "$prog"; }; then
 fi
 say "Installed fenji-server $wanted in $here, and kept $current as fenji-server.previous."
 units=''
-for u in "$new"/systemd/*; do
-  [ -f "$u" ] || continue
-  if mv -f -- "$(staged "$unitdir/${u##*/}")" "$unitdir/${u##*/}"; then
+for u in $UNITS; do
+  [ -f "$new/systemd/$u" ] || continue
+  if mv -f -- "$(staged "$unitdir/$u")" "$unitdir/$u"; then
     units=yes
   else
-    say "Couldn't install ${u##*/} in $unitdir: the old one stays."
+    say "Couldn't install $u in $unitdir: the old one stays."
   fi
 done
 if [ -n "$units" ]; then
