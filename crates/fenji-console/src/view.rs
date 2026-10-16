@@ -748,7 +748,7 @@ fn row_lines(row: &Row, width: usize, p: &Palette) -> Vec<Line<'static>> {
                     (clean(&part.text).into_owned(), base.fg(colour))
                 })
                 .collect();
-            wrap(head, MESSAGE_AT, parts, width)
+            wrap(head, MESSAGE_AT, parts, width, LongWords::Indented)
         }
         Row::Command(text) => {
             let head = vec![
@@ -757,7 +757,7 @@ fn row_lines(row: &Row, width: usize, p: &Palette) -> Vec<Line<'static>> {
                 Span::raw(" "),
             ];
             let text = (clean(text).into_owned(), Style::new().fg(p.text));
-            wrap(head, LINE_AT, vec![text], width)
+            wrap(head, LINE_AT, vec![text], width, LongWords::Indented)
         }
         Row::Answer { ok, text } => {
             let style = match (ok, p.colours) {
@@ -766,17 +766,13 @@ fn row_lines(row: &Row, width: usize, p: &Palette) -> Vec<Line<'static>> {
                 (false, _) => Style::new().fg(p.danger),
             };
             let head = vec![Span::raw(" ".repeat(LINE_AT))];
-            wrap(
-                head,
-                LINE_AT,
-                vec![(clean(text).into_owned(), style)],
-                width,
-            )
+            let text = vec![(clean(text).into_owned(), style)];
+            wrap(head, LINE_AT, text, width, LongWords::AtTheEdge)
         }
         Row::Note(text) => {
             let head = vec![Span::raw(" ".repeat(MESSAGE_AT))];
             let text = (clean(text).into_owned(), Style::new().fg(p.faint));
-            wrap(head, MESSAGE_AT, vec![text], width)
+            wrap(head, MESSAGE_AT, vec![text], width, LongWords::Indented)
         }
     }
 }
@@ -793,13 +789,29 @@ fn row_height(row: &Row, width: usize) -> usize {
     breaks(&widths, room(indent, width)).len()
 }
 
+/// Where the later lines of a word too long for a line start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LongWords {
+    /// Under the row's text, as its other later lines do: a log line's, so that none of its lines
+    /// can pass for another log line, whatever a player or an op wrote in it (a security review
+    /// of the link fix).
+    Indented,
+    /// At the edge: an answer to the host's own command, whose only words that long are the
+    /// server's links, so that a link copied from the screen holds only line breaks, which
+    /// launchers drop, rather than the indent's spaces as well (the hosting plan's final review B,
+    /// Important 1).
+    AtTheEdge,
+}
+
 /// `pieces`, each a text and its style, after `head`, broken into lines of `width` columns
-/// ([`breaks`]). The lines after the first are indented to `indent`, `head`'s width.
+/// ([`breaks`]). The lines after the first are indented to `indent`, `head`'s width, but for one
+/// that goes on with a word too long for a line where `long` says it starts at the edge.
 fn wrap(
     head: Vec<Span<'static>>,
     indent: usize,
     pieces: Vec<(String, Style)>,
     width: usize,
+    long: LongWords,
 ) -> Vec<Line<'static>> {
     let chars: Vec<(char, Style)> = pieces
         .iter()
@@ -807,12 +819,20 @@ fn wrap(
         .collect();
     let widths: Vec<_> = chars.iter().map(|&(c, _)| (c, char_width(c))).collect();
     let mut head = Some(head);
+    let mut ended = None;
     breaks(&widths, room(indent, width))
         .into_iter()
         .map(|range| {
-            let mut line = head
-                .take()
-                .unwrap_or_else(|| vec![Span::raw(" ".repeat(indent))]);
+            // A word goes on where the line before ended, as no space was dropped between.
+            let goes_on = ended == Some(range.start);
+            ended = Some(range.end);
+            let mut line = head.take().unwrap_or_else(|| {
+                let indent = match (goes_on, long) {
+                    (true, LongWords::AtTheEdge) => 0,
+                    _ => indent,
+                };
+                vec![Span::raw(" ".repeat(indent))]
+            });
             line.extend(runs(&chars[range]));
             Line::from(line)
         })
@@ -1310,6 +1330,119 @@ pub(crate) mod tests {
             "{rows:#?}"
         );
         assert!(rows[12].trim_end().ends_with("w29"), "{rows:#?}");
+    }
+
+    /// What a host copies of `link` from `rows`: from where it starts, row by row, as a terminal
+    /// copies a selection, each row without the blanks after its text and a line break between.
+    fn copied(rows: &[String], link: &str) -> String {
+        // Enough of it to tell links to one server apart.
+        let begins = &link[..32];
+        let start = rows
+            .iter()
+            .position(|r| r.contains(begins))
+            .unwrap_or_else(|| panic!("{link} isn't on the screen:\n{}", rows.join("\n")));
+        let first = &rows[start][rows[start].find(begins).unwrap()..];
+        let mut copy = first.trim_end().to_owned();
+        for row in &rows[start + 1..] {
+            if copy.chars().filter(|c| *c != '\n').count() >= link.chars().count() {
+                break;
+            }
+            copy.push('\n');
+            copy.push_str(row.trim_end());
+        }
+        copy
+    }
+
+    #[test]
+    fn a_link_too_long_for_its_row_is_copied_whole() {
+        // The hosting plan's final review B, Important 1: at 80 columns an invite link wraps, and
+        // its later rows were indented, so a copy held the indent's spaces, which the launchers
+        // refused. In an answer to the host's own command, `invite`'s or `link`'s, its later rows
+        // start at the edge: a copy holds only line breaks, which they drop.
+        let invite = "https://192.168.0.12:47901/#invite=PNAT-VNAQ-NYQ7-AK7A&pin=\
+                      bbTyFLCoTiZegeDN_cilR1RF7lQWI41rB3wuOlDr9Cw";
+        let server = "https://192.168.0.12:47901/#pin=bbTyFLCoTiZegeDN_cilR1RF7lQWI41rB3wuOlDr9Cw";
+        let mut view = View::new("F".into(), help(), Mode::InProcess);
+        view.on_server(ServerMsg::Answer {
+            id: 1,
+            ok: true,
+            lines: vec![format!("link (enp13s0): {invite}")],
+            more: false,
+        });
+        view.on_server(ServerMsg::Answer {
+            id: 2,
+            ok: true,
+            lines: vec![format!("server link (enp13s0): {server}")],
+            more: false,
+        });
+        for width in [60, 80, 100] {
+            let rows = rows_of(&drawn(&view, width, 30, Colours::True));
+            for link in [invite, server] {
+                let copy = copied(&rows, link);
+                assert_eq!(
+                    copy.replace('\n', ""),
+                    link,
+                    "at {width}:\n{}",
+                    rows.join("\n")
+                );
+            }
+        }
+        // Words broken at their spaces stay under their message.
+        let words = (0..30)
+            .map(|n| format!("w{n:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        view.on_server(ServerMsg::Answer {
+            id: 2,
+            ok: true,
+            lines: vec![words],
+            more: false,
+        });
+        let rows = rows_of(&drawn(&view, 60, 30, Colours::True));
+        let w12 = rows.iter().find(|r| r.contains("w12")).unwrap();
+        assert!(w12.starts_with("   w"), "{w12:?}");
+    }
+
+    #[test]
+    fn a_log_line_can_never_draw_a_row_that_passes_for_another() {
+        // A security review of the link fix: an op writes `!announce`'s text, which the world
+        // logs as typed. A word that fills a row at 80 columns and ends in a time, then words
+        // that look like a level and a message, would draw a forged log line had the word's later
+        // row started at the edge. A log line's later rows always start under its message.
+        let word = format!("{}12:00:01", "x".repeat(63));
+        let mut view = View::new("F".into(), help(), Mode::InProcess);
+        view.on_server(log(
+            Level::Info,
+            &[
+                ("an admin's command account=", false),
+                ("1", true),
+                (" character=", false),
+                ("Mai", true),
+                (&format!(" command=announce {word} INFO  forged"), false),
+            ],
+        ));
+        for width in [60, 80, 100] {
+            let rows = rows_of(&drawn(&view, width, 30, Colours::True));
+            let first = rows
+                .iter()
+                .position(|r| r.contains("an admin's command"))
+                .unwrap();
+            let last = rows.iter().position(|r| r.contains("forged")).unwrap();
+            for row in &rows[first + 1..=last] {
+                assert!(
+                    row.starts_with(&" ".repeat(MESSAGE_AT)),
+                    "at {width}, a row not under its message: {row:?}\n{}",
+                    rows.join("\n")
+                );
+            }
+        }
+        // At 80 columns the word's last row is the time and the rest: indented, it's no line.
+        let rows = rows_of(&drawn(&view, 80, 30, Colours::True));
+        let forged = rows.iter().find(|r| r.contains("INFO  forged")).unwrap();
+        assert_eq!(
+            forged.trim_end(),
+            format!("{}12:00:01 INFO  forged", " ".repeat(MESSAGE_AT))
+        );
     }
 
     #[test]
