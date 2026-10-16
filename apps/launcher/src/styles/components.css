@@ -13,11 +13,11 @@
   --popover-width: 404px;
 }
 
-/* The window: the rail, then the stage. */
+/* The window: the rail, then the stage, filling the page (#383). */
 .window {
   display: flex;
-  width: 1200px;
-  height: 720px;
+  width: 100%;
+  height: 100%;
 }
 
 /* ── The rail ─────────────────────────────────────────────────────────── */
