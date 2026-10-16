@@ -117,8 +117,6 @@ impl RunningServer {
                 None
             }
             failure = self.world.failed() => {
-                // Before the line: the log's stderr waits on nothing from here (#359).
-                crate::console::log::stopping();
                 tracing::error!("{failure}: stopping the server");
                 Some(failure)
             }
@@ -730,8 +728,6 @@ fn signalled() -> impl Future<Output = ()> {
             () = caught(term) => "SIGTERM",
             () = caught(hangup) => "SIGHUP",
         };
-        // Before the line: the log's stderr waits on nothing from here (#359).
-        crate::console::log::stopping();
         tracing::info!(signal, "shutting down");
     }
 }
@@ -753,8 +749,6 @@ fn signalled() -> impl Future<Output = ()> {
             Some(()) = async { logoff?.recv().await } => "logging off",
             Some(()) = async { shutdown?.recv().await } => "the system shutting down",
         };
-        // Before the line: the log's stderr waits on nothing from here (#359).
-        crate::console::log::stopping();
         tracing::info!(event, "shutting down");
     }
 }

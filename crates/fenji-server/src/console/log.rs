@@ -2,9 +2,8 @@
 //! becomes a [`LogLine`], every part of it cleaned of hidden characters ([`clean`]), for the sinks
 //! [`init`] is given:
 //! - [`Sink::Stderr`], as before the console, which systemd's journal keeps. A thread of its own
-//!   writes it, through a queue: while the server serves, a line waits for room, so none is lost;
-//!   once it's stopping ([`stopping`]), none waits, so a stderr that takes no more never holds the
-//!   stop up (#359);
+//!   writes it, through a queue, and no line waits for it: a stderr that takes no more holds that
+//!   thread alone, and the lines it has no room for are skipped and counted (#359);
 //! - [`Sink::File`], a file a day, which a host attaches to a bug report;
 //! - [`Sink::Hub`], the [`LogHub`]: the last lines for a console that attaches, then each line as
 //!   it's logged.
@@ -75,16 +74,6 @@ pub fn init(sinks: &[Sink]) -> anyhow::Result<LogHub> {
 /// The process's log's stderr, when it's one of its sinks ([`init`]).
 static STDERR: OnceLock<Stderr> = OnceLock::new();
 
-/// The server is stopping, whatever stopped it: from now on no thread waits for the log's stderr.
-/// Called as the stop begins, before the line that says so is logged, so that a stderr that takes
-/// no more, a terminal over a frozen link or a pipe nobody reads, never holds the stop up. While
-/// the server serves, a line waits for it, and none is lost (#359).
-pub fn stopping() {
-    if let Some(stderr) = STDERR.get() {
-        stderr.stopping();
-    }
-}
-
 /// As the process exits: waits `grace` at most for the log's stderr to take what's queued, and
 /// what was skipped to be said, then leaves it. Nothing waits on it after that (#359).
 pub fn finish(grace: Duration) {
@@ -97,7 +86,7 @@ pub fn finish(grace: Duration) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sink {
     /// The process's stderr, a line each in the console's columns: `HH:MM:SS LEVEL message`.
-    /// Written by a thread of its own, through a queue ([`stopping`], [`finish`]).
+    /// Written by a thread of its own, through a queue that no line waits for ([`finish`]).
     Stderr,
     /// A file a day in this folder, `fenji.<date>.log` in UTC, each line with its date in front;
     /// the last 14 are kept. The folder is made owner-only if it's missing, as the log names

@@ -115,7 +115,7 @@ On Windows, open a Command Prompt in the server's folder and run `start-server.b
 ./start-server.sh --plain 2>> fenji.log
 ```
 
-If the terminal stops taking what's written to it, as over a frozen SSH connection, the server waits for it while it serves, so no line of the log is lost. Ctrl-C, SIGTERM or closing the terminal still stops it cleanly: from then on the server waits for no line, skips the ones it can't write, and says how many if the terminal takes them again before it exits.
+If the terminal stops taking what's written to it, as over a frozen SSH connection, the server doesn't wait for it, and serves on: up to 8,192 lines of the log wait for the terminal, and any more are skipped. When the terminal takes them again, the log first says how many lines it skipped (`WARN  1204 lines of the log were skipped: stderr wasn't being read`). Ctrl-C, SIGTERM or closing the terminal still stops the server cleanly, and so does `./fenji-server console --run stop` from another session. As it exits, it gives the terminal a few seconds for the lines still waiting, then leaves them.
 
 **Over SSH,** on a computer at home or a server without the service of section 4, a server started in a bare SSH session stops cleanly when the connection goes. To keep it running, start it inside `tmux` or `screen`:
 

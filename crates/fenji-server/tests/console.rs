@@ -639,62 +639,188 @@ fn plain_lines_whose_answers_go_unread_are_left_once_the_server_has_stopped() {
     assert!(!dir.path().join("fenji.db-wal").exists(), "{said}");
 }
 
-#[test]
-fn a_plain_server_whose_log_goes_unread_still_stops_on_sigterm() {
-    // #359 (Task 7's review, Important 1): under `--plain` the log goes to stderr, and each line
-    // was written there by the thread that logged it. A stderr that took no more, a terminal over
-    // a frozen link or a pipe nobody reads, held every thread that logged, the "shutting down"
-    // line after SIGTERM among them: the server never stopped, and `run` never ended. While it
-    // serves, a line still waits for stderr; once it's stopping, none does.
-    let dir = tempfile::tempdir().unwrap();
-    let config = dir.path().join("fenji.toml");
-    std::fs::write(
-        &config,
-        "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n",
-    )
-    .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+/// A config for a server of its own in the folder it's written to.
+const CONFIG: &str =
+    "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n";
+
+/// `fenji-server console --run <line>` on `config`'s server.
+fn console_run(config: &Path, line: &str) -> Command {
+    let mut console = Command::new(env!("CARGO_BIN_EXE_fenji-server"));
+    console
         .arg("--config")
-        .arg(&config)
-        .args(["run", "--plain"])
-        .env("RUST_LOG", "info")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    // Held open, and never read.
-    let _stderr = child.stderr.take().unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    // Up, and serving, with its signals caught.
-    let online = || {
-        Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        .arg(config)
+        .args(["console", "--run", line]);
+    console
+}
+
+/// A pipe for a child's stderr that nobody reads, as a terminal over a frozen link is: full before
+/// the child starts, so that its first write waits, for as long as the reading end, returned with
+/// it, is held.
+fn full_pipe() -> (std::io::PipeReader, std::io::PipeWriter) {
+    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+    let (unread, mut pipe) = std::io::pipe().unwrap();
+    let flags = fcntl_getfl(&pipe).unwrap();
+    fcntl_setfl(&pipe, flags | OFlags::NONBLOCK).unwrap();
+    for chunk in [&[b'.'; 4096][..], b"."] {
+        while pipe.write(chunk).is_ok() {}
+    }
+    // A write waits for room again, as one to a terminal does.
+    fcntl_setfl(&pipe, flags).unwrap();
+    (unread, pipe)
+}
+
+/// A server in a folder of its own, as plain lines, whose log nobody reads: its stderr is a
+/// [`full_pipe`] (#359). Killed if the test ends first.
+struct Unread {
+    child: Child,
+    dir: tempfile::TempDir,
+    config: PathBuf,
+    stdin: Option<ChildStdin>,
+    /// What it prints on stdout, a line at a time: the commands' answers.
+    answers: mpsc::Receiver<String>,
+    /// Held, so that a write to its stderr waits rather than fails.
+    _unread: std::io::PipeReader,
+}
+
+impl Unread {
+    /// The server, up and serving, with its signals caught. Its runtime has `workers` threads, or
+    /// as many as it would.
+    fn start(workers: Option<&str>) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("fenji.toml");
+        std::fs::write(&config, CONFIG).unwrap();
+        let (unread, stderr) = full_pipe();
+        let mut server = Command::new(env!("CARGO_BIN_EXE_fenji-server"));
+        server
             .arg("--config")
             .arg(&config)
-            .args(["console", "--run", "online"])
-            .output()
-            .unwrap()
-    };
-    until(|| online().status.success(), || "never answered".into());
-    // Each command logs a line: far more than the pipe holds (64 KiB on Linux), and than the
-    // log's own queue does, so that every thread that logs waits on stderr by the signal.
-    for _ in 0..5_000 {
-        writeln!(stdin, "online").unwrap();
+            .args(["run", "--plain"])
+            .env("RUST_LOG", "info")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(stderr);
+        match workers {
+            Some(workers) => server.env("TOKIO_WORKER_THREADS", workers),
+            None => server.env_remove("TOKIO_WORKER_THREADS"),
+        };
+        let mut child = server.spawn().unwrap();
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().unwrap();
+        let (lines, answers) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if lines.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        until(
+            || {
+                console_run(&config, "online")
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            },
+            || "never answered".into(),
+        );
+        Unread {
+            child,
+            dir,
+            config,
+            stdin,
+            answers,
+            _unread: unread,
+        }
     }
-    stdin.flush().unwrap();
-    std::thread::sleep(Duration::from_secs(2));
-    kill_process(Pid::from_child(&child), Signal::TERM).unwrap();
-    let stopped = Instant::now();
-    let status = exit_of(&mut child, || "still running after SIGTERM".into());
-    let _ = child.kill();
-    assert!(status.success(), "{status}");
-    assert!(
-        stopped.elapsed() < Duration::from_secs(15),
-        "{:?}",
-        stopped.elapsed()
-    );
-    // It stopped cleanly: the store closed.
-    assert!(!dir.path().join("fenji.db-wal").exists());
+
+    /// Types `online` on its stdin `n` times, each command logging a line, and waits, 60 s at
+    /// most, for each answer: a line of the log that waited would hold its command, and the
+    /// answer. Typed from a thread of their own, in case the server reads no more.
+    fn serves(&mut self, n: usize) {
+        let mut stdin = self.stdin.take().unwrap();
+        let typing = std::thread::spawn(move || {
+            for _ in 0..n {
+                if writeln!(stdin, "online").is_err() {
+                    break;
+                }
+            }
+            let _ = stdin.flush();
+            stdin
+        });
+        let deadline = Instant::now() + Duration::from_secs(60);
+        for answered in 0..n {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let answer = self.answers.recv_timeout(left).unwrap_or_else(|e| {
+                panic!("{answered} of {n} commands answered ({e}): the log held the server")
+            });
+            assert_eq!(answer, "nobody is online");
+        }
+        self.stdin = Some(typing.join().unwrap());
+    }
+
+    /// Waits for it to stop by itself, 15 s at most, and cleanly: exit 0, and its store closed.
+    fn stops(&mut self, what: &str) {
+        let began = Instant::now();
+        let status = exit_of(&mut self.child, || format!("still running: {what}"));
+        assert!(status.success(), "{status}: {what}");
+        assert!(
+            began.elapsed() < Duration::from_secs(15),
+            "{:?}: {what}",
+            began.elapsed()
+        );
+        assert!(!self.dir.path().join("fenji.db-wal").exists(), "{what}");
+    }
+}
+
+impl Drop for Unread {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn a_plain_server_whose_log_goes_unread_serves_on_and_stops_on_sigterm() {
+    // #359 (Task 7's review, Important 1, and its re-review): under `--plain` the log goes to
+    // stderr. A stderr that took no more, a terminal over a frozen link or a pipe nobody reads,
+    // held each thread that logged: the commands' answers stopped, and once each of the
+    // runtime's workers had a line waiting, at once on a one-CPU host's only one, no signal was
+    // seen. No line waits now: one there's no room for is skipped, and counted.
+    for workers in [Some("1"), None] {
+        let what = format!("SIGTERM, {workers:?} workers");
+        let mut server = Unread::start(workers);
+        // Each logs a line: more than the log's queue holds.
+        server.serves(10_000);
+        kill_process(Pid::from_child(&server.child), Signal::TERM).unwrap();
+        server.stops(&what);
+    }
+}
+
+#[test]
+fn a_plain_server_whose_log_goes_unread_stops_on_the_consoles_stop() {
+    // #359 (Task 7's re-review, Important 1 (b)): the console's `stop` logs its line, then stops
+    // the server.
+    for workers in [Some("1"), None] {
+        let what = format!("the console's stop, {workers:?} workers");
+        let mut server = Unread::start(workers);
+        server.serves(10_000);
+        let mut stop = console_run(&server.config, "stop")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        server.stops(&what);
+        assert!(exit_of(&mut stop, || what.clone()).success(), "{what}");
+        let mut said = String::new();
+        stop.stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut said)
+            .unwrap();
+        assert_eq!(said, "stopping the server\n", "{what}");
+    }
 }
 
 #[test]
