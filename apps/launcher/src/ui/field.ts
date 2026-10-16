@@ -1,5 +1,5 @@
-// A labelled field (DESIGN.md, Inputs / Fields): the label always visible above, and an error
-// below that says what happened and what to try, with the circled exclamation.
+// A labelled field (the boards): the label above, or only named where the task's words name it, and an
+// error below that says what happened and what to try, with the circled exclamation.
 import { h } from "../dom";
 import { icons } from "./icons";
 
@@ -12,8 +12,15 @@ export interface Field {
 
 let next = 0;
 
+export interface FieldOptions {
+  /** The label shown above the field (the default), or only named for assistive technology. */
+  visibleLabel?: boolean;
+  /** A control inside the field's right edge: the password's Show. */
+  trailing?: HTMLElement;
+}
+
 /** A field. A hint the input already names in `aria-describedby` stays named beside an error. */
-export function field(label: string, input: HTMLInputElement): Field {
+export function field(label: string, input: HTMLInputElement, options: FieldOptions = {}): Field {
   next += 1;
   const id = input.id || `field-${next}`;
   const errorId = `${id}-error`;
@@ -22,8 +29,9 @@ export function field(label: string, input: HTMLInputElement): Field {
   input.classList.add("input");
   const words = h("span", {});
   const error = h("p", { class: "field-error", id: errorId, hidden: true }, icons.error(14), words);
-  const name = h("label", { class: "field-label", for: id }, label);
-  const el = h("div", { class: "field" }, name, input, error);
+  const name = h("label", { class: options.visibleLabel === false ? "visually-hidden" : "field-label", for: id }, label);
+  const control = options.trailing ? h("div", { class: "field-control" }, input, options.trailing) : input;
+  const el = h("div", { class: "field" }, name, control, error);
   return {
     el,
     setError(text) {
@@ -47,6 +55,24 @@ export function field(label: string, input: HTMLInputElement): Field {
       name.textContent = text;
     },
   };
+}
+
+/** Show and hide a password as it's typed: with one password field, it's how a typo is caught. */
+export function revealToggle(input: HTMLInputElement): HTMLButtonElement {
+  const toggle = h("button", {
+    class: "icon-button reveal",
+    type: "button",
+    "aria-label": "Show password",
+    "aria-pressed": "false",
+    onclick: () => {
+      const showing = input.type === "text";
+      input.type = showing ? "password" : "text";
+      toggle.setAttribute("aria-pressed", String(!showing));
+      toggle.replaceChildren(showing ? icons.eye(18) : icons.eyeOff(18));
+    },
+  });
+  toggle.append(icons.eye(18));
+  return toggle;
 }
 
 /** A checkbox (DESIGN.md, Checkbox): a 20 px box with the gold check, its label clickable. */

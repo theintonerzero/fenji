@@ -10,29 +10,36 @@ function fill(root: HTMLElement, username = "lin_yue", password = "a long passwo
   (root.querySelector("form") as HTMLFormElement).requestSubmit();
 }
 
-test("remember defaults to true, and Sign in sends it", () => {
-  const { root, sent } = mount(signIn, golden("play-signed-out"), undefined, "account");
+test("the server's account, not Steam; remember defaults to true, and Sign in sends it", async () => {
+  const { root, sent, asked } = mount(signIn, golden("play-signed-out"));
   expect(root.querySelector("h1")!.textContent).toBe("Sign in to Moonward");
+  expect(root.querySelector(".lede")!.textContent).toBe("Your Moonward account, not Steam.");
   expect(root.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
   expect(embers(root)).toBe(1);
   fill(root);
   expect(sent).toEqual([{ type: "signIn", username: "lin_yue", password: "a long password", remember: true }]);
+  await settle();
+  expect(asked.signIns).toEqual([null]);
 });
 
 test("the username the server remembers is filled in", () => {
-  const { root } = mount(signIn, golden("play-signed-out"), undefined, "account");
+  const { root } = mount(signIn, golden("play-signed-out"));
   expect(root.querySelector<HTMLInputElement>('input[autocomplete="username"]')!.value).toBe("lin_yue");
 });
 
-test("needSignIn shows Cancel, which cancels", () => {
-  const { root, sent } = mount(signIn, golden("sign-in"));
+test("Cancel cancels the sign-in Play waits for, and goes back", () => {
+  const { root, sent, asked } = mount(signIn, golden("sign-in"));
   press(root, "Cancel");
   expect(sent).toEqual([{ type: "cancelSignIn" }]);
-  expect(mount(signIn, golden("play-signed-out")).root.textContent).not.toContain("Cancel");
+  expect(asked.signIns).toEqual([null]);
+  const asking = mount(signIn, golden("play-signed-out"));
+  press(asking.root, "Cancel");
+  expect(asking.sent).toEqual([]);
+  expect(asking.asked.signIns).toEqual([null]);
 });
 
 test("a refusal shows under the form", async () => {
-  const words = "That username and password don't match an account on Moonward.";
+  const words = "Wrong username or password for Moonward.";
   const { root, sent } = mount(signIn, golden("sign-in"), (i) => (i.type === "signIn" ? words : null));
   fill(root);
   await settle();
@@ -45,16 +52,4 @@ test("an empty password isn't sent", () => {
   fill(root, "lin_yue", "");
   expect(sent).toEqual([]);
   expect(root.textContent).toContain("Type your password.");
-});
-
-test("Have an invite? Create an account goes back to the invite field", () => {
-  const { root, sent } = mount(signIn, golden("sign-in"));
-  press(root, "Have an invite? Create an account");
-  expect(root.querySelector("label")!.textContent).toBe("Invite link or code");
-  const input = root.querySelector("input")!;
-  input.value = "https://moonward.example.net/invite#K7QM-3XRD-VN2P-HT8B";
-  (root.querySelector("form") as HTMLFormElement).requestSubmit();
-  expect(sent).toEqual([{ type: "addServer", text: "https://moonward.example.net/invite#K7QM-3XRD-VN2P-HT8B" }]);
-  press(root, "I already have an account");
-  expect(root.querySelector("h1")!.textContent).toBe("Sign in to Moonward");
 });

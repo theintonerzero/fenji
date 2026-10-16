@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-16T00:00:00+00:00",
+  "generatedAt": "2026-10-17T00:00:00+00:00",
   "title": "Design System: Fenji",
   "extensions": {
     "colorMeta": {
       "ink-950": {
         "role": "neutral",
         "displayName": "Ink 950",
-        "purpose": "The app ground, the header, the console log.",
+        "purpose": "the stage's ground, the command line's well, the switch's knob when on, the ring between overlapping faces, and the console log.",
         "canonical": "#0c0c0f",
         "oklch": "oklch(15.6% 0.006 285.6)",
         "tonalRamp": [
@@ -24,7 +24,7 @@
       "ink-900": {
         "role": "neutral",
         "displayName": "Ink 900",
-        "purpose": "The context column, the console title bar and prompt row.",
+        "purpose": "the rail, and the console's title bar and prompt row.",
         "canonical": "#111115",
         "oklch": "oklch(17.9% 0.008 285.5)",
         "tonalRamp": [
@@ -41,7 +41,7 @@
       "ink-850": {
         "role": "neutral",
         "displayName": "Ink 850",
-        "purpose": "Cards, dialogs, the console status strip and palette.",
+        "purpose": "what floats over the stage: popovers, dialogs, the toast, a seal's menu; the console's status strip and command palette.",
         "canonical": "#16161b",
         "oklch": "oklch(20.2% 0.010 285.5)",
         "tonalRamp": [
@@ -58,7 +58,7 @@
       "ink-800": {
         "role": "neutral",
         "displayName": "Ink 800",
-        "purpose": "Inputs, disabled PLAY, hover, selected palette row, tags.",
+        "purpose": "seals, PLAY while it kindles or is closed, fields, checkboxes, the switch's track when off, faces, a seal's tip, a control while its popover is open, a menu row on hover, the progress track, the scrollbar's thumb; the console's chosen palette row.",
         "canonical": "#1c1c22",
         "oklch": "oklch(22.9% 0.012 285.5)",
         "tonalRamp": [
@@ -75,37 +75,109 @@
       "line": {
         "role": "neutral",
         "displayName": "Line",
-        "purpose": "Hairlines, dividers, card borders.",
-        "canonical": "rgba(255, 255, 255, 0.07)"
+        "purpose": "hairlines: the rail's edge, a popover's head and sections, file rows, the window controls' divider, the command line's ring, and closed PLAY's edge.",
+        "canonical": "rgba(255, 255, 255, 0.07)",
+        "oklch": "oklch(100.0% 0.000 0.0 / 0.07)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
       },
       "line-strong": {
         "role": "neutral",
         "displayName": "Line Strong",
-        "purpose": "The dialog border and a selected server row's inset outline.",
-        "canonical": "rgba(255, 255, 255, 0.12)"
+        "purpose": "the ring round everything that floats (tip, menu, popover, dialog, toast), the Game chip's ring, and kindling PLAY's edge.",
+        "canonical": "rgba(255, 255, 255, 0.12)",
+        "oklch": "oklch(100.0% 0.000 0.0 / 0.12)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
       },
       "outline": {
         "role": "neutral",
         "displayName": "Outline",
-        "purpose": "Secondary button and checkbox borders.",
-        "canonical": "rgba(255, 255, 255, 0.16)"
+        "purpose": "an outline button's ring, the ring of + and of a seal under the pointer, a checkbox's ring, the Game chip's ring on hover or while open.",
+        "canonical": "rgba(255, 255, 255, 0.16)",
+        "oklch": "oklch(100.0% 0.000 0.0 / 0.16)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
       },
       "field-line": {
         "role": "neutral",
         "displayName": "Field Line",
-        "purpose": "The border of inputs and fields, at 3:1 or more against the ink-800 fill and every ground (the 3:1 non-text floor).",
-        "canonical": "#706b63"
+        "purpose": "a field's ring and the switch's track when off: 3.2:1 against the ink-800 fill and 3.4:1 or more against the grounds around it, so a field's edge meets the 3:1 non-text floor.",
+        "canonical": "#706b63",
+        "oklch": "oklch(53.0% 0.014 79.7)",
+        "tonalRamp": [
+          "#0e0b05",
+          "#29241e",
+          "#46413a",
+          "#656059",
+          "#878279",
+          "#aaa49c",
+          "#cec8bf",
+          "#f3eee4"
+        ]
       },
       "scrim": {
         "role": "neutral",
         "displayName": "Scrim",
-        "purpose": "Backdrop behind a modal dialog.",
-        "canonical": "rgba(6, 6, 8, 0.86)"
+        "purpose": "behind a dialog. Darker than the boards' 42% under Add a server on purpose: 42% over a lit PLAY would leave two embers in view.",
+        "canonical": "rgba(6, 6, 8, 0.6)",
+        "oklch": "oklch(12.3% 0.006 285.6 / 0.6)",
+        "tonalRamp": [
+          "#0b0b0d",
+          "#252528",
+          "#424245",
+          "#616164",
+          "#828286",
+          "#a4a4a8",
+          "#c9c9cd",
+          "#eeeef2"
+        ]
+      },
+      "scrim-light": {
+        "role": "neutral",
+        "displayName": "Scrim Light",
+        "purpose": "behind a popover; the top bar stays above it.",
+        "canonical": "rgba(6, 6, 8, 0.42)",
+        "oklch": "oklch(12.3% 0.006 285.6 / 0.42)",
+        "tonalRamp": [
+          "#0b0b0d",
+          "#252528",
+          "#424245",
+          "#616164",
+          "#828286",
+          "#a4a4a8",
+          "#c9c9cd",
+          "#eeeef2"
+        ]
       },
       "text": {
         "role": "neutral",
         "displayName": "Paper",
-        "purpose": "Titles and primary text.",
+        "purpose": "the server's name, titles and primary text (17:1 on ink-950).",
         "canonical": "#f2efe9",
         "oklch": "oklch(95.3% 0.009 84.6)",
         "tonalRamp": [
@@ -122,7 +194,7 @@
       "text-prose": {
         "role": "neutral",
         "displayName": "Prose",
-        "purpose": "Running sentences in the main area.",
+        "purpose": "running sentences: the host's notice, a task's lede, a dialog's description, the stage's notes and What to try (13:1).",
         "canonical": "#d8d2c8",
         "oklch": "oklch(86.6% 0.015 80.7)",
         "tonalRamp": [
@@ -139,7 +211,7 @@
       "text-2": {
         "role": "neutral",
         "displayName": "Parchment",
-        "purpose": "Secondary text, labels, the status line.",
+        "purpose": "the state line, field labels, a seal's letter, the Game chip's words, a job's words in the Game popover (11:1).",
         "canonical": "#c9c2b7",
         "oklch": "oklch(81.7% 0.017 79.3)",
         "tonalRamp": [
@@ -156,7 +228,7 @@
       "muted": {
         "role": "neutral",
         "displayName": "Ash",
-        "purpose": "Inactive tabs, meta, definition terms, disabled text.",
+        "purpose": "meta lines, a popover's lines, \"playing\", hints, quiet words, icon buttons, the + seal, placeholders (7.6:1).",
         "canonical": "#a8a196",
         "oklch": "oklch(71.2% 0.018 79.3)",
         "tonalRamp": [
@@ -173,7 +245,7 @@
       "faint": {
         "role": "neutral",
         "displayName": "Smoke",
-        "purpose": "Footnotes, console timestamps, separators; 12.5 px and up.",
+        "purpose": "the address, closed PLAY's word (4.7:1 on ink-800), the window controls, footnotes, an offline seal's bar, What to try's bullets; console timestamps and separators (5.4:1 on ink-950).",
         "canonical": "#8c867c",
         "oklch": "oklch(62.2% 0.016 80.7)",
         "tonalRamp": [
@@ -190,9 +262,9 @@
       "on-ember": {
         "role": "neutral",
         "displayName": "On Ember",
-        "purpose": "Text on the ember primary action.",
+        "purpose": "white on ember: PLAY's word, an ember button's, the 焚, and selected text.",
         "canonical": "#ffffff",
-        "oklch": "oklch(100.0% 0.000 89.9)",
+        "oklch": "oklch(100.0% 0.000 0.0)",
         "tonalRamp": [
           "#0b0b0b",
           "#252525",
@@ -207,75 +279,92 @@
       "ember-600": {
         "role": "primary",
         "displayName": "Forge Ember",
-        "purpose": "The one primary action; the seal.",
+        "purpose": "lit PLAY's fill, under a 10% white sheen; the fill of the one primary action of a task, a popover section or a dialog (Continue, Create account, Sign in, Add, Use it, Repair, Verify, Remove); and the 焚 seal. Always with white text (4.9:1).",
         "canonical": "#c8431f",
         "oklch": "oklch(56.7% 0.176 35.4)",
         "tonalRamp": [
-          "#240000",
-          "#530000",
-          "#870000",
-          "#ae2900",
+          "#1d0200",
+          "#470d01",
+          "#771d02",
+          "#ab2e07",
           "#d6502e",
           "#ff7552",
-          "#ffae95",
-          "#ffe2d6"
+          "#feb5a1",
+          "#ffe9e3"
+        ]
+      },
+      "ember-hover": {
+        "role": "primary",
+        "displayName": "Hover Ember",
+        "purpose": "lit PLAY and an ember button under the pointer, a step brighter than ember-600. Never at rest.",
+        "canonical": "#d24b25",
+        "oklch": "oklch(59.3% 0.178 36.0)",
+        "tonalRamp": [
+          "#1c0200",
+          "#470d00",
+          "#762005",
+          "#ac2d00",
+          "#d7502a",
+          "#fc7855",
+          "#feb4a0",
+          "#ffe9e3"
         ]
       },
       "ember-500": {
         "role": "primary",
         "displayName": "Live Ember",
-        "purpose": "Active tab, focus ring, progress fill, selection.",
+        "purpose": "where the player is and how far along: the active seal's 1 px edge, + while Add a server is open, the account's ring while its popover is open, the 2 px focus ring, the caret, text selection, the Game popover's 4 px progress fill, the bright end of PLAY's kindle fill (at 85%), the running PLAY's edge (at 55%) and lit PLAY's glow (at 70%).",
         "canonical": "#e4572e",
         "oklch": "oklch(63.7% 0.184 36.5)",
         "tonalRamp": [
-          "#250000",
-          "#540000",
-          "#840000",
-          "#b12300",
+          "#1c0300",
+          "#470e00",
+          "#771e00",
+          "#aa2f02",
           "#d94d23",
-          "#ff734a",
-          "#ffad91",
-          "#ffe3d7"
+          "#fe7650",
+          "#fdb5a0",
+          "#ffe9e3"
         ]
       },
       "ember-300": {
         "role": "primary",
-        "displayName": "Blade Light",
-        "purpose": "The blade's lit gradient.",
+        "displayName": "Ember Edge",
+        "purpose": "the 1 px inner edge of lit PLAY (at 50%, 70% on hover) and of an ember button (at 45%, 65% on hover). Never a fill.",
         "canonical": "#ff7a45",
         "oklch": "oklch(72.7% 0.176 41.2)",
         "tonalRamp": [
-          "#240000",
-          "#520000",
-          "#860000",
-          "#ad2d00",
+          "#1a0400",
+          "#441300",
+          "#702806",
+          "#a43a01",
           "#d55317",
           "#fd7843",
-          "#ffac87",
-          "#ffe3d3"
+          "#ffb599",
+          "#fee9e2"
         ]
       },
       "ember-glow": {
         "role": "primary",
-        "displayName": "Ember Glow",
-        "purpose": "The bloom and motes at the blade's tip.",
+        "displayName": "Kindle Glow",
+        "purpose": "the soft glow beside the kindle's leading edge (at 55%). Never on chrome.",
         "canonical": "#ffb070",
         "oklch": "oklch(82.0% 0.123 58.9)",
         "tonalRamp": [
-          "#210000",
-          "#490e00",
-          "#6f2b00",
-          "#924c00",
+          "#160700",
+          "#3b1c00",
+          "#633506",
+          "#904e01",
           "#b76e2b",
           "#dd9151",
-          "#ffb575",
-          "#ffe2b9"
+          "#fdb983",
+          "#ffeadb"
         ]
       },
       "ember-tint": {
         "role": "neutral",
         "displayName": "Ember Tint",
-        "purpose": "Ground of the host's and player's avatars.",
+        "purpose": "the active seal's ground, the account's ground, the player's own face, and the running PLAY's ground (at 60%).",
         "canonical": "#2a1712",
         "oklch": "oklch(22.9% 0.033 35.5)",
         "tonalRamp": [
@@ -286,98 +375,47 @@
           "#957c75",
           "#b89e97",
           "#ddc2bb",
-          "#ffe7e0"
+          "#ffe9e3"
         ]
       },
       "gold-300": {
         "role": "secondary",
         "displayName": "Lantern Gold",
-        "purpose": "Names, links, avatar initials, switch on.",
+        "purpose": "people and places to go: the host's name before their notice, friends' names and initials, the account's initials, \"Signed in as lin_yue\", links, and the console's player names and prompt; and a setting that's on (the switch's track, the checkbox's tick).",
         "canonical": "#f2b365",
         "oklch": "oklch(81.0% 0.120 70.6)",
         "tonalRamp": [
-          "#1b0400",
-          "#3e1a00",
-          "#653400",
-          "#8b5200",
+          "#140800",
+          "#362001",
+          "#5c3903",
+          "#855509",
           "#af741f",
           "#d49748",
           "#fbbb6d",
-          "#ffe192"
+          "#ffebd4"
         ]
       },
       "gold-100": {
         "role": "secondary",
-        "displayName": "Blade Tip",
-        "purpose": "The blade's tip, its progress edge, link hover.",
+        "displayName": "Kindle Tip",
+        "purpose": "the kindle's 2 px leading edge, and a link on hover.",
         "canonical": "#ffd9ad",
         "oklch": "oklch(90.7% 0.071 70.8)",
         "tonalRamp": [
-          "#1b0400",
-          "#3a1d00",
+          "#140800",
+          "#362001",
           "#5a3b10",
           "#7b5a31",
           "#9e7b52",
           "#c29e74",
           "#e7c297",
-          "#ffe7bb"
-        ]
-      },
-      "brass": {
-        "role": "secondary",
-        "displayName": "Guard Brass",
-        "purpose": "The sword's guard and pommel.",
-        "canonical": "#c9a36a",
-        "oklch": "oklch(73.7% 0.087 76.9)",
-        "tonalRamp": [
-          "#180600",
-          "#3a1e00",
-          "#5b3a00",
-          "#7d5a1f",
-          "#a07b43",
-          "#c49e65",
-          "#e9c288",
-          "#ffe8ad"
-        ]
-      },
-      "blade-steel": {
-        "role": "neutral",
-        "displayName": "Blade Steel",
-        "purpose": "The unlit blade.",
-        "canonical": "#3a3a42",
-        "oklch": "oklch(35.2% 0.014 285.7)",
-        "tonalRamp": [
-          "#0a0a11",
-          "#24242c",
-          "#414149",
-          "#606069",
-          "#81818a",
-          "#a4a4ae",
-          "#c8c8d2",
-          "#ededf8"
-        ]
-      },
-      "blade-grip": {
-        "role": "neutral",
-        "displayName": "Blade Grip",
-        "purpose": "The sword's grip.",
-        "canonical": "#5a3b26",
-        "oklch": "oklch(38.3% 0.055 54.4)",
-        "tonalRamp": [
-          "#1b0300",
-          "#391d07",
-          "#593a25",
-          "#7a5943",
-          "#9d7a63",
-          "#c19c85",
-          "#e6c0a8",
-          "#ffe6cc"
+          "#ffebd5"
         ]
       },
       "vignette-warm": {
-        "role": "tertiary",
-        "displayName": "Warm Vignette",
-        "purpose": "Background when the server is up and open.",
+        "role": "neutral",
+        "displayName": "Warm Ground",
+        "purpose": "the stage's ground, from the lower left, while PLAY is lit or the game runs.",
         "canonical": "#2a1510",
         "oklch": "oklch(22.4% 0.036 34.2)",
         "tonalRamp": [
@@ -388,13 +426,13 @@
           "#977b74",
           "#ba9d96",
           "#dfc1ba",
-          "#ffe7df"
+          "#ffe9e4"
         ]
       },
       "vignette-warm-mid": {
-        "role": "tertiary",
-        "displayName": "Warm Vignette Mid",
-        "purpose": "Middle stop of the warm vignette.",
+        "role": "neutral",
+        "displayName": "Warm Ground (mid)",
+        "purpose": "the stage's ground, from the lower left, while PLAY is lit or the game runs.",
         "canonical": "#140d0c",
         "oklch": "oklch(16.8% 0.012 27.8)",
         "tonalRamp": [
@@ -410,8 +448,8 @@
       },
       "vignette-cool": {
         "role": "neutral",
-        "displayName": "Cool Vignette",
-        "purpose": "Background with no server, maintenance or offline.",
+        "displayName": "Cool Ground",
+        "purpose": "the stage's ground while PLAY kindles, while the copy needs something, and behind a task.",
         "canonical": "#17171c",
         "oklch": "oklch(20.7% 0.010 285.5)",
         "tonalRamp": [
@@ -427,8 +465,8 @@
       },
       "vignette-cool-mid": {
         "role": "neutral",
-        "displayName": "Cool Vignette Mid",
-        "purpose": "Middle stop of the cool vignette.",
+        "displayName": "Cool Ground (mid)",
+        "purpose": "the stage's ground while PLAY kindles, while the copy needs something, and behind a task.",
         "canonical": "#111114",
         "oklch": "oklch(17.9% 0.006 285.8)",
         "tonalRamp": [
@@ -445,204 +483,283 @@
       "ok": {
         "role": "tertiary",
         "displayName": "Jade OK",
-        "purpose": "Online, verified, files fine.",
+        "purpose": "online, Game ready, Verified, the running PLAY's dot; a seal's bar, an 8 px dot or a check.",
         "canonical": "#7fd38f",
         "oklch": "oklch(79.6% 0.126 149.0)",
         "tonalRamp": [
-          "#001200",
-          "#003102",
-          "#005315",
+          "#001003",
+          "#022e10",
+          "#065020",
           "#1a7436",
           "#439756",
           "#67bb78",
           "#8ce09b",
-          "#b1ffc0"
+          "#c8ffd0"
         ]
       },
       "warn": {
         "role": "tertiary",
         "displayName": "Amber Warn",
-        "purpose": "Maintenance, a file to repair, WARN.",
+        "purpose": "maintenance (a seal's bar, the state line's dot); a file that needs repair or a missing folder (the Game chip's words, dot and 40% ring, a repair's reasons); console WARN.",
         "canonical": "#e8b04a",
         "oklch": "oklch(79.1% 0.134 79.5)",
         "tonalRamp": [
-          "#160700",
-          "#391e00",
-          "#5d3a00",
-          "#855700",
-          "#ac7700",
+          "#120900",
+          "#332101",
+          "#573c04",
+          "#7f5a0b",
+          "#a87913",
           "#d19a30",
           "#f7bf5a",
-          "#ffe480"
+          "#feeccf"
         ]
       },
       "danger": {
         "role": "tertiary",
         "displayName": "Cinnabar Danger",
-        "purpose": "Errors with an icon and words, ERROR.",
+        "purpose": "a changed key, a key not yet trusted or a server this launcher can't play on (a seal's bar); errors and an unreachable server, always as the circled exclamation and words; an invalid field's ring and its message; console ERROR.",
         "canonical": "#f26d7d",
         "oklch": "oklch(69.9% 0.164 15.0)",
         "tonalRamp": [
-          "#250002",
-          "#54000e",
-          "#830024",
+          "#1e0004",
+          "#4b0214",
+          "#7e0527",
           "#aa2942",
           "#d15062",
           "#fa7484",
-          "#ffa8b0",
-          "#ffe1e3"
+          "#fdb2b7",
+          "#ffe8e9"
         ]
       },
       "info": {
         "role": "tertiary",
         "displayName": "Mist Info",
-        "purpose": "Notes and help.",
+        "purpose": "the info mark before the model's notice.",
         "canonical": "#9cc3e4",
         "oklch": "oklch(80.0% 0.063 244.2)",
         "tonalRamp": [
-          "#000b23",
+          "#000c1a",
           "#022741",
           "#224561",
           "#416583",
           "#6287a6",
           "#84aaca",
           "#a7cef0",
-          "#ccf4ff"
-        ]
-      },
-      "info-tint": {
-        "role": "tertiary",
-        "displayName": "Info Tint",
-        "purpose": "Ground of an informational badge or avatar.",
-        "canonical": "#172028",
-        "oklch": "oklch(23.9% 0.020 245.6)",
-        "tonalRamp": [
-          "#050c13",
-          "#1d262e",
-          "#39434c",
-          "#58636c",
-          "#79848e",
-          "#9ba7b1",
-          "#bfcbd6",
-          "#e4f0fc"
+          "#e1f1ff"
         ]
       }
     },
     "typographyMeta": {
-      "wordmark": {
-        "displayName": "Wordmark",
-        "purpose": "FENJI beside the seal; Cinzel 700, tracked 0.26em."
-      },
       "display": {
         "displayName": "Display",
-        "purpose": "The server's name on the Play screens."
+        "purpose": "the server's name on the stage, up to two lines, then clipped. Cinzel draws it in capitals."
       },
       "headline": {
         "displayName": "Headline",
-        "purpose": "Screen titles on task screens."
-      },
-      "section": {
-        "displayName": "Section",
-        "purpose": "Section headings on brand and documentation pages."
+        "purpose": "a task's title: \"Welcome to Fenji\", \"Join Moonward\", \"Sign in to Moonward\"."
       },
       "dialog-title": {
-        "displayName": "Dialog Title",
-        "purpose": "Dialog titles."
+        "displayName": "Dialog title",
+        "purpose": "\"Add a server\", \"Remove Moonward?\", \"A new key for Moonward\", \"Run it yourself\"."
       },
-      "title": {
-        "displayName": "Title",
-        "purpose": "Card titles, the blade's readout, the account name."
+      "popover-title": {
+        "displayName": "Popover title",
+        "purpose": "Game, Account, Settings."
       },
-      "status": {
-        "displayName": "Status",
-        "purpose": "The status line under the server name."
-      },
-      "body": {
-        "displayName": "Body",
-        "purpose": "Sentences and input text."
-      },
-      "nav": {
-        "displayName": "Nav",
-        "purpose": "Tabs and context-column headings."
-      },
-      "secondary": {
-        "displayName": "Secondary",
-        "purpose": "Helper text and meta lines (half a step down)."
-      },
-      "label": {
-        "displayName": "Label",
-        "purpose": "Field labels."
-      },
-      "data": {
-        "displayName": "Data",
-        "purpose": "Definition lists in cards and the context column."
-      },
-      "small": {
-        "displayName": "Small",
-        "purpose": "Footnotes, table headers; the floor for readable text."
+      "seal": {
+        "displayName": "Seal",
+        "purpose": "a server's initial in its seal."
       },
       "play": {
         "displayName": "Play",
-        "purpose": "PLAY only; the one tracked uppercase label."
+        "purpose": "PLAY's word: \"Play\", \"Verifying 78%\", \"Starting\", \"Running\"."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "a popover section's heading: \"Swords of Legends Online\", \"Steam library\", \"Moonward\", \"Auto-update\"."
+      },
+      "status": {
+        "displayName": "Status",
+        "purpose": "the state line in text-2; a task's lede in Prose at line-height 1.5."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "sentences; the host's notice and a dialog's description at 1.55, in Prose, up to 560 px wide."
+      },
+      "body-small": {
+        "displayName": "Body small",
+        "purpose": "the stage's notes and What to try in Prose, a field's text, a checkbox's label, quiet words."
       },
       "button-primary": {
-        "displayName": "Button Primary",
-        "purpose": "Worded ember buttons, sentence case."
+        "displayName": "Button primary",
+        "purpose": "Ember buttons, sentence case."
       },
       "button-secondary": {
-        "displayName": "Button Secondary",
-        "purpose": "Secondary buttons and links."
+        "displayName": "Button secondary",
+        "purpose": "Outline buttons and gold links, sentence case."
+      },
+      "secondary": {
+        "displayName": "Secondary",
+        "purpose": "the Game chip, a seal's tip, meta lines, a popover's lines, hints, field errors, the friends' row, the toast's line."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "field labels, in text-2, 10 px above the field."
+      },
+      "small": {
+        "displayName": "Small",
+        "purpose": "initials on the account and the faces. The floor: no readable text is smaller."
       },
       "mono": {
         "displayName": "Mono",
-        "purpose": "Builds, codes, paths and the host console; tabular numbers."
+        "purpose": "the address in the top bar, paths, a repair's file names, the command in Run it yourself; mono fields at 13.5 px; and the whole host console (line-height 1.75; 14 px on the prompt). A path under the player's home folder shows it as `~` (\"~/Games/SoLO\"), for display only, so a screenshot carries no player's name; on Windows, where `~` means nothing to a player, paths show whole."
       },
       "mark": {
         "displayName": "Mark",
-        "purpose": "焚寂 only, subset to two glyphs."
+        "purpose": "焚 in the rail's seal, at 20 px."
       }
     },
     "shadows": [
       {
-        "name": "primary-lift",
-        "value": "0 10px 26px rgba(0, 0, 0, 0.5)",
-        "purpose": "The ember primary button only."
+        "name": "Tip",
+        "value": "0 0 0 1px rgba(255, 255, 255, 0.12), 0 12px 30px rgba(0, 0, 0, 0.45)",
+        "purpose": "a seal's tip."
       },
       {
-        "name": "dialog",
-        "value": "0 24px 60px rgba(0, 0, 0, 0.6)",
-        "purpose": "Modal dialogs over the scrim."
+        "name": "Menu",
+        "value": "0 0 0 1px rgba(255, 255, 255, 0.12), 0 16px 40px rgba(0, 0, 0, 0.5)",
+        "purpose": "a seal's menu."
+      },
+      {
+        "name": "Toast",
+        "value": "0 0 0 1px rgba(255, 255, 255, 0.12), 0 20px 50px rgba(0, 0, 0, 0.55)",
+        "purpose": "the update toast."
+      },
+      {
+        "name": "Popover",
+        "value": "0 0 0 1px rgba(255, 255, 255, 0.12), 0 28px 70px rgba(0, 0, 0, 0.6)",
+        "purpose": "Game, Account and Settings, over the light scrim."
+      },
+      {
+        "name": "Dialog",
+        "value": "0 0 0 1px rgba(255, 255, 255, 0.12), 0 30px 80px rgba(0, 0, 0, 0.6)",
+        "purpose": "a dialog, over the scrim."
+      },
+      {
+        "name": "PLAY's light",
+        "value": "inset 0 0 0 1px rgba(255, 122, 69, 0.5), 0 14px 40px -12px rgba(228, 87, 46, 0.7)",
+        "purpose": "lit PLAY's ember edge and the glow beneath it.",
+        "hover": "inset 0 0 0 1px rgba(255, 122, 69, 0.7), 0 18px 44px -12px rgba(228, 87, 46, 0.8)"
+      },
+      {
+        "name": "The kindle's edge",
+        "value": "6px 0 14px -2px rgba(255, 176, 112, 0.55)",
+        "purpose": "the leading edge of PLAY's fill while it kindles. Gone when motion is reduced."
+      },
+      {
+        "name": "Rings",
+        "value": "0 0 0 2px #0c0c0f",
+        "alt": "0 0 0 2px #e4572e",
+        "purpose": "Between overlapping faces (ink-950), and round the account while its popover is open (ember-500). Separation and an open state, not depth."
       }
     ],
     "focus": [
       {
         "name": "focus-ring",
         "value": "outline: 2px solid #e4572e; outline-offset: 2px",
-        "purpose": "Every focusable element."
+        "purpose": "Every focusable element; on a checkbox or a switch, round its box or track."
       }
     ],
     "gradients": [
       {
-        "name": "blade-lit",
-        "value": "linear-gradient(to top, rgba(228, 87, 46, 0.15) 0%, #ff7a45 70%, #ffd9ad 100%)",
-        "purpose": "The lit blade, base to tip; clipped at the progress height while climbing (top stop at 75%)."
+        "name": "ground-warm",
+        "value": "radial-gradient(1000px 620px at 6% 104%, #2a1510, #140d0c 48%, rgba(12, 12, 15, 0) 78%)",
+        "purpose": "The stage's ground while PLAY is lit or the game runs, over ink-950."
       },
       {
-        "name": "blade-bloom",
-        "value": "radial-gradient(circle 70px, rgba(255, 176, 112, 0.75), rgba(255, 106, 61, 0))",
-        "purpose": "Tip bloom when the copy is ready and Play is open."
+        "name": "ground-cool",
+        "value": "radial-gradient(1000px 620px at 6% 104%, #17171c, #111114 48%, rgba(12, 12, 15, 0) 78%)",
+        "purpose": "The stage's ground while PLAY kindles, while the copy needs something, and behind a task."
       },
       {
-        "name": "vignette-warm",
-        "value": "radial-gradient(circle 700px at 160px 140px, #2a1510 0%, #140d0c 45%, #0c0c0f 100%)",
-        "purpose": "Background when the server is up and open."
+        "name": "play-sheen",
+        "value": "linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 55%)",
+        "purpose": "The white sheen on lit PLAY's top half."
       },
       {
-        "name": "vignette-cool",
-        "value": "radial-gradient(circle 700px at 160px 140px, #17171c 0%, #111114 45%, #0c0c0f 100%)",
-        "purpose": "Background with no server, in maintenance, or unreachable."
+        "name": "kindle-fill",
+        "value": "linear-gradient(90deg, rgba(200, 67, 31, 0.45), rgba(228, 87, 46, 0.85))",
+        "purpose": "PLAY's fill while it kindles, behind a 2 px gold-100 leading edge."
       }
     ],
+    "motion": [
+      {
+        "name": "ease-out",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Every change of state."
+      },
+      {
+        "name": "ease-in-out",
+        "value": "cubic-bezier(0.65, 0, 0.35, 1)",
+        "purpose": "The two things that breathe: PLAY's drift and the Game popover's sweep."
+      },
+      {
+        "name": "press",
+        "value": "120ms",
+        "purpose": "PLAY's 1 px press."
+      },
+      {
+        "name": "tip",
+        "value": "140ms",
+        "purpose": "A seal's tip fading in."
+      },
+      {
+        "name": "hover",
+        "value": "160ms",
+        "purpose": "Hovers, open states and a seal's menu."
+      },
+      {
+        "name": "scrim",
+        "value": "200ms",
+        "purpose": "A scrim's fade and the switch."
+      },
+      {
+        "name": "pop",
+        "value": "220ms",
+        "purpose": "A popover or a dialog: a 4 px drop and 98.5% to full size as it fades in."
+      },
+      {
+        "name": "toast",
+        "value": "360ms",
+        "purpose": "The toast's 10 px rise."
+      },
+      {
+        "name": "play-look",
+        "value": "400ms word, 700ms fill and edge",
+        "purpose": "PLAY changing look."
+      },
+      {
+        "name": "progress",
+        "value": "600ms",
+        "purpose": "A fill following its progress, and the kindled dissolve."
+      },
+      {
+        "name": "ground",
+        "value": "1200ms",
+        "purpose": "The stage's grounds cross-fading."
+      },
+      {
+        "name": "drift",
+        "value": "2.6s each way, 12% to 60%",
+        "purpose": "PLAY's fill with no progress to show; rests at 36% when motion is reduced."
+      },
+      {
+        "name": "sweep",
+        "value": "1.8s each way, a 30% block",
+        "purpose": "The Game popover's bar with no progress to show."
+      }
+    ],
+    "reducedMotion": "Nothing animates or transitions. The ground and PLAY change at once, the drift rests at 36% and the bar at 30%, the kindled moment is skipped, and the kindle's edge loses its glow.",
     "window": {
       "width": "1200px",
       "height": "720px",
@@ -651,24 +768,26 @@
         "minimise",
         "close"
       ],
-      "header": "56px",
-      "main": "860px",
-      "contextColumn": "340px",
-      "bladeX": "150px",
-      "heroTextX": "250px",
-      "heroTextTop": "120px"
+      "rail": "72px",
+      "stage": "1128px",
+      "topBar": "56px",
+      "groupX": "144px",
+      "groupMaxWidth": "820px",
+      "taskMaxWidth": "560px",
+      "popover": "404px, 60px from the top, 16px from the stage's right",
+      "dialog": "500px, centred on the stage",
+      "toast": "360px, 24px from the stage's bottom right"
     },
     "fonts": {
       "license": "SIL Open Font License 1.1",
-      "delivery": "Bundled with each product; the launcher CSP is default-src 'self'. Google Fonts links on the mockups are for mockups only.",
+      "delivery": "Bundled with each product; the launcher's CSP is default-src 'self', so nothing loads from a font CDN.",
       "families": [
-        "Cinzel 600, 700",
-        "Geist 400-700",
+        "Cinzel 600",
+        "Geist 400-600",
         "Geist Mono 400, 500",
         "Noto Serif SC 700 (subset: 焚寂)"
       ]
     },
-    "motion": [],
     "breakpoints": []
   },
   "components": [
@@ -676,73 +795,73 @@
       "name": "PLAY",
       "kind": "button",
       "refersTo": "button-play",
-      "description": "The one primary action on the Play screen; at most one ember button per screen.",
-      "html": "<button class=\"ds-play\">PLAY</button>",
-      "css": ".ds-play { font-family: Geist, system-ui, sans-serif; width: 200px; height: 56px; border: 0; border-radius: 8px; background: #c8431f; color: #ffffff; font-weight: 700; font-size: 17px; letter-spacing: 0.2em; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5); cursor: pointer; } .ds-play:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-play:disabled { background: #1c1c22; color: #a8a196; box-shadow: none; cursor: not-allowed; }"
+      "description": "The signature: lit when the copy is ready, kindling (filled with ember from the left to the progress, a gold edge glowing at its end) while files verify or the game starts, closed when Play can't happen, running while the game runs.",
+      "html": "<div class=\"ds-plays\"><button class=\"ds-play ds-lit\"><span>Play</span></button><button class=\"ds-play ds-kindle\" style=\"--p: 78%\"><span>Verifying 78%</span></button><button class=\"ds-play ds-closed\" disabled><span>Play</span></button><button class=\"ds-play ds-running\"><span><i class=\"ds-dot\"></i>Running</span></button></div>",
+      "css": ".ds-plays { display: grid; gap: 18px; justify-items: start; } .ds-play { font-family: Geist, system-ui, sans-serif; position: relative; isolation: isolate; overflow: hidden; display: inline-grid; place-items: center; width: 248px; height: 64px; padding: 0; border: 0; border-radius: 8px; background-color: #1c1c22; color: #8c867c; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07); font-size: 17px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color 700ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 700ms cubic-bezier(0.16, 1, 0.3, 1), color 400ms cubic-bezier(0.16, 1, 0.3, 1), transform 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-play span { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 10px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); } .ds-play:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-lit { background-color: #c8431f; background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 55%); color: #ffffff; box-shadow: inset 0 0 0 1px rgba(255, 122, 69, 0.5), 0 14px 40px -12px rgba(228, 87, 46, 0.7); } .ds-lit:hover { background-color: #d24b25; box-shadow: inset 0 0 0 1px rgba(255, 122, 69, 0.7), 0 18px 44px -12px rgba(228, 87, 46, 0.8); } .ds-lit:active { transform: translateY(1px); } .ds-kindle { color: #f2efe9; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12); cursor: default; } .ds-kindle::before { content: \"\"; position: absolute; top: 0; bottom: 0; left: 0; z-index: 0; width: var(--p, 0%); border-right: 2px solid #ffd9ad; background: linear-gradient(90deg, rgba(200, 67, 31, 0.45), rgba(228, 87, 46, 0.85)); box-shadow: 6px 0 14px -2px rgba(255, 176, 112, 0.55); } .ds-closed { cursor: not-allowed; } .ds-running { background-color: rgba(42, 23, 18, 0.6); color: #f2efe9; box-shadow: inset 0 0 0 1px rgba(228, 87, 46, 0.55); } .ds-dot { width: 8px; height: 8px; border-radius: 50%; background: #7fd38f; }"
     },
     {
-      "name": "Primary Button (worded)",
+      "name": "Ember Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "The screen's one action when it isn't Play: Continue, Create account, Repair from Steam.",
-      "html": "<button class=\"ds-btn-primary\">Create account</button>",
-      "css": ".ds-btn-primary { font-family: Geist, system-ui, sans-serif; height: 56px; min-width: 200px; padding: 0 32px; border: 0; border-radius: 8px; background: #c8431f; color: #ffffff; font-weight: 700; font-size: 16px; letter-spacing: 0.02em; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5); cursor: pointer; } .ds-btn-primary:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; }"
+      "description": "The one primary action of a task, a popover section or a dialog: Continue, Create account, Sign in, Add, Repair.",
+      "html": "<button class=\"ds-btn-ember\">Create account</button>",
+      "css": ".ds-btn-ember { font-family: Geist, system-ui, sans-serif; display: inline-flex; align-items: center; justify-content: center; height: 44px; padding: 0 18px; border: 0; border-radius: 8px; background: #c8431f; color: #ffffff; box-shadow: inset 0 0 0 1px rgba(255, 122, 69, 0.45); font-size: 14.5px; font-weight: 600; cursor: pointer; transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-ember:hover { background: #d24b25; box-shadow: inset 0 0 0 1px rgba(255, 122, 69, 0.65); } .ds-btn-ember:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-btn-ember:disabled { opacity: 0.55; cursor: not-allowed; }"
     },
     {
-      "name": "Secondary Button",
+      "name": "Outline Button",
       "kind": "button",
       "refersTo": "button-secondary",
-      "description": "Beside a primary: Check files, Later, Choose another folder.",
-      "html": "<button class=\"ds-btn-secondary\">Check files</button>",
-      "css": ".ds-btn-secondary { font-family: Geist, system-ui, sans-serif; height: 56px; padding: 0 22px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.16); background: transparent; color: #f2efe9; font-weight: 600; font-size: 14.5px; cursor: pointer; } .ds-btn-secondary:hover { background: #1c1c22; } .ds-btn-secondary:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; }"
+      "description": "Everything that isn't the one ember: Cancel, Verify integrity, Sign out; the small size (36 px) beside PLAY, in popovers and in the toast.",
+      "html": "<div class=\"ds-row\"><button class=\"ds-btn\">Cancel</button><button class=\"ds-btn ds-btn-sm\">Retry</button></div>",
+      "css": ".ds-row { display: flex; gap: 12px; align-items: center; } .ds-btn { font-family: Geist, system-ui, sans-serif; display: inline-flex; align-items: center; justify-content: center; height: 44px; padding: 0 18px; border: 0; border-radius: 8px; background: transparent; color: #f2efe9; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); font-size: 14.5px; font-weight: 500; cursor: pointer; transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn:hover { background: rgba(255, 255, 255, 0.04); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28); } .ds-btn:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-btn-sm { height: 36px; padding: 0 14px; font-size: 13.5px; }"
+    },
+    {
+      "name": "Link and quiet words",
+      "kind": "button",
+      "refersTo": "link",
+      "description": "Gold words for a place to go or a thing to open; muted quiet words for Stop and Cancel beside an action.",
+      "html": "<div class=\"ds-row\"><button class=\"ds-link\">I have an account</button><button class=\"ds-quiet\">Stop</button></div>",
+      "css": ".ds-row { display: flex; gap: 18px; align-items: center; } .ds-link, .ds-quiet { font-family: Geist, system-ui, sans-serif; padding: 0; border: 0; background: none; font-size: 14.5px; cursor: pointer; transition: color 160ms cubic-bezier(0.16, 1, 0.3, 1), text-decoration-color 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-link { color: #f2b365; font-weight: 500; text-decoration: underline; text-decoration-color: transparent; text-decoration-thickness: 1px; text-underline-offset: 3px; } .ds-link:hover { color: #ffd9ad; text-decoration-color: currentColor; } .ds-quiet { color: #a8a196; } .ds-quiet:hover { color: #f2efe9; } .ds-link:focus-visible, .ds-quiet:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; }"
     },
     {
       "name": "Text Field",
       "kind": "input",
       "refersTo": "input",
-      "description": "44 px field with a visible label and a field-line border (3:1 against fill and ground); ember focus ring; danger border and message on error.",
-      "html": "<div class=\"ds-field\"><label class=\"ds-label\" for=\"ds-user\">Username</label><input class=\"ds-input\" id=\"ds-user\" value=\"lin_yue\"></div>",
-      "css": ".ds-field { font-family: Geist, system-ui, sans-serif; display: flex; flex-direction: column; gap: 8px; max-width: 320px; } .ds-label { font-size: 13.5px; font-weight: 500; color: #c9c2b7; } .ds-input { height: 44px; box-sizing: border-box; padding: 0 14px; border-radius: 8px; border: 1px solid #706b63; background: #1c1c22; color: #f2efe9; font: inherit; font-size: 15px; } .ds-input:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-input[aria-invalid=\"true\"] { border-color: #f26d7d; }"
+      "description": "46 px ink-800 field with a field-line ring (3:1), a label above and a hint below; the ember focus ring; a cinnabar ring and message on error.",
+      "html": "<div class=\"ds-field\"><label class=\"ds-label\" for=\"ds-user\">Password</label><input class=\"ds-input\" id=\"ds-user\" type=\"password\" value=\"lanterns\"><p class=\"ds-hint\">Not your Steam password.</p></div>",
+      "css": ".ds-field { font-family: Geist, system-ui, sans-serif; display: flex; flex-direction: column; max-width: 360px; } .ds-label { margin: 0 0 10px; color: #c9c2b7; font-size: 13.5px; font-weight: 600; } .ds-input { height: 46px; padding: 0 14px; border: 0; border-radius: 8px; background: #1c1c22; color: #f2efe9; box-shadow: inset 0 0 0 1px #706b63; font: inherit; font-size: 14.5px; transition: box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-input:hover { box-shadow: inset 0 0 0 1px #8a847a; } .ds-input:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-input[aria-invalid=\"true\"] { box-shadow: inset 0 0 0 1px #f26d7d; } .ds-hint { margin: 8px 0 0; color: #a8a196; font-size: 13.5px; }"
     },
     {
-      "name": "Header and Tabs",
+      "name": "The rail",
       "kind": "nav",
-      "refersTo": "tab-active",
-      "description": "56 px header: seal and wordmark, four tabs, the active one underlined in ember.",
-      "html": "<header class=\"ds-header\"><span class=\"ds-seal\" aria-hidden=\"true\">焚</span><span class=\"ds-wordmark\">FENJI</span><nav class=\"ds-tabs\" aria-label=\"Main\"><a class=\"ds-tab ds-tab-active\" href=\"#play\" aria-current=\"page\">Play</a><a class=\"ds-tab\" href=\"#servers\">Servers</a><a class=\"ds-tab\" href=\"#account\">Account</a><a class=\"ds-tab\" href=\"#client\">Client</a></nav></header>",
-      "css": ".ds-header { font-family: Geist, system-ui, sans-serif; height: 56px; display: flex; align-items: center; gap: 10px; padding-left: 24px; background: #0c0c0f; border-bottom: 1px solid rgba(255, 255, 255, 0.07); color: #f2efe9; } .ds-seal { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; background: #c8431f; color: #fff; font-family: 'Noto Serif SC', serif; font-weight: 700; font-size: 14px; } .ds-wordmark { font-family: Cinzel, serif; font-weight: 700; font-size: 19px; letter-spacing: 0.26em; } .ds-tabs { display: flex; gap: 28px; margin-left: 38px; height: 56px; } .ds-tab { display: flex; align-items: center; color: #a8a196; text-decoration: none; font-size: 14px; font-weight: 600; } .ds-tab:hover { color: #f2efe9; } .ds-tab:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-tab-active { color: #f2efe9; border-bottom: 2px solid #e4572e; padding-top: 2px; }"
+      "refersTo": "rail",
+      "description": "72 px of ink-900: the 焚 seal, square ink seals over a 3 px state bar (the active one ember-edged on ember tint), then +.",
+      "html": "<nav class=\"ds-rail\" aria-label=\"Servers\"><span class=\"ds-brand\" aria-hidden=\"true\">焚</span><button class=\"ds-seal ds-on\" data-bar=\"ok\" aria-current=\"true\" aria-label=\"Moonward, online\">M</button><button class=\"ds-seal\" data-bar=\"warn\" aria-label=\"Jade Hall, maintenance\">J</button><button class=\"ds-seal\" data-bar=\"off\" aria-label=\"Kai's, offline\">K</button><button class=\"ds-seal ds-add\" aria-label=\"Add a server\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\"><path d=\"M12 5v14M5 12h14\"></path></svg></button></nav>",
+      "css": ".ds-rail { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 72px; padding: 16px 0; background: #111115; box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.07); } .ds-brand { display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 10px; border-radius: 8px; background: #c8431f; color: #ffffff; font: 700 20px/1 'Noto Serif SC', serif; } .ds-seal { position: relative; display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 4px; padding: 0; border: 0; border-radius: 8px; background: #1c1c22; color: #c9c2b7; font: 600 18px/1 Cinzel, serif; cursor: pointer; transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1), color 160ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-seal::after { content: \"\"; position: absolute; left: 14px; right: 14px; bottom: -8px; height: 3px; border-radius: 6px; background: transparent; } .ds-seal[data-bar=\"ok\"]::after { background: #7fd38f; } .ds-seal[data-bar=\"warn\"]::after { background: #e8b04a; } .ds-seal[data-bar=\"off\"]::after { background: #8c867c; } .ds-seal:hover { color: #f2efe9; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); } .ds-seal:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-on { background: #2a1712; color: #f2efe9; box-shadow: inset 0 0 0 1px #e4572e; } .ds-add { margin-bottom: 0; background: transparent; color: #a8a196; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); } .ds-add:hover { color: #f2efe9; box-shadow: inset 0 0 0 1px #e4572e; }"
     },
     {
-      "name": "Card with facts",
-      "kind": "card",
-      "refersTo": "card",
-      "description": "Ink-850 card, hairline border, no shadow; definition list in Data type.",
-      "html": "<section class=\"ds-card\"><h2 class=\"ds-card-title\">Server</h2><dl class=\"ds-facts\"><dt>Address</dt><dd>moonward.example.net</dd><dt>Version</dt><dd>Fenji 0.4.0</dd><dt>Players</dt><dd>3 of 10</dd></dl></section>",
-      "css": ".ds-card { font-family: Geist, system-ui, sans-serif; max-width: 300px; padding: 16px; border-radius: 12px; background: #16161b; border: 1px solid rgba(255, 255, 255, 0.07); color: #f2efe9; } .ds-card-title { margin: 0 0 10px; font-size: 14px; font-weight: 600; } .ds-facts { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; font-size: 13px; } .ds-facts dt { color: #a8a196; } .ds-facts dd { margin: 0; }"
-    },
-    {
-      "name": "Status line",
+      "name": "Game chip",
       "kind": "chip",
-      "refersTo": "status-dot",
-      "description": "A status dot (or a danger icon) and plain words, never colour alone.",
-      "html": "<p class=\"ds-status\"><span class=\"ds-dot\" aria-hidden=\"true\"></span>Online · 3 friends in the lobby · hosted by Wen</p><p class=\"ds-status\"><svg aria-hidden=\"true\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#f26d7d\" stroke-width=\"2\" stroke-linecap=\"round\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M12 7.5v5.5M12 16.6v0.01\"></path></svg>Can't reach Moonward · last seen today at 18:42</p>",
-      "css": ".ds-status { font-family: Geist, system-ui, sans-serif; margin: 0 0 8px; display: flex; align-items: center; gap: 9px; font-size: 15.5px; color: #c9c2b7; } .ds-dot { width: 8px; height: 8px; border-radius: 50%; background: #7fd38f; }"
+      "refersTo": "game-chip",
+      "description": "The top bar's pill for the player's copy: a dot and two or three words; amber words, dot and ring when it needs repair.",
+      "html": "<div class=\"ds-row\"><button class=\"ds-chip\"><i class=\"ds-dot\"></i>Game ready</button><button class=\"ds-chip ds-warn\"><i class=\"ds-dot\"></i>1 file needs repair</button></div>",
+      "css": ".ds-row { display: flex; gap: 14px; align-items: center; } .ds-chip { font-family: Geist, system-ui, sans-serif; display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 13px; border: 0; border-radius: 999px; background: transparent; color: #c9c2b7; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12); font-size: 13.5px; white-space: nowrap; cursor: pointer; transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1), color 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-chip:hover { color: #f2efe9; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); } .ds-chip:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-dot { width: 8px; height: 8px; border-radius: 50%; background: #7fd38f; } .ds-warn { color: #e8b04a; box-shadow: inset 0 0 0 1px rgba(232, 176, 74, 0.4); } .ds-warn .ds-dot { background: #e8b04a; }"
     },
     {
-      "name": "Progress bar",
-      "kind": "custom",
-      "refersTo": "progress-fill",
-      "description": "The 4 px bar, only where the blade isn't shown.",
-      "html": "<div class=\"ds-progress\"><div class=\"ds-progress-row\"><span>Downloading</span><span class=\"ds-mono\">134 of 210 files</span></div><div class=\"ds-track\" role=\"progressbar\" aria-valuemin=\"0\" aria-valuemax=\"210\" aria-valuenow=\"134\" aria-valuetext=\"134 of 210 files\"><div class=\"ds-fill\"></div></div></div>",
-      "css": ".ds-progress { font-family: Geist, system-ui, sans-serif; max-width: 320px; } .ds-progress-row { display: flex; justify-content: space-between; font-size: 12.5px; color: #c9c2b7; } .ds-mono { font-family: 'Geist Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; } .ds-track { margin-top: 8px; height: 4px; border-radius: 2px; background: #1c1c22; overflow: hidden; } .ds-fill { width: 64%; height: 100%; background: #e4572e; }"
+      "name": "Popover",
+      "kind": "card",
+      "refersTo": "popover",
+      "description": "Game, Account and Settings: 404 px of ink-850 under their control, a Cinzel head, sections between hairlines.",
+      "html": "<section class=\"ds-pop\" role=\"dialog\" aria-label=\"Game\"><header class=\"ds-pop-head\"><h2>Game</h2><button class=\"ds-x\" aria-label=\"Close\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\"><path d=\"M6 6l12 12M18 6L6 18\"></path></svg></button></header><div class=\"ds-pop-body\"><div class=\"ds-sec\"><p class=\"ds-big\">Swords of Legends Online</p><p class=\"ds-path\">~/Games/SoLO</p><p class=\"ds-line\"><i class=\"ds-dot\"></i>Verified today at 19:58</p><div class=\"ds-acts\"><button class=\"ds-btn\">Verify integrity</button><button class=\"ds-link\">Change folder</button></div></div></div></section>",
+      "css": ".ds-pop { font-family: Geist, system-ui, sans-serif; width: 404px; border-radius: 12px; background: #16161b; color: #f2efe9; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 28px 70px rgba(0, 0, 0, 0.6); } .ds-pop-head { display: flex; align-items: center; height: 60px; padding: 0 12px 0 24px; box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.07); } .ds-pop-head h2 { flex: 1; margin: 0; font: 600 20px/1 Cinzel, serif; letter-spacing: 0.03em; } .ds-x { display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #a8a196; cursor: pointer; } .ds-x:hover { color: #f2efe9; } .ds-x:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-pop-body { padding: 0 24px 4px; } .ds-sec { padding: 20px 0; } .ds-big { margin: 0; font-size: 16px; font-weight: 600; } .ds-path { margin: 4px 0 0; color: #a8a196; font: 400 13px/1.5 'Geist Mono', ui-monospace, monospace; } .ds-line { margin: 6px 0 0; color: #a8a196; font-size: 13.5px; line-height: 1.5; } .ds-dot { display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: #7fd38f; } .ds-acts { display: flex; gap: 12px; align-items: center; margin-top: 16px; } .ds-btn { font: inherit; height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: #f2efe9; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); font-size: 13.5px; font-weight: 500; cursor: pointer; } .ds-btn:hover { background: rgba(255, 255, 255, 0.04); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28); } .ds-btn:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-link { font: inherit; padding: 0; border: 0; background: none; color: #f2b365; font-size: 13.5px; font-weight: 500; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; cursor: pointer; } .ds-link:hover { color: #ffd9ad; text-decoration-color: currentColor; } .ds-link:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; }"
     },
     {
-      "name": "The blade",
-      "kind": "custom",
-      "refersTo": "button-play",
-      "description": "The signature: the blade's ember light climbs as the player's copy is readied; shown here climbing, with the sharp edge at the progress point.",
-      "html": "<svg class=\"ds-blade\" role=\"img\" aria-label=\"The blade, 42 percent lit\" width=\"120\" height=\"300\" viewBox=\"90 60 120 520\"><defs><linearGradient id=\"ds-part\" x1=\"0\" y1=\"520\" x2=\"0\" y2=\"339\" gradientUnits=\"userSpaceOnUse\"><stop offset=\"0\" stop-color=\"#e4572e\" stop-opacity=\"0.15\"></stop><stop offset=\"0.75\" stop-color=\"#ff7a45\"></stop><stop offset=\"1\" stop-color=\"#ffd9ad\"></stop></linearGradient></defs><polygon points=\"146.5,520 153.5,520 152,104 150,88 148,104\" fill=\"#3a3a42\"></polygon><polygon points=\"146.5,520 153.5,520 152.85,338.6 147.15,338.6\" fill=\"url(#ds-part)\"></polygon><rect x=\"137\" y=\"338\" width=\"7\" height=\"1\" fill=\"#ffd9ad\" opacity=\"0.7\"></rect><rect x=\"128\" y=\"520\" width=\"44\" height=\"5\" rx=\"2.5\" fill=\"#c9a36a\"></rect><rect x=\"147.5\" y=\"525\" width=\"5\" height=\"44\" rx=\"1.5\" fill=\"#5a3b26\"></rect><circle cx=\"150\" cy=\"574\" r=\"5\" fill=\"#c9a36a\"></circle></svg>",
-      "css": ".ds-blade { display: block; background: radial-gradient(circle at 30% 20%, #2a1510, #140d0c 45%, #0c0c0f); border-radius: 12px; }"
+      "name": "Dialog",
+      "kind": "card",
+      "refersTo": "dialog",
+      "description": "500 px, centred on the stage over the 60% scrim: a Cinzel title, a description in Prose, then the outline and the one ember at the bottom right.",
+      "html": "<div class=\"ds-scrim\"><section class=\"ds-dialog\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"ds-dt\"><h2 id=\"ds-dt\">Remove Moonward?</h2><p class=\"ds-desc\">Your account on it stays. To add it again, you'll need its link or address.</p><div class=\"ds-actions\"><button class=\"ds-btn\">Cancel</button><button class=\"ds-btn ds-ember\">Remove</button></div></section></div>",
+      "css": ".ds-scrim { font-family: Geist, system-ui, sans-serif; display: grid; place-items: center; padding: 40px; background: rgba(6, 6, 8, 0.6); } .ds-dialog { width: 500px; padding: 30px 32px 28px; border-radius: 12px; background: #16161b; color: #f2efe9; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 30px 80px rgba(0, 0, 0, 0.6); } .ds-dialog h2 { margin: 0; font: 600 26px/1.15 Cinzel, serif; letter-spacing: 0.02em; } .ds-desc { margin: 10px 0 0; color: #d8d2c8; font-size: 15px; line-height: 1.55; } .ds-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; } .ds-btn { font: inherit; height: 44px; padding: 0 18px; border: 0; border-radius: 8px; background: transparent; color: #f2efe9; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); font-size: 14.5px; font-weight: 500; cursor: pointer; } .ds-btn:hover { background: rgba(255, 255, 255, 0.04); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28); } .ds-btn:focus-visible { outline: 2px solid #e4572e; outline-offset: 2px; } .ds-ember { background: #c8431f; color: #ffffff; box-shadow: inset 0 0 0 1px rgba(255, 122, 69, 0.45); font-weight: 600; } .ds-ember:hover { background: #d24b25; box-shadow: inset 0 0 0 1px rgba(255, 122, 69, 0.65); }"
     },
     {
       "name": "Console log and prompt",
@@ -754,77 +873,93 @@
     }
   ],
   "narrative": {
-    "northStar": "The Ember Sword",
-    "overview": "Fenji is named for 焚寂, the cursed sword, and the system is built around one blade whose ember light climbs as the player's own copy of the game is checked and made ready. Readiness is felt before it is read. Everything else is quiet ink: a near-black ground, tonal panels a step lighter, hairline borders, warm off-white text. Ember is rationed so hard that the eye always finds the one thing to do. The finish is that of a premium game launcher (familiar header-and-tabs structure, a single big Play button, a context column) dressed in xianxia restraint rather than key art and news carousels.\n\nThe density is calm: one fixed window, one primary action, plain sentences that say what is true about the server and the copy. Cinzel carries names and titles with an inscribed, classical voice; Geist runs the interface; Geist Mono carries data and the host's console, which is the same world rendered as a terminal. The key art is drawn in code (the blade, a vignette of light behind it) and never borrowed from the game.\n\nThese tokens are Fenji's single identity, approved by the owner on 2026-10-13, for the launcher, the host console, the website and the docs. The fonts (Cinzel, Geist, Geist Mono, and Noto Serif SC subset to 焚寂) are SIL Open Font License and ship inside each product; the launcher's content security policy is `default-src 'self'`, so nothing loads from a font CDN. The Google Fonts links on the mockups are for the mockups only.",
+    "northStar": "One stage, PLAY kindles",
+    "overview": "Fenji is named for 焚寂, the cursed sword, and its light now lives in the one button the player came to press. The chosen server fills the window: its name inscribed in Cinzel, one line of state, its host's notice, PLAY, and the friends already in the lobby. While the game's files verify or Proton prepares, ember fills PLAY from the left; when the copy is ready, PLAY is alight and the stage's ground warms from the lower left. Readiness is felt on PLAY before it is read.\n\nEverything else is quiet ink: a near-black stage, an ink-900 rail of square server seals, hairlines, warm off-white text. Ember is rationed to one action in view, gold marks people and places to go, and the four status hues only ever travel with words. Game, Account and Settings open as compact popovers under their own controls and close again; a task the player must finish takes the stage or a centred dialog; an update waits in a corner. The finish is a modern game launcher's (HoYoPlay, Riot Client, Battle.net) in xianxia restraint: no tabs, no side column, no key art, no news. The Ember Sword's launcher parts (the blade, the header with its wordmark and tabs, the context column) are retired; their boards stay in `docs/design/launcher/boards/` as the v0.5 record.\n\nThese tokens are Fenji's single identity, approved by the owner on 2026-10-13 and kept through the launcher's redesign of 2026-10-16, for the launcher, the host console, the website and the docs. The fonts (Cinzel, Geist, Geist Mono, and Noto Serif SC subset to 焚寂) are SIL Open Font License and ship inside each product; the launcher's content security policy is `default-src 'self'`, so nothing loads from a font CDN. The redesign's boards (`docs/design/launcher/redesign/screens.html`) are what the build follows, under the rulings in its spec (`docs/superpowers/specs/2026-10-16-launcher-redesign-design.md`); where the build departs from a board, this file records the build and says why.\n\n",
     "keyCharacteristics": [
-      "Ink ground with tonal steps, hairline borders and almost no shadow.",
-      "One ember action per screen; gold for names and links; status colours only for status.",
-      "The blade is the progress indicator and the brand image at once.",
-      "Cinzel for titles, Geist for the interface, Geist Mono for data and the console.",
-      "A fixed 1200 × 720 window with a 56 px header, a main area and a 340 px context column.",
-      "Plain, true sentences; never a request for platform credentials."
+      "Ink ground in tonal steps with hairlines; a shadow only on what floats over the stage.",
+      "One ember action in view, at most; gold for people and links; status colours only beside words.",
+      "PLAY kindles: it is the progress indicator and the brand's light at once.",
+      "A 72 px rail of square ink seals, each over a 3 px state bar.",
+      "Cinzel for the server's name and titles, Geist for the interface, Geist Mono for addresses, paths and the console.",
+      "A fixed 1200 × 720 window: the rail, a 56 px top bar, and the stage.",
+      "Short, true words; never a request for Steam or Gameforge credentials."
     ],
     "rules": [
       {
         "name": "The One Ember Rule",
-        "body": "Ember is for the one primary action on a screen, the active tab, the focus ring, progress, the blade and the seal behind 焚. Nothing else is ember: not icons, not headings, not borders, not switches.",
+        "body": "One ember-600 action in view, at most: PLAY when it's lit, otherwise the one primary action of a task, a popover section or a dialog. Ember-500 marks where the player is (the active seal, focus, the caret, a selection, an open account) and progress. Nothing else is ember: not icons, not headings, not links, not switches.",
         "section": "colors"
       },
       {
         "name": "The Gold Is People Rule",
-        "body": "Gold marks names (hosts, players, characters) and the places a link goes. It is never a fill for an action.",
+        "body": "Gold marks people and places to go, and a setting that's on. It never fills an action button.",
         "section": "colors"
       },
       {
         "name": "The Status Never Alone Rule",
-        "body": "A status colour always travels with words, and errors also carry an icon. A dot alone is never the message.",
+        "body": "A status colour always travels with words, and an error also carries the circled exclamation. In the rail, a seal's bar has its words in the seal's tip and its accessible name.",
         "section": "colors"
       },
       {
         "name": "The Plaque Rule",
-        "body": "Cinzel is only for the wordmark, server names and screen titles. Body, buttons, labels and tabs are Geist.",
+        "body": "Cinzel is only for the server's name, the titles of tasks, dialogs and popovers, and a seal's letter. PLAY, buttons, labels and lines are Geist; addresses, paths and commands are Geist Mono.",
         "section": "typography"
       },
       {
         "name": "The Tracked Caps Rule",
-        "body": "PLAY is the only tracked uppercase button label (0.2em). Every other button is sentence case, 0.02em at most.",
+        "body": "PLAY is the only tracked uppercase label (0.2em). Every other button is sentence case and untracked.",
         "section": "typography"
       },
       {
         "name": "The Hairline Rule",
-        "body": "Cards and panels separate by tone and a 1 px white-7% border, never by shadow.",
+        "body": "Surfaces separate by tone and a 1 px hairline, never by shadow. A shadow belongs only to what floats over the stage, with its line-strong ring.",
         "section": "elevation"
       },
       {
-        "name": "The Blade And Ground Rule",
-        "body": "The blade shows the player's copy; the background shows the server. Behind the blade, a radial vignette from the top left: warm (vignette-warm to vignette-warm-mid to ink-950) when the server is up and open, cool (vignette-cool to vignette-cool-mid to ink-950) when there is no server, it is in maintenance, or it can't be reached.",
+        "name": "The One Light Rule",
+        "body": "PLAY's ember is the only light: the glow under it when lit, the kindle's gold edge, and the stage's ground, which warms with it. Nothing else glows.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Ground Follows PLAY Rule",
+        "body": "The ground is warm only while PLAY is lit or the game runs, cool while something is being readied or a task holds the stage, and plain ink when Play can't happen. It shows nothing else.",
         "section": "components"
       },
       {
-        "name": "The Readiness Only Rule",
-        "body": "Use the blade only where readiness is the subject. It is not decoration for pages about accounts, servers or settings.",
+        "name": "The Kindle Rule",
+        "body": "PLAY's fill is the stage's only ember motion, and it shows only what stands between the player and Play: a check of their files, or the game starting. A download's progress shows on the Game chip and in the Game popover's bar.",
+        "section": "components"
+      },
+      {
+        "name": "The One Line, One Action Rule",
+        "body": "One line says the state; one action, beside PLAY, cures it. No second button, no paragraph: where more is needed, a link opens it (What to try) or a popover holds it (Game).",
         "section": "components"
       }
     ],
     "dos": [
-      "**Do** keep at most one ember-600 action per screen; with no Play, give the screen's one task a worded ember button (Continue, Create account, Repair from Steam). Where the next step is on another tab, as on a ready copy, lead there with a gold link and keep the buttons outlines.",
-      "**Do** say what is true in plain words beside every status colour: \"Online · 3 friends in the lobby\", \"1 needs repair\", \"Can't reach Moonward\".",
-      "**Do** keep PLAY visible but disabled (ink-800, muted) while the copy is being readied, the server is in maintenance or the system can't start the client, and write the reason beside it; when the server can't be reached, the one action becomes a worded \"Try again\"; when it answers but can't be played on, the one action is its cure (\"Add the new link\", \"Add the link\", \"Check for updates\"), never \"Try again\".",
+      "**Do** keep one ember-600 action in view at most: PLAY when it's lit, otherwise the one primary action of a task, a popover section or a dialog. Under a dialog the 60% scrim sinks PLAY, so the dialog's ember is the one.",
+      "**Do** give every state of the stage one line of state and at most one action beside PLAY, its cure: Stop, Cancel, Refresh, Retry, Paste new link, Check for updates, or the Game popover's next step.",
+      "**Do** keep PLAY on the stage in every state, closed (ink-800, faint) when Play can't happen, with the reason in the state line or the meta line.",
+      "**Do** say what is true in plain words beside every status colour: \"Online · 3/10 players\", \"Maintenance · back around 21:00\", \"1 file needs repair\".",
+      "**Do** open Game, Account and Settings as 404 px popovers under their own controls, with the control shown open; keep Add a server, a key and Remove as centred 500 px dialogs, and an update as a corner toast.",
       "**Do** keep the window at 1200 × 720 with minimise and close only.",
       "**Do** ship Cinzel, Geist, Geist Mono and the 焚寂 subset of Noto Serif SC inside the product (OFL); load nothing from a font CDN.",
-      "**Do** use a 2 px ember-500 focus ring with a 2 px offset on every focusable element, and keep text at 12.5 px or larger.",
-      "**Do** say, wherever Steam or Gameforge comes up, that Fenji never asks for those passwords: \"Fenji never asks for your Steam or Gameforge password.\" and \"You sign in to Steam in DepotDownloader's own window, never in Fenji.\"",
-      "**Do** use exactly \"Fenji can't start the client on this system yet\" off Linux, keep PLAY disabled, and list what still works there (create an account, check the game folder, see the server's state).",
+      "**Do** use the 2 px ember-500 focus ring with a 2 px offset on every focusable element, and keep text at 12.5 px or larger.",
+      "**Do** say, wherever Steam or Gameforge comes up, that Fenji never asks for those passwords.",
+      "**Do** keep PLAY closed off Linux and say so in one line: \"Playing on Windows isn't supported yet.\"",
       "**Do** name the game only as a fact (\"Swords of Legends Online\") and draw all art in code."
     ],
     "donts": [
-      "**Don't** use ember for anything but the primary action, the active tab, focus, progress, the blade and the seal.",
-      "**Don't** use glow shadows on interface elements, gradient text, glass blur, coloured side borders, or hard offset shadows. The blade's own light is the only glow.",
+      "**Don't** use ember for anything but PLAY, the one primary action, the 焚 seal, the edges of the active seal, of + and of an open account, focus, the caret, selection and progress.",
+      "**Don't** bring back tabs, a side column, a blade, key art or a news carousel: the stage holds one server and PLAY.",
+      "**Don't** let anything but PLAY glow; no gradient text, glass blur, coloured stripes down the side of a card, popover or note, or hard offset shadows.",
+      "**Don't** draw servers as round avatars with presence dots: they're square ink seals over a state bar.",
       "**Don't** use emoji, small labels above headings, or section numbers.",
       "**Don't** use Inter, Roboto or Arial, or any font, logo, screenshot or art from the game.",
       "**Don't** ask for, or offer a field for, a Steam or Gameforge password anywhere in Fenji.",
-      "**Don't** add a maximise button, a resizable window, a news carousel, or key art competing with Play.",
-      "**Don't** let a status dot carry meaning without words, or put faint text below 12.5 px."
+      "**Don't** add a maximise button or a resizable window.",
+      "**Don't** show the game's build numbers or file totals: progress is a percentage.",
+      "**Don't** let a status colour carry meaning without words, or put text below 12.5 px."
     ]
   }
 }

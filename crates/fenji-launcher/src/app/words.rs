@@ -7,62 +7,59 @@ use crate::api::ApiError;
 use crate::servers::AddError;
 
 /// An invite code with no server saved to redeem it on (plan LP7).
-pub const NEED_LINK: &str =
-    "Paste the whole link your host sent: a code alone doesn't say which server it's for.";
+pub const NEED_LINK: &str = "Paste the whole link: a code alone doesn't say which server.";
 /// Play on a system other than Linux (launcher spec L2).
-pub const NOT_HERE: &str = "Fenji can't start the client on this system yet";
+pub const NOT_HERE: &str = "Playing on this system isn't supported yet";
 /// An account intent with no server in the list.
-pub const NO_SERVER: &str = "Add a server first: paste the link or the address your host sent.";
+pub const NO_SERVER: &str = "Add a server first.";
 /// A typed invite code that isn't one.
-pub const BAD_CODE: &str = "That isn't an invite code. Check it against the link your host sent.";
+pub const BAD_CODE: &str = "That isn't an invite code.";
 
 /// A download off Linux (launcher spec L2).
-pub const DOWNLOAD_LINUX_ONLY: &str = "Downloading with Steam works on Linux only for now.";
+pub const DOWNLOAD_LINUX_ONLY: &str = "Downloading works on Linux only for now.";
 /// A check, download or repair while another runs.
-pub const BUSY: &str = "Something is already running: wait for it to finish, or stop it.";
-/// No terminal to open DepotDownloader in: the player runs the command from the Client tab's
-/// dialog, on its first screen and on Repair, in a terminal of their own (#348).
-pub const NO_TERMINAL: &str = "Fenji couldn't open a terminal for DepotDownloader. Open one yourself, and run the command under \"No Steam app? Run DepotDownloader yourself\" on the Client tab.";
-pub const CHECK_STOPPED: &str = "The check was stopped.";
-pub const DOWNLOAD_CANCELLED: &str = "The download was cancelled.";
-pub const WINDOW_CLOSED: &str =
-    "DepotDownloader's window closed before the download finished. Try again.";
-pub const NOTHING_TO_REPAIR: &str = "Every file checked out last time: there's nothing to repair.";
+pub const BUSY: &str = "Something's already running. Wait, or stop it.";
+/// No terminal to open DepotDownloader in: the player runs the command from the Game popover's
+/// Run it yourself, while setting up or on Repair, in a terminal of their own (#348).
+pub const NO_TERMINAL: &str = "Fenji couldn't open a terminal. Open Game, then Run it yourself.";
+pub const CHECK_STOPPED: &str = "Verification stopped.";
+pub const DOWNLOAD_CANCELLED: &str = "Download cancelled.";
+pub const WINDOW_CLOSED: &str = "The download window closed early. Try again.";
+pub const NOTHING_TO_REPAIR: &str = "Nothing to repair.";
 /// Play, a check or a repair with no game folder chosen (or one that's gone).
-pub const NO_FOLDER: &str =
-    "Fenji doesn't know where your game is yet. Set it up on the Client tab.";
+pub const NO_FOLDER: &str = "Set up the game first. Open Game.";
 /// Play while the game starts or runs (spec L12: one game at a time).
 pub const RUNNING: &str = "The game is already running.";
 /// Choosing the game folder, a download or a repair while the game starts or runs (#348).
-pub const WHILE_PLAYING: &str =
-    "Not while the game is starting or running. Try again once it has ended.";
+pub const WHILE_PLAYING: &str = "Not while the game is running.";
 /// Play when the quick check finds files to repair.
-pub const NEEDS_REPAIR: &str = "Some game files need repair. The Client tab shows which.";
+pub const NEEDS_REPAIR: &str = "Some game files need repair. Open Game.";
 /// `umu-run createprefix` didn't make the Wine prefix.
-pub const PREFIX_FAILED: &str =
-    "Proton couldn't make the game's Wine prefix. The log folder has the details.";
+pub const PREFIX_FAILED: &str = "Proton couldn't set up the game. See the logs.";
 /// `umu-run createprefix` ran past its limit, `play::PREFIX_LIMIT` (#348).
-pub const PREFIX_TOO_LONG: &str = "Proton was still making the game's Wine prefix after 60 minutes, so Fenji stopped it. The log folder has the details.";
+pub const PREFIX_TOO_LONG: &str =
+    "Proton's setup ran over 60 minutes, so Fenji stopped it. See the logs.";
 /// A download into a Steam library (Amendment A, LA2).
-pub const IN_STEAM_LIBRARY: &str = "That folder is in a Steam library, which Steam looks after. Choose another folder, or use the copy Steam installed.";
+pub const IN_STEAM_LIBRARY: &str =
+    "Steam looks after that folder. Choose another, or use Steam's copy.";
 /// Repair from Steam of a copy in a Steam library (LA2).
-pub const REPAIR_IN_STEAM: &str = "This copy is in your Steam library, which Steam looks after. In Steam, open the game's Properties, then Installed Files, and choose Verify integrity of game files. Then check the files here.";
+pub const REPAIR_IN_STEAM: &str =
+    "Steam looks after this copy: in Steam, choose Verify integrity of game files.";
 /// Cancel start, before the game ran (#348).
-pub const START_CANCELLED: &str = "The start was cancelled.";
+pub const START_CANCELLED: &str = "Start cancelled.";
 
 /// The game ended with 0 within its first seconds: umu-run 1.4 logs a failure and ends that way
 /// (#332).
-pub const ENDED_AT_ONCE: &str =
-    "The game couldn't start: umu-run ended at once. The log folder has the details.";
+pub const ENDED_AT_ONCE: &str = "The game couldn't start. See the logs.";
 
 /// The game ended with another code than 0 within its first seconds.
 pub fn couldnt_start(code: i32) -> String {
-    format!("The game couldn't start: umu-run ended with {code}. The log folder has the details.")
+    format!("The game couldn't start (code {code}). See the logs.")
 }
 
 /// The game ended with another code than 0 after it had run a while.
 pub fn ended(code: i32) -> String {
-    format!("The game ended with code {code}. The log folder has the details.")
+    format!("The game ended with code {code}. See the logs.")
 }
 
 /// umu-run couldn't be run at all.
@@ -75,7 +72,7 @@ pub fn incompatible(server: &str, newer: bool) -> String {
     if newer {
         format!("{server} runs a newer Fenji. Update the launcher.")
     } else {
-        format!("{server} expects a different build of the game than this launcher checks.")
+        format!("{server} expects another build of the game.")
     }
 }
 
@@ -86,7 +83,7 @@ pub fn no_ticket(server: &str, why: &str) -> String {
 
 /// DepotDownloader ended with another status than 0.
 pub fn download_stopped(code: i32) -> String {
-    format!("The download stopped: DepotDownloader ended with {code}. Try again.")
+    format!("The download stopped (code {code}). Try again.")
 }
 
 /// A tool couldn't be fetched (launcher plan Task 3: the tool's error doesn't name it).
@@ -126,14 +123,14 @@ pub fn api_error(e: &ApiError, server: &str, host: Option<&str>, username: Optio
             ..
         } => match code.as_str() {
             "bad_credentials" => {
-                format!("That username and password don't match an account on {server}.")
+                format!("Wrong username or password for {server}.")
             }
             "username_taken" => match username {
-                Some(name) => format!("“{name}” is already taken on {server}. Try another name."),
-                None => format!("That username is already taken on {server}. Try another name."),
+                Some(name) => format!("“{name}” is taken on {server}. Try another."),
+                None => format!("That name is taken on {server}. Try another."),
             },
             "invalid_invite" => {
-                format!("That invite has been used or has expired. Ask {host_lower} for a new one.")
+                format!("That invite is used or expired. Ask {host_lower} for a new one.")
             }
             "bad_username" => "Usernames are 3 to 16 letters, digits, _ or -.".into(),
             "bad_password" => "Passwords are 10 to 128 characters.".into(),
@@ -141,7 +138,7 @@ pub fn api_error(e: &ApiError, server: &str, host: Option<&str>, username: Optio
                 Some(n) => format!("Too many tries. Wait {n} s and try again."),
                 None => "Too many tries. Wait a minute and try again.".into(),
             },
-            "bad_session" => format!("Your session on {server} ended. Sign in again."),
+            "bad_session" => format!("Signed out of {server}. Sign in again."),
             _ => unreadable(server),
         },
         ApiError::Decode(_) => unreadable(server),
@@ -222,11 +219,11 @@ mod tests {
         );
         assert_eq!(
             say(code("bad_credentials")),
-            "That username and password don't match an account on Moonward."
+            "Wrong username or password for Moonward."
         );
         assert_eq!(
             say(code("username_taken")),
-            "That username is already taken on Moonward. Try another name."
+            "That name is taken on Moonward. Try another."
         );
         assert_eq!(
             say(code("bad_username")),
@@ -242,7 +239,7 @@ mod tests {
         );
         assert_eq!(
             say(code("bad_session")),
-            "Your session on Moonward ended. Sign in again."
+            "Signed out of Moonward. Sign in again."
         );
         assert_eq!(
             say(code("something_new")),
@@ -254,7 +251,7 @@ mod tests {
         );
         assert_eq!(
             say(ApiError::Insecure),
-            "Plain http:// works only for a server on this computer."
+            "Plain http:// works only on this computer."
         );
     }
 }

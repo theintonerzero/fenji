@@ -242,9 +242,7 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             with(|s| {
                 s.game = GameView::Ended { code: 3 };
                 s.notice = Some(Notice {
-                    text: "The game couldn't start: umu-run ended with 3. The log folder has \
-                           the details."
-                        .into(),
+                    text: "The game couldn't start (code 3). See the logs.".into(),
                     error: true,
                 });
             }),
@@ -316,6 +314,22 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             }),
         ),
         (
+            // A copy Steam installed, at the pinned build: the Game popover offers it first
+            // (Amendment A, LA1; the redesign's Set up board).
+            "client-steam",
+            with(|s| {
+                no_client(s);
+                s.client.manual = Some(manual(None));
+                s.client.steam = Some(SteamCopyView {
+                    folder:
+                        "/home/player/.local/share/Steam/steamapps/common/Swords of Legends Online"
+                            .into(),
+                    build: "10015727".into(),
+                    pinned: true,
+                });
+            }),
+        ),
+        (
             "client-fetching",
             with(|s| {
                 no_client(s);
@@ -329,6 +343,8 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             "client-waiting-for-steam",
             with(|s| {
                 s.client.check = CheckView::None;
+                // Wherever a download works, so does the player's own terminal (spec §3.12).
+                s.client.manual = Some(manual(None));
                 s.job = Some(JobView::Downloading {
                     repair: false,
                     percent: None,
@@ -476,7 +492,7 @@ fn every_server_state_has_a_sentence() {
     };
     assert_eq!(
         say(code("username_taken")),
-        "“lin” is already taken on Moonward. Try another name."
+        "“lin” is taken on Moonward. Try another."
     );
     assert_eq!(
         say(code("try_later")),
@@ -484,7 +500,7 @@ fn every_server_state_has_a_sentence() {
     );
     assert_eq!(
         super::words::api_error(&code("invalid_invite"), "Moonward", None, None),
-        "That invite has been used or has expired. Ask your host for a new one."
+        "That invite is used or expired. Ask your host for a new one."
     );
     assert_eq!(
         super::words::api_error(

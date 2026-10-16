@@ -73,7 +73,7 @@
     "logFolder": "/home/player/.local/share/fenji-launcher/logs"
   },
   "notice": {
-    "text": "The game couldn't start: umu-run ended with 3. The log folder has the details.",
+    "text": "The game couldn't start (code 3). See the logs.",
     "error": true
   }
 }

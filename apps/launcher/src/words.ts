@@ -1,9 +1,9 @@
-// The view's own sentences (launcher spec §3.3, §3.12; DESIGN.md, Status): plain words for what
-// is true, joined by " · ". Times are the player's local time.
-import { activeServer } from "./route";
+// The view's own words (the redesign spec R4, R5): one line of state, the Game chip, PLAY's label
+// and who's playing. Plain words joined by " · "; times are the player's local time.
+import type { PlayLook } from "./route";
 import type { ServerView, Snapshot } from "./types";
 
-const JOIN = " · ";
+export const JOIN = " · ";
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -24,75 +24,40 @@ function day(ms: number): number {
 
 const DAY = 24 * 60 * 60 * 1000;
 
+/** Whole days from `ms` to `now`, by the calendar. */
+function daysAgo(ms: number, now: number): number {
+  return Math.round((day(now) - day(ms)) / DAY);
+}
+
 /** "21:00", or "Friday 21:00" when it isn't today. */
 export function backAround(ms: number, now: number): string {
   return day(ms) === day(now) ? clock(ms) : `${WEEKDAYS[new Date(ms).getDay()]} ${clock(ms)}`;
 }
 
-/** "today at 18:42", "yesterday at 23:10", or "on 12 Oct". */
+/** "today 18:42", "yesterday 23:10" or "12 Oct", after "last seen". */
 export function seen(ms: number, now: number): string {
-  const days = Math.round((day(now) - day(ms)) / DAY);
+  const days = daysAgo(ms, now);
   if (days === 0) {
-    return `today at ${clock(ms)}`;
+    return `today ${clock(ms)}`;
   }
   if (days === 1) {
-    return `yesterday at ${clock(ms)}`;
+    return `yesterday ${clock(ms)}`;
   }
   const d = new Date(ms);
-  return `on ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
 }
 
-function friends(n: number): string {
-  return n === 1 ? "1 friend" : `${n} friends`;
-}
-
-/** Who's playing: friends by name while signed in on the active server, else the server's count. */
-function playing(v: ServerView, s: Snapshot, row: boolean): string[] {
-  const own = !row && v.id === s.active && v.signedIn && s.lobby !== null;
-  if (own) {
-    const others = s.lobby!.filter((name) => name !== v.username).length;
-    if (s.game.kind === "running") {
-      return [others === 0 ? "you're playing" : `you and ${friends(others)} playing`];
-    }
-    return [others === 0 ? "no one playing yet" : `${friends(others)} playing`];
+/** "Today at 09:10", "Yesterday at 23:10" or "12 Oct": when a copy was verified. */
+export function when(ms: number, now: number): string {
+  const days = daysAgo(ms, now);
+  if (days === 0) {
+    return `Today at ${clock(ms)}`;
   }
-  return v.players ? [`${v.players.online} of ${v.players.max} playing`] : [];
-}
-
-function pieces(v: ServerView, s: Snapshot, now: number, row: boolean): string[] {
-  const host = v.host ? [`hosted by ${v.host}`] : [];
-  switch (v.status.kind) {
-    case "online": {
-      const ping = row && v.pingMs !== null ? [`${v.pingMs} ms`] : [];
-      return ["Online", ...playing(v, s, row), ...ping, ...host];
-    }
-    case "maintenance": {
-      const until = v.status.until;
-      const back = until === null ? [] : [`back around ${backAround(until, now)}`];
-      return ["In maintenance", ...back, ...host];
-    }
-    case "offline":
-      return [`Can't reach ${v.name}`, ...(v.lastSeenMs === null ? [] : [`last seen ${seen(v.lastSeenMs, now)}`])];
-    case "keyChanged":
-      return [`${v.name}'s key has changed`];
-    case "ownKey":
-      return [`${v.name} uses its own key`];
-    case "incompatible":
-      return [v.status.newer ? `${v.name} runs a newer Fenji` : `${v.name} expects another game build`];
-    case "unknown":
-      return [`Checking ${v.name}…`];
+  if (days === 1) {
+    return `Yesterday at ${clock(ms)}`;
   }
-}
-
-/** The line under the active server's name. */
-export function statusLine(s: Snapshot, now: number): string {
-  const v = activeServer(s);
-  return v ? pieces(v, s, now, false).join(JOIN) : "No server yet";
-}
-
-/** A row of the Servers list, with the ping. */
-export function serverLine(v: ServerView, s: Snapshot, now: number): string {
-  return pieces(v, s, now, true).join(JOIN);
+  const d = new Date(ms);
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
 }
 
 /** "78%". */
@@ -100,38 +65,123 @@ export function percent(p: number): string {
   return `${Math.round(p)}%`;
 }
 
-/** "164 of 210 files". */
-export function filesOf(done: number, total: number): string {
-  return `${done} of ${total} ${total === 1 ? "file" : "files"}`;
+/**
+ * The line under the server's name (R4): "Online · 3/20 players · 24 ms", "Maintenance · back
+ * around 21:00", "Offline · last seen yesterday 23:10", "Key changed". The ping shows while PLAY is
+ * lit, as the Ready board has it.
+ */
+export function stateLine(v: ServerView, now: number, lit: boolean): string {
+  switch (v.status.kind) {
+    case "online": {
+      const players = v.players === null ? [] : [`${v.players.online}/${v.players.max} players`];
+      const ping = lit && v.pingMs !== null ? [`${v.pingMs} ms`] : [];
+      return ["Online", ...players, ...ping].join(JOIN);
+    }
+    case "maintenance": {
+      const until = v.status.until;
+      return ["Maintenance", ...(until === null ? [] : [`back around ${backAround(until, now)}`])].join(JOIN);
+    }
+    case "offline":
+      return ["Offline", ...(v.lastSeenMs === null ? [] : [`last seen ${seen(v.lastSeenMs, now)}`])].join(JOIN);
+    case "keyChanged":
+      return "Key changed";
+    case "ownKey":
+      return "Not trusted yet";
+    case "incompatible":
+      return v.status.newer ? "Runs a newer Fenji" : "Expects another game build";
+    case "unknown":
+      return "Connecting…";
+  }
 }
 
-/**
- * The client's meta line: "Client verified · build 10015727 · 210 files", or what's wrong. Under
- * the column's "Your client" heading it starts "Verified".
- */
-export function clientLine(s: Snapshot, underHeading = false): string {
+/** A seal's tip in the rail, after the server's name: its players, or its state. */
+export function sealLine(v: ServerView): string {
+  switch (v.status.kind) {
+    case "online":
+      return v.players === null ? "Online" : `${v.players.online}/${v.players.max} players`;
+    case "maintenance":
+      return "Maintenance";
+    case "offline":
+      return "Offline";
+    case "unknown":
+      return "Connecting…";
+    default:
+      return stateLine(v, 0, false);
+  }
+}
+
+export type Tone = "ok" | "warn" | "quiet";
+
+/** The Game chip in the top bar: the player's copy in two or three words, with its dot's tone. */
+export function gameChip(s: Snapshot): { label: string; tone: Tone } {
+  const job = s.job;
+  if (job?.kind === "checking") {
+    return { label: "Verifying", tone: "quiet" };
+  }
+  if (job?.kind === "downloading") {
+    const words = job.repair ? "Repairing" : "Downloading";
+    return { label: job.percent === null ? words : `${words} ${percent(job.percent)}`, tone: "quiet" };
+  }
+  // DepotDownloader comes first on a first download; umu-launcher on a first start is PLAY's.
+  if (job?.kind === "fetching" && s.game.kind !== "starting") {
+    return { label: "Downloading", tone: "quiet" };
+  }
   const { client } = s;
-  const build = `build ${client.build}`;
-  const files = `${client.files} files`;
+  if (client.folder === null) {
+    return { label: "Set up the game", tone: "quiet" };
+  }
   switch (client.check.kind) {
     case "verified":
-      return [underHeading ? "Verified" : "Client verified", build, files].join(JOIN);
+      return { label: "Game ready", tone: "ok" };
     case "needsRepair": {
-      const wrong = client.check.files.length;
-      return [`${client.check.fine} fine`, `${wrong} to repair`, build].join(JOIN);
+      const n = client.check.files.length;
+      return { label: n === 1 ? "1 file needs repair" : `${n} files need repair`, tone: "warn" };
     }
     case "folderMissing":
-      return ["The game folder is missing", build].join(JOIN);
+      return { label: "Game folder missing", tone: "warn" };
     case "none":
-      return [client.folder === null ? "No game folder yet" : "Not checked yet", build, files].join(JOIN);
+      return { label: "Not verified", tone: "quiet" };
   }
 }
 
-/** The column's foot: the launcher's version, and a downloaded or available update. */
+/** PLAY's label: "Play", "Verifying 78%", "Starting" or "Running". */
+export function playWords(look: PlayLook): string {
+  switch (look.kind) {
+    case "lit":
+    case "closed":
+      return "Play";
+    case "running":
+      return "Running";
+    case "kindle":
+      if (look.task === "starting") {
+        return "Starting";
+      }
+      return look.percent === null ? "Verifying" : `Verifying ${percent(look.percent)}`;
+  }
+}
+
+/** The system's own name, for the line that says Play isn't supported on it yet. */
+export function systemName(os: string): string {
+  switch (os) {
+    case "windows":
+      return "Windows";
+    case "macos":
+      return "macOS";
+    case "linux":
+      return "Linux";
+    default:
+      return "this system";
+  }
+}
+
+/** The launcher's version, then an update: "0.5.1 · up to date", "0.5.1 · 0.5.2 ready". */
 export function versionLine(s: Snapshot): string {
   const { update } = s;
-  if (update.available === null) {
-    return update.upToDate ? `Launcher ${update.current} · up to date` : `Launcher ${update.current}`;
+  if (update.checking) {
+    return `${update.current}${JOIN}checking…`;
   }
-  return `Launcher ${update.current} · ${update.available} ${update.ready ? "ready" : "available"}`;
+  if (update.available === null) {
+    return update.upToDate ? `${update.current}${JOIN}up to date` : update.current;
+  }
+  return `${update.current}${JOIN}${update.available} ${update.ready ? "ready" : "available"}`;
 }

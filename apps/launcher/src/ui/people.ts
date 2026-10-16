@@ -1,56 +1,36 @@
-// Who's playing (DESIGN.md, Lists; plan LP5): 34 px avatars with initials, the name, and a short
-// line, under "Playing now". The host and the player sit on ember-tint with gold initials; the
-// others rotate through tinted grounds.
+// Who's playing (R4): under PLAY, up to four faces with initials and the names in gold, "Kai, Wen,
+// Shu playing". Running, the player leads as "You", on ember tint.
 import { h } from "../dom";
 
 /** "LY" for lin_yue, "W" for Wen. */
 export function initials(name: string): string {
   const parts = name.split(/[\s_.-]+/).filter(Boolean);
-  const letters = (parts.length > 1 ? parts.slice(0, 2).map((p) => p[0]) : [name[0] ?? "?"]).join("");
+  const letters = (parts.length > 1 ? parts.slice(0, 2).map((p) => [...p][0]) : [[...name][0] ?? "?"]).join("");
   return letters.toUpperCase();
 }
 
-/** 34 px in lists, 28 px in the account pill, 48 px on the Account page. */
-export function avatar(
-  name: string,
-  tint: number | null,
-  size: "regular" | "small" | "large" = "regular",
-): HTMLElement {
-  return h(
-    "span",
-    {
-      class: size === "regular" ? "avatar" : `avatar avatar-${size}`,
-      "data-tint": tint === null ? null : String(tint),
-      "aria-hidden": "true",
-    },
-    initials(name),
-  );
-}
+const FACES = 4;
+const NAMES = 3;
 
 /**
- * The "Playing now" section. `names` is who's online on the active server (`null` while signed
- * out there), `you` the player's own name, `host` the server's host.
+ * The friends' row: `names` is who's online, the player left out; `you`, the player's own name
+ * while their game runs. Nothing when no one is.
  */
-export function people(names: string[] | null, you: string | null, host: string | null): HTMLElement {
-  const heading = h("h2", { class: "column-heading" }, "Playing now");
-  if (names === null) {
-    return h("section", {}, heading, h("p", { class: "people-empty" }, "Sign in to see who's playing."));
+export function friends(names: string[], you: string | null): HTMLElement | null {
+  const everyone = you === null ? names : [you, ...names];
+  if (everyone.length === 0) {
+    return null;
   }
-  if (names.length === 0) {
-    return h("section", {}, heading, h("p", { class: "people-empty" }, "No one is playing right now."));
-  }
-  let others = 0;
-  const rows = names.map((name) => {
-    const own = name === you;
-    const hosts = host !== null && name === host;
-    const tint = own || hosts ? null : (others++ % 3) + 1;
-    const line = own ? "You · online" : hosts ? "Host · online" : "Online";
-    return h(
-      "li",
-      { class: "person" },
-      avatar(name, tint),
-      h("div", {}, h("div", { class: "person-name" }, name), h("div", { class: "person-line" }, line)),
-    );
-  });
-  return h("section", {}, heading, h("ul", { class: "people" }, rows));
+  const faces = everyone.slice(0, FACES).map((name, i) =>
+    h("span", { class: you !== null && i === 0 ? "face face-you" : "face", "aria-hidden": "true" }, initials(name)),
+  );
+  // Three friends by name, and the player before them, as the Running board has it.
+  const shown = [...(you === null ? [] : ["You"]), ...names.slice(0, NAMES)];
+  const more = names.length - Math.min(names.length, NAMES);
+  return h(
+    "div",
+    { class: "friends" },
+    h("span", { class: "faces" }, faces),
+    h("span", {}, h("span", { class: "gold" }, shown.join(", ")), more > 0 ? ` and ${more} more playing` : " playing"),
+  );
 }

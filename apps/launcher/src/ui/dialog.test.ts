@@ -2,17 +2,16 @@ import { expect, test } from "vitest";
 
 import { dialog } from "./dialog";
 
-test("the description sits under the title, beside the tile, as the AddServer and Update boards draw it", () => {
-  // The finish review's fix 7: it ran full width beneath the tile.
-  const d = dialog({
-    title: "Add a server",
-    icon: document.createElement("span"),
-    description: "Paste the link.",
-    actions: [],
-    onClose() {},
-  });
-  const heading = d.el.querySelector(".dialog-head > .dialog-heading")!;
-  expect(heading.querySelector(".dialog-title")!.textContent).toBe("Add a server");
-  expect(heading.querySelector(".dialog-description")!.textContent).toBe("Paste the link.");
-  expect(d.el.querySelector(".dialog-head > .tile")).not.toBeNull();
+test("a title, its description, the body, then the actions; Escape closes it", () => {
+  let closed = 0;
+  const first = document.createElement("button");
+  first.textContent = "Cancel";
+  const d = dialog({ title: "Add a server", description: "Paste the link.", actions: [first], onClose: () => (closed += 1) });
+  document.body.replaceChildren(d.el);
+  const box = d.el.querySelector('[role="dialog"]')!;
+  expect(box.getAttribute("aria-modal")).toBe("true");
+  expect(document.getElementById(box.getAttribute("aria-labelledby")!)!.textContent).toBe("Add a server");
+  expect(box.querySelector(".dialog-description")!.textContent).toBe("Paste the link.");
+  box.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(closed).toBe(1);
 });

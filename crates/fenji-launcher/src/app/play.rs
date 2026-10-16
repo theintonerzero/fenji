@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn the_words_for_a_prefix_past_its_limit_name_the_limit() {
-        let minutes = format!("after {} minutes", PREFIX_LIMIT.as_secs() / 60);
+        let minutes = format!("over {} minutes", PREFIX_LIMIT.as_secs() / 60);
         assert!(words::PREFIX_TOO_LONG.contains(&minutes));
     }
 

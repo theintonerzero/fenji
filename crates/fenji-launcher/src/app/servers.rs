@@ -18,7 +18,7 @@ use crate::settings::AddOutcome;
 
 /// How often the active server is probed (L10).
 const ACTIVE_EVERY: Duration = Duration::from_secs(15);
-/// How often every server is probed while the Servers tab shows (L10).
+/// How often every server is probed: the rail always shows them all (L10; the redesign's R8).
 const SWEEP_EVERY: Duration = Duration::from_secs(30);
 /// How often the active server is asked who's online (spec §3.3).
 const PLAYERS_EVERY: Duration = Duration::from_secs(15);
@@ -49,7 +49,7 @@ pub(super) fn session_over(e: &ApiError) -> bool {
 
 impl App {
     /// The loop's work: the active server every 15 s (and at once at start), every server every
-    /// 30 s while the Servers tab shows, and who's online every 15 s.
+    /// 30 s, and who's online every 15 s.
     fn tick(&self) {
         let now = Instant::now();
         let due: Vec<u32> = {
@@ -64,7 +64,7 @@ impl App {
             {
                 due.push(id);
             }
-            if st.tab == Tab::Servers && st.swept_at.is_none_or(|at| now - at >= SWEEP_EVERY) {
+            if st.swept_at.is_none_or(|at| now - at >= SWEEP_EVERY) {
                 st.swept_at = Some(now);
                 due.extend(st.settings.servers.iter().map(|s| s.id));
             }

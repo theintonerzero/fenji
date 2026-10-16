@@ -178,6 +178,51 @@ async fn a_silent_server_never_holds_up_the_rest() {
 }
 
 #[tokio::test]
+async fn every_server_in_the_rail_is_probed_with_no_servers_tab() {
+    // The redesign's R8: the rail always shows every server, so the model probes them all every
+    // 30 s, not only while a Servers tab shows. A launcher opened again on saved servers knew
+    // only the active one's state.
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (a, _ca) = server(one.path(), "", GateLimits::default()).await;
+    let (b, _cb) = server(two.path(), "", GateLimits::default()).await;
+    let cfg = config(one.path());
+    let first = App::start(cfg.clone(), tokio::runtime::Handle::current());
+    for s in [&a, &b] {
+        first
+            .intent(Intent::AddServer {
+                text: format!("http://{}", s.api_addr),
+            })
+            .await
+            .unwrap();
+    }
+    until(&first, |s| {
+        s.servers.len() == 2
+            && s.servers
+                .iter()
+                .all(|v| matches!(v.status, StatusView::Online))
+    })
+    .await;
+    let active = first.snapshot().servers[0].id;
+    first
+        .intent(Intent::SelectServer { id: active })
+        .await
+        .unwrap();
+    drop(first);
+    // Opened again, as a player does: no tab is ever shown.
+    let next = App::start(cfg, tokio::runtime::Handle::current());
+    let s = until(&next, |s| {
+        s.servers.len() == 2
+            && s.servers
+                .iter()
+                .all(|v| matches!(v.status, StatusView::Online))
+    })
+    .await;
+    assert_eq!(s.active, Some(active));
+    a.shutdown().await.unwrap();
+    b.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn maintenance_and_a_ban_reach_the_player_in_words() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
@@ -651,7 +696,7 @@ async fn one_game_at_a_time_and_play_refuses_in_words() {
     let w = PlayBed::on(Os::Windows).await;
     assert_eq!(
         w.app.intent(Intent::Play).await.unwrap_err().to_string(),
-        "Fenji can't start the client on this system yet"
+        "Playing on this system isn't supported yet"
     );
     let m = PlayBed::new().await;
     m.signed_in().await;
@@ -717,7 +762,7 @@ async fn the_folder_and_downloads_wait_while_the_game_starts_or_runs() {
     ] {
         assert_eq!(
             t.app.intent(intent).await.unwrap_err().to_string(),
-            "Not while the game is starting or running. Try again once it has ended."
+            "Not while the game is running."
         );
     }
     assert_eq!(
@@ -757,7 +802,7 @@ async fn a_start_stuck_making_the_prefix_can_be_cancelled() {
     t.app.intent(Intent::CancelStart).await.unwrap();
     let s = until(&t.app, |s| matches!(s.game, GameView::Idle)).await;
     let notice = s.notice.unwrap();
-    assert_eq!(notice.text, "The start was cancelled.");
+    assert_eq!(notice.text, "Start cancelled.");
     assert!(!notice.error);
     // Everything umu-run started ends, though Proton has a session of its own and ignores SIGTERM
     // (#348's final review).
@@ -793,7 +838,7 @@ async fn a_client_that_fails_its_check_never_starts() {
     std::fs::write(t.client.join("bin64/a.dll"), b"tampered").unwrap();
     assert_eq!(
         t.app.intent(Intent::Play).await.unwrap_err().to_string(),
-        "Some game files need repair. The Client tab shows which."
+        "Some game files need repair. Open Game."
     );
     assert!(!t.record.exists(), "the client was started");
     t.s.shutdown().await.unwrap();
@@ -807,7 +852,7 @@ async fn a_client_that_dies_at_once_says_it_couldnt_start() {
     let s = until(&t.app, |s| matches!(s.game, GameView::Ended { .. })).await;
     assert_eq!(
         s.notice.unwrap().text,
-        "The game couldn't start: umu-run ended with 7. The log folder has the details."
+        "The game couldn't start (code 7). See the logs."
     );
     t.s.shutdown().await.unwrap();
 }
