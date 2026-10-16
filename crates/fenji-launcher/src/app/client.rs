@@ -56,7 +56,8 @@ pub(super) struct CheckJob {
     folder: PathBuf,
     manifest: Manifest,
     level: LevelView,
-    /// Files hashed in full before every file has `level`'s check: a repair's (spec §3.5).
+    /// Files hashed in full before every file has `level`'s check: those the last check found
+    /// wrong, when this one is quick (spec §3.5; #348).
     deep: Vec<String>,
     stop: Arc<AtomicBool>,
 }
@@ -144,14 +145,14 @@ impl App {
             free(st)?;
             st.settings.client = Some(PathBuf::from(&path));
             self.save(st);
-            self.begin_check(st, LevelView::Quick, Vec::new())
+            self.begin_check(st, LevelView::Quick)
         })?;
         self.run_check(job);
         Ok(())
     }
 
     pub(super) fn check(&self, level: LevelView) -> Result<(), IntentError> {
-        let job = self.change(|st| self.begin_check(st, level, Vec::new()))?;
+        let job = self.change(|st| self.begin_check(st, level))?;
         self.run_check(job);
         Ok(())
     }
@@ -160,7 +161,7 @@ impl App {
     pub(super) fn check_at_start(&self) {
         let job = self.change(|st| {
             st.settings.client.as_ref()?;
-            self.begin_check(st, LevelView::Quick, Vec::new()).ok()
+            self.begin_check(st, LevelView::Quick).ok()
         });
         if let Some(job) = job {
             self.run_check(job);
@@ -175,15 +176,18 @@ impl App {
         });
     }
 
-    /// Marks a check of the saved folder as the running job: every file at `level`, after the
-    /// files in `deep` are hashed in full.
-    fn begin_check(
-        &self,
-        st: &mut State,
-        level: LevelView,
-        deep: Vec<String>,
-    ) -> Result<CheckJob, IntentError> {
+    /// Marks a check of the saved folder as the running job: every file at `level`. A quick check
+    /// of a copy whose last check found files wrong hashes those in full first, so a file still
+    /// wrong with the right size can't pass it: after a repair (spec §3.5), by Fenji or by hand,
+    /// and before Play (#348).
+    fn begin_check(&self, st: &mut State, level: LevelView) -> Result<CheckJob, IntentError> {
         free(st)?;
+        let deep = match (level, &st.client.check) {
+            (LevelView::Quick, CheckView::NeedsRepair { files, .. }) => {
+                files.iter().map(|f| f.path.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
         let folder = st
             .settings
             .client
@@ -229,7 +233,7 @@ impl App {
         &self,
         level: LevelView,
     ) -> Result<Option<CheckView>, IntentError> {
-        let job = self.change(|st| self.begin_check(st, level, Vec::new()))?;
+        let job = self.change(|st| self.begin_check(st, level))?;
         Ok(self.run_check_here(job).await)
     }
 
@@ -567,13 +571,15 @@ impl App {
                 st.settings.client = Some(folder);
                 self.save(st);
             }
-            // After a download, every file in full. After a repair, the repaired files in full
-            // (spec §3.5), then every file's quick check, which the record names: a full check of
-            // every file would hash the whole copy, 100 GiB for the pinned build (#348).
-            match files {
-                None => self.begin_check(st, LevelView::Full, Vec::new()),
-                Some(files) => self.begin_check(st, LevelView::Quick, files),
-            }
+            // After a download, every file in full. After a repair, a quick check, which hashes
+            // the repaired files in full first (spec §3.5), and which the record names: a full
+            // check would hash the whole copy, 100 GiB for the pinned build (#348).
+            let level = if files.is_none() {
+                LevelView::Full
+            } else {
+                LevelView::Quick
+            };
+            self.begin_check(st, level)
         });
         match job {
             Ok(job) => self.run_check(job),
@@ -949,6 +955,55 @@ exit {code}"#,
             "after the second repair: {:?}",
             s.client.check
         );
+    }
+
+    #[tokio::test]
+    async fn a_quick_check_hashes_the_files_found_wrong_in_full() {
+        // #348's final review: after a repair by hand (DepotDownloader in the player's own
+        // terminal, or files copied from a Gameforge install), a quick check saw only sizes outside
+        // bin64, so a file still wrong with the right size passed, and Play could start with it.
+        let t = Testbed::new(&[("bin64/a.dll", 10), ("data/c.pak", 100)]);
+        let app = t.app();
+        app.intent(Intent::ChooseFolder {
+            path: t.good.display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Quick)).await;
+        let mut bytes = std::fs::read(t.good.join("data/c.pak")).unwrap();
+        bytes[0] ^= 0xff;
+        std::fs::write(t.good.join("data/c.pak"), &bytes).unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Full,
+        })
+        .await
+        .unwrap();
+        until(&app, |s| {
+            matches!(s.client.check, CheckView::NeedsRepair { .. })
+        })
+        .await;
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        let s = until(&app, |s| s.job.is_none()).await;
+        let CheckView::NeedsRepair { files, .. } = &s.client.check else {
+            panic!(
+                "the quick check passed a file it knew was wrong: {:?}",
+                s.client.check
+            )
+        };
+        assert_eq!(files[0].path, "data/c.pak");
+        // Fixed by hand, it passes the next quick check.
+        bytes[0] ^= 0xff;
+        std::fs::write(t.good.join("data/c.pak"), &bytes).unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Quick)).await;
     }
 
     #[tokio::test]
