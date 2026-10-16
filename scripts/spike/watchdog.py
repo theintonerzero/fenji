@@ -1239,8 +1239,9 @@ def watch(a, log, stream):
             why = None if found else unanswered(final=not sandbox_alive)
             if why and sandbox_alive:
                 # Exit 4 ends the run: first every log is read to its end and scanned, as at the end
-                # of a run, and the registry read, so that a sign written so far still wins.
-                found = check_log(final=True) + check_reg()
+                # of a run, then the *.sys files and the processes are read again (S1, S2) and the
+                # registry read, so that a sign written so far, since this poll's scans too, still wins.
+                found = check_log(final=True) + check_sys() + check_procs() + check_reg()
                 if found:
                     log(f"sign found while ending the run for the fail safe ({why})")
             if found:

@@ -13,6 +13,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("watchdog", HERE / "watchdog.py")
@@ -499,6 +500,12 @@ for at, binary, rename, rename_t, die_t in plan:
     if binary == "@log":  # [at, "@log", n, text, 0]: append text to client n's log
         with open(f"{d}/out/log-{rename}.log", "a") as fh:
             fh.write(rename_t)
+        continue
+    if binary == "@when":  # [at, "@when", path, name, die_t]: once path exists, start name
+        deadline = time.time() + 15
+        while not os.path.exists(rename) and time.time() < deadline:
+            time.sleep(0.005)
+        procs.append(subprocess.Popen([f"{d}/bin/{rename_t}", f"{d}/proc.py", "-", "0", str(t0 + die_t)]))
         continue
     procs.append(subprocess.Popen([f"{d}/bin/{binary}", f"{d}/proc.py", rename, str(t0 + rename_t), str(t0 + die_t)]))
 for q in procs:
@@ -1065,6 +1072,53 @@ class TwoClientsWholeLoop(WholeLoop):  # Amendment B: two clients, one log each
         self.assertEqual(rc, 3)
         self.assertIn("S3 LoadDriver for non-baseline service agt: " + AGT_LOADDRIVER, trig)
         self.assertRegex(trig, r"client 2 pid \d+ .*no log of its own")
+
+    THREE = [[0.0, "gujianol.exe", "-", 0, 4.0], [0.5, "gujianol.exe", "-", 0, 4.0], [1.0, "gujianol.exe", "-", 0, 4.0]]
+
+    def test_a_sys_file_written_in_the_poll_that_ends_the_run_for_the_fail_safe_is_exit_3(self):  # #244
+        # A third client with two logs ends the run with exit 4 once the poll's signs are read. A
+        # .sys file appears after that poll's S1 scan, as its process scan finds the third client:
+        # S1 is read again before exit 4, and the sign wins.
+        third, track, scan = [], wd.track_clients, wd.scan_sys
+
+        def tracking(seen, clients, info_of):
+            if len(clients) >= 3:
+                third.append(True)
+            return track(seen, clients, info_of)
+
+        def scanning(root, prune=()):
+            if third:
+                pathlib.Path(root, "agt.sys").write_bytes(b"MZ")
+            return scan(root, prune)
+
+        with mock.patch.object(wd, "track_clients", tracking), mock.patch.object(wd, "scan_sys", scanning):
+            rc, trig = self.watch(self.THREE, logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        self.assertEqual(rc, 3)
+        self.assertIn("S1 new .sys file", trig)
+        self.assertIn("sign found while ending the run for the fail safe", self.watchdog_log)
+
+    def test_a_winedevice_started_in_the_poll_that_ends_the_run_for_the_fail_safe_is_exit_3(self):  # #244
+        # As above, with a winedevice.exe that starts after that poll's process scan: S2 is read
+        # again before exit 4 too.
+        with tempfile.TemporaryDirectory() as tmp:
+            cue, started, track = pathlib.Path(tmp, "start the winedevice"), [], wd.track_clients
+
+            def tracking(seen, clients, info_of):
+                found = track(seen, clients, info_of)
+                if len(clients) >= 3 and not started:
+                    started.append(True)
+                    cue.touch()
+                    init, deadline = seen[next(iter(clients))]["ppid"], time.time() + 10
+                    while time.time() < deadline and not any(
+                            (wd.proc_info(c) or {}).get("comm") == "winedevice.exe" for c in wd.children(init)):
+                        time.sleep(0.01)
+                return found
+
+            with mock.patch.object(wd, "track_clients", tracking):
+                rc, trig = self.watch(self.THREE + [[1.0, "@when", str(cue), "winedevice.exe", 4.0]],
+                                      logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        self.assertEqual(rc, 3)
+        self.assertIn("S2 winedevice.exe started after the client", trig)
 
     def test_a_client_found_just_before_the_end_is_held_to_its_log(self):  # Ruling R17 (a)
         # Found well within the grace, the client was never held to its log while it ran: after the
