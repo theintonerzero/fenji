@@ -835,9 +835,13 @@ fn an_attached_console_left_by_a_signal_gives_the_terminal_its_mode_back() {
     let mut console = Window::holding(&server.config, &["console"], Held::Given);
     console.drawn("attached");
     assert!(!console.cooked(), "the console holds the terminal raw");
-    // The terminal takes no more output: the console's next frame, at the next second, waits.
+    // The terminal takes no more output, and a key makes a frame due at once: its write waits,
+    // well before the signal, so the console is caught in it, however loaded the machine (Task 7's
+    // review, Minor 4). Without the frame, it would leave as usual, and its give-back gives the
+    // mode back before its own write waits.
     rustix::termios::tcflow(&console.terminal, rustix::termios::Action::OOff).unwrap();
-    std::thread::sleep(Duration::from_millis(1500));
+    console.type_keys(b"x");
+    std::thread::sleep(Duration::from_millis(1000));
     kill_process(Pid::from_child(&console.child), Signal::TERM).unwrap();
     let status = exit_of(&mut console.child, || "still running after SIGTERM".into());
     assert_eq!(status.code(), Some(0), "{status}");
