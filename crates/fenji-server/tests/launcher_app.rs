@@ -178,6 +178,51 @@ async fn a_silent_server_never_holds_up_the_rest() {
 }
 
 #[tokio::test]
+async fn every_server_in_the_rail_is_probed_with_no_servers_tab() {
+    // The redesign's R8: the rail always shows every server, so the model probes them all every
+    // 30 s, not only while a Servers tab shows. A launcher opened again on saved servers knew
+    // only the active one's state.
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (a, _ca) = server(one.path(), "", GateLimits::default()).await;
+    let (b, _cb) = server(two.path(), "", GateLimits::default()).await;
+    let cfg = config(one.path());
+    let first = App::start(cfg.clone(), tokio::runtime::Handle::current());
+    for s in [&a, &b] {
+        first
+            .intent(Intent::AddServer {
+                text: format!("http://{}", s.api_addr),
+            })
+            .await
+            .unwrap();
+    }
+    until(&first, |s| {
+        s.servers.len() == 2
+            && s.servers
+                .iter()
+                .all(|v| matches!(v.status, StatusView::Online))
+    })
+    .await;
+    let active = first.snapshot().servers[0].id;
+    first
+        .intent(Intent::SelectServer { id: active })
+        .await
+        .unwrap();
+    drop(first);
+    // Opened again, as a player does: no tab is ever shown.
+    let next = App::start(cfg, tokio::runtime::Handle::current());
+    let s = until(&next, |s| {
+        s.servers.len() == 2
+            && s.servers
+                .iter()
+                .all(|v| matches!(v.status, StatusView::Online))
+    })
+    .await;
+    assert_eq!(s.active, Some(active));
+    a.shutdown().await.unwrap();
+    b.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn maintenance_and_a_ban_reach_the_player_in_words() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
