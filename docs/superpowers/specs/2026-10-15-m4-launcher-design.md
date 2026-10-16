@@ -302,3 +302,30 @@ Each is the controller's, made under the owner's pre-approval, and recorded so t
 | L16 | PRIVACY.md lists the update check, the two tool downloads and umu-launcher's own downloads. "Update automatically" turns the check off (§3.11). | PRIVACY.md today says Fenji makes no update checks. | Wording. |
 | L17 | A download goes to `~/Games/SoLO` unless the player chooses another folder (§3.5). | The approved ClientSetup board. | A default path. |
 | L18 | In Add server, a bare host means `https://` on port 443, checked by the usual authorities. Servers with their own key come by link (§3.3). | Only a link carries a pin, and plain http stays on this machine (M3 D12). | One default. |
+
+## 8. Amendment A: Steam copies, and DepotDownloader inside the launcher (the owner, 2026-10-16)
+
+The owner, after v0.5.0: "depot downloader for those who dont have access to the game via steam app right, if downloaded via steam can use that copy etc (and the qr and hidden depot downloader within the launcher too)". A player whose copy Steam installed uses it as it is. A player who owns the game on Steam but hasn't got it signs in to DepotDownloader inside the launcher, by QR code. Only a password sign-in, for a player without the Steam Mobile App, still opens a terminal. Where this section and the earlier ones differ, this section wins. The follow-ups plan's tasks carry each item, built inline as the launcher was.
+
+- **A copy Steam installed (LA1).**
+  - Steam's own files list the player's libraries: `libraryfolders.vdf` under Steam's folder. On Linux that folder is `~/.steam/steam`, `~/.local/share/Steam`, or the Flatpak's or Snap's. On Windows, it's the folder the registry names, or the default.
+  - A library with `steamapps/appmanifest_1418100.acf` holds the game, in `steamapps/common/` under the manifest's `installdir`. The manifest's `buildid` tells at once whether it's the pinned build, 10015727.
+  - Found, the Client tab's setup screen offers it first: "Found in your Steam library", the folder, and "Use it", the screen's one ember. Using it is choosing that folder, so the quick check runs as for any folder. A different build says so, and asks the player to update the game in Steam.
+- **Fenji never writes into a Steam library (LA2).** A copy there that needs repair is repaired by Steam itself. The Repair screen names Steam's "Verify integrity of game files", in place of "Repair from Steam". DepotDownloader stays for copies in a folder of the player's own.
+- **Play never goes through Steam (LA3).** The launcher starts a copy from a Steam library as it starts any other: through umu-run on Linux, so it can hand the game its ticket and keep one game at a time (§3.7). Steam may be running. If the acceptance session shows that the unmodified client, started this way, hands itself to Steam or stalls, the launcher asks the player to close Steam before Play. After M4, the patcher can remove the client's Steam and Gameforge SDK calls (ground rule 6). A patched client started *through* Steam would reach Steam: that is a decision gate, and nothing here does it.
+- **DepotDownloader runs hidden, and the QR code shows in the launcher (LA4).**
+  - Download and Repair run DepotDownloader 3.4.0 as the launcher's own child, with `-qr`. Its input is closed and its output goes to the model.
+  - It draws the sign-in code as text, two characters a module (QRCoder's `AsciiQRCode`): after "Use the Steam Mobile App to sign in with this QR code:", and again after "The QR code has changed:".
+  - The model reads those lines as the code's squares, and the Downloading screen draws them, with "Scan this with the Steam Mobile App". Fenji never decodes the code: it redraws what DepotDownloader drew.
+  - Progress lines are read as in §3.6, and the run's end is the child's exit. Cancel ends the child's process group.
+  - Every other line is dropped unread: never logged, shown or kept. That includes the account name DepotDownloader prints after a sign-in (ground rule 7).
+  - The code is a sign-in request that only the player's Steam app can approve, and the session goes to DepotDownloader. No password or token passes through Fenji. There's still no `-remember-password`, so each download signs in again.
+- **A password sign-in keeps its terminal (LA5).** "No Steam Mobile App? Sign in with your password" opens DepotDownloader in a terminal, as L3 described, or shows the command for the player's own terminal (#348). The password is typed into DepotDownloader there, never into Fenji.
+- **Steam's Proton (LA6).** On Linux, when a Steam library holds Proton, umu-run uses the newest stable `Proton x.y` there (`PROTONPATH`), unless the player set one. So a player with Steam skips Proton's download on the first start. This comes after a game-box rehearsal shows that version starting the client through umu-run.
+
+| # | Ruling | Why | Cost if wrong |
+|---|---|---|---|
+| L19 | A Steam install is found through Steam's library files, and offered first on the setup screen. Fenji never writes into a Steam library, and Steam's "Verify integrity" repairs a copy there (LA1, LA2). | The player has the copy already, and Steam's record of it must stay true. | A repair in place later. |
+| L20 | Play starts the game itself, never through Steam (LA3). | The ticket, one game at a time, and ground rule 6's gate for a patched client. | Closing Steam before Play, should the acceptance session need it. |
+| L21 | DepotDownloader runs hidden with `-qr`, and the launcher redraws its QR code from DepotDownloader's own output. Only a password sign-in keeps the terminal. This replaces L3's terminal for the QR sign-in (LA4, LA5). | The owner's decision. No credential passes through Fenji, and the window that opened beside the launcher goes. | The terminal path, kept for passwords, back for everyone. |
+| L22 | umu-run uses Steam's newest stable Proton when a library holds one, after a rehearsal (LA6). | The first start's largest download, skipped. | umu's own Proton, as before. |

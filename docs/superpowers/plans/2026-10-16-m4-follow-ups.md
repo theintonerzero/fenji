@@ -10,7 +10,8 @@
 - #281: the world's final review's follow-ups;
 - #282: back to character select;
 - #244: the two-client runners and watchdog;
-- #174: the v0.4.1 review's last two runner items.
+- #174: the v0.4.1 review's last two runner items;
+- the launcher spec's Amendment A (the owner, 2026-10-16): Steam copies, and DepotDownloader inside the launcher (Tasks 10–13).
 
 The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-13-m4-world-design.md`, `…/2026-10-14-m4-hosting-design.md` and `…/2026-10-15-m4-launcher-design.md`.
 
@@ -28,8 +29,8 @@ The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-1
 ## Releases
 
 - **0.5.1:** T1, T2 and T3, what M4's acceptance session will touch first.
-- **0.5.2:** T4 to T7, robustness, tests, docs and tooling.
-- **0.5.3:** T8 and T9, what needs the client.
+- **0.5.2:** T4 to T7, robustness, tests, docs and tooling, and T10, a copy Steam installed.
+- **0.5.3:** T8 and T9, what needs the client, and T11 to T13, DepotDownloader inside the launcher.
 
 Each release follows `docs/development.md`'s steps, and the owner approves its `sign` job.
 
@@ -99,6 +100,44 @@ Find what the client expects after type 4 in the world, answer it, and return th
 ### Task 9 (local, RE and client runs): #281's local checks
 - The creation data other players receive: whether the name rule can spell the `locale_str` setter's unpickle prefix, and validating the face string as the client does.
 - `!tp` across scenes: verify the client path in a run, then lift the refusal.
+
+### Task 10 (inline): a copy Steam installed (launcher spec Amendment A, LA1, LA2; L19)
+- The model finds SoLO in the player's Steam libraries:
+  - `libraryfolders.vdf` under Steam's folder: on Linux `~/.steam/steam`, `~/.local/share/Steam`, the Flatpak's and the Snap's; on Windows, the folder the registry names, or the default;
+  - then `appmanifest_1418100.acf`, its `installdir` and `buildid`.
+
+  It's tested with fake Steam folders: several libraries, a missing or garbled file, another build.
+- The setup screen offers a found copy first ("Found in your Steam library", the folder, "Use it"), designed with `impeccable` from DESIGN.md. Using it chooses that folder, and the quick check runs.
+- A copy in a Steam library is never written to:
+  - Repair names Steam's "Verify integrity of game files" in place of "Repair from Steam";
+  - Download refuses a folder inside a Steam library, in words.
+- PRIVACY.md says the launcher reads Steam's library files, on this computer only, to find the game.
+
+### Task 11 (local): the rehearsal for DepotDownloader inside the launcher (LA4, LA6)
+- On the game box, DepotDownloader 3.4.0 run as a child with `-qr`, its input closed and its output piped:
+  - the exact lines of the code, of "The QR code has changed:", of progress, of the end, and of a cancel;
+  - whether anything needs a terminal.
+
+  Kept as fixtures for Task 12's parser, with the account name and anything identifying taken out.
+- Steam's newest stable Proton through umu-run (`PROTONPATH`), starting the pinned client under `scripts/spike/run-bare.sh`'s guards (Steam not running). It must reach the lobby against a local fenji-server, as the launcher's bare-metal end to end did.
+
+### Task 12 (inline): DepotDownloader hidden, its QR code in the launcher (LA4, LA5; L21)
+- The download and the repair run DepotDownloader as the model's own child, in a process group of its own:
+  - the code's lines read into its squares;
+  - progress as in §3.6;
+  - every other line dropped unread;
+  - Cancel ends the group.
+- The Downloading screen draws the code as SVG squares with "Scan this with the Steam Mobile App", and redraws it when it changes. It's designed with `impeccable` from DESIGN.md.
+- "No Steam Mobile App? Sign in with your password" keeps the terminal and the manual command (#348).
+- PRIVACY.md says what the launcher reads of DepotDownloader's output (the code, progress, the end) and that it keeps none of it.
+- Tests:
+  - Task 11's fixtures through the parser;
+  - a fake DepotDownloader that draws a code, changes it, then downloads;
+  - no snapshot and no log line ever holds a code line or the account-name line.
+
+### Task 13 (inline): Steam's Proton for umu-run (LA6; L22)
+- When a Steam library holds Proton, and the player set none, umu-run gets the newest stable `Proton x.y` there as `PROTONPATH`, after Task 11 showed it works.
+- Tested with fake Steam folders: Experimental and betas skipped, the player's own setting winning.
 
 ## Review Focus
 1. **Nothing a player or a host does in the acceptance session should get worse.** A fix that changes a flow a host or player sees has its write-up line updated in the same PR.
