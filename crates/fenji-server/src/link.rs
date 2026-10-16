@@ -24,6 +24,7 @@ use fenji_proto::world::{self, PlayerActor};
 use fenji_store::{Account, Character, Store};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, MissedTickBehavior};
 
@@ -206,6 +207,23 @@ pub(crate) async fn play(
                 return gate::close_told(sock, peer, gate, server, account, closing).await;
             }
             () = &mut unreleased => {
+                // The select! is unbiased: after a write held past `let_go`, the world's Kicked
+                // may be waiting too. What the world sent is read first, and only a world that
+                // has sent nothing to end on is said not to have let go. The rest goes unsent: the
+                // server is stopping.
+                loop {
+                    match rx.try_recv() {
+                        Ok(WorldOut::Kicked(reason)) => {
+                            return kicked(sock, peer, gate, server, account, reason).await;
+                        }
+                        Ok(_) => {}
+                        Err(TryRecvError::Disconnected) => {
+                            tracing::info!(%peer, account = %account.username, "the world let go: closing");
+                            return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                    }
+                }
                 tracing::warn!(%peer, account = %account.username, "the server is stopping, and the world hasn't let go: closing");
                 return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
             }
@@ -1228,6 +1246,72 @@ mod tests {
                 gate::SERVER_STOPPING.as_bytes().to_vec()
             )]
         );
+    }
+
+    #[test]
+    fn a_world_that_let_go_in_time_is_never_blamed_for_a_write_held_past_let_go() {
+        // #363's review: the link's select! is unbiased. When the stop begins and a write is then
+        // held past `let_go`, the world's Kicked(Shutdown) and `let_go`'s end are both ready once
+        // it finishes, and the link took the second about half the time, warning that the world
+        // hadn't let go. Here the client reads nothing for longer than `let_go` while the world
+        // sends more than the socket holds, then lets go.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (events, log) = logged(|| {
+            rt.block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut gate, mut inbox) = gate(dir.path()).await;
+                let let_go = Duration::from_millis(200);
+                gate.limits.let_go = let_go;
+                let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+                let (_newer, mut replaced) = oneshot::channel();
+                let tester = account("tester");
+                let played = play(
+                    &mut ours,
+                    peer,
+                    &gate,
+                    &mut server,
+                    &tester,
+                    1,
+                    lin(None),
+                    &mut replaced,
+                );
+                let world = async {
+                    let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                        panic!("a join first")
+                    };
+                    gate.stopping.send_replace(true);
+                    // The link begins its wait for the world to let go.
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let text = "x".repeat(512 * 1024);
+                    for _ in 0..16 {
+                        let line = ChatOut::System { text: text.clone() };
+                        out.send(WorldOut::Chat(line)).await.unwrap();
+                    }
+                    out.send(WorldOut::Kicked(KickReason::Shutdown))
+                        .await
+                        .unwrap();
+                    tokio::time::sleep(let_go * 3).await;
+                    rest(&mut theirs, &mut client).await
+                };
+                let (ended, events) = tokio::time::timeout(Duration::from_secs(20), async {
+                    tokio::join!(played, world)
+                })
+                .await
+                .expect("within 20 s");
+                ended.unwrap();
+                events
+            })
+        });
+        assert_eq!(
+            events.last(),
+            Some(&ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            ))
+        );
+        assert!(!log.contains("hasn't let go"), "{log}");
     }
 
     #[tokio::test]

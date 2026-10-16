@@ -34,11 +34,21 @@ use crate::config::Config;
 pub const MAX_INPUTS_PER_TICK: usize = 128;
 
 /// How long a stall a connection's allowance covers: it holds [`MAX_INPUTS_PER_TICK`] for each
-/// tick period in this long, so what a client sent during a stall, which then arrives at once,
-/// passes. That's so whether the player's network stalled (#281), which the world never sees, or
+/// tick period in this long, up to [`MAX_BURST`], so what a client sent during a stall, which then
+/// arrives at once, passes. That's so whether the player's network stalled (#281), which the world never sees, or
 /// the world itself did, its thread or process paused (#222). An honest client sends far less
 /// than the limit, and its allowance stays full.
 pub const MAX_STALL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The most a connection's allowance holds, in messages, whatever the tick rate (#281). Without it
+/// [`MAX_STALL`]'s worth grew with `tick_hz`: 12,800 messages at 20 Hz, and 39,936 at 60.
+///
+/// An honest client's backlog after a five-second stall is far less: a move each 50 ms at most,
+/// 100; a pull for each player coming into view, 200 at most (`[server] max_players`); and a few
+/// lines of chat. So this many still passes every stall [`MAX_STALL`] covers, at every tick rate.
+/// The worst tick, with every player bursting at once, takes this many from each: 40,000 messages
+/// with 20 players, where it was 256,000 at 20 Hz and 798,720 at 60.
+pub const MAX_BURST: usize = 2_000;
 
 /// How long the world keeps where a character left. Its save is written off the tick, so a login
 /// that reads the store before it lands would come back at an older place (#222); a minute is far

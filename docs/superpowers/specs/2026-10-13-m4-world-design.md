@@ -82,7 +82,7 @@ Everything here is **Inferred** from scripts and tables unless marked otherwise.
 - **68 `PROTOS2C_ROBOT_CMD`** makes the client write files at paths the server chooses, then run a script from disk.
 - **714 `PROTOS2C_DESIGN_REMOTE_INVOKE`** calls any exported function, opening URLs among them.
 
-Neither is on fenji-proto's never-send list yet.
+Both are on fenji-proto's never-send list now (#209), with ten others: [`lobby.md`](../../protocol/packets/lobby.md) 2.3 gives all twelve.
 
 ## 3. Design
 

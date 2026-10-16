@@ -50,4 +50,5 @@ admins = []                     # accounts that may use !tp, !kick, !announce an
 start_scene = 5                 # the scene new characters enter
 start_position = [2366.0, -71735.0, 64854.0, 345.0]   # x, y, z (up) and a yaw in degrees
 move_tolerance = 1.5            # how lenient the speed check is (1.0 to 5.0)
-save_every_secs = 300           # how often everyone's place is saved, besides on leaving
+save_every_secs = 300           # how often everyone's place is saved, in seconds (30 to 3600);
+#                               # each player's is saved on leaving too

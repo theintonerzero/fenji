@@ -145,11 +145,33 @@ async fn shutdown_saves_everyone_still_in_the_world() {
 async fn the_world_ticks_and_reports_its_tick_times() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _clock) = server(dir.path(), "", GateLimits::default()).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let r = s.ticks();
-    assert!(r.ticks >= 5, "{r:?}");
-    assert!(r.p50 <= r.p99 && r.p99 <= r.max, "{r:?}");
+    // The quantiles' order holds even for a report that measured nothing, all zeros (#281), so
+    // the count must also go on as the world ticks, and a tick's work must show.
+    let first = ticked(&s, 1).await;
+    let later = ticked(&s, first.ticks + 5).await;
+    assert!(later.ticks >= first.ticks + 5, "{first:?} then {later:?}");
+    assert!(
+        later.max > Duration::ZERO,
+        "a tick's work was measured: {later:?}"
+    );
+    assert!(
+        later.p50 <= later.p99 && later.p99 <= later.max,
+        "{later:?}"
+    );
     s.shutdown().await.unwrap();
+}
+
+/// The server's tick report once it counts at least `ticks` (5 s at most; the world ticks 20
+/// times a second).
+async fn ticked(s: &RunningServer, ticks: u64) -> fenji_server::world::TickReport {
+    for _ in 0..100 {
+        let r = s.ticks();
+        if r.ticks >= ticks {
+            return r;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("fewer than {ticks} ticks within 5 s: {:?}", s.ticks());
 }
 
 #[tokio::test]

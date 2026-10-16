@@ -27,9 +27,10 @@ pub struct Rules {
     /// How often everyone's place is saved, in milliseconds (`[world] save_every_secs`).
     pub save_every_ms: u64,
     /// The most messages a connection may send a tick, kept up: each tick gives this many back
-    /// to its allowance, which holds [`MAX_STALL`]'s worth ([`Inputs`]).
+    /// to its allowance, which holds [`MAX_STALL`]'s worth, up to [`MAX_BURST`] ([`Inputs`]).
     ///
     /// [`MAX_STALL`]: super::MAX_STALL
+    /// [`MAX_BURST`]: super::MAX_BURST
     pub max_inputs_per_tick: usize,
 }
 
@@ -76,8 +77,9 @@ struct Greeted;
 pub(super) struct Doomed(pub Option<KickReason>);
 
 /// A connection's allowance of messages to the world, a token bucket (#281). It starts full,
-/// each tick gives `max_inputs_per_tick` back, and it holds [`MAX_STALL`]'s worth of them
-/// ([`input_cap`]). Each message spends one, and one with none left is a flood, which is kicked.
+/// each tick gives `max_inputs_per_tick` back, and it holds [`MAX_STALL`]'s worth of them, up to
+/// [`MAX_BURST`] ([`input_cap`]). Each message spends one, and one with none left is a flood,
+/// which is kicked.
 ///
 /// So a client is held to the limit over time, while what it sent during a stall, which arrives
 /// at once, passes within the cap: a stall of the player's network, which the world never sees,
@@ -85,6 +87,7 @@ pub(super) struct Doomed(pub Option<KickReason>);
 /// can't buy itself more by making ticks slow (Ruling R10).
 ///
 /// [`MAX_STALL`]: super::MAX_STALL
+/// [`MAX_BURST`]: super::MAX_BURST
 #[derive(Component, Debug, Clone, Copy)]
 struct Inputs(usize);
 
@@ -296,14 +299,19 @@ pub(super) fn name_key(name: &str) -> String {
 }
 
 /// The most a connection's [`Inputs`] holds: `max_inputs_per_tick` for each tick period in
-/// [`MAX_STALL`], and at least one period's.
+/// [`MAX_STALL`], up to [`MAX_BURST`] messages, and at least one period's.
 ///
 /// [`MAX_STALL`]: super::MAX_STALL
+/// [`MAX_BURST`]: super::MAX_BURST
 fn input_cap(rules: &Rules) -> usize {
     let period_ms = (1_000 / u64::from(rules.tick_hz.max(1))).max(1);
     let stall_ms = u64::try_from(super::MAX_STALL.as_millis()).unwrap_or(u64::MAX);
     let periods = usize::try_from((stall_ms / period_ms).max(1)).unwrap_or(usize::MAX);
-    rules.max_inputs_per_tick.saturating_mul(periods)
+    let per_tick = rules.max_inputs_per_tick;
+    per_tick
+        .saturating_mul(periods)
+        .min(super::MAX_BURST)
+        .max(per_tick)
 }
 
 /// Gives each connection the tick's `max_inputs_per_tick` back, up to its [`input_cap`], before
@@ -1125,22 +1133,56 @@ mod tests {
     }
 
     #[test]
-    fn the_allowance_holds_the_limit_for_each_tick_period_in_max_stall() {
-        let at_hz = |tick_hz| Rules {
+    fn the_allowance_holds_the_limit_for_each_tick_period_in_max_stall_up_to_max_burst() {
+        use crate::world::{MAX_BURST, MAX_INPUTS_PER_TICK};
+        let at_hz = |tick_hz, max_inputs_per_tick| Rules {
             tick_hz,
-            max_inputs_per_tick: 10,
+            max_inputs_per_tick,
             ..rules()
         };
-        // 20 Hz: 100 periods of 50 ms; 1 Hz: 5 of a second; 60 Hz: 312 of 16 ms.
-        assert_eq!(input_cap(&at_hz(20)), 1_000);
-        assert_eq!(input_cap(&at_hz(1)), 50);
-        assert_eq!(input_cap(&at_hz(60)), 3_120);
-        // The server's own: 128 a tick at 20 Hz, five seconds' worth.
-        let server = Rules {
-            max_inputs_per_tick: crate::world::MAX_INPUTS_PER_TICK,
-            ..rules()
-        };
-        assert_eq!(input_cap(&server), 12_800);
+        // 20 Hz: 100 periods of 50 ms; 1 Hz: 5 of a second.
+        assert_eq!(input_cap(&at_hz(20, 10)), 1_000);
+        assert_eq!(input_cap(&at_hz(1, 10)), 50);
+        // 60 Hz: 312 periods of 16 ms, 3,120, which the burst's bound holds to 2,000 (#281).
+        assert_eq!(MAX_BURST, 2_000);
+        assert_eq!(input_cap(&at_hz(60, 10)), MAX_BURST);
+        // The server's own, 128 a tick: five seconds' worth is 12,800 at 20 Hz and 39,936 at
+        // 60 Hz, which the bound holds, and 640 at 1 Hz, within it.
+        for (tick_hz, cap) in [(20, MAX_BURST), (60, MAX_BURST), (1, 640)] {
+            assert_eq!(
+                input_cap(&at_hz(tick_hz, MAX_INPUTS_PER_TICK)),
+                cap,
+                "{tick_hz} Hz"
+            );
+        }
+        // Never less than one tick's worth.
+        assert_eq!(input_cap(&at_hz(20, 5_000)), 5_000);
+    }
+
+    #[test]
+    fn a_burst_is_held_to_max_burst_messages_at_every_tick_rate() {
+        // #281: a burst grew with the tick rate, to 39,936 messages at 60 Hz, so a handful of
+        // hostile clients bursting at once could overrun a tick. It is held to MAX_BURST.
+        use crate::world::{MAX_BURST, MAX_INPUTS_PER_TICK};
+        // At 1 Hz five seconds' worth, 640, is within the bound.
+        for (tick_hz, cap) in [(1, 640), (20, MAX_BURST), (60, MAX_BURST)] {
+            let mut h = Harness::with(Rules {
+                tick_hz,
+                max_inputs_per_tick: MAX_INPUTS_PER_TICK,
+                ..rules()
+            });
+            h.enter(player(1, "Lin", at(0.0, 0.0)));
+            h.enter(player(2, "Mai", at(50_000.0, 0.0)));
+            pulls(&mut h, 1, cap);
+            pulls(&mut h, 2, cap + 1);
+            h.tick(1_000 / u64::from(tick_hz));
+            assert_eq!(h.take(1), Vec::new(), "{tick_hz} Hz: the whole allowance");
+            assert_eq!(
+                h.take(2),
+                vec![WorldOut::Kicked(KickReason::Flood)],
+                "{tick_hz} Hz: one more"
+            );
+        }
     }
 
     #[test]
@@ -1173,6 +1215,48 @@ mod tests {
         });
         h.tick(50);
         assert_eq!(h.core.players(), 0);
+        assert_eq!(
+            h.saves(),
+            vec![Service::SavePlace {
+                pid: 1,
+                at: at(0.0, 0.0)
+            }],
+            "its place is saved as any leaver's"
+        );
+    }
+
+    #[test]
+    fn a_viewer_that_a_leaver_fills_leaves_in_the_same_tick() {
+        // Cleanup runs again until no one is doomed: taking a player out tells its viewers (9),
+        // and a viewer whose channel that fills is doomed in turn, and taken out in a second pass.
+        let mut h = Harness::new();
+        // LoadScene, SelfEnter and the Announce of Mai fill Lin's channel, which it never reads.
+        h.join_with(player(1, "Lin", at(0.0, 0.0)), 3);
+        h.push(WorldIn::Loaded { conn: 1 });
+        h.tick(50);
+        h.enter(player(2, "Mai", at(0.0, 0.0)));
+        assert_eq!(h.core.players(), 2);
+        // The console's kick dooms Mai in the admin phase, after interest: only cleanup tells Lin.
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        h.push(WorldIn::Console {
+            order: Command::Kick { name: "Mai".into() },
+            reply,
+        });
+        h.tick(50);
+        assert_eq!(h.core.players(), 0, "Lin leaves in the tick Mai does");
+        let mut saved: Vec<ActorId> = h
+            .saves()
+            .into_iter()
+            .map(|s| match s {
+                Service::SavePlace { pid, .. } => pid,
+                Service::CreateInvite { .. } => 0,
+            })
+            .collect();
+        saved.sort_unstable();
+        assert_eq!(saved, [1, 2], "both are saved");
+        assert_eq!(h.take(2), vec![WorldOut::Kicked(KickReason::Kicked)]);
+        h.take(1);
+        assert!(h.closed(1), "the world let go of Lin");
     }
 
     #[test]
