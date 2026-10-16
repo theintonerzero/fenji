@@ -79,6 +79,22 @@ impl fmt::Debug for Pin {
     }
 }
 
+/// Text as a player pasted it, without the line breaks and indents a wrapped line adds: the host
+/// console wraps a long link at the window's edge, and chat apps and mail wrap it too (#357). A
+/// link or a URL (with `#` or `://`) never holds whitespace, so all of it goes; elsewhere each
+/// whitespace character becomes a space, which an invite code skips and an address refuses.
+pub(crate) fn unwrapped(text: &str) -> String {
+    let text = text.trim();
+    let link = text.contains('#') || text.contains("://");
+    text.chars()
+        .filter_map(|c| match c.is_whitespace() {
+            true if link => None,
+            true => Some(' '),
+            false => Some(c),
+        })
+        .collect()
+}
+
 /// A server's address as players give it: its origin (`https://host[:port]`, or `http://` on this
 /// machine), and the pin of its own key when its link carried one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,10 +108,10 @@ impl ServerAddr {
     /// pin. A path, a query, a login or any other fragment is [`ApiError::BadUrl`]; plain http off
     /// this machine is [`ApiError::Insecure`].
     pub fn parse(text: &str) -> Result<ServerAddr, ApiError> {
-        let text = text.trim();
+        let text = unwrapped(text);
         let (address, fragment) = match text.split_once('#') {
             Some((address, fragment)) => (address, Some(fragment)),
-            None => (text, None),
+            None => (text.as_str(), None),
         };
         let url = Url::parse(address).map_err(|_| ApiError::BadUrl)?;
         if url.host_str().is_none_or(str::is_empty)
@@ -293,6 +309,36 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn an_address_pasted_from_a_wrapped_line_still_reads() {
+        // `fenji-launch --server` takes what the host console printed, wrapped or not (#357).
+        let (head, tail) = PIN.split_at(20);
+        let a =
+            ServerAddr::parse(&format!("https://203.0.113.5:7801/#pin={head}\n   {tail}")).unwrap();
+        assert_eq!(
+            (a.origin.as_str(), a.pin.unwrap().to_string()),
+            ("https://203.0.113.5:7801", PIN.to_string())
+        );
+        let a = ServerAddr::parse("https://play.example.\n   net").unwrap();
+        assert_eq!(a.origin, "https://play.example.net");
+    }
+
+    #[test]
+    fn only_a_link_loses_its_inner_whitespace() {
+        assert_eq!(
+            unwrapped(" https://h:1/#invite=AB\r\n   CD&pin=x y "),
+            "https://h:1/#invite=ABCD&pin=xy"
+        );
+        assert_eq!(
+            unwrapped("play.example.net\n:8443"),
+            "play.example.net :8443"
+        );
+        assert_eq!(
+            unwrapped("ABCD-EFGH-\n\tJKMN-PQRS"),
+            "ABCD-EFGH-  JKMN-PQRS"
+        );
     }
 
     const INFO: &str = r#"{"name":"P","version":"0.5.0","pinned_build":"10015727","gate_host":"127.0.0.1","gate_port":7800,"server_id":1,"api_version":1}"#;

@@ -68,28 +68,34 @@ pub enum AddError {
 }
 
 /// Reads the Add dialog's text: a link (with `#`), then a bare invite code (no `.`, `:` or `/`),
-/// then an address, where a bare host gets `https://` in front (launcher spec L18).
+/// then an address, where a bare host gets `https://` in front (launcher spec L18). A link wrapped
+/// over several lines reads as one (`pin::unwrapped`).
 pub fn parse_added(text: &str) -> Result<Added, AddError> {
-    let text = text.trim();
+    let text = crate::pin::unwrapped(text);
     if text.is_empty() {
         return Err(AddError::Empty);
     }
     if text.contains('#') {
-        if let Some((Some(server), code)) = invite_link::parse(text) {
+        if let Some((Some(server), code)) = invite_link::parse(&text) {
             return Ok(Added::Invite(server, code));
         }
         // A link without an invite, such as `…/#pin=…`, is an address.
-        return address(text);
+        return address(&text);
     }
     if !text.contains(['.', ':', '/'])
-        && let Some(code) = InviteCode::parse(text)
+        && let Some(code) = InviteCode::parse(&text)
     {
         return Ok(Added::Code(code));
     }
-    address(text)
+    address(&text)
 }
 
 fn address(text: &str) -> Result<Added, AddError> {
+    // `unwrapped` took every space out of a link or URL, so one left here is in typed text, and a
+    // host name never holds one: refused here, before the scheme in front makes it a URL.
+    if text.contains(char::is_whitespace) {
+        return Err(AddError::Unreadable);
+    }
     let full = if text.starts_with("https://") || text.starts_with("http://") {
         text.to_string()
     } else {
@@ -157,6 +163,41 @@ mod tests {
         ));
         assert!(matches!(
             parse_added("not an address at all"),
+            Err(AddError::Unreadable)
+        ));
+    }
+
+    #[test]
+    fn a_link_pasted_from_a_wrapped_line_still_reads() {
+        // The host console wraps a long link (#357), and a one-line field drops the line break but
+        // keeps the indent: whitespace inside a link is never part of it.
+        let (head, tail) = PIN.split_at(20);
+        match parse_added(&format!(
+            "https://203.0.113.5:7801/#invite=ABCD-EFGH-JKMN-PQRS&pin={head}   {tail}"
+        ))
+        .unwrap()
+        {
+            Added::Invite(addr, code) => {
+                assert_eq!(addr.origin, "https://203.0.113.5:7801");
+                assert_eq!(addr.pin.unwrap().to_string(), PIN);
+                assert_eq!(code.display(), "ABCD-EFGH-JKMN-PQRS");
+            }
+            other => panic!("{other:?}"),
+        }
+        let Added::Address(a) =
+            parse_added(&format!("https://203.0.113.5:7801/#pin={head}\n   {tail}")).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(a.pin.unwrap().to_string(), PIN);
+        // A bare code broken over two lines is still a code, not a host name.
+        assert!(matches!(
+            parse_added("ABCD-EFGH-\n   JKMN-PQRS").unwrap(),
+            Added::Code(c) if c.display() == "ABCD-EFGH-JKMN-PQRS"
+        ));
+        // Spaces in what isn't a link stay a mistake, not a host name.
+        assert!(matches!(
+            parse_added("play example.net"),
             Err(AddError::Unreadable)
         ));
     }
