@@ -585,9 +585,19 @@ impl PlayBed {
 
 #[tokio::test]
 async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
+    // Review Focus 1 to its end (#348): redeem, sign in and Play leave the password, the session
+    // token and the ticket in no snapshot, log line or settings file.
+    let logs = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let sink = logs.clone();
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || Writer(sink.clone()))
+            .finish(),
+    );
     let t = PlayBed::new().await;
-    t.signed_in().await;
     let seen = t.collect_snapshots();
+    t.signed_in().await;
     t.app.intent(Intent::Play).await.unwrap();
     until(&t.app, |s| {
         matches!(s.game, GameView::Starting { first_start: true })
@@ -601,8 +611,19 @@ async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
         "{record}"
     );
     assert!(record.contains("gj_uinfo=") && record.contains("gj_gates="));
-    for json in seen.lock().unwrap().iter() {
-        assert!(!json.contains("fenji1-"), "the ticket reached a snapshot");
+    let settings = std::fs::read_to_string(t.cfg.config_dir.join("settings.json")).unwrap();
+    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("the game is running"),
+        "the log wasn't caught"
+    );
+    let seen = seen.lock().unwrap().clone();
+    assert!(seen.iter().any(|json| json.contains(r#""signedIn":true"#)));
+    for text in seen.iter().chain([&settings, &logs]) {
+        assert!(
+            !text.contains("a long password") && !text.contains("fenji1-"),
+            "a secret leaked: {text}"
+        );
     }
     t.s.shutdown().await.unwrap();
 }
@@ -656,6 +677,8 @@ async fn one_game_at_a_time_and_play_refuses_in_words() {
     }
 }
 
+/// Linux only: the game's mark reads `/proc`, as Play runs only there (launcher spec L2).
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_game_a_closed_launcher_left_running_holds_play_in_the_next() {
     // #348: one game at a time across a restart. Closing the launcher leaves the game running

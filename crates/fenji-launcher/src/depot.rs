@@ -548,6 +548,54 @@ mod tests {
         assert_eq!(wait_for(&run, |s| *s == RunState::Lost), RunState::Lost);
     }
 
+    /// Review Focus 4 as a window really closes (#348): the terminal and its pty go, so the session
+    /// is hung up (`SIGHUP`) rather than killed. Python's `pty` module stands in for the terminal.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_window_hung_up_mid_download_ends_as_lost() {
+        let spawn = spawning();
+        let dir = tempfile::tempdir().unwrap();
+        let holder = dir.path().join("holder");
+        let term = Terminal {
+            program: script(
+                dir.path(),
+                "term",
+                &format!(
+                    r#"python3 -I -c 'import os, pty, sys; open(sys.argv[1], "w").write(str(os.getpid())); pty.spawn(sys.argv[2:])' '{}' "$@" </dev/null >/dev/null 2>&1 &"#,
+                    holder.display()
+                ),
+            ),
+            before: vec![],
+        };
+        let dd = script(dir.path(), "dd", "echo ' 10.00% a.bin'; sleep 30");
+        let job = Job {
+            dd,
+            folder: dir.path().join("game"),
+            files: None,
+        };
+        let run =
+            DepotRun::start(&term, &job, &dir.path().join("run"), std::env::vars_os()).unwrap();
+        drop(spawn);
+        assert!(
+            matches!(
+                wait_for(&run, |s| matches!(s, RunState::Running { .. })),
+                RunState::Running { .. }
+            ),
+            "the fake terminal needs python3"
+        );
+        let pid: i32 = std::fs::read_to_string(&holder)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        rustix::process::kill_process(
+            rustix::process::Pid::from_raw(pid).unwrap(),
+            rustix::process::Signal::KILL,
+        )
+        .unwrap();
+        assert_eq!(wait_for(&run, |s| *s == RunState::Lost), RunState::Lost);
+    }
+
     #[test]
     fn cancel_ends_the_download_and_a_terminal_that_never_starts_is_lost() {
         let spawn = spawning();

@@ -608,6 +608,8 @@ mod tests {
         }
     }
 
+    /// Linux only: the mark reads `/proc`, as Play runs only there (spec L2).
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_mark_whose_game_has_ended_is_forgotten_and_a_live_one_is_kept() {
         // #348: a pid the system gave to another process since doesn't hold Play.
