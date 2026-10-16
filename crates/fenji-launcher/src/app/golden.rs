@@ -314,6 +314,22 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             }),
         ),
         (
+            // A copy Steam installed, at the pinned build: the Game popover offers it first
+            // (Amendment A, LA1; the redesign's Set up board).
+            "client-steam",
+            with(|s| {
+                no_client(s);
+                s.client.manual = Some(manual(None));
+                s.client.steam = Some(SteamCopyView {
+                    folder:
+                        "/home/player/.local/share/Steam/steamapps/common/Swords of Legends Online"
+                            .into(),
+                    build: "10015727".into(),
+                    pinned: true,
+                });
+            }),
+        ),
+        (
             "client-fetching",
             with(|s| {
                 no_client(s);

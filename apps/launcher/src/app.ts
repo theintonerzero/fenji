@@ -81,6 +81,8 @@ export interface Ipc {
 export interface MountOptions {
   /** A popover open from the start: the finish review's screenshots (dev-golden.ts). */
   open?: PopoverName;
+  /** Add a server open from the start, for the same. */
+  adding?: boolean;
 }
 
 /** Mounts the view in `root`, and keeps it on the model's snapshots. */
@@ -225,6 +227,9 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
   mounted = true;
   if (options.open !== undefined) {
     setPopover(options.open);
+  }
+  if (options.adding) {
+    ctx.addServer();
   }
   window.addEventListener("focus", () => void ipc.send({ type: "focus", focused: true }));
   window.addEventListener("blur", () => void ipc.send({ type: "focus", focused: false }));
