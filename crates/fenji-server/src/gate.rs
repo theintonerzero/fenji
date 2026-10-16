@@ -566,7 +566,11 @@ async fn lobby_loop(
                         }
                         Step::Enter(pid) => match entry(gate, account, pid).await {
                             Entry::Play(c) => {
-                                return link::play(sock, peer, gate, server, account, conn, c, replaced).await;
+                                match link::play(sock, peer, gate, server, account, conn, c, replaced).await? {
+                                    link::Ended::Closed => return Ok(()),
+                                    // Back to character select: the lobby carries on (#282).
+                                    link::Ended::Lobby => {}
+                                }
                             }
                             Entry::Banned => {
                                 tracing::info!(%peer, account = %account.username, "banned: not entering the world");

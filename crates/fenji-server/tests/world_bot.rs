@@ -475,11 +475,19 @@ enum Leaving {
 }
 
 impl Leaving {
-    /// `bot` leaves this way, and the server ends its connection.
+    /// `bot` leaves this way: the server ends its connection, or, back to character select,
+    /// answers 330 and keeps it for the lobby (#282).
     async fn leave(self, mut bot: Bot) {
         match self {
             Self::Quit => bot.send(lobby::CLIENT_EXIT, &[]).await,
-            Self::BackToSelect => bot.send_native(Cts::ClientLeave.to_u8(), &[]).await,
+            Self::BackToSelect => {
+                bot.send_native(Cts::ClientLeave.to_u8(), &[]).await;
+                assert_eq!(
+                    bot.recv().await,
+                    (fenji_proto::world::ACTOR_LOGOUT, Vec::new())
+                );
+                return;
+            }
             Self::HangUp => return,
         }
         // The idle timeout is a minute, so an end within 2 s is the server's answer.
