@@ -22,12 +22,17 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
 
-# Stderr pointed away from the terminal while the full-screen console holds it (tui.rs).
+# Stderr pointed away from the terminal while the full-screen console holds it, and its raw mode,
+# which any thread can give back (tui.rs); the terminal's keys read (keys.rs).
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["stdio"], optional = true }
+rustix = { workspace = true, features = ["stdio", "termios"], optional = true }
 
 [dev-dependencies]
 tokio.workspace = true
+
+# A pseudo-terminal that hangs up, for the keys' reading (keys.rs).
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["pty", "termios"] }
 
 [lints]
 workspace = true

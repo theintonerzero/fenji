@@ -7,6 +7,7 @@
 //!   it's logged.
 //!
 //! Logging never waits on a console: one that falls behind loses lines, and is told how many.
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::Write;
@@ -73,6 +74,44 @@ pub enum Sink {
     Hub,
 }
 
+/// Logs a panic on a thread other than the full-screen console's, at ERROR, as the console's hook
+/// gives it ([`fenji_console::PanicLog`]): cleaned, as every line is. Turned away, with nothing
+/// logged, when the panic is the log's own, this thread being in the log's code: it may hold the
+/// log's locks, and logging would wait on them for ever. The console then ends as it did (the
+/// hosting plan's final review B, Minor 6).
+pub fn log_panic(text: &str) -> bool {
+    if IN_LOG.with(Cell::get) {
+        return false;
+    }
+    tracing::error!("{text}");
+    true
+}
+
+thread_local! {
+    /// Whether this thread is in the log's own code, perhaps holding its locks: a panic here is
+    /// the log's own, which [`log_panic`] turns away.
+    static IN_LOG: Cell<bool> = const { Cell::new(false) };
+}
+
+/// This thread marked as in the log's own code ([`IN_LOG`]) until dropped.
+struct InLog {
+    was: bool,
+}
+
+impl InLog {
+    fn enter() -> InLog {
+        InLog {
+            was: IN_LOG.replace(true),
+        }
+    }
+}
+
+impl Drop for InLog {
+    fn drop(&mut self) {
+        IN_LOG.set(self.was);
+    }
+}
+
 /// The log for consoles: the last lines, for a console that attaches, and each line as it's
 /// logged. Clones share one hub.
 #[derive(Debug, Clone)]
@@ -112,6 +151,7 @@ impl LogHub {
 
     /// The last lines logged, then each line as it's logged: none missed, and none twice.
     pub fn subscribe(&self) -> LogSubscription {
+        let _in_log = InLog::enter();
         let inner = self.lock();
         LogSubscription {
             backlog: inner.backlog.iter().cloned().collect(),
@@ -121,6 +161,7 @@ impl LogHub {
 
     /// Keeps `line` and sends it to the subscribers, without waiting for any.
     pub(crate) fn publish(&self, line: LogLine) {
+        let _in_log = InLog::enter();
         let mut inner = self.lock();
         // With no subscriber, the line is the backlog's alone.
         let _ = inner.lines.send(line.clone());
@@ -210,6 +251,8 @@ impl LogLayer {
 
 impl<S: Subscriber> Layer<S> for LogLayer {
     fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+        // A panic from here on, a field's value written out or a sink's write, is the log's own.
+        let _in_log = InLog::enter();
         let line = line_of(event, SystemClock.now_ms());
         for writer in &self.writers {
             writer.write(&line);
@@ -384,6 +427,53 @@ mod tests {
                 .any(|p| p.name && p.text == r"Mai\u{1b}[2J"),
             "{line:?}"
         );
+    }
+
+    #[test]
+    fn a_panic_elsewhere_is_logged_at_error_cleaned() {
+        // The hosting plan's final review B, Minor 6: while the full-screen console holds the
+        // terminal, stderr points away from it, so another thread's panic reaches the host through
+        // the log, cleaned as every line is.
+        let hub = LogHub::new(10);
+        let subscriber = tracing_subscriber::registry().with(hub.layer());
+        let logged = tracing::subscriber::with_default(subscriber, || {
+            log_panic("a thread panicked at src/x.rs:1:2: \u{1b}[2Jboom")
+        });
+        assert!(logged);
+        let line = &hub.subscribe().backlog[0];
+        assert_eq!(line.level, Level::Error);
+        assert_eq!(
+            text_of(line),
+            "a thread panicked at src/x.rs:1:2: \\u{1b}[2Jboom"
+        );
+    }
+
+    #[test]
+    fn a_panic_in_the_logs_own_code_is_turned_away() {
+        // The panicking thread may hold the log's locks, and logging its panic would wait on them
+        // for ever: it's turned away, and the console ends as it did. Here the log is asked from
+        // inside the layer, as a field's value is written out there.
+        struct Inside(Arc<Mutex<Option<bool>>>);
+        impl fmt::Debug for Inside {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                *self.0.lock().unwrap() = Some(log_panic("a thread panicked in the log"));
+                f.write_str("inside")
+            }
+        }
+        let hub = LogHub::new(10);
+        let asked = Arc::new(Mutex::new(None));
+        let subscriber = tracing_subscriber::registry().with(hub.layer());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(value = ?Inside(Arc::clone(&asked)), "a line");
+        });
+        assert_eq!(*asked.lock().unwrap(), Some(false), "not turned away");
+        // Outside the log's code, it's taken again.
+        let subscriber = tracing_subscriber::registry().with(hub.layer());
+        let logged = tracing::subscriber::with_default(subscriber, || log_panic("later"));
+        assert!(logged);
+        let backlog = hub.subscribe().backlog;
+        let texts: Vec<String> = backlog.iter().map(text_of).collect();
+        assert_eq!(texts, ["a line value=inside", "later"]);
     }
 
     #[test]

@@ -184,7 +184,9 @@ const PROXY_NOT_TRUSTED: &str = "public_api is set and api_bind is a loopback ad
 /// - a proxy in front of a loopback API (`public_api` set) that `trusted_proxies` doesn't list,
 ///   unless the API serves TLS itself: what's in front of it then passes the players' TLS through
 ///   and can't add `X-Forwarded-For`, so trusting it would let each player name their own address
-///   (the hosting plan's final review, Minor 3).
+///   (the hosting plan's final review, Minor 3);
+/// - for that reason, `trusted_proxies` set under `tls = "self"`, which can only be a mistake
+///   (#359).
 ///
 /// A loopback API without `public_api` is a server for this computer, and warns of nothing.
 fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<String> {
@@ -197,7 +199,22 @@ fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<String> {
     if s.tls.is_none() && s.public_api.is_some() && loopback && s.trusted_proxies.is_empty() {
         warnings.push(PROXY_NOT_TRUSTED.to_owned());
     }
+    if s.tls == Some(Tls::OwnKey) && !s.trusted_proxies.is_empty() {
+        warnings.push(own_key_proxies());
+    }
     warnings
+}
+
+/// What a start warns about when `trusted_proxies` is set under `tls = "self"`.
+fn own_key_proxies() -> String {
+    format!(
+        "trusted_proxies is set, but under tls = \"self\" the account API ends TLS itself, so no \
+         proxy in front of it can be trusted: one that ended TLS would break the pin in your links, \
+         and one that passes TLS through can't add X-Forwarded-For, so trusting it only lets each \
+         player name their own address. Empty trusted_proxies; with Caddy in front, put a # before \
+         tls = \"self\" instead: see {}",
+        crate::config::guide()
+    )
 }
 
 /// The server link a start shows beside "Fenji is running" under `tls = "self"` (M4 hosting spec
@@ -406,9 +423,11 @@ pub async fn start(
 /// - [`Front::Full`]: the full-screen console holds the terminal while the server runs on a task
 ///   of its own; Ctrl-C there is `stop`. However the console ends, a panic included, it gives the
 ///   terminal back first (Review Focus 2). One that ends while the server runs leaves it running,
-///   and says so, until a signal stops it. Then `run` waits for the server's end. Once the server
-///   has stopped, it waits [`CONSOLE_GRACE`] at most for a console that hasn't ended: one whose
-///   terminal has gone may never end.
+///   and says so, until a signal stops it. A terminal that hangs up ends the console, and its
+///   SIGHUP stops the server, unless SIGHUP came ignored: the log then says the server runs on
+///   without a console (#359). Then `run` waits for the server's end. Once the server has stopped,
+///   it waits [`CONSOLE_GRACE`] at most for a console that hasn't ended: one whose terminal has
+///   stopped reading may never end.
 /// - [`Front::Plain`]: commands from stdin and answers on stdout, the log being on stderr. The end
 ///   of stdin leaves the server running.
 pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()> {
@@ -472,18 +491,28 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
     let served = match front {
         // Signals stop the server here (`signalled`), and the console ends on its goodbye.
         Front::Full => {
+            // A panic on another of the server's threads goes to the log, and the console runs on.
             let tui = fenji_console::run_tui(
                 session,
                 Mode::InProcess,
                 Colours::from_env(),
                 std::future::pending(),
+                Some(console::log::log_panic),
             );
             let ended = held_until_stopped(tui, console.stopped(), CONSOLE_GRACE).await;
-            // The terminal is the host's again, whatever ended the console, unless the console was
-            // left to its thread, its terminal gone.
-            let serving = !served.is_finished() && !*console.stopping().borrow();
-            if let Some(note) = closed_note(&ended, serving, &logs) {
-                say(&note);
+            if matches!(ended, Ok(Ending::HungUp)) {
+                // No terminal to tell: the log says it, unless the hang-up's SIGHUP is stopping
+                // the server.
+                if runs_on(console.stopping(), HANGUP_WAIT).await {
+                    tracing::warn!("{TERMINAL_GONE}");
+                }
+            } else {
+                // The terminal is the host's again, whatever ended the console, unless the
+                // console was left to its thread, its terminal stalled.
+                let serving = !served.is_finished() && !*console.stopping().borrow();
+                if let Some(note) = closed_note(&ended, serving, &logs) {
+                    say(&note);
+                }
             }
             joined(served).await
         }
@@ -536,12 +565,28 @@ pub(crate) async fn held(
 }
 
 /// How long `run` waits for its full-screen console once the server has stopped. The console ends
-/// on the server's goodbye at once, unless it's caught in a read of its terminal that never
-/// returns. Closing the window while the console waits for the terminal's answer to where its
-/// cursor is (ratatui's `Terminal::clear`, as it starts) hangs the terminal up, and crossterm then
-/// reads it over and over, a core spinning, on the console's thread (the fix pass's re-review,
-/// NB1).
+/// on the server's goodbye at once, unless it's caught in a write to a terminal that has stopped
+/// reading, as over a stalled SSH link (the fix pass's re-review, NB1).
 const CONSOLE_GRACE: Duration = Duration::from_secs(2);
+
+/// How long `run` gives the server to begin stopping once its full-screen console's terminal has
+/// gone: the hang-up's SIGHUP stops it, unless SIGHUP came ignored.
+const HANGUP_WAIT: Duration = Duration::from_millis(500);
+
+/// What `run` logs once its full-screen console's terminal has gone while the server runs on, SIGHUP
+/// having come ignored (`trap '' HUP`, or `nohup`): the server has no console now, and this says how
+/// a host reaches it, and stops it (#359).
+const TERMINAL_GONE: &str = "the console's terminal has gone (its window closed, or its SSH \
+     connection was lost), and SIGHUP didn't stop the server, so it runs on without a console: \
+     `fenji-server console` attaches to it, and `fenji-server console --run stop`, SIGINT or \
+     SIGTERM stops it";
+
+/// Whether the server runs on `wait` after its console's terminal has gone, `stopping` being the
+/// console service's ([`ConsoleService::stopping`]): not when it begins stopping meanwhile.
+async fn runs_on(mut stopping: watch::Receiver<bool>, wait: Duration) -> bool {
+    let stops = tokio::time::timeout(wait, stopping.wait_for(|stopping| *stopping)).await;
+    !matches!(stops, Ok(Ok(_)))
+}
 
 /// Why `run` stops waiting for the full-screen console: the server has stopped, and the console
 /// didn't end within [`CONSOLE_GRACE`].
@@ -549,8 +594,11 @@ const CONSOLE_LEFT: &str = "the server has stopped, but the console hasn't ended
      likely gone: it's left behind";
 
 /// [`held`], waited for no longer than `grace` once the server has `stopped`
-/// ([`ConsoleService::stopped`]). A console still running then, such as one whose terminal hung
-/// up, is left to its thread, which `main` doesn't wait for, so that the process ends.
+/// ([`ConsoleService::stopped`]). A console still running then, such as one caught in a write to a
+/// terminal that has stopped reading, is left to its thread, which `main` doesn't wait for, so that
+/// the process ends. The terminal gets its mode back first ([`fenji_console::restore_mode`], which
+/// takes no write), so that the shell after the server reads lines once the terminal reads again
+/// (#359).
 async fn held_until_stopped(
     console: impl Future<Output = std::io::Result<Ending>> + Send + 'static,
     mut stopped: watch::Receiver<bool>,
@@ -563,6 +611,7 @@ async fn held_until_stopped(
     tokio::select! {
         ended = held(console) => ended,
         () = left => {
+            fenji_console::restore_mode();
             tracing::info!("{CONSOLE_LEFT}");
             Err(std::io::Error::other(CONSOLE_LEFT))
         }
@@ -576,6 +625,7 @@ fn still_serving(ended: &std::io::Result<Ending>) -> Option<String> {
         Ok(Ending::ServerStopped(_)) => None,
         Ok(Ending::InputClosed) => Some("its keys ended".into()),
         Ok(Ending::Lost | Ending::Detached) => Some("it lost the server".into()),
+        Ok(Ending::HungUp) => Some("its terminal has gone".into()),
         Err(e) => Some(e.to_string()),
     }
 }
@@ -865,6 +915,21 @@ mod tests {
         rt.shutdown_background();
     }
 
+    #[tokio::test]
+    async fn a_server_whose_console_hung_up_runs_on_unless_it_begins_stopping() {
+        // #359: the hang-up's SIGHUP stops the server unless it came ignored, so `run` logs that
+        // the server runs on without a console only once it hasn't begun stopping.
+        let (stop, stopping) = watch::channel(false);
+        assert!(runs_on(stopping.clone(), Duration::from_millis(50)).await);
+        let stops = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stop.send_replace(true);
+            stop
+        });
+        assert!(!runs_on(stopping, Duration::from_secs(10)).await);
+        let _stop = stops.await.unwrap();
+    }
+
     #[test]
     fn the_console_says_the_server_runs_on_only_while_it_does() {
         // Review 1, Minor 3: a console that ends as the server stops (a key pressed just then, or
@@ -1027,6 +1092,39 @@ mod tests {
             address_warnings(&tunnelled, Some(pin)),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn under_its_own_key_a_trusted_proxy_is_warned_of() {
+        // #359: under tls = "self" the account API ends TLS itself. A proxy in front that ended it
+        // would break the pin in players' links, and one that passes it through can't add
+        // X-Forwarded-For: trusting one can only let each player name their own address.
+        let cfg = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/")).unwrap()
+        };
+        let pin = "q1o9C1M6ufA5UGrUkSYhW-AXXa3S7jdJ9Fxlp0f2cBo";
+        let own = "tls = \"self\"\nlogin_bind = \"0.0.0.0:7800\"\napi_bind = \"0.0.0.0:7801\"\n";
+        let trusted = cfg(&format!("{own}trusted_proxies = [\"127.0.0.1\"]\n"));
+        let warned = address_warnings(&trusted, Some(pin));
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(
+            warned[0].starts_with("trusted_proxies is set, but under tls = \"self\"")
+                && warned[0].contains(&crate::config::guide()),
+            "says why it's a mistake, and where to read more: {}",
+            warned[0]
+        );
+        // A tunnel to a loopback API, which the warnings let be (the final review, Minor 3), is
+        // one too, listed as trusted.
+        let tunnelled = cfg(
+            "tls = \"self\"\npublic_api = \"https://play.example.net:7801\"\n\
+             trusted_proxies = [\"127.0.0.1\"]\n",
+        );
+        assert_eq!(address_warnings(&tunnelled, Some(pin)), warned);
+        // Without its own key, a proxy that adds X-Forwarded-For is what Caddy is: trusted, as the
+        // write-up's section 4 lists it.
+        let caddy =
+            cfg("public_api = \"https://play.example.net\"\ntrusted_proxies = [\"127.0.0.1\"]\n");
+        assert_eq!(address_warnings(&caddy, None), Vec::<String>::new());
     }
 
     #[test]

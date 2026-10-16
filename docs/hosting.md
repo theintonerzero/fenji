@@ -97,11 +97,11 @@ The console works like a Minecraft server's. The log scrolls above, the command 
 - Type a command and press Enter. While you type its first word, or when you press Tab, a list shows the commands that match: ↑ and ↓ choose, Tab completes, Enter runs and Esc closes it. With the list closed, ↑ and ↓ go back through the commands you typed.
 - PgUp and PgDn scroll back through the last 5,000 lines of the log. The mouse wheel doesn't: the console turns off the terminal's habit of turning it into ↑ and ↓, which would bring back your earlier commands instead.
 - The log's times are in UTC, as the title bar says (`times in UTC`).
-- `stop`, or Ctrl-C, stops the server cleanly: it lets every player go, saves where each one stood, and says `Fenji has stopped` with where its log is. Closing the window, or losing the SSH connection the server runs in, stops it cleanly too, though there's no window left to say so. On Windows, Windows ends the server a few seconds after its window closes, and the server saves where everyone stood first.
+- `stop`, or Ctrl-C, stops the server cleanly: it lets every player go, saves where each one stood, and says `Fenji has stopped` with where its log is. Closing the window, or losing the SSH connection the server runs in, stops it cleanly too, though there's no window left to say so. A server started with SIGHUP ignored, as `trap '' HUP` leaves it, runs on instead, without a console, and its log says so: `./fenji-server console` attaches to it, and `./fenji-server console --run stop` stops it. On Windows, Windows ends the server a few seconds after its window closes, and the server saves where everyone stood first.
 - The window needs to be at least 60 columns by 15 rows. A smaller one shows a note asking for a bigger window, and the server keeps running.
 - The colours are exact in a terminal with 24-bit colour, and close elsewhere. With `NO_COLOR` set there are none. Any monospaced font works; Geist Mono, under the SIL Open Font License, suits the console's design.
 - This full-screen console also writes the log to files in `data/logs`, one for each day the server runs (`fenji.2026-10-16.log`, by the day in UTC), and keeps those of the last 14 days it ran. Attach the day's file to a bug report.
-- If the console itself fails, it gives the terminal back and says so. The server keeps running, and Ctrl-C, or closing the terminal, stops it.
+- If the console itself fails, it gives the terminal back and says so. The server keeps running, and Ctrl-C, or closing the terminal, stops it. A fault elsewhere in the server shows as an `ERROR` line in the log instead, `a thread panicked at …`, and the console carries on; attach the day's log file to a bug report.
 
 **Plain lines,** for a screen reader or a simple terminal: start the server with `--plain`, and the console reads commands as lines and prints their answers, with the log as plain lines too.
 
@@ -172,7 +172,7 @@ Commands work in any case. `help` lists them, and `help <command>` shows one's u
 | `maintenance off` | Turns maintenance off, and everyone in the game reads `Maintenance is over.` |
 | `op <account>` | Makes the account an admin, at once, even for a player in the game. Admins can use `!tp`, `!kick`, `!announce` and `!invite` in the game's chat, and sign in during maintenance. Ops are kept in the database, beside `admins` in `fenji.toml`. |
 | `deop <account>` | Takes the account's op away, at once. An account that `admins` in `fenji.toml` names stays an admin until you take it out of the file and restart the server. |
-| `ops` | Lists the admins, and why each is one: an op, `admins` in `fenji.toml`, or both. |
+| `ops` | Lists the admins, and why each is one: an op, `admins` in `fenji.toml`, or both. A name in `admins` that no account has yet is marked `(no account yet)`: whoever next makes an account with that name becomes an admin, so send that name's invite only to its owner. |
 | `ban <account> [<reason>]` | Bans the account: it can't sign in or start the game, and its player reads the reason, plain text of at most 200 characters. If it's connected, it's let go at once, and the lobby won't let it into the world. |
 | `pardon <account>` | Lifts the account's ban. |
 | `bans` | Lists the bans, with their reasons and since when. |
@@ -184,7 +184,7 @@ Signed-in players' launchers list the characters in the world, those still loadi
 
 ### Commands outside the console
 
-The server's program takes commands of its own too, for scripts and for times the server isn't running; `--help` lists them. They're safe while the server runs. Run them from the server's folder, as the user the server runs as:
+The server's program takes commands of its own too, for scripts and for times the server isn't running; `--help` lists them. They're safe while the server runs, and they never change its database's layout under it. If the running server is another version of Fenji, with a database laid out for that version, they refuse, and say how to run the command through the server instead (`console --run`, above), or to stop the server first. With no server running, they bring the database up to date, as starting the server does. Run them from the server's folder, as the user the server runs as:
 - on Linux and macOS, as `./fenji-server <command>`;
 - on Windows, in a Command Prompt, as `fenji-server.exe <command>`;
 - on the reference VPS (section 4), as `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`. Run as root, they refuse, and say whom to run them as: a file root made in the data folder would be root's, and the service couldn't use it. The one exception is `init`, which writes the settings into `/etc/fenji`, where only root may write, and touches no data (section 4).
@@ -626,7 +626,7 @@ xattr -dr com.apple.quarantine ~/fenji-server
 
 **It says "can't attach to the server: the path of its console socket, …, is too long for a socket here".** The server said as much in its log when it started, and runs without a socket. Move the data folder to a shorter path, or start the server from its own folder, as the start scripts do (section 2).
 
-**An attached console closes at once, saying "The cursor position could not be read within a normal duration".** The full-screen console asks the terminal where its cursor is, and this terminal didn't answer. Attach with `--plain`, or from a terminal program or tmux.
+**An SSH connection that froze comes back showing the console, though the server has stopped.** The server stopped while the connection was frozen, and the console couldn't give the screen back. The terminal reads lines again: type `reset` and press Enter.
 
 **The service won't start, and `systemctl status fenji` shows `status=217/USER` or `status=226/NAMESPACE`.** `sudo journalctl -u fenji` says why, such as "Failed to keep CAP_SYS_ADMIN: Operation not permitted". Your VPS is most likely a container itself (LXC, OpenVZ and the like), whose systemd lacks a privilege that part of the service's sandbox needs: the settings that filter the server's system calls. Turn those off, for both services, and start the server again:
 

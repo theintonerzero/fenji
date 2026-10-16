@@ -105,8 +105,8 @@ impl Drop for AttachedPlain {
 }
 
 /// `fenji-server console` full-screen on `config`'s server, in a pseudo-terminal of 100 × 30 as a
-/// host's terminal would be: what it writes there is kept, and its cursor queries are answered.
-/// Killed if the test ends first.
+/// host's terminal would be: what it writes there is kept. Nothing answers what it might ask the
+/// terminal, and it asks nothing (#359). Killed if the test ends first.
 struct InTerminal {
     child: Child,
     master: File,
@@ -151,22 +151,12 @@ impl InTerminal {
             .unwrap();
         let master = File::from(master);
         let out = Arc::new(Mutex::new(Vec::new()));
-        let (mut reading, mut answering) =
-            (master.try_clone().unwrap(), master.try_clone().unwrap());
+        let mut reading = master.try_clone().unwrap();
         let kept = Arc::clone(&out);
         std::thread::spawn(move || {
-            const ASKED: &[u8] = b"\x1b[6n";
             let mut buf = [0; 65536];
-            let mut answered = 0;
             while let Ok(n @ 1..) = reading.read(&mut buf) {
-                let mut out = kept.lock().unwrap();
-                out.extend_from_slice(&buf[..n]);
-                // ratatui asks where the cursor is as it clears the screen: a terminal answers.
-                let asked = out.windows(ASKED.len()).filter(|w| *w == ASKED).count();
-                for _ in answered..asked {
-                    let _ = answering.write_all(b"\x1b[1;1R");
-                }
-                answered = asked;
+                kept.lock().unwrap().extend_from_slice(&buf[..n]);
             }
         });
         InTerminal { child, master, out }
@@ -196,30 +186,49 @@ impl Drop for InTerminal {
     }
 }
 
-/// `fenji-server run` full-screen in a window of 80 × 24: a pseudo-terminal that is its
-/// controlling terminal, as a terminal window or an SSH session gives it, which the test can close
-/// as a window closes. The kernel then hangs the terminal up and sends the server SIGHUP. Linux,
-/// for util-linux's `setsid --ctty`. Killed if the test ends first.
+/// `fenji-server` full-screen in a window of 80 × 24: a pseudo-terminal, which the test can close as
+/// a window closes. Nothing answers what the program might ask the terminal. Linux, for
+/// util-linux's `setsid --ctty`. Killed if the test ends first.
 #[cfg(target_os = "linux")]
 struct Window {
     child: Child,
     master: Option<File>,
+    /// The program's end of the terminal, for its mode and its flow.
+    terminal: File,
     /// True while the window is open: the thread reading the terminal goes on.
     open: Arc<std::sync::atomic::AtomicBool>,
     reader: Option<std::thread::JoinHandle<()>>,
     out: Arc<Mutex<Vec<u8>>>,
 }
 
-/// What the console asks a terminal as it clears the screen: where its cursor is.
+/// How a [`Window`]'s program holds its terminal.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// As its controlling terminal, as a terminal window or an SSH session gives it: closing the
+    /// window hangs the terminal up, and the kernel sends the program SIGHUP.
+    Controlling,
+    /// The same, but with SIGHUP ignored from the start, as `trap '' HUP` leaves it: the hang-up's
+    /// SIGHUP does nothing.
+    ControllingHangupIgnored,
+    /// As a terminal it was given, not its controlling one: closing the window ends its reads and
+    /// fails its writes, and no signal comes.
+    Given,
+}
+
+/// What a terminal is asked where its cursor is with.
 #[cfg(target_os = "linux")]
 const CURSOR_ASKED: &[u8] = b"\x1b[6n";
 
 #[cfg(target_os = "linux")]
 impl Window {
-    /// The window on `config`'s server. Its terminal answers the console's question of where its
-    /// cursor is at once, as terminals do, if `answers`; otherwise the console waits for the
-    /// answer, 2 s at most (crossterm's wait).
-    fn open(config: &Path, answers: bool) -> Window {
+    /// `fenji-server --config <config> <args>` in the window, its controlling terminal.
+    fn open(config: &Path, args: &[&str]) -> Window {
+        Window::holding(config, args, Held::Controlling)
+    }
+
+    /// `fenji-server --config <config> <args>` in the window, holding its terminal as `held` says.
+    fn holding(config: &Path, args: &[&str], held: Held) -> Window {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
@@ -244,28 +253,39 @@ impl Window {
             ws_ypixel: 0,
         };
         rustix::termios::tcsetwinsize(&terminal, size).unwrap();
-        // A session of its own whose controlling terminal is its stdin: this terminal.
-        let child = Command::new("setsid")
-            .arg("--ctty")
-            .arg(env!("CARGO_BIN_EXE_fenji-server"))
+        let server = env!("CARGO_BIN_EXE_fenji-server");
+        let mut program = match held {
+            // A session of its own whose controlling terminal is its stdin: this terminal.
+            Held::Controlling => {
+                let mut setsid = Command::new("setsid");
+                setsid.arg("--ctty").arg(server);
+                setsid
+            }
+            // The shell ignores SIGHUP, and what it runs keeps it ignored.
+            Held::ControllingHangupIgnored => {
+                let mut sh = Command::new("sh");
+                sh.args(["-c", "trap '' HUP; exec setsid --ctty \"$@\"", "sh", server]);
+                sh
+            }
+            Held::Given => Command::new(server),
+        };
+        let child = program
             .arg("--config")
             .arg(config)
-            .arg("run")
+            .args(args)
             .env("TERM", "xterm-256color")
             .stdin(terminal.try_clone().unwrap())
             .stdout(terminal.try_clone().unwrap())
-            .stderr(terminal)
+            .stderr(terminal.try_clone().unwrap())
             .spawn()
             .unwrap();
         let master = File::from(master);
         let out = Arc::new(Mutex::new(Vec::new()));
         let open = Arc::new(AtomicBool::new(true));
-        let (mut reading, mut answering) =
-            (master.try_clone().unwrap(), master.try_clone().unwrap());
+        let mut reading = master.try_clone().unwrap();
         let (kept, still) = (Arc::clone(&out), Arc::clone(&open));
         let reader = std::thread::spawn(move || {
             let mut buf = [0; 65536];
-            let mut answered = 0;
             while still.load(Ordering::SeqCst) {
                 let n = match reading.read(&mut buf) {
                     Ok(n @ 1..) => n,
@@ -273,32 +293,46 @@ impl Window {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     }
-                    // The console's side is closed: the server has ended.
+                    // The program's side is closed: it has ended.
                     Ok(0) | Err(_) => return,
                 };
-                let mut out = kept.lock().unwrap();
-                out.extend_from_slice(&buf[..n]);
-                if answers {
-                    let asked = out.windows(CURSOR_ASKED.len());
-                    let asked = asked.filter(|w| *w == CURSOR_ASKED).count();
-                    for _ in answered..asked {
-                        let _ = answering.write_all(b"\x1b[1;1R");
-                    }
-                    answered = asked;
-                }
+                kept.lock().unwrap().extend_from_slice(&buf[..n]);
             }
         });
         Window {
             child,
             master: Some(master),
+            terminal,
             open,
             reader: Some(reader),
             out,
         }
     }
 
+    /// Whether the terminal is in its usual, cooked mode: lines, echo and signals from keys.
+    fn cooked(&self) -> bool {
+        let modes = rustix::termios::tcgetattr(&self.terminal)
+            .unwrap()
+            .local_modes;
+        modes.contains(LocalModes::ICANON | LocalModes::ECHO | LocalModes::ISIG)
+    }
+
     fn shown(&self) -> String {
         String::from_utf8_lossy(&self.out.lock().unwrap()).into_owned()
+    }
+
+    /// Types `keys` in the window, as the terminal sends them.
+    fn type_keys(&self, keys: &[u8]) {
+        let mut master = self.master.as_ref().expect("the window is open");
+        master.write_all(keys).unwrap();
+    }
+
+    /// Waits, 60 s at most, until the program has drawn `text`.
+    fn drawn(&self, text: &str) {
+        until(
+            || self.shown().contains(text),
+            || format!("{text:?} not drawn: {:?}", self.shown()),
+        );
     }
 
     /// Closes the window at once: the last handle on the terminal's master end goes, and the kernel
@@ -317,6 +351,8 @@ impl Drop for Window {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // The test's own end of the terminal keeps it from ending: the reading stops here.
+        self.open.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -560,6 +596,28 @@ fn window_config(dir: &Path) -> PathBuf {
     config
 }
 
+/// The log of a full-screen server whose data folder is `dir`: its files in `logs`.
+#[cfg(target_os = "linux")]
+fn logs_of(dir: &Path) -> String {
+    std::fs::read_dir(dir.join("logs"))
+        .unwrap()
+        .map(|f| std::fs::read_to_string(f.unwrap().path()).unwrap())
+        .collect()
+}
+
+/// The CPU time process `pid` has used, in clock ticks (100 a second here): its utime and stime in
+/// /proc.
+#[cfg(target_os = "linux")]
+fn cpu_ticks(pid: u32) -> u64 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    // After the program's name, in parentheses that may hold anything: the state, then the rest,
+    // utime being the 12th field from it and stime the 13th.
+    let fields: Vec<&str> = stat[stat.rfind(')').unwrap() + 2..]
+        .split_whitespace()
+        .collect();
+    fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+}
+
 /// Closes `window` on a server whose data folder is `dir`: the server stops on the hang-up, its
 /// store closed and its log saying why, and its process ends with success, within 15 s.
 #[cfg(target_os = "linux")]
@@ -576,11 +634,119 @@ fn closed_cleanly(mut window: Window, dir: &Path) {
     assert!(took < Duration::from_secs(15), "it took {took:?}");
     assert!(!wal.exists() && !dir.join("fenji.db-shm").exists());
     // Its log, in the data folder's logs as the full-screen console has it, says why it stopped.
-    let logs: String = std::fs::read_dir(dir.join("logs"))
-        .unwrap()
-        .map(|f| std::fs::read_to_string(f.unwrap().path()).unwrap())
-        .collect();
+    let logs = logs_of(dir);
     assert!(logs.contains("shutting down signal=SIGHUP"), "{logs}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_console_left_behind_gives_the_terminal_its_mode_back() {
+    // #359: once the server has stopped, `run` waits 2 s at most for a console that hasn't ended,
+    // then leaves it to its thread, caught in a write to a terminal that has stopped reading, as
+    // over a stalled SSH link. The terminal was left raw: once the link came back, the shell after
+    // the server read no lines and echoed nothing, until `reset`. `run` gives it its mode back
+    // before it leaves the console, without a write.
+    let dir = tempfile::tempdir().unwrap();
+    let mut window = Window::open(&window_config(dir.path()), &["run"]);
+    window.drawn("online");
+    assert!(!window.cooked(), "the console holds the terminal raw");
+    // The terminal takes no more output: the console's next frame, at the next second, waits.
+    rustix::termios::tcflow(&window.terminal, rustix::termios::Action::OOff).unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    kill_process(Pid::from_child(&window.child), Signal::TERM).unwrap();
+    let status = exit_of(&mut window.child, || logs_of(dir.path()));
+    assert!(status.success(), "{status}");
+    let logs = logs_of(dir.path());
+    assert!(logs.contains("it's left behind"), "{logs}");
+    assert!(window.cooked(), "the terminal is left raw");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_full_screen_console_runs_what_is_typed_and_ctrl_c_stops_the_server() {
+    // #359: on Linux and macOS the console reads its keys itself, rather than through crossterm's
+    // event source. A command typed and Enter, a cursor key on the way, then Ctrl-C.
+    let dir = tempfile::tempdir().unwrap();
+    let mut window = Window::open(&window_config(dir.path()), &["run"]);
+    window.drawn("online");
+    window.type_keys(b"onlie\x1b[Dn\x1b[F\r");
+    window.drawn("nobody is online");
+    window.type_keys(b"\x03");
+    let status = exit_of(&mut window.child, || logs_of(dir.path()));
+    assert!(status.success(), "{status}");
+    let logs = logs_of(dir.path());
+    assert!(
+        logs.contains("shutting down, as the console asked"),
+        "{logs}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_whose_terminal_hangs_up_with_sighup_ignored_runs_on_without_spinning() {
+    // #359: with SIGHUP ignored on purpose (`trap '' HUP`), closing the window doesn't stop the
+    // server, and crossterm 0.29 read the hung-up terminal over and over without end: a core spun
+    // for as long as the server served. The console ends on the hang-up now, and the server runs
+    // on without it, says so in its log, and stops cleanly on Ctrl-C's SIGINT as before.
+    let dir = tempfile::tempdir().unwrap();
+    let config = window_config(dir.path());
+    let mut window = Window::holding(&config, &["run"], Held::ControllingHangupIgnored);
+    window.drawn("online");
+    window.close();
+    let pid = window.child.id();
+    // Settled: the console has ended, and anything that would spin is spinning.
+    std::thread::sleep(Duration::from_secs(1));
+    let before = cpu_ticks(pid);
+    std::thread::sleep(Duration::from_secs(2));
+    let used = cpu_ticks(pid) - before;
+    let running = window.child.try_wait().unwrap().is_none();
+    assert!(running, "it stopped:\n{}", logs_of(dir.path()));
+    // A core spinning uses 200 ticks in 2 s; a server at rest, a few.
+    assert!(used < 50, "{used} ticks in 2 s:\n{}", logs_of(dir.path()));
+    let logs = logs_of(dir.path());
+    assert!(logs.contains("the console's terminal has gone"), "{logs}");
+    // It serves, and answers a console.
+    let online = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        .arg("--config")
+        .arg(&config)
+        .args(["console", "--run", "online"])
+        .output()
+        .unwrap();
+    assert!(online.status.success(), "{online:?}");
+    kill_process(Pid::from_child(&window.child), Signal::INT).unwrap();
+    let status = exit_of(&mut window.child, || logs_of(dir.path()));
+    assert!(status.success(), "{status}");
+    let logs = logs_of(dir.path());
+    assert!(logs.contains("shutting down signal=SIGINT"), "{logs}");
+    assert!(!dir.path().join("fenji.db-wal").exists(), "{logs}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_attached_full_screen_console_whose_terminal_hangs_up_exits_0() {
+    // #359: a hang-up failed the console's writes, and with no SIGHUP to say the host had left, as
+    // a terminal that isn't the console's controlling one sends none, it exited 1, as a console
+    // that failed. A terminal that has gone is the host leaving, however it went: 0.
+    let dir = tempfile::tempdir().unwrap();
+    let server = Plain::start(dir.path());
+    server.running();
+    for held in [
+        Held::Given,
+        Held::Controlling,
+        Held::ControllingHangupIgnored,
+    ] {
+        let mut console = Window::holding(&server.config, &["console"], held);
+        console.drawn("attached");
+        console.close();
+        let status = exit_of(&mut console.child, || format!("{held:?}: still running"));
+        assert_eq!(status.code(), Some(0), "{held:?}: {status}");
+    }
+    // The server runs on, and answers a console. One it hasn't seen go yet holds its place a
+    // moment more (tests/attach.rs's `a_console_that_goes_gives_its_place_back_at_once`).
+    until(
+        || server.console(&["--run", "online"], "").status.success(),
+        || "no console is answered".into(),
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -589,35 +755,50 @@ fn closing_the_window_of_a_full_screen_server_stops_it_and_ends_its_process() {
     // The hosting plan's final review, Important 1: closing the window stops the server cleanly,
     // and the process ends, here once the console is up and drawing.
     let dir = tempfile::tempdir().unwrap();
-    let window = Window::open(&window_config(dir.path()), true);
+    let window = Window::open(&window_config(dir.path()), &["run"]);
     // The status strip's word: the console is up, and the server runs.
-    until(
-        || window.shown().contains("online"),
-        || format!("not drawn: {:?}", window.shown()),
-    );
+    window.drawn("online");
     closed_cleanly(window, dir.path());
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn closing_the_window_as_the_console_waits_on_its_terminal_still_ends_the_process() {
-    // The fix pass's re-review, NB1. As it starts, the console clears the screen, which asks the
-    // terminal where its cursor is and waits for the answer, 2 s at most, reading the terminal on
-    // the console's own thread. A window closed meanwhile hangs the terminal up, and that read
-    // (crossterm's) then never returns: the server stopped cleanly on its SIGHUP, but `run`
-    // waited for its console without end, and the process spun a core until it was killed.
+fn the_console_draws_at_once_in_a_terminal_that_never_answers() {
+    // #359: as it started, the console cleared the screen with ratatui's Terminal::clear, which asks
+    // the terminal where its cursor is and waits up to 2 s for the answer. A terminal that never
+    // answered cost the 2 s, then ended the console. It clears the screen without asking now.
     let dir = tempfile::tempdir().unwrap();
-    let window = Window::open(&window_config(dir.path()), false);
-    until(
-        || {
-            window
-                .shown()
-                .as_bytes()
-                .windows(CURSOR_ASKED.len())
-                .any(|w| w == CURSOR_ASKED)
-        },
-        || format!("never asked: {:?}", window.shown()),
-    );
+    let window = Window::open(&window_config(dir.path()), &["run"]);
+    window.drawn("\x1b[?1049h");
+    let took = Instant::now();
+    // The status strip's word: the first frame is drawn.
+    while !window.shown().contains("online") {
+        assert!(
+            took.elapsed() < Duration::from_secs(1),
+            "not drawn within 1 s of taking the screen: {:?}",
+            window.shown()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let asked = window
+        .shown()
+        .as_bytes()
+        .windows(CURSOR_ASKED.len())
+        .any(|w| w == CURSOR_ASKED);
+    assert!(!asked, "it asked where the cursor is");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn closing_the_window_as_the_console_starts_still_ends_the_process() {
+    // The fix pass's re-review, NB1: a window closed as the console started, then waiting for the
+    // terminal's answer to where its cursor was, hung the terminal up under a read (crossterm's)
+    // that never returned. The server stopped cleanly on its SIGHUP, but `run` waited for its
+    // console without end, the process spinning a core. The console asks nothing now (#359): closed
+    // as the console takes the screen, the server stops cleanly and the process ends.
+    let dir = tempfile::tempdir().unwrap();
+    let window = Window::open(&window_config(dir.path()), &["run"]);
+    window.drawn("\x1b[?1049h");
     closed_cleanly(window, dir.path());
 }
 

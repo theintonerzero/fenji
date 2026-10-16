@@ -25,13 +25,25 @@ pub struct Lock {
 /// `a server is already using this data folder (<path>)` while another server holds it, or why the
 /// folder or its lock can't be made or taken.
 pub fn take(data: &Path) -> anyhow::Result<Lock> {
+    match try_take(data)? {
+        Some(lock) => Ok(lock),
+        None => bail!(in_use(data)),
+    }
+}
+
+/// [`take`], or `None` while another process holds the lock: a server runs on the folder, or an
+/// admin command is bringing its database up to date (#359).
+///
+/// # Errors
+/// Why the folder or its lock can't be made or taken.
+pub(crate) fn try_take(data: &Path) -> anyhow::Result<Option<Lock>> {
     crate::config::private_folder(data)
         .with_context(|| format!("can't make the data folder {}", data.display()))?;
     let path = data.join(NAME);
     let file = open_lock_file(&path)?;
     match file.try_lock() {
-        Ok(()) => Ok(Lock { _file: file }),
-        Err(TryLockError::WouldBlock) => bail!(in_use(data)),
+        Ok(()) => Ok(Some(Lock { _file: file })),
+        Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(e)) => {
             Err(e).with_context(|| format!("can't lock {}", path.display()))
         }
@@ -146,6 +158,21 @@ mod tests {
         drop(held);
         let _again = take(&data).unwrap();
         assert!(data.join(NAME).is_file());
+    }
+
+    #[test]
+    fn an_admin_command_takes_the_lock_only_while_no_one_holds_it() {
+        // #359: an admin command holds the lock while it brings the database up to date, so that a
+        // server starting meanwhile is refused; while a server holds it, the command sees so.
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let held = try_take(&data).unwrap().expect("free: made and taken");
+        assert!(try_take(&data).unwrap().is_none(), "taken twice");
+        drop(held);
+        let server = take(&data).unwrap();
+        assert!(try_take(&data).unwrap().is_none(), "a server holds it");
+        drop(server);
+        assert!(try_take(&data).unwrap().is_some());
     }
 
     #[cfg(unix)]

@@ -521,7 +521,9 @@ impl ConsoleService {
         })
     }
 
-    /// The admins: `[access].admins`' names and the store's ops, each marked with why it's one.
+    /// The admins: `[access].admins`' names and the store's ops, each marked with why it's one. A
+    /// name the config gives that no account has yet is marked so: whoever next makes an account by
+    /// that name is an admin (#359).
     async fn ops(&self) -> anyhow::Result<Answer> {
         // By name in any case: the name as the account has it, else as the config writes it,
         // whether the config names it, and whether it's an op.
@@ -539,17 +541,19 @@ impl ConsoleService {
         if admins.is_empty() {
             return Ok(Answer::line("no admins: op <account> makes one"));
         }
-        let rows: Vec<Vec<String>> = admins
-            .into_values()
-            .map(|(name, named, op)| {
-                let why = match (named, op) {
-                    (true, true) => "[access].admins, op",
-                    (true, false) => "[access].admins",
-                    (false, _) => "op",
-                };
-                vec![name, why.into()]
-            })
-            .collect();
+        let mut rows = Vec::new();
+        for (name, named, op) in admins.into_values() {
+            let why = match (named, op) {
+                (true, true) => "[access].admins, op".to_owned(),
+                // An op's account is there: only a name the config gives may have none.
+                (true, false) if self.store.account_by_username(&name).await?.is_none() => {
+                    "[access].admins (no account yet)".to_owned()
+                }
+                (true, false) => "[access].admins".to_owned(),
+                (false, _) => "op".to_owned(),
+            };
+            rows.push(vec![name, why]);
+        }
         Ok(Answer::done(table(&rows)))
     }
 
@@ -1284,6 +1288,28 @@ mod tests {
             failed(["no account Nobody"])
         );
         assert!(world.try_recv().is_err(), "nothing more for the world");
+    }
+
+    #[tokio::test]
+    async fn ops_marks_the_admins_names_that_no_account_has_yet() {
+        // #359: a name `[access].admins` gives that no account has yet is the next registration's:
+        // whoever next makes an account by that name is an admin. `ops` says which they are.
+        let dir = tempfile::tempdir().unwrap();
+        let admins = "[access]\nadmins = [\"BOSS\", \"Wen\"]\n";
+        let (c, _world, store, _online) = with_fake_world(dir.path(), admins, WORLD_WAIT).await;
+        account(&store, 1, "boss").await;
+        assert_eq!(
+            c.run_line("ops").await,
+            done([
+                "BOSS  [access].admins",
+                "Wen   [access].admins (no account yet)"
+            ])
+        );
+        account(&store, 2, "wen").await;
+        assert_eq!(
+            c.run_line("ops").await,
+            done(["BOSS  [access].admins", "Wen   [access].admins"])
+        );
     }
 
     #[tokio::test]
