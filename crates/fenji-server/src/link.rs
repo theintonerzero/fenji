@@ -198,9 +198,11 @@ pub(crate) async fn play(
                 None => {
                     // A full channel, which the world drops without a word (its SlowReader kick
                     // didn't fit either), or the world has stopped. Once the server is stopping,
-                    // the client hears why, as when the link drains the channel after `let_go`.
+                    // the client hears why, as when the link drains the channel after `let_go`;
+                    // so too once the world has stopped by itself, after a tick that panicked
+                    // (Ruling R9), which takes nothing more before it lets go of its channels.
                     tracing::info!(%peer, account = %account.username, "the world let go: closing");
-                    if *gate.stopping.borrow() {
+                    if *gate.stopping.borrow() || gate.world.is_closed() {
                         return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
                     }
                     return Ok(());
@@ -1457,6 +1459,51 @@ mod tests {
         .expect("within 5 s, long before `let_go`");
         ended.unwrap();
         assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
+        drop(ours);
+        assert_eq!(
+            rest(&mut theirs, &mut client).await,
+            [ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_world_letting_go_as_it_stops_by_itself_closes_with_the_reason() {
+        // #378's review: after a tick that panics (Ruling R9), the world takes nothing more and
+        // then lets go of every channel, before the server has begun stopping. A link whose
+        // Kicked didn't fit reads the channel's end then, and its client hears the shutdown's
+        // reason all the same.
+        let dir = tempfile::tempdir().unwrap();
+        let (gate, mut inbox) = gate(dir.path()).await;
+        let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let tester = account("tester");
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        let world = async {
+            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            // As the world's `turn_away` does, before its channels close.
+            inbox.close();
+            drop(out);
+        };
+        let (ended, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(played, world)
+        })
+        .await
+        .expect("within 5 s");
+        ended.unwrap();
+        assert!(!*gate.stopping.borrow(), "the server never began stopping");
         drop(ours);
         assert_eq!(
             rest(&mut theirs, &mut client).await,
