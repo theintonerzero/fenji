@@ -9,7 +9,7 @@ The owner designed M4 in conversation on 2026-10-13, as a short [umbrella spec](
 
 **Status (2026-10-16):** All three pieces are built, reviewed and merged into `dev`. Each had a final review of the whole piece, and every Critical or Important finding was fixed before the piece was called done. Hosting's was in two halves: the server's security and correctness, and the host's experience, with a first-time host's run of the write-up.
 
-M4's acceptance (umbrella §5) is a session with friends on other machines, each with their own copy of the game. They meet in the starting zone through a hosted server and the desktop launcher, move, see each other and chat, and an admin's commands work. That session is the owner's to run, with the checks only real machines can make, such as a real VPS, a real Steam download, and Windows and macOS (#359). By the owner's decision of 2026-10-16, v0.5.0 is tagged after it, with everything else ready. Play is Linux-only until gate #337 is decided, so for now those friends need Linux.
+M4's acceptance (umbrella §5) is a session with friends on other machines, each with their own copy of the game. They meet in the starting zone through a hosted server and the desktop launcher, move, see each other and chat, and an admin's commands work. That session is the owner's to run, with the checks only real machines can make, such as a real VPS, a real Steam download, and Windows and macOS (#359). By the owner's decision of 2026-10-16, v0.5.0 ships before it, and what it finds ships in 0.5.x releases. Play is Linux-only until gate #337 is decided, so for now those friends need Linux.
 
 ## What M4 built
 
@@ -133,7 +133,7 @@ The owner's rulings during M4:
 - **Cloud agents** (2026-10-13): repository-only tasks, on Opus at max effort; client-derived material never goes to the cloud. At most two subagents at once (2026-10-14).
 - **Hosting as easy as a Minecraft server** (2026-10-15): Amendment A, HA1–HA6.
 - **The launcher built inline** (2026-10-15), as ordinary engineering, with one review at the end.
-- **Releases pre-approved** (2026-10-15), and **v0.5.0 after the acceptance session** (2026-10-16).
+- **Releases pre-approved** (2026-10-15), and **v0.5.0 before the acceptance session**, with what it finds in 0.5.x releases (2026-10-16).
 - **The release environment** (2026-10-16): the owner is its required reviewer, so a pushed tag alone can't sign an update.
 
 ## Findings M5 inherits
