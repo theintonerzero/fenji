@@ -663,6 +663,29 @@ fn a_console_left_behind_gives_the_terminal_its_mode_back() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn an_attached_console_left_by_a_signal_gives_the_terminal_its_mode_back() {
+    // #359 (Task 2's review, Minor 5): an attached console whose terminal takes no more output,
+    // as over a stalled SSH link, is left 2 s after a signal to leave, its thread caught in a
+    // write to that terminal. It exited 0 with the terminal raw: once the link came back, the
+    // shell after it read no lines and echoed nothing, until `reset`. It gives the terminal its
+    // mode back first, without a write, as `run` does with a console it leaves behind.
+    let dir = tempfile::tempdir().unwrap();
+    let server = Plain::start(dir.path());
+    server.running();
+    let mut console = Window::holding(&server.config, &["console"], Held::Given);
+    console.drawn("attached");
+    assert!(!console.cooked(), "the console holds the terminal raw");
+    // The terminal takes no more output: the console's next frame, at the next second, waits.
+    rustix::termios::tcflow(&console.terminal, rustix::termios::Action::OOff).unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    kill_process(Pid::from_child(&console.child), Signal::TERM).unwrap();
+    let status = exit_of(&mut console.child, || "still running after SIGTERM".into());
+    assert_eq!(status.code(), Some(0), "{status}");
+    assert!(console.cooked(), "the terminal is left raw");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn the_full_screen_console_runs_what_is_typed_and_ctrl_c_stops_the_server() {
     // #359: on Linux and macOS the console reads its keys itself, rather than through crossterm's
     // event source. A command typed and Enter, a cursor key on the way, then Ctrl-C.

@@ -59,7 +59,8 @@ mod unix {
     const HELLO_WAIT: Duration = Duration::from_secs(10);
 
     /// How long a console left by a signal has to give its terminal back. A terminal that takes no
-    /// more output, as a frozen link's doesn't, would keep it from ending: it ends without.
+    /// more output, as a frozen link's doesn't, would keep it from ending: it ends without, the
+    /// terminal's mode alone given back.
     const LEAVE_WAIT: Duration = Duration::from_secs(2);
 
     /// How long a console that ended with an error waits for a signal to leave: a terminal that
@@ -120,8 +121,14 @@ mod unix {
         };
         let ended = tokio::select! {
             ended = shown => settle(ended, left).await,
-            // Left, but its terminal takes nothing more: there's nothing to give back, or to say.
-            () = stuck(left.clone()) => return Ok(ExitCode::SUCCESS),
+            // Left, but its terminal takes nothing more: the console's thread is caught in a write
+            // to it, and nothing more can be said there. The terminal gets its mode back, which
+            // takes no write, so that the shell after the console reads lines once the terminal
+            // reads again (#359); the screen stays the console's until `reset`.
+            () = stuck(left.clone()) => {
+                fenji_console::restore_mode();
+                return Ok(ExitCode::SUCCESS);
+            }
         };
         let (note, ok) = ending(&ended, front);
         if let Some(note) = note {
