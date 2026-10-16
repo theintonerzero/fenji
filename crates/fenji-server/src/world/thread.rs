@@ -944,6 +944,33 @@ mod tests {
         assert!(format!("{e:#}").contains("services task"), "{e:#}");
     }
 
+    #[tokio::test]
+    async fn a_services_task_that_ends_well_names_the_worlds_thread_and_loses_no_saves() {
+        // #222's fix of the name: the services task returns only once the world's thread has
+        // dropped its end of their channel, so a services task that ends well, seen before the
+        // thread's end, names the thread, and claims no lost saves. Which end the runtime sees
+        // first is its own choice when the thread ends; here the services task's comes first
+        // every time, from a stand-in that returns at once while the world still ticks.
+        let (services_tx, _jobs) = mpsc::unbounded_channel();
+        let services = tokio::spawn(async {});
+        let channels = mpsc::unbounded_channel();
+        let mut world = launch(
+            rules(),
+            channels,
+            services_tx,
+            services,
+            unread_names(),
+            no_motd(),
+        )
+        .unwrap();
+        let failed = tokio::time::timeout(Duration::from_secs(5), world.failed()).await;
+        assert_eq!(failed, Ok(Failure::Thread));
+        let stopped = tokio::time::timeout(Duration::from_secs(10), world.stop())
+            .await
+            .expect("the world stops");
+        assert!(stopped.is_ok(), "no saves were lost: {stopped:?}");
+    }
+
     #[test]
     fn the_report_takes_the_last_minute_and_counts_ticks_over_budget() {
         let mut s = Stats::new(100);
