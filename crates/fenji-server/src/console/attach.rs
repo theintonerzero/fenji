@@ -77,6 +77,9 @@ mod unix {
     /// after it.
     pub const STOP_WAIT: Duration = Duration::from_secs(60);
 
+    /// How often `--run stop` looks whether the stopped server has let go of its data folder.
+    const LOCK_LOOK: Duration = Duration::from_millis(20);
+
     pub(super) async fn console(
         cfg: &Config,
         run: Option<&str>,
@@ -215,14 +218,15 @@ mod unix {
     /// Runs `line` on the server whose console socket is `socket`: whether it ran, and its
     /// answer's lines, an answer in parts put together. Everything else the server sends is let
     /// go. A blank line is no command, and nothing is sent (carry-forward 2). After `stop`'s
-    /// answer it reads on to the server's goodbye, which comes once the server has stopped, for
-    /// [`STOP_WAIT`] at most, so that a script can start the server again once it returns (the
-    /// hosting plan's final review, Minor 2).
+    /// answer it reads on to the server's goodbye, which comes once the server has stopped, then
+    /// waits for the data folder's lock, beside the socket, to be free, for [`STOP_WAIT`] at most
+    /// in all, so that a script can start the server again once it returns (the hosting plan's
+    /// final review, Minor 2; the fix pass's re-review, NB2).
     ///
     /// # Errors
     /// If no server answers there, or it speaks another protocol, or it closes the console before
-    /// it answers; after `stop`, if it closes the console without its goodbye or hasn't stopped
-    /// within [`STOP_WAIT`].
+    /// it answers; after `stop`, if it closes the console without its goodbye, or hasn't stopped
+    /// and let go of its data folder within [`STOP_WAIT`].
     pub async fn run_once(socket: &Path, line: &str) -> anyhow::Result<(bool, Vec<String>)> {
         run_once_within(socket, line, STOP_WAIT).await
     }
@@ -261,7 +265,8 @@ mod unix {
                     lines.extend(part);
                     if !more {
                         if ok && stops(line) {
-                            link.stopped(&lines, stop_wait).await?;
+                            let lock = socket.with_file_name(lock::NAME);
+                            link.stopped(&lines, stop_wait, &lock).await?;
                         }
                         return Ok((ok, lines));
                     }
@@ -334,8 +339,15 @@ mod unix {
 
         /// Waits, `wait` at most, for a server that has answered `stop` with `answered` to stop:
         /// its goodbye, which it says once the world has let everyone go and saved them and the
-        /// store has closed, then the console's end.
-        async fn stopped(&mut self, answered: &[String], wait: Duration) -> anyhow::Result<()> {
+        /// store has closed, then the console's end, then its data folder's `lock` free. It holds
+        /// the folder on for its other consoles' goodbyes, 5 s at most, and a server started
+        /// meanwhile would be refused. A lock that can't be looked at isn't waited for.
+        async fn stopped(
+            &mut self,
+            answered: &[String],
+            wait: Duration,
+            lock: &Path,
+        ) -> anyhow::Result<()> {
             let until = tokio::time::Instant::now() + wait;
             let said = || clean(&answered.join(" ")).into_owned();
             let mut goodbye = false;
@@ -344,7 +356,7 @@ mod unix {
                     Ok(Ok(Some(ServerMsg::Bye { .. }))) => goodbye = true,
                     Ok(Ok(Some(_))) => {}
                     // Gone after its goodbye, or still going: it has stopped.
-                    _ if goodbye => return Ok(()),
+                    _ if goodbye => break,
                     Ok(Ok(None)) => bail!(
                         "the server said \"{}\", then closed the console without its goodbye: it \
                          may not have stopped cleanly",
@@ -363,6 +375,18 @@ mod unix {
                     ),
                 }
             }
+            while !lock::is_free(lock).unwrap_or(true) {
+                if tokio::time::Instant::now() >= until {
+                    bail!(
+                        "the server said \"{}\" and has stopped, but hasn't let go of its data \
+                         folder within {} s",
+                        said(),
+                        wait.as_secs()
+                    );
+                }
+                tokio::time::sleep(LOCK_LOOK).await;
+            }
+            Ok(())
         }
 
         async fn send(&mut self, msg: &ConsoleMsg) -> io::Result<()> {
@@ -606,6 +630,20 @@ mod unix {
                 .await
                 .unwrap_err();
             assert!(format!("{e:#}").contains("without its goodbye"), "{e:#}");
+        }
+
+        #[tokio::test]
+        async fn run_stop_fails_and_says_why_when_the_server_keeps_its_data_folder() {
+            // The fix pass's re-review, NB2: after the goodbye, `--run stop` waits for the data
+            // folder's lock to be free, within the same bound.
+            let dir = tempfile::tempdir().unwrap();
+            let _kept = lock::take(dir.path()).unwrap();
+            let socket = fake_server(dir.path(), "stopping the server", Then::Goodbye);
+            let e = run_once_within(&socket, "stop", STOPS_WITHIN)
+                .await
+                .unwrap_err();
+            let e = format!("{e:#}");
+            assert!(e.contains("hasn't let go of its data folder"), "{e}");
         }
 
         #[tokio::test]

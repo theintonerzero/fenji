@@ -73,6 +73,32 @@ pub(crate) fn open_lock_file(path: &Path) -> anyhow::Result<File> {
     Ok(file)
 }
 
+/// Whether the lock at `path` is free, as a server starting would find it: there's none, or no
+/// process holds it. It's taken and let go at once, to see, and never opened through a link in its
+/// place.
+///
+/// # Errors
+/// If it can't be opened or locked for another reason.
+#[cfg(unix)]
+pub(crate) fn is_free(path: &Path) -> std::io::Result<bool> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let no_link = rustix::fs::OFlags::NOFOLLOW.bits() as i32;
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(no_link)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(e) => return Err(e),
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(TryLockError::WouldBlock) => Ok(false),
+        Err(TryLockError::Error(e)) => Err(e),
+    }
+}
+
 /// Why a server can't start on the data folder `data`, and what to do (the hosting plan's final
 /// review B, Minor 4).
 pub(crate) fn in_use(data: &Path) -> String {
@@ -120,6 +146,21 @@ mod tests {
         drop(held);
         let _again = take(&data).unwrap();
         assert!(data.join(NAME).is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_lock_is_free_once_its_server_lets_go_of_it() {
+        // The fix pass's re-review, NB2: what `--run stop` waits for.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(NAME);
+        assert!(is_free(&path).unwrap(), "none yet");
+        let held = take(dir.path()).unwrap();
+        assert!(!is_free(&path).unwrap());
+        drop(held);
+        assert!(is_free(&path).unwrap());
+        // Seeing doesn't keep it.
+        let _again = take(dir.path()).unwrap();
     }
 
     #[cfg(unix)]
