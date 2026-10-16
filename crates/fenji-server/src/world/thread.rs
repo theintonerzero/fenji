@@ -139,7 +139,7 @@ pub struct RunningWorld {
 }
 
 /// Starts the world's thread and its services task, on the current tokio runtime. `invite_base`
-/// and `clock` are for `!invite` and the console's `invite`. The world sends the sorted names of
+/// and `clock` are for admins' `!invite`. The world sends the sorted names of
 /// its characters on `names` when one enters or leaves, and greets each player with the MOTD
 /// `motd` holds (`Status::names_sender` and `Status::watch_motd`; M4 hosting spec §3.8, §8 HA1).
 pub fn start(
@@ -636,7 +636,7 @@ mod tests {
         }
         saved.sort_by_key(|s| match s {
             Service::SavePlace { pid, .. } => *pid,
-            Service::CreateInvite { .. } | Service::CreateInviteFor { .. } => 0,
+            Service::CreateInvite { .. } => 0,
         });
         assert_eq!(
             saved,

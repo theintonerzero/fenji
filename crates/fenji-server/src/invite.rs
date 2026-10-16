@@ -1,7 +1,7 @@
-//! Making an invite (M3 spec D13; M4 spec §4.3): one place for `fenji-server invite create` and
-//! the admins' `!invite`, and later the host console's `invite`. Its links (M4 hosting spec §3.10,
-//! §3.11 and §8, HA4) start where players reach the account API, and carry the server's pin when
-//! it serves TLS with its own key.
+//! Making an invite (M3 spec D13; M4 spec §4.3): one place for `fenji-server invite create`, the
+//! admins' `!invite` and the host console's `invite`. Its links (M4 hosting spec §3.10, §3.11 and
+//! §8, HA4) start where players reach the account API, and carry the server's pin when it serves
+//! TLS with its own key.
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 

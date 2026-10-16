@@ -1,9 +1,10 @@
 //! Admin commands (world spec §3.6; M4 hosting spec §3.3): what `tp`, `kick`, `announce` and
-//! `invite` do, for an admin in the game or for the host's console. The chat phase spends a chat
-//! token on an admin's `!` line, parses it with [`crate::commands`] and queues it here, and its
-//! answer is a line only the admin sees. The console's come as `WorldIn::Console`, from an admin
-//! with no character in the world, and its answers go back on its channel. Each command run is
-//! logged, so a host can see what its admins did.
+//! `invite` do, for an admin in the game, and the first three for the host's console. The chat
+//! phase spends a chat token on an admin's `!` line, parses it with [`crate::commands`] and queues
+//! it here, and its answer is a line only the admin sees. The console's come as
+//! `WorldIn::Console`, from an admin with no character in the world, and its answers go back on its
+//! channel; the console service makes the console's invites itself. Each command run is logged, so
+//! a host can see what its admins did.
 use bevy_ecs::prelude::*;
 use tokio::sync::oneshot;
 
@@ -147,8 +148,8 @@ fn announce(world: &mut World, text: &str) -> Done {
 }
 
 /// Gives `caller` what its command came to: a line to an admin, the console's answer on its
-/// channel, saying whether it was done, and an invite to the services task, which answers each
-/// where it should.
+/// channel, saying whether it was done, and an admin's invite to the services task, which tells
+/// the admin its link.
 fn answer(world: &mut World, caller: Caller, done: Done) {
     let services = |world: &World, job| {
         let _ = world.resource::<Services>().0.send(job);
@@ -177,8 +178,11 @@ fn answer(world: &mut World, caller: Caller, done: Done) {
             };
             let _ = reply.send(ConsoleReply { ok: true, text });
         }
-        (Caller::Console(reply), Done::Invite(label)) => {
-            services(world, Service::CreateInviteFor { reply, label });
+        // The console service makes the console's, with a link for each of the machine's
+        // addresses (Amendment A, HA4): one asked of the world is refused.
+        (Caller::Console(reply), Done::Invite(_)) => {
+            let text = "the console makes its own invites".into();
+            let _ = reply.send(ConsoleReply { ok: false, text });
         }
     }
 }
@@ -814,7 +818,10 @@ mod tests {
     }
 
     #[test]
-    fn the_consoles_invite_goes_to_the_services_with_its_channel() {
+    fn the_world_makes_no_invite_for_the_console() {
+        // The hosting plan's final review, Minor 5: the console's `invite` runs in the console
+        // service, which gives a link for each of the machine's addresses (HA4). An invite asked
+        // of the world for the console is refused, and nothing is made.
         let mut h = admins_world();
         h.saves();
         let (order, mut answer) = console(Command::Invite {
@@ -822,14 +829,11 @@ mod tests {
         });
         h.push(order);
         h.tick(50);
-        let mut jobs = h.saves();
-        let Some(Service::CreateInviteFor { reply, label }) = jobs.pop() else {
-            panic!("an invite for the console: {jobs:?}")
-        };
-        assert!(jobs.is_empty(), "{jobs:?}");
-        assert_eq!(label.as_deref(), Some("for Bob"));
-        reply.send(done("invite link: X")).unwrap();
-        assert_eq!(answer.try_recv().unwrap(), done("invite link: X"));
+        assert_eq!(h.saves(), []);
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            refused("the console makes its own invites")
+        );
         for c in 1..=3 {
             assert!(h.take(c).is_empty(), "{c}");
         }
