@@ -68,17 +68,23 @@
 # script tests pass it. PROTON_LOG_DIR is $IO/1 and $IO/2, and the watchdog gets
 # both logs in that order. --key, --type and --click take 2@T:... for client 2's display. Client 2's
 # timeout ends its fenji-launch; if its gujianol.exe is still there 10 s later, the namespace ends
-# that process by its own pid. Whether two umu-run sessions share one wineserver is Unknown
-# (world.md 15.5), and a second would boot its own session in the prefix: once client 2 has
-# started, the runner checks every 2 s that the namespace holds one wineserver at most, and a
-# second stops the run at once (the namespace is killed, so neither saves the registry): exit 1, "a
-# second wineserver for the prefix", and the prefix is marked, to be rebuilt as after a gate event.
+# that process by its own pid. If client 1's fenji-launch has ended when client 2 is due, client 2
+# isn't started (io/2/not-started): a fresh wineserver would start Wine's drivers in a new
+# winedevice.exe, which the watchdog's S2 takes for a gate event. Whether two umu-run sessions
+# share one wineserver is Unknown (world.md 15.5), and a second would boot its own session in the
+# prefix: once client 2 has started, the runner checks every 2 s that the namespace holds one
+# wineserver at most, and a second stops the run at once (the namespace is killed, so neither saves
+# the registry): exit 1, "a second wineserver for the prefix", and the prefix is marked, to be
+# rebuilt as after a gate event.
 #
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
 # update off (the namespace has no network anyway), then primes it: cmd.exe started once through
 # Proton's launcher, so Proton's own service is in the watchdog's baseline (prefix_primed). A run
-# refuses an unprimed prefix, and setup primes an existing one. A run whose watchdog doesn't exit
-# 0 (a gate event, or a watchdog failure) marks the prefix (compat/fenji-gate-event), and setup and
+# refuses an unprimed prefix. Setup builds and primes a prefix only in an empty or missing compat/
+# (run-client.sh's compat_held): one that isn't ready for this GE-Proton build is removed first
+# (remove re/bare-metal/compat, then setup), as Wine booting a prefix runs have used would start,
+# unwatched, any driver service a run left there (#148). A run whose watchdog doesn't exit 0 (a
+# gate event, or a watchdog failure) marks the prefix (compat/fenji-gate-event), and setup and
 # run refuse it until it is rebuilt (remove re/bare-metal/compat, then setup): a driver service that
 # run left in the registry would start, unwatched, the next time Wine boots the prefix.
 #
@@ -464,14 +470,12 @@ prefix_ready() { [ -f "$WORK/compat/system.reg" ] && [ -d "$WORK/compat/drive_c/
 # createprefix never runs the shim. Unprimed, the client's own first launch registers the service,
 # and the watchdog rightly stops the run: a service that isn't in the baseline (bm-1, 2026-10-13).
 # setup primes the prefix by starting cmd.exe once through the shim, then leaves the mark, which
-# names the GE-Proton build that primed it. The prefix is primed when the mark names this build (a
-# new build upgrades the prefix, and its services would be new too) and, if this GE-Proton ships
-# the bridge, the bridge service has reached the registry on disk.
-PRIMED_MARK=fenji-primed
-proton_build() { cat -- "$PROTON/version" 2>/dev/null || echo unknown; }
+# names the GE-Proton build that primed it (run-client.sh's PRIMED_MARK, proton_build and
+# prefix_marked). The prefix is primed when the mark names this build (a new build upgrades the
+# prefix, and its services would be new too) and, if this GE-Proton ships the bridge, the bridge
+# service has reached the registry on disk.
 prefix_primed() {
-  [ -f "$WORK/compat/$PRIMED_MARK" ] || return 1
-  [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" = "$(proton_build)" ] || return 1
+  prefix_marked || return 1
   [ ! -e "$PROTON/files/lib/wine/discord-rpc-bridge/bridge.exe" ] ||
     grep -q '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\discord-bridge\]' "$WORK/compat/system.reg"
 }
@@ -524,20 +528,27 @@ cmd_bare_setup() {
     echo "the prefix is ready: $WORK/compat"
     return 0
   fi
-  mkdir -p "$WORK/compat"
   need_display "$display"
   nested_display_ok "$desktop" "$display"
+  # Setup builds and primes a prefix only in a compat/ that's empty or missing. One that isn't
+  # ready for this GE-Proton build may be one runs have used (another build's, one primed before
+  # builds were recorded), and a run killed before its watchdog's verdict leaves no gate mark:
+  # booting it would start any driver service a run left in its registry, unwatched (#148).
+  if compat_held; then
+    die "$WORK/compat holds a prefix that isn't ready for this GE-Proton build, which runs may have used, and setup never starts Wine in one (#148): remove $WORK/compat, then run: $0 setup"
+  fi
+  mkdir -p "$WORK/compat"
   local ns ne se bpf prime
   mapfile -t ns < <(namespace_cmd "$display" "$xauth")
   mapfile -t ne < <(namespace_env "$display" "$xauth")
   mapfile -t se < <(setup_env)
   bpf=$(seccomp_filter)
-  if ! prefix_ready; then
-    # umu-launcher 1.4 ends createprefix with exit 1 once the prefix is built: the prefix decides.
-    "${ns[@]}" "${ne[@]}" "${se[@]}" "$UMU" createprefix > "$WORK/setup.log" 2>&1 \
-      7< <(printf '%b' "$bpf") || true
-    prefix_ready || die "createprefix didn't build the prefix; see $WORK/setup.log"
-  fi
+  # compat/ is empty here, so the prefix is always built, never primed as it was found.
+  ! prefix_ready || die "$WORK/compat holds a prefix already; remove it, then run: $0 setup"
+  # umu-launcher 1.4 ends createprefix with exit 1 once the prefix is built: the prefix decides.
+  "${ns[@]}" "${ne[@]}" "${se[@]}" "$UMU" createprefix > "$WORK/setup.log" 2>&1 \
+    7< <(printf '%b' "$bpf") || true
+  prefix_ready || die "createprefix didn't build the prefix; see $WORK/setup.log"
   # The prime (see prefix_primed). umu-run returns once Wine has ended, so the registry is on disk.
   mapfile -t prime < <(prime_args)
   timeout -k 10 300 "${ns[@]}" "${ne[@]}" "${se[@]}" "$UMU" "${prime[@]}" >> "$WORK/setup.log" 2>&1 \
@@ -716,7 +727,7 @@ PY
   check_unmarked
   prefix_ready || die "no prefix; run: $0 setup"
   if [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" != "$(proton_build)" ]; then
-    die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run; run once: $0 setup"
+    die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run; remove $WORK/compat, then run: $0 setup"
   fi
   prefix_primed || die "the prefix hasn't been through Proton's launcher, so Proton's own service isn't in the watchdog's baseline; run: $0 setup"
   need_display "$display"
@@ -854,21 +865,29 @@ PY
       c2=""
       if [ "$CLIENTS" = 2 ]; then
         sleep "$AFTER"
-        # From here the runner checks that the namespace holds one wineserver at most.
-        : > "$IO/2/.started"
-        (
-          export PROTON_LOG_DIR="$IO/2"
-          if [ -n "$D2" ]; then export DISPLAY=":$D2"; fi
-          timeout -k 10 "$TMO2" "$BIN/fenji-launch" "${LA2[@]}" > "$IO/2/launch.out" 2> "$IO/2/launch.err"
-          rc=$?
-          if grep -q "starting the client" "$IO/2/launch.err"; then echo "$rc" > "$IO/exit-code-2"; fi
-          # Its timeout ends fenji-launch; a client 2 still there 10 s later is ended by its own pid
-          # (wineserver -k would end client 1 too).
-          sleep 10
-          { date +%s; end_client "$EXE2"; } > "$IO/2/ended-by-pid"
-          exit "$rc"
-        ) &
-        c2=$!
+        if ! kill -0 "$c1" 2>/dev/null; then
+          # Client 1 has ended, and the wineserver may be gone with it: client 2 would boot a fresh
+          # one, which starts Wine drivers in a new winedevice.exe, and S2 takes that for a gate
+          # event (#244).
+          echo "client 1 had ended when client 2 was due; client 2 not started" >&2
+          : > "$IO/2/not-started"
+        else
+          # From here the runner checks that the namespace holds one wineserver at most.
+          : > "$IO/2/.started"
+          (
+            export PROTON_LOG_DIR="$IO/2"
+            if [ -n "$D2" ]; then export DISPLAY=":$D2"; fi
+            timeout -k 10 "$TMO2" "$BIN/fenji-launch" "${LA2[@]}" > "$IO/2/launch.out" 2> "$IO/2/launch.err"
+            rc=$?
+            if grep -q "starting the client" "$IO/2/launch.err"; then echo "$rc" > "$IO/exit-code-2"; fi
+            # Its timeout ends fenji-launch; a client 2 still there 10 s later is ended by its own pid
+            # (wineserver -k would end client 1 too).
+            sleep 10
+            { date +%s; end_client "$EXE2"; } > "$IO/2/ended-by-pid"
+            exit "$rc"
+          ) &
+          c2=$!
+        fi
       fi
       wait "$c1"
       rc=$?
@@ -941,7 +960,11 @@ PY
   date -Is > "$OUT/ended"
   collect_bare_evidence || echo "run-bare: collecting the evidence failed (exit $?); the verdict stands" >&2
   local two=""
-  if [ "$clients" = 2 ]; then two=", client 2's fenji-launch exit $(cat "$IO/exit-code-2" 2>/dev/null || echo '?')"; fi
+  if [ "$clients" = 2 ] && [ -e "$IO/2/not-started" ]; then
+    two=", client 2 not started (client 1 had ended when it was due)"
+  elif [ "$clients" = 2 ]; then
+    two=", client 2's fenji-launch exit $(cat "$IO/exit-code-2" 2>/dev/null || echo '?')"
+  fi
   local what="fenji-launch exit"
   if [ -n "$app" ]; then what="game exit"; fi
   echo "run $run done: $what $(cat "$IO/exit-code" 2>/dev/null || echo '?')$two, namespace exit $wrc, watchdog exit $wdrc"

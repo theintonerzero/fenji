@@ -10,6 +10,13 @@ libXtst). It sends input to that display and nothing else; it never touches the 
     xkey.py --display :99 --type "Lin Two"   printable ASCII, one key at a time, Shift as needed
     xkey.py --display :99 --type-file FILE   the same for FILE's first line, so a password typed
                                              into a form never sits on a command line
+
+Before each key press, a pointer over no window is moved into the client's window (#244): a nested
+display has no window manager, so a press goes to the window under the pointer, and a client in the
+world leaves the pointer on the display's bottom row, outside its window, where its presses were
+lost (Task 13's m4-s3 and m4-s4). A click to bring it back acts on the game's UI too (it took the
+title screen in two runs). The move is the shortest into the display's largest window, and best
+effort: if it can't be made, the key is pressed as before.
 """
 import argparse
 import ctypes
@@ -22,6 +29,99 @@ import time
 MAX_HOLD_MS = 60_000
 # How long a plain press holds its key, in seconds.
 TAP = 0.03
+# How long a moved pointer settles before the key press, in seconds: the window gets its enter and
+# focus events first.
+SETTLE = 0.05
+IS_VIEWABLE, INPUT_OUTPUT = 2, 1  # XWindowAttributes' map_state and class
+
+
+def pointer_target(pointer, over_window, windows):
+    """Where to move the pointer before a key press, or None to leave it: when it's over no window,
+    the nearest point inside the largest window (the topmost of equals), so that the key goes to
+    that window. `windows` are the display's viewable top-level windows, bottom first, each the
+    (x, y, width, height) of its inside."""
+    if over_window or not windows:
+        return None
+    x, y, w, h = max(reversed(windows), key=lambda r: r[2] * r[3])
+    px, py = pointer
+    return min(max(px, x), x + w - 1), min(max(py, y), y + h - 1)
+
+
+class XWindowAttributes(ctypes.Structure):
+    """Xlib's XWindowAttributes (X11/Xlib.h), read only up to the fields used here."""
+    _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int), ("width", ctypes.c_int), ("height", ctypes.c_int),
+                ("border_width", ctypes.c_int), ("depth", ctypes.c_int), ("visual", ctypes.c_void_p),
+                ("root", ctypes.c_ulong), ("c_class", ctypes.c_int), ("bit_gravity", ctypes.c_int),
+                ("win_gravity", ctypes.c_int), ("backing_store", ctypes.c_int), ("backing_planes", ctypes.c_ulong),
+                ("backing_pixel", ctypes.c_ulong), ("save_under", ctypes.c_int), ("colormap", ctypes.c_ulong),
+                ("map_installed", ctypes.c_int), ("map_state", ctypes.c_int), ("all_event_masks", ctypes.c_long),
+                ("your_event_mask", ctypes.c_long), ("do_not_propagate_mask", ctypes.c_long),
+                ("override_redirect", ctypes.c_int), ("screen", ctypes.c_void_p)]
+
+
+# Xlib's default error handler ends the process. While the windows are listed, a window that goes
+# away between the listing and its attributes is an error to skip instead. Kept at module level, so
+# the callback is never freed.
+_IGNORE_X_ERRORS = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(lambda dpy, event: 0)
+
+
+class Pointer:
+    """Moves the pointer into the client's window before a key press (pointer_target), through XTEST."""
+
+    def __init__(self, x11, xtst, dpy):
+        self.x11, self.xtst, self.dpy = x11, xtst, dpy
+        win = ctypes.c_ulong
+        x11.XSetErrorHandler.restype = ctypes.c_void_p
+        x11.XSetErrorHandler.argtypes = [ctypes.c_void_p]
+        x11.XDefaultRootWindow.restype = win
+        x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+        x11.XQueryPointer.argtypes = [ctypes.c_void_p, win] + [ctypes.POINTER(win)] * 2 + \
+            [ctypes.POINTER(ctypes.c_int)] * 4 + [ctypes.POINTER(ctypes.c_uint)]
+        x11.XQueryTree.argtypes = [ctypes.c_void_p, win, ctypes.POINTER(win), ctypes.POINTER(win),
+                                   ctypes.POINTER(ctypes.POINTER(win)), ctypes.POINTER(ctypes.c_uint)]
+        x11.XGetWindowAttributes.argtypes = [ctypes.c_void_p, win, ctypes.c_void_p]
+        x11.XFree.argtypes = [ctypes.c_void_p]
+        xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+        self.root = x11.XDefaultRootWindow(dpy)
+
+    def windows(self):
+        """The viewable top-level windows, bottom first, as pointer_target takes them."""
+        root, parent, n = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_uint()
+        children = ctypes.POINTER(ctypes.c_ulong)()
+        if not self.x11.XQueryTree(self.dpy, self.root, ctypes.byref(root), ctypes.byref(parent),
+                                   ctypes.byref(children), ctypes.byref(n)):
+            return []
+        try:
+            ids = [children[i] for i in range(n.value)]
+        finally:
+            if children:
+                self.x11.XFree(children)
+        out = []
+        xlibs = self.x11.XSetErrorHandler(ctypes.cast(_IGNORE_X_ERRORS, ctypes.c_void_p))
+        try:
+            for w in ids:
+                buf = (ctypes.c_char * 512)()  # room to spare beyond XWindowAttributes, whatever its size
+                if not self.x11.XGetWindowAttributes(self.dpy, w, buf):
+                    continue  # gone since the listing
+                a = XWindowAttributes.from_buffer(buf)
+                if a.map_state == IS_VIEWABLE and a.c_class == INPUT_OUTPUT:
+                    out.append((a.x + a.border_width, a.y + a.border_width, a.width, a.height))
+        finally:
+            self.x11.XSetErrorHandler(xlibs)
+        return out
+
+    def place(self):
+        """Moves the pointer into the client's window if it's over no window; returns where to."""
+        root, child = ctypes.c_ulong(), ctypes.c_ulong()
+        rx, ry, wx, wy, mask = ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_uint()
+        if not self.x11.XQueryPointer(self.dpy, self.root, ctypes.byref(root), ctypes.byref(child), ctypes.byref(rx),
+                                      ctypes.byref(ry), ctypes.byref(wx), ctypes.byref(wy), ctypes.byref(mask)):
+            return None  # on another screen
+        to = None if child.value else pointer_target((rx.value, ry.value), False, self.windows())
+        if to:
+            self.xtst.XTestFakeMotionEvent(self.dpy, -1, to[0], to[1], 0)
+            self.x11.XFlush(self.dpy)
+        return to
 
 
 def main():
@@ -94,7 +194,17 @@ def main():
         # A run that ends during a hold stops it with SIGTERM: the key is released before this ends,
         # so no key stays down on the display for whatever runs there next.
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+        pointer = None
+        try:
+            pointer = Pointer(x11, xtst, dpy)
+        except (AttributeError, OSError, ctypes.ArgumentError) as e:
+            print(f"xkey: the pointer can't be placed ({e.__class__.__name__}); pressing as it lies", file=sys.stderr)
         for code, shifted in plan:
+            try:
+                if pointer and pointer.place():
+                    time.sleep(SETTLE)
+            except (OSError, ctypes.ArgumentError, ValueError) as e:
+                print(f"xkey: the pointer wasn't placed ({e.__class__.__name__}); pressing as it lies", file=sys.stderr)
             if shifted:
                 xtst.XTestFakeKeyEvent(dpy, shift, 1, 0)
             xtst.XTestFakeKeyEvent(dpy, code, 1, 0)
