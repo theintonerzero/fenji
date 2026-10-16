@@ -23,7 +23,7 @@ pub struct Lock {
 /// refusal suggests repeats.
 ///
 /// # Errors
-/// `a server is already using this data folder (<path>)` while another process holds it
+/// `another fenji-server holds this data folder (<path>)` while another process holds it
 /// (`in_use`), or why the folder or its lock can't be made or taken.
 pub fn take(data: &Path, given: Option<&Path>) -> anyhow::Result<Lock> {
     match try_take(data)? {
@@ -112,26 +112,27 @@ pub(crate) fn is_free(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// What a refusal over the data folder's lock ends with: besides a server, an admin command holds
-/// the lock for a moment, while it brings the database up to date (#359).
-pub(crate) const OR_UPDATING: &str = "If no server runs, a fenji-server command is bringing the \
-     database up to date: try again in a moment";
+/// The second of the two holders a refusal over the data folder's lock names, after a server: an
+/// admin command holds the lock for a moment, while it brings the database up to date (#359).
+pub(crate) const OR_UPDATING: &str =
+    "or a command bringing its database up to date (try again in a moment)";
 
-/// Why a server can't start on the data folder `data`, and what to do (the hosting plan's final
-/// review B, Minor 4): with the server that holds it, attach with the `--config` this run was
-/// `given`, or stop it; with a command bringing the database up to date, try again ([`OR_UPDATING`]).
+/// Why a server can't start on the data folder `data`, naming both holders the lock may have, and
+/// what to do about each (the hosting plan's final review B, Minor 4; #359): a server, which a
+/// console attaches to with the `--config` this run was `given`, or which is stopped first; or a
+/// command bringing the database up to date ([`OR_UPDATING`]).
 pub(crate) fn in_use(data: &Path, given: Option<&Path>) -> String {
-    let todo = if cfg!(unix) {
+    let server = if cfg!(unix) {
         format!(
-            "it runs in another window, in tmux or as a service; attach to it with `{}`, or stop \
-             it first",
+            "a server, in another window, in tmux or as a service (attach to it with `{}`, or \
+             stop it first)",
             crate::cli::command_line(given, "console")
         )
     } else {
-        "it runs in another window; use that one, or stop it first".to_owned()
+        "a server, in another window (use that one, or stop it first)".to_owned()
     };
     format!(
-        "a server is already using this data folder ({}): {todo}. {OR_UPDATING}",
+        "another fenji-server holds this data folder ({}): {server}, {OR_UPDATING}",
         shown(data).display()
     )
 }
@@ -154,20 +155,25 @@ mod tests {
         let held = take(&data, None).unwrap();
         let e = take(&data, None).unwrap_err();
         assert!(
-            format!("{e:#}").contains("a server is already using this data folder ("),
+            format!("{e:#}").starts_with("another fenji-server holds this data folder ("),
             "{e:#}"
         );
-        // And what to do (the hosting plan's final review B, Minor 4), and what else may hold it
-        // a moment: a command bringing the database up to date (#359, Task 2's review, Minor 3).
-        let todo = if cfg!(unix) {
-            "): it runs in another window, in tmux or as a service; attach to it with \
-             `fenji-server console`, or stop it first. "
+        // The two it may be, up front, and what to do about each: a server (the hosting plan's
+        // final review B, Minor 4), or a command bringing the database up to date (#359, Task 2's
+        // review, Minor 3, and Task 7's review, Minor 1).
+        let server = if cfg!(unix) {
+            "): a server, in another window, in tmux or as a service (attach to it with \
+             `fenji-server console`, or stop it first), "
         } else {
-            "): it runs in another window; use that one, or stop it first. "
+            "): a server, in another window (use that one, or stop it first), "
         };
         assert!(
-            format!("{e:#}").ends_with(&format!("{todo}{OR_UPDATING}")),
+            format!("{e:#}").ends_with(&format!("{server}{OR_UPDATING}")),
             "{e:#}"
+        );
+        assert_eq!(
+            OR_UPDATING,
+            "or a command bringing its database up to date (try again in a moment)"
         );
         drop(held);
         let _again = take(&data, None).unwrap();

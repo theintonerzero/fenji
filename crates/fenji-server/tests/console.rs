@@ -1080,7 +1080,7 @@ fn a_second_server_on_a_data_folder_in_use_refuses_before_it_opens_its_database_
     assert!(!second.wait().success());
     let said = second.said();
     assert!(
-        said.contains("a server is already using this data folder ("),
+        said.contains("another fenji-server holds this data folder ("),
         "{said}"
     );
     // To attach, with the config it was given (#359, Task 2's review, Minor 2).

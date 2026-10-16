@@ -209,7 +209,7 @@ Hosts with a domain keep parent §8's path: Caddy in front of the account API, w
 4. **On a VPS: the reference deployment.** Parent §8: a `fenji` user, systemd with its hardening, `tls = "self"` or Caddy with a domain, `ufw` with the gate's port and either the API's port or 443, the backup timer, and attaching the console.
 5. **Updating.** `maintenance on 15m Updating Fenji`, `systemctl stop fenji` (which stops the server as `stop` does, and returns once it has stopped), replace the binary, start, check, then `maintenance off`.
 6. **Backups and restoring.**
-7. **Troubleshooting:** ports, SmartScreen and Gatekeeper, "a server is already using this data folder", "this server's key has changed".
+7. **Troubleshooting:** ports, SmartScreen and Gatekeeper, "another fenji-server holds this data folder", "this server's key has changed".
 
 **The default path for the internet (H2)** is open ports. Parent §8 designed it that way, and players install nothing more. The write-up recommends a VPN to anyone who wants their game traffic private.
 

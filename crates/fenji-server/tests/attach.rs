@@ -261,10 +261,7 @@ async fn a_second_server_on_the_same_data_folder_refuses_before_opening_anything
     // Review Focus 5.
     let s = started_with_socket().await;
     let e = console::socket::claim(&s.data(), None).await.unwrap_err();
-    assert!(
-        format!("{e:#}").contains("already using this data folder"),
-        "{e:#}"
-    );
+    assert!(format!("{e:#}").contains("holds this data folder"), "{e:#}");
 }
 
 #[tokio::test]
@@ -274,10 +271,7 @@ async fn a_server_whose_lock_file_was_deleted_keeps_its_data_folder_by_its_socke
     let s = started_with_socket().await;
     std::fs::remove_file(s.data().join("server.lock")).unwrap();
     let e = console::socket::claim(&s.data(), None).await.unwrap_err();
-    assert!(
-        format!("{e:#}").contains("already using this data folder"),
-        "{e:#}"
-    );
+    assert!(format!("{e:#}").contains("holds this data folder"), "{e:#}");
     assert!(s.data().join("console.sock").exists(), "its socket stays");
 }
 
@@ -517,10 +511,7 @@ async fn a_data_folder_too_deep_for_a_socket_still_starts_and_keeps_one_server_t
     assert!(!deep.join("console.sock").exists());
     // One server per data folder holds without the socket.
     let e = console::socket::claim(&deep, None).await.unwrap_err();
-    assert!(
-        format!("{e:#}").contains("already using this data folder"),
-        "{e:#}"
-    );
+    assert!(format!("{e:#}").contains("holds this data folder"), "{e:#}");
     // A console can't attach, and says why.
     let e = console::attach::run_once(&deep.join("console.sock"), "online")
         .await

@@ -866,9 +866,9 @@ async fn an_admin_command_never_migrates_a_running_servers_database() {
         .unwrap_err();
     let e = format!("{e:#}");
     assert!(
-        e.starts_with("a server is running on this data folder (")
-            && e.contains("its database is an older version's than this fenji-server's")
-            && e.contains("or stop the server first."),
+        e.starts_with("another fenji-server holds this data folder (")
+            && e.contains("and the database is an older version's than this fenji-server's")
+            && e.contains(", or stop it first), "),
         "{e}"
     );
     #[cfg(unix)]
@@ -901,7 +901,7 @@ async fn an_admin_command_never_migrates_a_running_servers_database() {
         .await
         .unwrap_err();
     let e = format!("{e:#}");
-    assert!(e.contains(": stop the server first."), "{e}");
+    assert!(e.contains(": a server (stop it first), "), "{e}");
     assert_eq!(
         behind_at(&cfg.store.path).await,
         Some(latest - 1),

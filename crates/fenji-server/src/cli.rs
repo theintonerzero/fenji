@@ -374,9 +374,10 @@ async fn admin_store(
     }
 }
 
-/// Why admin command `cmd` won't open the database of the server running on `data`, laid out for
-/// another version of Fenji (`differs`), and what to do instead (#359), `given` being the
-/// `--config` the command was given.
+/// Why admin command `cmd` won't open the database of the data folder `data`, which another
+/// fenji-server holds, laid out for another version of Fenji (`differs`): the two holders it may
+/// be, a server or a command bringing the database up to date, and what to do about each (#359),
+/// `given` being the `--config` the command was given.
 fn another_version(
     data: &Path,
     differs: &SchemaDiffers,
@@ -387,29 +388,28 @@ fn another_version(
     let (whose, otherwise) = if differs.newer() {
         (
             format!("a newer version's than this fenji-server (v{version}) knows"),
-            "use the fenji-server of the server's version",
+            "use the fenji-server of its version",
         )
     } else {
         (
             format!(
                 "an older version's than this fenji-server's (v{version}), which won't update it \
-                 under the server"
+                 while the folder is held"
             ),
-            "stop the server first",
+            "stop it first",
         )
     };
-    let instead = match console_form(cmd) {
+    let server = match console_form(cmd) {
         Some(line) if cfg!(unix) => {
             let run = command_line(given, &format!("console --run {}", shell_word(&line)));
-            format!("run the command through the server instead, `{run}`, or {otherwise}")
+            format!("run the command through it instead, `{run}`, or {otherwise}")
         }
-        Some(line) => {
-            format!("type `{line}` in the server's window instead, or {otherwise}")
-        }
+        Some(line) => format!("type `{line}` in its window instead, or {otherwise}"),
         None => otherwise.to_owned(),
     };
     format!(
-        "a server is running on this data folder ({}), and its database is {whose}: {instead}. {}",
+        "another fenji-server holds this data folder ({}), and the database is {whose}: a server \
+         ({server}), {}",
         crate::lock::shown(data).display(),
         crate::lock::OR_UPDATING
     )
@@ -571,33 +571,36 @@ mod tests {
             cmd: InviteCmd::Revoke { id: 7 },
         };
         let text = another_version(data, &older, &revoke, None);
+        // The two holders it may have, up front (Task 2's review, Minor 3, and Task 7's review,
+        // Minor 1): a server, and what to do about it, or a command bringing the database up to
+        // date.
         assert!(
-            text.starts_with("a server is running on this data folder (/srv/fenji/data)")
-                && text.contains("its database is an older version's")
-                && text.contains("or stop the server first."),
+            text.starts_with(
+                "another fenji-server holds this data folder (/srv/fenji/data), and the database \
+                 is an older version's"
+            ) && text.contains(": a server (")
+                && text.contains(", or stop it first), "),
             "{text}"
         );
         let through = if cfg!(unix) {
-            "`fenji-server console --run 'revoke 7'`"
+            "run the command through it instead, `fenji-server console --run 'revoke 7'`"
         } else {
-            "type `revoke 7` in the server's window"
+            "type `revoke 7` in its window instead"
         };
         assert!(text.contains(through), "{text}");
-        // What else holds the data folder a moment: another command bringing the database up to
-        // date (Task 2's review, Minor 3).
         assert!(text.ends_with(crate::lock::OR_UPDATING), "{text}");
         // A newer one: stopping the server wouldn't help this fenji-server, which doesn't know it.
         let text = another_version(data, &newer, &revoke, None);
         assert!(
-            text.contains("its database is a newer version's")
-                && text.contains("or use the fenji-server of the server's version."),
+            text.contains("and the database is a newer version's")
+                && text.contains(", or use the fenji-server of its version), "),
             "{text}"
         );
         // `backup --keep 3` keeps another number than the console's `backup`: no console form.
         let backup = Command::Backup { keep: 3 };
         let text = another_version(data, &newer, &backup, None);
         assert!(
-            text.contains(": use the fenji-server of the server's version."),
+            text.contains(": a server (use the fenji-server of its version), "),
             "{text}"
         );
     }
@@ -637,7 +640,7 @@ mod tests {
         );
         // A label the console's `invite` would refuse gives no console form.
         let text = another_version(data, &older, &invite(&"x".repeat(65)), None);
-        assert!(text.contains(": stop the server first."), "{text}");
+        assert!(text.contains(": a server (stop it first), "), "{text}");
         // With the config the command was given, quoted where it needs to be.
         let list = Command::Invite {
             cmd: InviteCmd::List,
