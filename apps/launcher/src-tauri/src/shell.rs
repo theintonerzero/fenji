@@ -64,6 +64,7 @@ pub fn route(intent: &Intent) -> Route {
         | Intent::Repair
         | Intent::Play
         | Intent::PlayOn { .. }
+        | Intent::CancelStart
         | Intent::DismissNotice { .. }
         | Intent::SetAutoUpdate { .. }
         | Intent::SetUmuRun { .. }

@@ -139,9 +139,30 @@ pub fn prepare_spec(platform: &Platform) -> Option<LaunchSpec> {
     }
 }
 
-/// Whether Proton has built the Wine prefix at `prefix`: its registry and its Windows folder.
+/// The mark a prefix carries while `umu-run createprefix` builds it, so that one a stopped run
+/// left half made isn't taken for ready (#348).
+const UNFINISHED: &str = ".fenji-unfinished";
+
+/// Whether Proton has built the Wine prefix at `prefix`: its registry and its Windows folder, and
+/// no run that stopped before it finished.
 pub fn prefix_ready(prefix: &Path) -> bool {
-    prefix.join("system.reg").is_file() && prefix.join("drive_c/windows").is_dir()
+    prefix.join("system.reg").is_file()
+        && prefix.join("drive_c/windows").is_dir()
+        && !prefix.join(UNFINISHED).exists()
+}
+
+/// Marks `prefix` as being built, before `umu-run createprefix` runs in it.
+pub fn mark_unfinished(prefix: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(prefix)?;
+    std::fs::write(prefix.join(UNFINISHED), b"")
+}
+
+/// Takes the mark away, once `umu-run createprefix` has ended by itself.
+pub fn mark_finished(prefix: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(prefix.join(UNFINISHED)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        done => done,
+    }
 }
 
 /// Runs [`prepare_spec`] and judges it by the prefix, whatever umu-run's exit code.
@@ -149,10 +170,12 @@ fn prepare(platform: &Platform) -> anyhow::Result<()> {
     let (Some(spec), Platform::Linux { prefix, .. }) = (prepare_spec(platform), platform) else {
         return Ok(());
     };
+    mark_unfinished(prefix)?;
     let status = run(&spec)?;
     if status.code().is_none() {
         bail!("`umu-run createprefix` was stopped ({status}), so the Wine prefix may not be ready");
     }
+    mark_finished(prefix)?;
     if !prefix_ready(prefix) {
         bail!(
             "the Wine prefix in {} isn't ready; `umu-run createprefix`'s output above says why",
@@ -505,6 +528,11 @@ mod tests {
         assert!(!prefix_ready(d.path()), "no registry yet");
         std::fs::write(d.path().join("system.reg"), "WINE REGISTRY Version 2\n").unwrap();
         assert!(prefix_ready(d.path()));
+        mark_unfinished(d.path()).unwrap();
+        assert!(!prefix_ready(d.path()), "still being built");
+        mark_finished(d.path()).unwrap();
+        assert!(prefix_ready(d.path()));
+        mark_finished(d.path()).unwrap();
     }
 
     /// umu 1.4 ends `createprefix` with exit 1 once the prefix is built; only the prefix and a
@@ -545,6 +573,8 @@ mod tests {
         let killed = umu("killed", &format!("{build}\nkill -9 $$"));
         let e = format!("{:#}", prepare(&platform(killed, "c")).unwrap_err());
         assert!(e.contains("signal"), "{e}");
+        // Its two marks are there, but it never finished (#348).
+        assert!(!prefix_ready(&d.path().join("c")));
     }
 
     #[test]

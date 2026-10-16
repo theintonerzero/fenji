@@ -41,6 +41,10 @@ pub const NEEDS_REPAIR: &str = "Some game files need repair. The Client tab show
 /// `umu-run createprefix` didn't make the Wine prefix.
 pub const PREFIX_FAILED: &str =
     "Proton couldn't make the game's Wine prefix. The log folder has the details.";
+/// `umu-run createprefix` ran past its limit, `play::PREFIX_LIMIT` (#348).
+pub const PREFIX_TOO_LONG: &str = "Proton was still making the game's Wine prefix after 60 minutes, so Fenji stopped it. The log folder has the details.";
+/// Cancel start, before the game ran (#348).
+pub const START_CANCELLED: &str = "The start was cancelled.";
 
 /// The game ended with 0 within its first seconds: umu-run 1.4 logs a failure and ends that way
 /// (#332).

@@ -152,6 +152,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
   These are `fenji-launcher`'s `start` steps, with the session the model holds, where `fenji-launch` signs in for each game.
 - **umu-run** is the one on `PATH`, or umu-launcher 1.4.4's zipapp, fetched on first Play from its GitHub release and checked against a SHA-256 (L4).
   - The first start makes the prefix, and umu-run downloads Proton and Valve's runtime. That takes a few minutes, so Play says "Starting · the first start sets up Proton, which takes a few minutes".
+  - **Cancel start,** beside Play while it starts, ends the start before the game runs: umu-run making the prefix, with everything it started, or the ticket (#348). Making the prefix may take 60 minutes before Fenji stops it. A prefix whose making was stopped is made again on the next start.
   - `PROTONPATH` in the launcher's environment, or the umu-run path in Settings, overrides the defaults, as `fenji-launch`'s options do.
 - **While the game runs:**
   - Play reads "Running", and the lobby lists the player;

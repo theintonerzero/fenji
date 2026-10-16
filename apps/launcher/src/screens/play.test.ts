@@ -72,10 +72,12 @@ test("ready offers a quick check beside Play", () => {
   expect(sent).toEqual([{ type: "check", level: "quick" }]);
 });
 
-test("starting says the first start sets up Proton", () => {
-  const { root } = mount(play, golden("play-starting"));
+test("starting says the first start sets up Proton, and its one action cancels the start", () => {
+  const { root, sent } = mount(play, golden("play-starting"));
   expect(root.querySelector("button.play")!.textContent).toBe("Starting");
   expect(root.textContent).toContain("The first start sets up Proton, which takes a few minutes");
+  press(root, "Cancel start");
+  expect(sent).toEqual([{ type: "cancelStart" }]);
 });
 
 test("running says so, and who is signed in where", () => {

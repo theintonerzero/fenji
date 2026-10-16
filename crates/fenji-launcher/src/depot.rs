@@ -213,7 +213,9 @@ impl DepotRun {
         let ended = terminal.clone();
         std::thread::spawn(move || {
             let ok = child.wait().is_ok_and(|status| status.success());
-            *ended.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ok);
+            *ended
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ok);
         });
         Ok(DepotRun {
             run_dir: run_dir.to_path_buf(),
@@ -410,7 +412,10 @@ mod tests {
         let run = DepotRun::start(&term, &job, &dir.path().join("run"), []).unwrap();
         drop(_spawn);
         let started = std::time::Instant::now();
-        assert_eq!(wait_for(&run, |s| *s != RunState::Waiting), RunState::NotOpened);
+        assert_eq!(
+            wait_for(&run, |s| *s != RunState::Waiting),
+            RunState::NotOpened
+        );
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 

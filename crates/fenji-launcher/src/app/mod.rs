@@ -95,6 +95,8 @@ struct State {
     need_sign_in: bool,
     client: client::Client,
     game: GameView,
+    /// Cancel start came while the game was starting (#348): the start sees it and ends.
+    start_cancelled: bool,
     pending_invite: Option<(u32, InviteCode)>,
     key_change: Option<KeyChange>,
     notice: Option<Notice>,
@@ -172,6 +174,7 @@ impl App {
                 .map_or(GameView::Idle, |mark| GameView::Running {
                     since_ms: mark.since_ms,
                 }),
+            start_cancelled: false,
             pending_invite: None,
             key_change: None,
             notice: problem.map(|text| Notice { text, error: true }),
@@ -269,6 +272,10 @@ impl App {
             Intent::PlayOn { id } => {
                 self.select_server(id);
                 self.play().await
+            }
+            Intent::CancelStart => {
+                self.cancel_start();
+                Ok(())
             }
             Intent::DismissNotice { text } => {
                 // Only the notice the view showed: a newer one came for a reason (#348).

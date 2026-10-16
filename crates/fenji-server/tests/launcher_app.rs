@@ -394,10 +394,17 @@ async fn unticking_remember_forgets_a_server_saved_in_an_earlier_run_too() {
     s.shutdown().await.unwrap();
 }
 
-/// umu-run as Play uses it: `createprefix` makes the prefix's two marks; the game records its
-/// environment, waits, and ends as the test says.
+/// umu-run as Play uses it: `createprefix` makes the prefix's two marks, then, if the test says,
+/// waits on a child of its own, as umu-run waits on Proton; the game records its environment,
+/// waits, and ends as the test says.
 const FAKE_UMU_RUN: &str = r#"#!/bin/sh
-if [ "$1" = createprefix ]; then mkdir -p "$WINEPREFIX/drive_c/windows" && : > "$WINEPREFIX/system.reg"; exit 0; fi
+if [ "$1" = createprefix ]; then
+  mkdir -p "$WINEPREFIX/drive_c/windows" && : > "$WINEPREFIX/system.reg"
+  if [ "${FENJI_TEST_PREFIX_SLEEP:-0}" != 0 ]; then
+    sleep "$FENJI_TEST_PREFIX_SLEEP" & echo $! > "$FENJI_TEST_RECORD.prefix"; wait
+  fi
+  exit 0
+fi
 env > "$FENJI_TEST_RECORD"
 sleep "${FENJI_TEST_SLEEP:-1}"
 exit "${FENJI_TEST_EXIT:-0}"
@@ -418,22 +425,27 @@ struct PlayBed {
 
 impl PlayBed {
     async fn new() -> PlayBed {
-        Self::build(Os::Linux, 1, 0).await
+        Self::build(Os::Linux, 1, 0, 0).await
     }
 
     async fn with_sleep(secs: u32) -> PlayBed {
-        Self::build(Os::Linux, secs, 0).await
+        Self::build(Os::Linux, secs, 0, 0).await
     }
 
     async fn with_exit(code: i32) -> PlayBed {
-        Self::build(Os::Linux, 1, code).await
+        Self::build(Os::Linux, 1, code, 0).await
     }
 
     async fn on(os: Os) -> PlayBed {
-        Self::build(os, 1, 0).await
+        Self::build(os, 1, 0, 0).await
     }
 
-    async fn build(os: Os, sleep: u32, exit: i32) -> PlayBed {
+    /// A first start whose `umu-run createprefix` never ends by itself.
+    async fn with_stuck_prefix() -> PlayBed {
+        Self::build(Os::Linux, 1, 0, 600).await
+    }
+
+    async fn build(os: Os, sleep: u32, exit: i32, prefix_sleep: u32) -> PlayBed {
         let dir = tempfile::tempdir().unwrap();
         let (s, c) = server(dir.path(), "", GateLimits::default()).await;
         let code = InviteCode::generate().unwrap();
@@ -458,6 +470,10 @@ impl PlayBed {
             ("FENJI_TEST_RECORD".into(), record.clone().into()),
             ("FENJI_TEST_SLEEP".into(), sleep.to_string().into()),
             ("FENJI_TEST_EXIT".into(), exit.to_string().into()),
+            (
+                "FENJI_TEST_PREFIX_SLEEP".into(),
+                prefix_sleep.to_string().into(),
+            ),
         ]);
         let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
         app.intent(Intent::ChooseFolder {
@@ -697,6 +713,61 @@ async fn the_folder_and_downloads_wait_while_the_game_starts_or_runs() {
         Some(t.client.display().to_string().as_str())
     );
     t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_start_stuck_making_the_prefix_can_be_cancelled() {
+    // #348: Starting had no way out, so a first start whose prefix never finished held Play until
+    // the launcher closed.
+    let t = PlayBed::with_stuck_prefix().await;
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    let child = t.record.with_extension("prefix");
+    let pid = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&child)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("createprefix never started");
+    assert!(matches!(
+        t.app.snapshot().game,
+        GameView::Starting { first_start: true }
+    ));
+    t.app.intent(Intent::CancelStart).await.unwrap();
+    let s = until(&t.app, |s| matches!(s.game, GameView::Idle)).await;
+    let notice = s.notice.unwrap();
+    assert_eq!(notice.text, "The start was cancelled.");
+    assert!(!notice.error);
+    // umu-run's whole process group ends, not umu-run alone.
+    let gone = Instant::now();
+    while alive(pid) {
+        assert!(
+            gone.elapsed() < Duration::from_secs(10),
+            "createprefix's child outlived the cancel"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Its two marks are there, but the prefix was never finished: the next start makes it again.
+    let prefix = t.cfg.data_dir.join("prefix");
+    assert!(prefix.join("system.reg").is_file());
+    assert!(!fenji_launcher::start::prefix_ready(&prefix));
+    assert!(!t.record.exists(), "the client was started");
+    t.s.shutdown().await.unwrap();
+}
+
+/// Whether `pid` runs: a process that has ended but isn't reaped yet doesn't.
+fn alive(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .is_some_and(|(_, rest)| !rest.trim_start().starts_with(['Z', 'X']))
+    })
 }
 
 #[tokio::test]

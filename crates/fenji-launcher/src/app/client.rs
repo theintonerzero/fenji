@@ -106,7 +106,7 @@ fn not_playing(st: &State) -> Result<(), IntentError> {
 
 /// `work`, or `None` as soon as `cancelled` says so, looked at every `every`: a fetch dropped
 /// midway leaves only its `.part` file, which the next fetch writes over (`tools::ensure`).
-async fn or_cancelled<T>(
+pub(super) async fn or_cancelled<T>(
     work: impl std::future::Future<Output = T>,
     cancelled: impl Fn() -> bool,
     every: Duration,
