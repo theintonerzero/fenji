@@ -416,16 +416,50 @@ fn another_version(
 }
 
 /// `fenji-server <args>` as a host types it in a shell, with the `--config` the program was
-/// `given`, quoted where the shell needs it: a command a message gives the host to copy, which
-/// finds the same config as the program that gave it (#359). A hidden character in the path shows
-/// as its escape.
+/// `given`, quoted where the shell needs it, and run as the same user when sudo ran it as another
+/// (`sudo -u`): a command a message gives the host to copy, which finds the same config and files
+/// as the program that gave it (#359). A hidden character in the path shows as its escape.
 pub(crate) fn command_line(given: Option<&Path>, args: &str) -> String {
+    command_line_as(run_as().as_deref(), given, args)
+}
+
+/// [`command_line`], run as `user`, `sudo -u`'s word for them, when it's given.
+fn command_line_as(user: Option<&str>, given: Option<&Path>, args: &str) -> String {
+    let sudo = user
+        .map(|user| format!("sudo -u {user} "))
+        .unwrap_or_default();
     match given {
         Some(config) => {
             let config = shell_word(&escape_hidden(&config.display().to_string()));
-            format!("fenji-server --config {config} {args}")
+            format!("{sudo}fenji-server --config {config} {args}")
         }
-        None => format!("fenji-server {args}"),
+        None => format!("{sudo}fenji-server {args}"),
+    }
+}
+
+/// Whom a command to copy runs as, `sudo -u`'s word for them: this program's user, when sudo ran
+/// it as them for another user, as the guide's `sudo -u fenji fenji-server …` does. Nobody
+/// otherwise, and on Windows.
+fn run_as() -> Option<String> {
+    #[cfg(unix)]
+    {
+        let typed_by = std::env::var("SUDO_USER").ok()?;
+        let uid = rustix::process::geteuid().as_raw();
+        sudo_user(&typed_by, uid, crate::unix::user_name(uid))
+    }
+    #[cfg(not(unix))]
+    None
+}
+
+/// `sudo -u`'s word for the user `uid`, named `name` where the system names them, when sudo ran
+/// this program as them for another user, `typed_by` (`SUDO_USER`). A user without a name is given
+/// by number, as sudo takes one, and a name is quoted where the shell needs it.
+#[cfg(unix)]
+fn sudo_user(typed_by: &str, uid: u32, name: Option<String>) -> Option<String> {
+    match name {
+        Some(name) if name == typed_by => None,
+        Some(name) => Some(shell_word(&escape_hidden(&name))),
+        None => Some(format!("'#{uid}'")),
     }
 }
 
@@ -658,6 +692,38 @@ mod tests {
                 "`fenji-server --config '/srv/my fenji/fenji.toml' console --run invites`"
             ),
             "{text}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_to_copy_runs_as_the_user_sudo_ran_this_as() {
+        // #359 (Task 7's review, Minor 2): the guide runs everything as `sudo -u fenji
+        // fenji-server --config …`, and a refusal's command, copied as printed, ran as the host
+        // and met a second refusal: the console socket is another user's.
+        use std::path::Path;
+
+        use super::{command_line_as, sudo_user};
+        let etc = Path::new("/etc/fenji/fenji.toml");
+        assert_eq!(
+            command_line_as(Some("fenji"), Some(etc), "console --run invites"),
+            "sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run invites"
+        );
+        assert_eq!(
+            command_line_as(None, None, "console"),
+            "fenji-server console"
+        );
+        // Run by sudo as fenji for wen, the copy runs as fenji; as wen for wen, it needs no sudo.
+        assert_eq!(
+            sudo_user("wen", 998, Some("fenji".into())).as_deref(),
+            Some("fenji")
+        );
+        assert_eq!(sudo_user("wen", 1000, Some("wen".into())), None);
+        // A user the system doesn't name, by number, as sudo takes one; an odd name, quoted.
+        assert_eq!(sudo_user("wen", 1234, None).as_deref(), Some("'#1234'"));
+        assert_eq!(
+            sudo_user("wen", 1001, Some("a b".into())).as_deref(),
+            Some("'a b'")
         );
     }
 
