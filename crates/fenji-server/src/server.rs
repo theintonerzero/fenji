@@ -854,10 +854,11 @@ mod tests {
             let left = tokio::time::timeout(Duration::from_secs(10), waiting).await;
             let left = left.expect("waited for without end");
             assert_eq!(left.unwrap_err().to_string(), CONSOLE_LEFT);
-            // A console that ends on the server's goodbye ends so.
+            // A console that ends on the server's goodbye ends so, well within its grace.
             let bye = Ending::ServerStopped(service::STOPPING.into());
             let ending = bye.clone();
-            let ended = held_until_stopped(async move { Ok(ending) }, stopped, grace).await;
+            let ample = Duration::from_secs(10);
+            let ended = held_until_stopped(async move { Ok(ending) }, stopped, ample).await;
             assert_eq!(ended.unwrap(), bye);
         });
         // As `main` does: the console left behind keeps its thread, which isn't waited for.
