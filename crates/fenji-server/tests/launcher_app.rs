@@ -347,6 +347,53 @@ async fn a_server_signed_in_without_remember_stays_off_the_disk() {
     s.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn unticking_remember_forgets_a_server_saved_in_an_earlier_run_too() {
+    // #348: unticked, "Remember this server" forgot only a server added in this run; launcher spec
+    // §3.4 says the server is forgotten when the launcher closes, whenever it was added.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    let first = App::start(config(dir.path()), tokio::runtime::Handle::current());
+    first
+        .intent(Intent::AddServer {
+            text: format!("http://{}", s.api_addr),
+        })
+        .await
+        .unwrap();
+    first
+        .intent(Intent::SignIn {
+            username: "tester".into(),
+            password: password(),
+            remember: true,
+        })
+        .await
+        .unwrap();
+    let file = dir.path().join("config/settings.json");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("tester"));
+    // A later run signs in on the saved server without remembering it.
+    let later = App::start(config(dir.path()), tokio::runtime::Handle::current());
+    later
+        .intent(Intent::SignIn {
+            username: "tester".into(),
+            password: password(),
+            remember: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        later.snapshot().servers.len(),
+        1,
+        "it stays while the launcher runs"
+    );
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        !saved.contains(&s.api_addr.to_string()) && !saved.contains("tester"),
+        "{saved}"
+    );
+    s.shutdown().await.unwrap();
+}
+
 /// umu-run as Play uses it: `createprefix` makes the prefix's two marks; the game records its
 /// environment, waits, and ends as the test says.
 const FAKE_UMU_RUN: &str = r#"#!/bin/sh

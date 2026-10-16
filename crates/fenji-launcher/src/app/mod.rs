@@ -87,10 +87,8 @@ impl Inner {
 
 struct State {
     settings: Settings,
-    /// Servers added in this run.
-    added: HashSet<u32>,
-    /// Of those, the ones signed in to without "Remember this server": in the list until the
-    /// launcher closes, and never in settings.json (spec §3.4).
+    /// The servers signed in to without "Remember this server": in the list until the launcher
+    /// closes, and never in settings.json, whenever they were added (spec §3.4; #348).
     transient: HashSet<u32>,
     live: HashMap<u32, Live>,
     tab: Tab,
@@ -164,7 +162,6 @@ impl App {
                 up_to_date: false,
             },
             settings,
-            added: HashSet::new(),
             transient: HashSet::new(),
             live: HashMap::new(),
             tab: Tab::Play,

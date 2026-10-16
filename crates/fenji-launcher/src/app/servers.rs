@@ -244,7 +244,6 @@ impl App {
                     });
                 }
                 AddOutcome::New(_) => {
-                    st.added.insert(id);
                     if let Some(code) = invite {
                         st.pending_invite = Some((id, code));
                     }
@@ -272,7 +271,6 @@ impl App {
                 return None;
             }
             info!(server = id, "removed a server");
-            st.added.remove(&id);
             st.transient.remove(&id);
             if st.pending_invite.as_ref().is_some_and(|(p, _)| *p == id) {
                 st.pending_invite = None;
@@ -390,7 +388,7 @@ impl App {
     }
 
     /// Signs in on the active server (spec §3.4). With `remember`, the username is saved; without,
-    /// a server added in this run stays off the disk.
+    /// the server leaves the disk now, and the list when the launcher closes.
     pub(super) async fn sign_in(
         &self,
         username: String,
@@ -458,7 +456,9 @@ impl App {
                 if let Some(saved) = st.settings.server_mut(id) {
                     saved.username = Some(username.clone());
                 }
-            } else if st.added.contains(&id) {
+            } else {
+                // Unticked, the server is forgotten when the launcher closes, whenever it was
+                // added (spec §3.4; #348): it leaves the disk now, and the list at the close.
                 st.transient.insert(id);
             }
             let live = st.live.entry(id).or_default();
