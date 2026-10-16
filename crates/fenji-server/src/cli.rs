@@ -415,6 +415,9 @@ fn another_version(
     )
 }
 
+/// The program, as a command to copy names it.
+const PROGRAM: &str = "fenji-server";
+
 /// `fenji-server <args>` as a host types it in a shell, with the `--config` the program was
 /// `given`, quoted where the shell needs it, and run as the same user when sudo ran it as another
 /// (`sudo -u`): a command a message gives the host to copy, which finds the same config and files
@@ -431,31 +434,43 @@ fn command_line_as(user: Option<&str>, given: Option<&Path>, args: &str) -> Stri
     match given {
         Some(config) => {
             let config = shell_word(&escape_hidden(&config.display().to_string()));
-            format!("{sudo}fenji-server --config {config} {args}")
+            format!("{sudo}{PROGRAM} --config {config} {args}")
         }
-        None => format!("{sudo}fenji-server {args}"),
+        None => format!("{sudo}{PROGRAM} {args}"),
     }
 }
 
 /// Whom a command to copy runs as, `sudo -u`'s word for them: this program's user, when sudo ran
-/// it as them for another user, as the guide's `sudo -u fenji fenji-server …` does. Nobody
-/// otherwise, and on Windows.
+/// the program as them for another user, as the guide's `sudo -u fenji fenji-server …` does.
+/// Nobody otherwise, in a shell sudo opened as them among others, and on Windows.
 fn run_as() -> Option<String> {
     #[cfg(unix)]
     {
         let typed_by = std::env::var("SUDO_USER").ok()?;
+        let command = std::env::var("SUDO_COMMAND").unwrap_or_default();
         let uid = rustix::process::geteuid().as_raw();
-        sudo_user(&typed_by, uid, crate::unix::user_name(uid))
+        sudo_user(&typed_by, &command, uid, crate::unix::user_name(uid))
     }
     #[cfg(not(unix))]
     None
 }
 
 /// `sudo -u`'s word for the user `uid`, named `name` where the system names them, when sudo ran
-/// this program as them for another user, `typed_by` (`SUDO_USER`). A user without a name is given
-/// by number, as sudo takes one, and a name is quoted where the shell needs it.
+/// this program as them for another user, `typed_by` (`SUDO_USER`): when sudo's `command`
+/// (`SUDO_COMMAND`) names fenji-server, which it ran directly or through a shell's `-c`
+/// (`sudo -iu fenji fenji-server …`). In a shell sudo opened as them (`sudo -iu fenji`), whose
+/// command is that shell, the bare command works, and they may not use sudo. A user without a name
+/// is given by number, as sudo takes one, and a name is quoted where the shell needs it.
 #[cfg(unix)]
-fn sudo_user(typed_by: &str, uid: u32, name: Option<String>) -> Option<String> {
+fn sudo_user(typed_by: &str, command: &str, uid: u32, name: Option<String>) -> Option<String> {
+    let ran_this = command.split_whitespace().any(|word| {
+        Path::new(word)
+            .file_name()
+            .is_some_and(|file| file == PROGRAM)
+    });
+    if !ran_this {
+        return None;
+    }
     match name {
         Some(name) if name == typed_by => None,
         Some(name) => Some(shell_word(&escape_hidden(&name))),
@@ -714,16 +729,54 @@ mod tests {
             "fenji-server console"
         );
         // Run by sudo as fenji for wen, the copy runs as fenji; as wen for wen, it needs no sudo.
+        let ran = "/usr/local/bin/fenji-server --config /etc/fenji/fenji.toml console";
         assert_eq!(
-            sudo_user("wen", 998, Some("fenji".into())).as_deref(),
+            sudo_user("wen", ran, 998, Some("fenji".into())).as_deref(),
             Some("fenji")
         );
-        assert_eq!(sudo_user("wen", 1000, Some("wen".into())), None);
+        assert_eq!(sudo_user("wen", ran, 1000, Some("wen".into())), None);
         // A user the system doesn't name, by number, as sudo takes one; an odd name, quoted.
-        assert_eq!(sudo_user("wen", 1234, None).as_deref(), Some("'#1234'"));
         assert_eq!(
-            sudo_user("wen", 1001, Some("a b".into())).as_deref(),
+            sudo_user("wen", ran, 1234, None).as_deref(),
+            Some("'#1234'")
+        );
+        assert_eq!(
+            sudo_user("wen", ran, 1001, Some("a b".into())).as_deref(),
             Some("'a b'")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_to_copy_needs_no_sudo_in_a_shell_sudo_opened() {
+        // #359 (Task 7's re-review, new Minor): `SUDO_USER` stays set in a shell sudo opened as
+        // the server's user (`sudo -iu fenji`, `sudo -su fenji`), where the copy's `sudo -u fenji`
+        // failed, as the server's user may not use sudo, and the bare command works. Sudo's
+        // command (`SUDO_COMMAND`) is that shell.
+        use super::sudo_user;
+        let fenji = || Some("fenji".to_owned());
+        assert_eq!(sudo_user("wen", "/bin/bash", 998, fenji()), None);
+        assert_eq!(sudo_user("wen", "/usr/bin/zsh", 998, fenji()), None);
+        assert_eq!(sudo_user("wen", "", 998, fenji()), None);
+        // Sudo ran fenji-server itself, or a shell to run it (`sudo -iu fenji fenji-server …`).
+        assert_eq!(
+            sudo_user("wen", "/usr/local/bin/fenji-server console", 998, fenji()).as_deref(),
+            Some("fenji")
+        );
+        assert_eq!(
+            sudo_user(
+                "wen",
+                "/bin/bash -c fenji-server --config /etc/fenji/fenji.toml console",
+                998,
+                fenji()
+            )
+            .as_deref(),
+            Some("fenji")
+        );
+        // A program whose name only begins with it is another.
+        assert_eq!(
+            sudo_user("wen", "/opt/fenji-server-tools/bin/bash", 998, fenji()),
+            None
         );
     }
 
