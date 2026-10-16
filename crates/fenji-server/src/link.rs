@@ -1290,12 +1290,15 @@ mod tests {
     }
 
     /// #363's race, set up as its review found it: once the server is stopping, the world sends
-    /// 8 MiB in 64 lines, far more than [`small_session`]'s sockets hold, then `end`s its side of
-    /// the channel, while the client reads nothing for three times `let_go`. So a write is held
-    /// past `let_go`; once it finishes, what `end` left and `let_go`'s end are both ready to the
-    /// link's select!, and each line still to send is another draw between them. Returns what the
-    /// client read, and the log.
-    fn held_past_let_go(end: impl FnOnce(mpsc::Sender<WorldOut>)) -> (Vec<ClientEvent>, String) {
+    /// 8 MiB in 64 lines, far more than [`small_session`]'s sockets hold, then has its last say
+    /// with `end`, while the client reads nothing for three times `let_go`. What `end` returns is
+    /// kept until the client has read the rest, so the channel stays open if it returns the world's
+    /// sender, and closes if it drops it. A write is held past `let_go`; once it finishes, what
+    /// `end` left and `let_go`'s end are both ready to the link's select!, and each line still to
+    /// send is another draw between them. Returns what the client read, and the log.
+    fn held_past_let_go<K>(
+        end: impl FnOnce(mpsc::Sender<WorldOut>) -> K,
+    ) -> (Vec<ClientEvent>, String) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1331,7 +1334,7 @@ mod tests {
                         let line = ChatOut::System { text: text.clone() };
                         out.send(WorldOut::Chat(line)).await.unwrap();
                     }
-                    end(out);
+                    let _kept = end(out);
                     tokio::time::sleep(let_go * 3).await;
                     rest(&mut theirs, &mut client).await
                 };
@@ -1351,10 +1354,12 @@ mod tests {
         // #363's review: the link's select! is unbiased. When the stop begins and a write is then
         // held past `let_go`, the world's Kicked(Shutdown) and `let_go`'s end are both ready once
         // it finishes, and the link took the second about half the time, warning that the world
-        // hadn't let go. Here the world lets go with the shutdown's reason.
+        // hadn't let go. Here the world lets go with the shutdown's reason and keeps its channel
+        // open, so that only reading the Kicked ends the drain without a warning.
         let (events, log) = held_past_let_go(|out| {
             out.try_send(WorldOut::Kicked(KickReason::Shutdown))
                 .unwrap();
+            out
         });
         assert_eq!(
             events.last(),
