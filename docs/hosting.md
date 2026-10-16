@@ -476,7 +476,7 @@ sudo systemctl start fenji
 
 The new version's services replace the ones installed. A change of your own to a service belongs in a drop-in file, as the container fix in section 7 makes, which an update leaves alone.
 
-`systemctl stop` stops the server as the console's `stop` does, letting every player go and saving where each one stood, and returns once it has stopped. That takes 30 seconds at most, and the service gives it 35.
+`systemctl stop` stops the server as the console's `stop` does, letting every player go and saving where each one stood, and returns once it has stopped. That takes 30 seconds at most, and the service gives it 35. Only closing the database can take longer, since it waits for what still uses it, such as a backup begun in the console: one still running at 35 seconds is cut short, and never passes for a backup (section 6).
 
 Check that it runs the new version, still in maintenance, which lasts through restarts:
 

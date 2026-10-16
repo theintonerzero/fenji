@@ -44,10 +44,12 @@ pub const MAX_STALL: std::time::Duration = std::time::Duration::from_secs(5);
 /// [`MAX_STALL`]'s worth grew with `tick_hz`: 12,800 messages at 20 Hz, and 39,936 at 60.
 ///
 /// An honest client's backlog after a five-second stall is far less: a move each 50 ms at most,
-/// 100; a pull for each player coming into view, 200 at most (`[server] max_players`); and a few
-/// lines of chat. So this many still passes every stall [`MAX_STALL`] covers, at every tick rate.
-/// The worst tick, with every player bursting at once, takes this many from each: 40,000 messages
-/// with 20 players, where it was 256,000 at 20 Hz and 798,720 at 60.
+/// 100; a pull each 250 ms at most, 20 (world.md 14.3); the sync filter's type 5 for each player
+/// coming into view, 200 at most (`[server] max_players`; 14.12); and a few lines of chat. So this
+/// many still passes every stall [`MAX_STALL`] covers, at every tick rate. The worst tick, with
+/// every player bursting at once, takes this many from each: 40,000 messages with 20 players,
+/// where it was 256,000 at 20 Hz and 798,720 at 60. With 200 players, the most `max_players` may
+/// be, it takes 400,000.
 pub const MAX_BURST: usize = 2_000;
 
 /// How long the world keeps where a character left. Its save is written off the tick, so a login

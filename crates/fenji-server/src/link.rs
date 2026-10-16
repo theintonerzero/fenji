@@ -201,8 +201,14 @@ pub(crate) async fn play(
                 }
                 None => {
                     // A full channel, which the world drops without a word (its SlowReader kick
-                    // didn't fit either), or the world has stopped.
+                    // didn't fit either), or the world has stopped. Once the server is stopping,
+                    // the client hears why, as when the link drains the channel after `let_go`;
+                    // so too once the world has stopped by itself, after a tick that panicked
+                    // (Ruling R9), which takes nothing more before it lets go of its channels.
                     tracing::info!(%peer, account = %account.username, "the world let go: closing");
+                    if *gate.stopping.borrow() || gate.world.is_closed() {
+                        return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
+                    }
                     return Ok(());
                 }
             },
@@ -786,7 +792,7 @@ mod tests {
     use fenji_proto::world::BlobValue;
     use fenji_store::{Place, Store};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpSocket};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -878,6 +884,43 @@ mod tests {
             .await
             .unwrap();
         let (ours, peer) = listener.accept().await.unwrap();
+        at_work(ours, peer, theirs)
+    }
+
+    /// What [`small_session`] sets each socket's send and receive buffers to. Linux doubles it,
+    /// and the two sockets then hold about 256 KiB between them.
+    const SMALL_BUFFER: u32 = 64 * 1024;
+
+    /// [`session`] on sockets with buffers of [`SMALL_BUFFER`], which the host's TCP settings
+    /// can't grow: left to tune themselves, they can hold megabytes, and a test that needs a write
+    /// held until the client reads would pass without one (#378). As tcp(7) asks, they're set
+    /// before `listen` and `connect`, and the gate's socket takes the listener's.
+    async fn small_session() -> (TcpStream, SocketAddr, Server, TcpStream, Client) {
+        let small = || {
+            let socket = TcpSocket::new_v4().unwrap();
+            socket.set_send_buffer_size(SMALL_BUFFER).unwrap();
+            socket.set_recv_buffer_size(SMALL_BUFFER).unwrap();
+            socket
+        };
+        let listening = small();
+        listening
+            .bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .unwrap();
+        let listener = listening.listen(1).unwrap();
+        let theirs = small()
+            .connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (ours, peer) = listener.accept().await.unwrap();
+        at_work(ours, peer, theirs)
+    }
+
+    /// The gate's and the client's ends of a new connection, taken to `WORK`.
+    fn at_work(
+        ours: TcpStream,
+        peer: SocketAddr,
+        theirs: TcpStream,
+    ) -> (TcpStream, SocketAddr, Server, TcpStream, Client) {
         let variants = Variants {
             down: AES128,
             up: AES128,
@@ -1256,24 +1299,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_world_that_let_go_in_time_is_never_blamed_for_a_write_held_past_let_go() {
-        // #363's review: the link's select! is unbiased. When the stop begins and a write is then
-        // held past `let_go`, the world's Kicked(Shutdown) and `let_go`'s end are both ready once
-        // it finishes, and the link took the second about half the time, warning that the world
-        // hadn't let go. Here the client reads nothing for longer than `let_go` while the world
-        // sends more than the socket holds, then lets go.
+    /// #363's race, set up as its review found it: once the server is stopping, the world sends
+    /// 8 MiB in 64 lines, far more than [`small_session`]'s sockets hold, then has its last say
+    /// with `end`, while the client reads nothing for three times `let_go`. What `end` returns is
+    /// kept until the client has read the rest, so the channel stays open if it returns the world's
+    /// sender, and closes if it drops it. A write is held past `let_go`; once it finishes, what
+    /// `end` left and `let_go`'s end are both ready to the link's select!, and each line still to
+    /// send is another draw between them. Returns what the client read, and the log.
+    fn held_past_let_go<K>(
+        end: impl FnOnce(mpsc::Sender<WorldOut>) -> K,
+    ) -> (Vec<ClientEvent>, String) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let (events, log) = logged(|| {
+        logged(|| {
             rt.block_on(async {
                 let dir = tempfile::tempdir().unwrap();
                 let (mut gate, mut inbox) = gate(dir.path()).await;
                 let let_go = Duration::from_millis(200);
                 gate.limits.let_go = let_go;
-                let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+                let (mut ours, peer, mut server, mut theirs, mut client) = small_session().await;
                 let (_newer, mut replaced) = oneshot::channel();
                 let tester = account("tester");
                 let played = play(
@@ -1293,14 +1339,12 @@ mod tests {
                     gate.stopping.send_replace(true);
                     // The link begins its wait for the world to let go.
                     tokio::time::sleep(Duration::from_millis(20)).await;
-                    let text = "x".repeat(512 * 1024);
-                    for _ in 0..16 {
+                    let text = "x".repeat(128 * 1024);
+                    for _ in 0..64 {
                         let line = ChatOut::System { text: text.clone() };
                         out.send(WorldOut::Chat(line)).await.unwrap();
                     }
-                    out.send(WorldOut::Kicked(KickReason::Shutdown))
-                        .await
-                        .unwrap();
+                    let _kept = end(out);
                     tokio::time::sleep(let_go * 3).await;
                     rest(&mut theirs, &mut client).await
                 };
@@ -1312,6 +1356,20 @@ mod tests {
                 ended.unwrap();
                 events
             })
+        })
+    }
+
+    #[test]
+    fn a_world_that_let_go_in_time_is_never_blamed_for_a_write_held_past_let_go() {
+        // #363's review: the link's select! is unbiased. When the stop begins and a write is then
+        // held past `let_go`, the world's Kicked(Shutdown) and `let_go`'s end are both ready once
+        // it finishes, and the link took the second about half the time, warning that the world
+        // hadn't let go. Here the world lets go with the shutdown's reason and keeps its channel
+        // open, so that only reading the Kicked ends the drain without a warning.
+        let (events, log) = held_past_let_go(|out| {
+            out.try_send(WorldOut::Kicked(KickReason::Shutdown))
+                .unwrap();
+            out
         });
         assert_eq!(
             events.last(),
@@ -1320,6 +1378,22 @@ mod tests {
             ))
         );
         assert!(!log.contains("hasn't let go"), "{log}");
+    }
+
+    #[test]
+    fn a_world_that_let_go_without_a_kick_is_never_blamed_for_a_write_held_past_let_go() {
+        // #378: what the link drains after `let_go` may end in a closed channel rather than a
+        // Kicked, which the world leaves out when it doesn't fit, as at a shutdown that finds a
+        // slow reader's channel full. That world has let go too: nothing warns, and the client
+        // hears the shutdown's reason.
+        let (events, log) = held_past_let_go(drop);
+        assert_eq!(
+            events.last(),
+            Some(&ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            ))
+        );
+        assert!(!log.contains("WARN"), "{log}");
     }
 
     #[tokio::test]
@@ -1355,6 +1429,96 @@ mod tests {
         assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
         drop(ours);
         assert_eq!(rest(&mut theirs, &mut client).await, []);
+    }
+
+    #[tokio::test]
+    async fn the_world_letting_go_of_a_stopping_server_closes_with_the_reason() {
+        // #378: the world drops a channel without a Kicked when the Kicked doesn't fit, as at a
+        // shutdown that finds a slow reader's channel full, or when it has stopped. Once the server
+        // is stopping, the client hears the shutdown's reason (world.md 10.3), as after `let_go`,
+        // which is far off here: the close comes from the channel's end.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gate, mut inbox) = gate(dir.path()).await;
+        gate.limits.let_go = Duration::from_secs(60);
+        let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let tester = account("tester");
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        let world = async {
+            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            gate.stopping.send_replace(true);
+            drop(out);
+        };
+        let (ended, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(played, world)
+        })
+        .await
+        .expect("within 5 s, long before `let_go`");
+        ended.unwrap();
+        assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
+        drop(ours);
+        assert_eq!(
+            rest(&mut theirs, &mut client).await,
+            [ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_world_letting_go_as_it_stops_by_itself_closes_with_the_reason() {
+        // #378's review: after a tick that panics (Ruling R9), the world takes nothing more and
+        // then lets go of every channel, before the server has begun stopping. A link whose
+        // Kicked didn't fit reads the channel's end then, and its client hears the shutdown's
+        // reason all the same.
+        let dir = tempfile::tempdir().unwrap();
+        let (gate, mut inbox) = gate(dir.path()).await;
+        let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let tester = account("tester");
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        let world = async {
+            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            // As the world's `turn_away` does, before its channels close.
+            inbox.close();
+            drop(out);
+        };
+        let (ended, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(played, world)
+        })
+        .await
+        .expect("within 5 s");
+        ended.unwrap();
+        assert!(!*gate.stopping.borrow(), "the server never began stopping");
+        drop(ours);
+        assert_eq!(
+            rest(&mut theirs, &mut client).await,
+            [ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            )]
+        );
     }
 
     #[tokio::test]

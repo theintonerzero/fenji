@@ -875,7 +875,8 @@ mod tests {
     fn systemd_waits_out_a_stops_worst_case_with_room_to_spare() {
         // #281: a stop takes at most the connections' grace, the world thread's wait, the last
         // saves' and the consoles' goodbye, one after another: 30 s. The reference unit gives it
-        // more than that before systemd ends it, so nothing is cut short even then.
+        // more than that before systemd ends it, so nothing is cut short even then, unless the
+        // store's close waits on something still using it, such as a console's backup (#378).
         let worst = GateLimits::default().grace()
             + world::THREAD_WAIT
             + world::SAVE_WAIT
