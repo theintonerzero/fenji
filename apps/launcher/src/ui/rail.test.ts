@@ -99,3 +99,24 @@ test("a seal's menu stays open while a probe redraws the rail, which catches up 
   expect(part.el.querySelector('[role="menu"]')).toBeNull();
   expect(part.el.querySelector<HTMLElement>('button[data-server="3"]')!.dataset.bar).toBe("ok");
 });
+
+test("when the focused seal's server is removed, focus goes to the next seal, then the last, then + (#376)", () => {
+  const { part } = mounted();
+  const sealFor = (id: number) => part.el.querySelector<HTMLButtonElement>(`button[data-server="${id}"]`)!;
+  const without = (ids: number[]) => {
+    const s = golden("servers");
+    s.servers = s.servers.filter((v) => !ids.includes(v.id));
+    s.active = s.servers[0]?.id ?? null;
+    return s;
+  };
+  sealFor(1).focus();
+  part.update(without([1]), false);
+  expect(document.activeElement).toBe(sealFor(2));
+  // The last seal's server: the one before it.
+  sealFor(3).focus();
+  part.update(without([1, 3]), false);
+  expect(document.activeElement).toBe(sealFor(2));
+  // The only one: +.
+  part.update(without([1, 2, 3]), false);
+  expect(document.activeElement).toBe(part.el.querySelector('button[aria-label="Add a server"]'));
+});

@@ -13,7 +13,7 @@ import { signIn } from "./screens/sign-in";
 import { stage } from "./screens/stage";
 import { welcome } from "./screens/welcome";
 import type { Intent, ServerView, Snapshot } from "./types";
-import type { Dialog } from "./ui/dialog";
+import { firstFocusable, type Dialog } from "./ui/dialog";
 import { keyDialog } from "./ui/key-dialog";
 import { popover, type Popover } from "./ui/popover";
 import { rail } from "./ui/rail";
@@ -162,6 +162,14 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
   let current: { name: ScreenName; server: number | null; screen: Screen } | null = null;
   let keyShown: { key: string; el: HTMLElement & { close(): void } } | null = null;
   let toastKey = "";
+  // The control that last had focus in the window. One that goes, or hides, under focus leaves
+  // focus on the page: render gives it a stable place (keepFocus; #376).
+  let lastFocused: HTMLElement | null = null;
+  root.addEventListener("focusin", (event) => {
+    if (event.target instanceof HTMLElement) {
+      lastFocused = event.target;
+    }
+  });
 
   /** Escape closes the open popover wherever focus is: dialogs above it, and its own panel, stop
    * their Escape before it gets here, so only the topmost layer closes (R7). */
@@ -242,7 +250,6 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
       closePopover();
     }
     open?.content.update(snapshot);
-    top.update(snapshot, name, open?.name ?? null);
     // A changed key's dialog is drawn once for what it asks, and again only when that changes.
     const key = snapshot.keyChange === null ? "" : JSON.stringify(snapshot.keyChange);
     if (keyShown !== null && keyShown.key !== key) {
@@ -254,11 +261,42 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
       closePopover();
       layer.append(keyShown.el);
     }
+    top.update(snapshot, name, open?.name ?? null, shownDialog !== null || keyShown !== null);
     const toast = snapshot.update.showDialog ? `${snapshot.update.available}` : "";
     if (toast !== toastKey) {
       toastKey = toast;
       toastSlot.replaceChildren(...(toast === "" ? [] : [updateToast(ctx, snapshot)]));
     }
+    keepFocus(name);
+  }
+
+  /** Where focus goes when the control that had it went away or hid under it, as Stop does when
+   * its job ends, or the avatar when Account's Sign in leaves the stage (#376): the topmost
+   * dialog, the open popover's panel, a task screen's first field, or PLAY, else the active
+   * seal. */
+  function keepFocus(name: ScreenName): void {
+    const gone = (el: HTMLElement): boolean => !el.isConnected || el.closest("[hidden]") !== null;
+    const at = document.activeElement;
+    const lost = !(at instanceof HTMLElement) || at === document.body || gone(at);
+    if (!lost || lastFocused === null || !gone(lastFocused)) {
+      return;
+    }
+    const dialogs = [...layer.querySelectorAll<HTMLElement>('.dialog[aria-modal="true"]')];
+    const topmost = dialogs.at(-1);
+    const target =
+      topmost !== undefined
+        ? firstFocusable(topmost)
+        : open !== null
+          ? open.shown.el.querySelector<HTMLElement>(".popover")
+          : name !== "stage"
+            ? ([...body.querySelectorAll<HTMLElement>("input:not([disabled])")].find((el) => !gone(el)) ??
+              firstFocusable(body))
+            : (body.querySelector<HTMLElement>("button.play:not([disabled])") ??
+              railPart.el.querySelector<HTMLElement>("button.seal.on"));
+    // The lost control is forgotten: a target that takes focus is the last one now, and with none,
+    // a later click on nothing keeps its focus.
+    lastFocused = null;
+    target?.focus();
   }
 
   render();

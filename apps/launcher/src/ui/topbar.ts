@@ -14,7 +14,9 @@ export interface TopBar {
   el: HTMLElement;
   /** The control a popover belongs to. */
   control(which: PopoverName): HTMLElement;
-  update(s: Snapshot, screen: ScreenName, open: PopoverName | null): void;
+  /** `modal`: a dialog is open. The top bar stays above its scrim, so the window's controls and
+   * its drag keep working, and the popovers' controls wait for it (#376). */
+  update(s: Snapshot, screen: ScreenName, open: PopoverName | null, modal?: boolean): void;
 }
 
 export function topBar(ctx: Ctx): TopBar {
@@ -49,7 +51,7 @@ export function topBar(ctx: Ctx): TopBar {
   return {
     el,
     control: (which) => controls[which],
-    update(s, screen, open) {
+    update(s, screen, open, modal = false) {
       const v = activeServer(s);
       address.textContent = screen === "welcome" ? "" : (v?.address ?? "");
       // The boards: no chip until there's a server and an account to play with; the account on the
@@ -72,6 +74,7 @@ export function topBar(ctx: Ctx): TopBar {
       for (const [which, control] of Object.entries(controls) as [PopoverName, HTMLElement][]) {
         control.classList.toggle("open", open === which);
         control.setAttribute("aria-expanded", String(open === which));
+        control.toggleAttribute("inert", modal);
       }
     },
   };

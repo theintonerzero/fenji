@@ -201,12 +201,16 @@ export function rail(ctx: Ctx): Rail {
       return;
     }
     shown = key;
-    // A probe draws the seals again every 15–30 s: the one that had focus keeps it.
-    const focused = (document.activeElement as HTMLElement | null)?.closest?.("[data-server]")?.getAttribute("data-server");
+    // A probe draws the seals again every 15–30 s: the one that had focus keeps it. Its server
+    // removed, focus goes to the seal now in its place, the last one, or + (#376).
+    const had = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>("[data-server]") ?? null;
+    const at = had === null ? -1 : [...list.querySelectorAll("[data-server]")].indexOf(had);
     hideTip();
     list.replaceChildren(...s.servers.map((v) => seal(v, v.id === s.active)));
-    if (focused !== null && focused !== undefined) {
-      list.querySelector<HTMLElement>(`[data-server="${focused}"]`)?.focus();
+    if (had !== null) {
+      const seals = [...list.querySelectorAll<HTMLElement>("[data-server]")];
+      const same = seals.find((b) => b.dataset.server === had.dataset.server);
+      (same ?? seals[Math.min(at, seals.length - 1)] ?? add).focus();
     }
   }
 
