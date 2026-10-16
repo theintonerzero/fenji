@@ -4,11 +4,14 @@
 //! socket or a lock a test has just let go of. `fenji-server console` itself is in
 //! `tests/console.rs`.
 #![cfg(unix)]
+mod common;
+
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::caught::{self, Caught};
 use fenji_console::wire::{self, ConsoleMsg, ServerMsg, State};
 use fenji_server::clock::TestClock;
 use fenji_server::config::Config;
@@ -19,8 +22,6 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::task::JoinHandle;
-use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
 
 const NOW: i64 = 1_800_000_000_000;
 
@@ -33,8 +34,7 @@ struct Started {
     server: RunningServer,
     serving: JoinHandle<()>,
     _dir: tempfile::TempDir,
-    _log: tracing::subscriber::DefaultGuard,
-    _asked: tracing::Dispatch,
+    _log: Caught,
 }
 
 impl Deref for Started {
@@ -54,16 +54,10 @@ async fn started_with_socket() -> Started {
 
 /// A server whose data folder is `data`, in `dir`, with its socket served.
 async fn started_at(dir: tempfile::TempDir, data: &Path) -> Started {
-    // While one dispatcher alone is registered, tracing-core keeps each place's interest as the
-    // first thread to log there saw it (M4 hosting plan, Task 10's finding): a second one makes it
-    // ask them all, so this test's lines reach its hub whatever other threads did first.
-    let _asked = tracing::Dispatch::new(tracing_subscriber::registry());
+    // Through the process's own subscriber, which no other test's thread can make blind to a line
+    // (#359).
     let hub = LogHub::new(500);
-    let _log = tracing::subscriber::set_default(
-        tracing_subscriber::registry()
-            .with(LevelFilter::INFO)
-            .with(hub.layer()),
-    );
+    let _log = caught::to_hub(&hub);
     let claim = console::socket::claim(data, None).await.unwrap();
     let cfg = Config::parse(
         "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n",
@@ -79,7 +73,6 @@ async fn started_at(dir: tempfile::TempDir, data: &Path) -> Started {
         serving,
         _dir: dir,
         _log,
-        _asked,
     }
 }
 
@@ -378,7 +371,6 @@ async fn a_console_that_stops_reading_doesnt_hold_up_the_servers_end() {
         serving,
         _dir,
         _log,
-        _asked,
     } = started_with_socket().await;
     let socket = server.data().join("console.sock");
     let mut stalled = Raw::connect(&socket).await;
@@ -412,7 +404,6 @@ async fn run_once_stop_returns_once_another_server_could_start() {
         serving,
         _dir,
         _log,
-        _asked,
     } = started_with_socket().await;
     let data = server.data();
     let socket = data.join("console.sock");
@@ -491,7 +482,6 @@ async fn a_data_folder_too_deep_for_a_socket_still_starts_and_keeps_one_server_t
         serving,
         _dir,
         _log,
-        _asked,
     } = s;
     server.shutdown().await.unwrap();
     tokio::time::timeout(WAIT, serving).await.unwrap().unwrap();
@@ -529,7 +519,6 @@ async fn the_server_stopping_says_goodbye_and_takes_its_socket_away() {
         serving,
         _dir,
         _log,
-        _asked,
     } = started_with_socket().await;
     let data = server.data();
     let socket = data.join("console.sock");

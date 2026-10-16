@@ -951,11 +951,12 @@ mod tests {
     use crate::commands::console_help;
     use crate::config::Config;
     use crate::console::log::LogHub;
+    use crate::console::log::caught::{logged, published_to};
     use crate::console::{Front, front};
     use crate::online::{Closing, Join, Online, Playing};
     use crate::server::{GateLimits, RunningServer, start};
     use crate::status::{DEFAULT_MESSAGE, Maintenance, Status};
-    use crate::world::{ConsoleReply, WorldHandle, WorldIn, logged};
+    use crate::world::{ConsoleReply, WorldHandle, WorldIn};
 
     const NOW: i64 = 1_800_000_000_000;
 
@@ -1903,50 +1904,46 @@ mod tests {
     #[test]
     fn what_a_command_logs_and_changes_reaches_the_console_before_its_answer() {
         // In the order they happen (M4 hosting plan, Task 11's interface): `stop`, with nothing
-        // serving to act on it, logs its line and changes the status at once, then answers.
-        use tracing_subscriber::layer::SubscriberExt;
-        // While one subscriber alone is registered, tracing-core asks only the subscriber of the
-        // thread that first logs at a place whether it's wanted (`Rebuilder::JustOne`), and keeps
-        // the answer: another test's thread, with none, could then make this one's lines unwanted
-        // everywhere. With a second registered, every subscriber is asked.
-        let _asked = tracing::Dispatch::new(tracing_subscriber::registry());
+        // serving to act on it, logs its line and changes the status at once, then answers. The
+        // log reaches the hub through the process's own subscriber (`caught`), which no other
+        // test's thread can make blind to it (#359).
         let hub = LogHub::new(500);
-        let subscriber = tracing_subscriber::registry().with(hub.layer());
-        let _log = tracing::subscriber::set_default(subscriber);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(async {
-            let (s, _dir) = started().await;
-            let Session {
-                mut from_server,
-                to_server,
-                ..
-            } = session(&s.console(), &hub);
-            while !matches!(next(&mut from_server).await, ServerMsg::Status { .. }) {}
-            to_server
-                .send(ConsoleMsg::Run {
-                    id: 1,
-                    line: "stop".into(),
-                })
-                .await
-                .unwrap();
-            let mut seen = Vec::new();
-            while !matches!(seen.last(), Some(ServerMsg::Answer { .. })) {
-                seen.push(next(&mut from_server).await);
-            }
-            let logged = seen.iter().position(
+        published_to(&hub, || {
+            rt.block_on(async {
+                let (s, _dir) = started().await;
+                let Session {
+                    mut from_server,
+                    to_server,
+                    ..
+                } = session(&s.console(), &hub);
+                while !matches!(next(&mut from_server).await, ServerMsg::Status { .. }) {}
+                to_server
+                    .send(ConsoleMsg::Run {
+                        id: 1,
+                        line: "stop".into(),
+                    })
+                    .await
+                    .unwrap();
+                let mut seen = Vec::new();
+                while !matches!(seen.last(), Some(ServerMsg::Answer { .. })) {
+                    seen.push(next(&mut from_server).await);
+                }
+                let logged = seen.iter().position(
                 |m| matches!(m, ServerMsg::Log { line } if line.message().contains("command=stop")),
             );
-            let stopping = seen.iter().position(|m| {
+                let stopping = seen.iter().position(|m| {
                 matches!(m, ServerMsg::Status { status } if status.state == wire::State::Stopping)
             });
-            assert!(
-                logged.is_some() && stopping.is_some(),
-                "before the answer: {seen:?}"
-            );
-            s.shutdown().await.unwrap();
+                assert!(
+                    logged.is_some() && stopping.is_some(),
+                    "before the answer: {seen:?}"
+                );
+                s.shutdown().await.unwrap();
+            })
         });
     }
 

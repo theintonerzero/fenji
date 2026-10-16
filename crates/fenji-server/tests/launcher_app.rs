@@ -57,30 +57,11 @@ fn password() -> Secret {
     Secret("a long password".into())
 }
 
-/// A `std::io::Write` over a shared buffer, for the log.
-struct Writer(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for Writer {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn a_new_player_goes_from_a_link_to_signed_in_and_no_secret_leaks() {
-    let logs = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let sink = logs.clone();
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_writer(move || Writer(sink.clone()))
-            .finish(),
-    );
+    // The log is caught by the process's own subscriber, which no other test's thread can make
+    // blind to a line (#359).
+    let log = caught::as_text(tracing::Level::TRACE);
     let dir = tempfile::tempdir().unwrap();
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
     let code = fenji_auth::invite::InviteCode::generate().unwrap();
@@ -135,7 +116,11 @@ async fn a_new_player_goes_from_a_link_to_signed_in_and_no_secret_leaks() {
         seen.len()
     );
     let settings = std::fs::read_to_string(dir.path().join("config/settings.json")).unwrap();
-    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    let logs = log.text();
+    assert!(
+        logs.contains("made an account with an invite"),
+        "the log wasn't caught: {logs}"
+    );
     for text in seen.iter().chain([&settings, &logs]) {
         assert!(
             !text.contains("a long password") && !text.contains("fenji1-"),
@@ -591,15 +576,9 @@ impl PlayBed {
 #[tokio::test]
 async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
     // Review Focus 1 to its end (#348): redeem, sign in and Play leave the password, the session
-    // token and the ticket in no snapshot, log line or settings file.
-    let logs = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let sink = logs.clone();
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_writer(move || Writer(sink.clone()))
-            .finish(),
-    );
+    // token and the ticket in no snapshot, log line or settings file. The log is caught by the
+    // process's own subscriber, which no other test's thread can make blind to a line (#359).
+    let log = caught::as_text(tracing::Level::TRACE);
     let t = PlayBed::new().await;
     let seen = t.collect_snapshots();
     t.signed_in().await;
@@ -617,7 +596,7 @@ async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
     );
     assert!(record.contains("gj_uinfo=") && record.contains("gj_gates="));
     let settings = std::fs::read_to_string(t.cfg.config_dir.join("settings.json")).unwrap();
-    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    let logs = log.text();
     assert!(
         logs.contains("the game is running"),
         "the log wasn't caught"

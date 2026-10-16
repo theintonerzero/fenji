@@ -377,6 +377,116 @@ fn dated(line: &LogLine) -> String {
     format!("{year:04}-{month:02}-{day:02} {line}\n")
 }
 
+/// The log as the server's tests catch it: through the process's own subscriber, set once, which
+/// asks at every event and takes the events of the threads catching them, writing nothing for any
+/// other. A thread's own default subscriber can miss a line: while one dispatcher alone is
+/// registered, tracing keeps whether a callsite is wanted as the first thread to log there found
+/// it, and another test's thread, with no subscriber, can make it unwanted everywhere (the hosting
+/// plan's final review A, Minor 8; #359).
+#[cfg(test)]
+pub(crate) mod caught {
+    use std::cell::{Cell, RefCell};
+    use std::io;
+    use std::sync::Once;
+
+    use tracing::{Event, Level, Subscriber};
+    use tracing_subscriber::filter;
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+    use super::{LogHub, LogLayer};
+
+    thread_local! {
+        /// What this thread's events are written to, as text, while it catches them so.
+        static TEXT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+        /// The level this thread's events are caught at as text.
+        static TEXT_LEVEL: Cell<Option<Level>> = const { Cell::new(None) };
+        /// The hub this thread's events at info and above go to, while it gives them to one.
+        static HUB: RefCell<Option<LogLayer>> = const { RefCell::new(None) };
+    }
+
+    /// What this thread logs at info and above while `f` runs, as the server's log shows it: see
+    /// [`logged_at`].
+    pub fn logged<T>(f: impl FnOnce() -> T) -> (T, String) {
+        logged_at(Level::INFO, f)
+    }
+
+    /// What this thread logs at `level` and above while `f` runs, as the server's log shows it.
+    pub fn logged_at<T>(level: Level, f: impl FnOnce() -> T) -> (T, String) {
+        subscribed();
+        TEXT.with_borrow_mut(|text| *text = Some(Vec::new()));
+        TEXT_LEVEL.set(Some(level));
+        let out = f();
+        TEXT_LEVEL.set(None);
+        let bytes = TEXT.with_borrow_mut(Option::take).unwrap_or_default();
+        (out, String::from_utf8(bytes).unwrap())
+    }
+
+    /// Runs `f`, this thread's events at info and above given to `hub` meanwhile, as the server's
+    /// log gives it each line.
+    pub fn published_to<T>(hub: &LogHub, f: impl FnOnce() -> T) -> T {
+        subscribed();
+        HUB.with_borrow_mut(|layer| *layer = Some(hub.layer()));
+        let out = f();
+        HUB.with_borrow_mut(|layer| *layer = None);
+        out
+    }
+
+    /// Sets the process's subscriber, the first time.
+    fn subscribed() {
+        static SET: Once = Once::new();
+        SET.call_once(|| {
+            // More verbose levels are greater: TRACE > DEBUG > INFO.
+            let as_text = filter::dynamic_filter_fn(|meta, _| {
+                TEXT_LEVEL.get().is_some_and(|level| *meta.level() <= level)
+            });
+            let text = tracing_subscriber::fmt::layer()
+                .with_writer(|| ThisThread)
+                .with_ansi(false)
+                .with_filter(as_text);
+            let to_hub = filter::dynamic_filter_fn(|meta, _| {
+                *meta.level() <= Level::INFO && HUB.with_borrow(Option::is_some)
+            });
+            let hub = ToHub.with_filter(to_hub);
+            let subscriber = tracing_subscriber::registry().with(text).with(hub);
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("no other test sets the process's subscriber");
+        });
+        // A callsite first seen between the subscriber's registration and its setting is wanted.
+        tracing::callsite::rebuild_interest_cache();
+    }
+
+    /// Where this thread's events are written as text.
+    struct ThisThread;
+
+    impl io::Write for ThisThread {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            TEXT.with_borrow_mut(|text| {
+                if let Some(text) = text {
+                    text.extend_from_slice(buf);
+                }
+            });
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Gives an event to the hub of the thread that logged it.
+    struct ToHub;
+
+    impl<S: Subscriber> Layer<S> for ToHub {
+        fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+            HUB.with_borrow(|hub| {
+                if let Some(layer) = hub {
+                    layer.on_event(event, ctx);
+                }
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -730,67 +730,8 @@ pub(crate) mod test_util {
         }
     }
 
-    /// What this thread logs at info and above while `f` runs, as the server's log shows it: see
-    /// [`logged_at`].
-    pub fn logged<T>(f: impl FnOnce() -> T) -> (T, String) {
-        logged_at(tracing::Level::INFO, f)
-    }
-
-    /// What this thread logs at `level` and above while `f` runs, as the server's log shows it. The
-    /// subscriber is the process's, set once: tracing caches whether a callsite is wanted for
-    /// every thread, so one thread's own subscriber can miss a callsite another thread saw first.
-    /// This one asks at every event, and takes the events of a thread that's catching them, at the
-    /// level it asked for; it writes nothing for any other thread.
-    pub fn logged_at<T>(level: tracing::Level, f: impl FnOnce() -> T) -> (T, String) {
-        use std::cell::{Cell, RefCell};
-        use std::io;
-        use std::sync::Once;
-
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::{Layer, filter};
-
-        thread_local! {
-            static CAUGHT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
-            /// The level this thread's events are caught at, while `f` runs.
-            static CATCHING: Cell<Option<tracing::Level>> = const { Cell::new(None) };
-        }
-        struct ThisThread;
-        impl io::Write for ThisThread {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                CAUGHT.with_borrow_mut(|caught| {
-                    if let Some(caught) = caught {
-                        caught.extend_from_slice(buf);
-                    }
-                });
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        static SET: Once = Once::new();
-        SET.call_once(|| {
-            // More verbose levels are greater: TRACE > DEBUG > INFO.
-            let catching = filter::dynamic_filter_fn(|meta, _| {
-                CATCHING.get().is_some_and(|level| *meta.level() <= level)
-            });
-            let lines = tracing_subscriber::fmt::layer()
-                .with_writer(|| ThisThread)
-                .with_ansi(false)
-                .with_filter(catching);
-            let subscriber = tracing_subscriber::registry().with(lines);
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("no other test sets the process's subscriber");
-        });
-        // A callsite first seen between the subscriber's registration and its setting is wanted.
-        tracing::callsite::rebuild_interest_cache();
-        CAUGHT.with_borrow_mut(|caught| *caught = Some(Vec::new()));
-        CATCHING.set(Some(level));
-        let out = f();
-        CATCHING.set(None);
-        let bytes = CAUGHT.with_borrow_mut(Option::take).unwrap_or_default();
-        (out, String::from_utf8(bytes).unwrap())
-    }
+    /// What a thread logs, as the server's log shows it, caught by the process's own subscriber.
+    pub use crate::console::log::caught::{logged, logged_at};
 
     /// A player for connection `conn`: account `conn`, pid `conn`, named `name`.
     pub fn player(conn: ConnId, name: &str, at: Location) -> Player {
