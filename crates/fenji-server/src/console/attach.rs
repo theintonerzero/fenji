@@ -113,7 +113,7 @@ mod unix {
             // Left, but its terminal takes nothing more: there's nothing to give back, or to say.
             () = stuck(left.clone()) => return Ok(ExitCode::SUCCESS),
         };
-        let (note, ok) = ending(&ended);
+        let (note, ok) = ending(&ended, front);
         if let Some(note) = note {
             server::say(&note);
         }
@@ -181,8 +181,9 @@ mod unix {
         }
     }
 
-    /// What the host is told as an attached console ends, and whether it ended as it should.
-    fn ending(ended: &io::Result<Ending>) -> (Option<String>, bool) {
+    /// What the host is told as an attached console ends, and whether it ended as it should. A
+    /// full-screen console that failed suggests plain lines, as `run`'s own does.
+    fn ending(ended: &io::Result<Ending>, front: Front) -> (Option<String>, bool) {
         match ended {
             Ok(Ending::Detached) => (Some("Left the console. The server runs on.".into()), true),
             Ok(Ending::ServerStopped(reason)) => (
@@ -192,6 +193,13 @@ mod unix {
             Ok(Ending::InputClosed) => (None, true),
             Ok(Ending::Lost) => (
                 Some("The console lost the server: it closed without a goodbye.".into()),
+                false,
+            ),
+            Err(e) if front == Front::Full => (
+                Some(format!(
+                    "The console has closed: {e}. `fenji-server console --plain` gives the \
+                     console as plain lines, for a terminal the full-screen one doesn't suit."
+                )),
                 false,
             ),
             Err(e) => (Some(format!("The console has closed: {e}.")), false),
@@ -397,21 +405,49 @@ mod unix {
 
         #[test]
         fn an_attached_console_says_how_it_ended_and_fails_only_when_it_lost_the_server() {
-            let (left, ok) = ending(&Ok(Ending::Detached));
-            assert!(ok);
+            for front in [Front::Full, Front::Plain] {
+                let (left, ok) = ending(&Ok(Ending::Detached), front);
+                assert!(ok);
+                assert_eq!(
+                    left.as_deref(),
+                    Some("Left the console. The server runs on.")
+                );
+                let stopping = Ok(Ending::ServerStopped("the server is stopping".into()));
+                let (bye, ok) = ending(&stopping, front);
+                assert!(ok);
+                assert_eq!(
+                    bye.as_deref(),
+                    Some("The server closed the console: the server is stopping.")
+                );
+                assert_eq!(ending(&Ok(Ending::InputClosed), front), (None, true));
+                assert!(!ending(&Ok(Ending::Lost), front).1);
+                let panicked = Err(io::Error::other("a panic ended the console"));
+                assert!(!ending(&panicked, front).1);
+            }
+        }
+
+        #[test]
+        fn a_full_screen_console_that_fails_suggests_plain_lines() {
+            // The hosting plan's final review, carry line 9: as `run`'s own console says when it
+            // closes, a terminal the full-screen console doesn't suit has plain lines.
+            let failed = || Err(io::Error::other("the terminal has no raw mode"));
+            let (note, ok) = ending(&failed(), Front::Full);
+            assert!(!ok);
             assert_eq!(
-                left.as_deref(),
-                Some("Left the console. The server runs on.")
+                note.as_deref(),
+                Some(
+                    "The console has closed: the terminal has no raw mode. \
+                     `fenji-server console --plain` gives the console as plain lines, for a \
+                     terminal the full-screen one doesn't suit."
+                )
             );
-            let (bye, ok) = ending(&Ok(Ending::ServerStopped("the server is stopping".into())));
-            assert!(ok);
+            // Plain lines that fail have nothing plainer to suggest.
+            let (note, ok) = ending(&failed(), Front::Plain);
+            assert!(!ok);
             assert_eq!(
-                bye.as_deref(),
-                Some("The server closed the console: the server is stopping.")
+                note.as_deref(),
+                Some("The console has closed: the terminal has no raw mode.")
             );
-            assert_eq!(ending(&Ok(Ending::InputClosed)), (None, true));
-            assert!(!ending(&Ok(Ending::Lost)).1);
-            assert!(!ending(&Err(io::Error::other("a panic ended the console"))).1);
         }
 
         #[tokio::test]
