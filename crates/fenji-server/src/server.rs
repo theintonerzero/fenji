@@ -100,11 +100,12 @@ impl RunningServer {
         self.world.report()
     }
 
-    /// Serves until `stop` completes or the console's `stop` asks it to, or until the world's
-    /// thread or its services task ends by itself, then shuts down: what `fenji-server run` awaits.
-    /// Either ending early takes the server with it, so that no login waits for a world that isn't
-    /// there (Ruling R9) or plays in one that can't save (Ruling R13), and the error makes
-    /// `fenji-server run` exit non-zero for systemd to restart it.
+    /// Serves until `stop` completes or the console's `stop` asks it to, or until the world fails
+    /// (`RunningWorld::failed`): its thread or its services task ends by itself, or its tick hangs.
+    /// Then it shuts down: what `fenji-server run` awaits. A world that fails takes the server with
+    /// it, so that no login waits for a world that isn't there (Ruling R9) or doesn't answer
+    /// (#281), or plays in one that can't save (Ruling R13), and the error makes `fenji-server run`
+    /// exit non-zero for systemd to restart it.
     pub async fn serve_until(mut self, stop: impl Future<Output = ()>) -> anyhow::Result<()> {
         let mut stopping = self.console.stopping();
         let failed = tokio::select! {
@@ -115,13 +116,13 @@ impl RunningServer {
                 tracing::info!("shutting down, as the console asked");
                 None
             }
-            what = self.world.ended() => {
-                tracing::error!("{what} has ended: stopping the server");
-                Some(what)
+            failure = self.world.failed() => {
+                tracing::error!("{failure}: stopping the server");
+                Some(failure)
             }
         };
         match (self.shutdown().await, failed) {
-            (Ok(()), Some(what)) => Err(anyhow::anyhow!("{what} ended before the server")),
+            (Ok(()), Some(failure)) => Err(anyhow::anyhow!("the server stopped: {failure}")),
             (stopped, _) => stopped,
         }
     }
@@ -737,7 +738,7 @@ mod tests {
 
     use fenji_store::{Character, NewCharacter, Place};
     use tokio::net::TcpStream;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
 
     use super::*;
     use crate::clock::TestClock;
@@ -1215,6 +1216,53 @@ mod tests {
             let place = store.character(c.account_id, c.pid).await.unwrap();
             assert_eq!(place.unwrap().place, Some(saved), "{}", c.name);
         }
+    }
+
+    #[test]
+    fn a_tick_that_hangs_stops_the_server_with_an_error_that_says_so() {
+        // #281: a tick that never returned left a server that took logins into a world that
+        // never answered, without a word. The watch takes a tick count that stands still for its
+        // time, here a second, for a hang. The server logs it as an error and stops as it always
+        // does: the gate stops, and the world's shutdown tick, once the tick returns, lets
+        // everyone go with its reason and saves them. It ends with an error, so `fenji-server run`
+        // exits non-zero and systemd restarts it. The log is caught by the process's own
+        // subscriber (`world::logged`), on the one thread of this test's runtime.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (stopped, log) = crate::world::logged(|| {
+            rt.block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut server, characters) = server_with_characters(dir.path()).await;
+                server.world.hang_after(Duration::from_secs(1));
+                let (login, world) = (server.login_addr, server.world());
+                let served = tokio::spawn(server.serve_until(future::pending()));
+                let mut links = enter(&world, &characters).await;
+                // A tick that hangs for 3 s: past the watch's second, and over within the stop's
+                // wait for the world's thread.
+                let (begun, working) = oneshot::channel();
+                let work = Duration::from_secs(3);
+                world.send(WorldIn::Stall { work, begun });
+                working.await.unwrap();
+                for link in &mut links {
+                    assert_eq!(next(link).await, WorldOut::Kicked(KickReason::Shutdown));
+                }
+                let e = failure(served).await;
+                assert!(TcpStream::connect(login).await.is_err(), "no more logins");
+                let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
+                for c in &characters {
+                    let place = store.character(c.account_id, c.pid).await.unwrap();
+                    assert!(place.unwrap().place.is_some(), "{} was saved", c.name);
+                }
+                format!("{e:#}")
+            })
+        });
+        assert!(stopped.contains("no progress for 1s"), "{stopped}");
+        let said = log
+            .lines()
+            .any(|l| l.contains("ERROR") && l.contains("made no progress for 1s"));
+        assert!(said, "{log}");
     }
 
     #[tokio::test]

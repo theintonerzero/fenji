@@ -213,7 +213,7 @@ On Linux, for example, an invite for a week:
 - `name`: your server's name, which the game and launchers show (at most 32 characters, and no colons);
 - `host`: your name, which launchers show as "hosted by";
 - `motd`: the message of the day, unless the console sets one;
-- `max_players`: how many players can be online at once (20 unless you change it);
+- `max_players`: how many players can be online at once: 20 unless you change it, and at most 200, since a crowd of more would be sent more of each other's moves at once than a player's connection holds. Fenji is built and measured for 20;
 - `admins`: accounts that are admins whatever the console's `op` and `deop` say.
 
 The server keeps a file open for each connection. The start scripts raise the limit on open files to 4,096, as far as the system allows (macOS gives a program 256 by default), and the reference deployment's service sets it (section 4). If you start `fenji-server` some other way, raise it too, in the same shell first:
@@ -667,5 +667,7 @@ To undo either, delete the two `container.conf` files, then `sudo systemctl daem
 **The server won't start, and its log says "can't listen on 0.0.0.0:7800".** Another program, or another Fenji server, uses that port.
 
 **"there's no config at /etc/fenji/fenji.toml".** The service's settings are missing: write them with `sudo fenji-server --config /etc/fenji/fenji.toml init` (section 4).
+
+**The server stopped by itself, and its log says "the world's tick has made no progress for 30s".** The world stopped answering, which is a bug in Fenji. Rather than keep players in a world where nothing moves, the server told them it was stopping and stopped, saving them if the world came back in time. Places since the last save (`save_every_secs`, five minutes by default) may be lost. The reference VPS's service starts the server again 5 seconds later; on your own computer, start it again. Please report it on GitHub, with the server's log from that time.
 
 **Players are told the server is in maintenance:** "Moonward is in maintenance: Back soon." in the desktop launcher, or "the server is in maintenance: Back soon" from `fenji-launch`, with your message. Maintenance is on, and stays on through restarts: `maintenance off` turns it off.
