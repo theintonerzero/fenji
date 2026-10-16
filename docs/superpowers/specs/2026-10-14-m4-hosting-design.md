@@ -139,7 +139,7 @@ A server that doesn't answer is offline. The launcher concludes that itself.
 
 - `maintenance on [<duration>] [<message>]` turns it on.
   - The duration (`30m`, `2h`, `1d`: `invite create`'s syntax) is when the host expects to be back. It's shown to players, and doesn't end maintenance by itself.
-  - The message is plain text of at most 200 characters. The default is "The server is in maintenance."
+  - The message is plain text of at most 200 characters. The default is "Back soon", which reads well after the words players see before it, such as the launcher's "Moonward is in maintenance: " (the plan's Task 8 ruled it).
 - **While it's on:**
   - Signing in and asking for a game ticket answer 503 with `{"error": "maintenance", "message", "until"}`, except for admins (`[access].admins`), so the host can check the server before opening it again.
   - Redeeming an invite answers the same 503 for everyone, so that the invite isn't spent on an account that can't sign in.
@@ -184,7 +184,7 @@ Hosts with a domain keep parent §8's path: Caddy in front of the account API, w
 
 ### 3.13 The write-up (H2, H12)
 
-`docs/hosting.md` is for hosts, not developers. `deploy/` holds what it installs: the systemd units (the server; the backup service and its timer), a `Caddyfile` for hosts with a domain, and the firewall commands. Its sections:
+`docs/hosting.md` is for hosts, not developers. `deploy/` holds what it installs: the systemd units (the server; the backup service and its timer) and a `Caddyfile` for hosts with a domain. The firewall commands are in the write-up itself. Its sections:
 1. **Before you start.** Every player needs their own copy of the game. Trust goes both ways (PRIVACY.md). The law (the README).
 2. **On your own computer.** Download, run the start script, type `invite`, send the link.
 3. **Letting friends in.**
@@ -192,13 +192,13 @@ Hosts with a domain keep parent §8's path: Caddy in front of the account API, w
    - Over the internet with open ports: router forwarding, the firewall, `tls = "self"`. It says plainly what an open game port exposes: the game connection is readable and authenticates nobody ([`transport.md`](../../protocol/transport.md) 3.9, PRIVACY.md).
    - Over a VPN (WireGuard, Tailscale, ZeroTier): the private option, and the way past carrier-grade NAT.
 4. **On a VPS: the reference deployment.** Parent §8: a `fenji` user, systemd with its hardening, `tls = "self"` or Caddy with a domain, `ufw` with the gate's port and either the API's port or 443, the backup timer, and attaching the console.
-5. **Updating.** `maintenance on 15m Updating Fenji`, `console --run stop`, replace the binary, start, check, then `maintenance off`.
+5. **Updating.** `maintenance on 15m Updating Fenji`, `systemctl stop fenji` (which stops the server as `stop` does, and returns once it has stopped), replace the binary, start, check, then `maintenance off`.
 6. **Backups and restoring.**
 7. **Troubleshooting:** ports, SmartScreen and Gatekeeper, "a server is already using this data folder", "this server's key has changed".
 
 **The default path for the internet (H2)** is open ports. Parent §8 designed it that way, and players install nothing more. The write-up recommends a VPN to anyone who wants their game traffic private.
 
-**Verifying the write-up (H12):** a fresh Debian container with systemd (podman), set up by following `docs/hosting.md` alone, with `tls = "self"`, the backup timer and an attached console. A real VPS, and friends on other machines, are M4's acceptance session (umbrella §5).
+**Verifying the write-up (H12):** a fresh Debian container with systemd (podman), set up by following `docs/hosting.md` alone, with `tls = "self"`, the backup timer and an attached console. Under rootless podman the container runs with `--cap-add=SYS_ADMIN --security-opt label=disable`: the units' sandbox needs CAP_SYS_ADMIN in systemd's hands, as a VM's systemd has it (systemd keeps it for a non-root service's system call filters), and with it, systemd's own journald needs the container's SELinux label lifted. Without them, the units stop at `217/USER`, which the write-up's troubleshooting covers for a VPS that is itself a container. A real VPS, and friends on other machines, are M4's acceptance session (umbrella §5).
 
 ## 4. Testing
 
@@ -231,7 +231,7 @@ Hosts with a domain keep parent §8's path: Caddy in front of the account API, w
 ## 5. Done when
 
 The umbrella spec's §3.2, made concrete:
-- The reference deployment works in a fresh Debian container by following `docs/hosting.md` alone (H12): systemd, `tls = "self"` or Caddy, the firewall commands, nightly backups.
+- The reference deployment works in a fresh Debian container by following `docs/hosting.md` alone (H12; under rootless podman, a container with `--cap-add=SYS_ADMIN --security-opt label=disable`): systemd, `tls = "self"` or Caddy, the firewall commands, nightly backups.
 - Hosts without a domain have a documented path: `tls = "self"` and pinned links (H1).
 - The console runs `fenji-server`, with live logs above and a command line below:
   - in its own terminal on Linux, Windows and macOS, and over SSH;

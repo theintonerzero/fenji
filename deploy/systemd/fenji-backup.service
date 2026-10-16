@@ -1,0 +1,34 @@
+# Copies the Fenji server's database into /var/lib/fenji/backups and keeps the last 14 copies, for
+# the reference deployment in docs/hosting.md. fenji-backup.timer runs it each night. It's safe
+# while the server runs. It goes in /etc/systemd/system, beside fenji.service.
+[Unit]
+Description=Back up the Fenji server's database
+Documentation=https://github.com/theintonerzero/fenji/blob/main/docs/hosting.md
+
+[Service]
+Type=oneshot
+User=fenji
+Group=fenji
+ExecStart=/usr/local/bin/fenji-server --config /etc/fenji/fenji.toml backup
+StateDirectory=fenji
+StateDirectoryMode=0700
+UMask=0077
+# The same sandbox as fenji.service's.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes

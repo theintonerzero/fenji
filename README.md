@@ -9,7 +9,7 @@ All the protocol and format knowledge here comes from studying our own licensed 
 
 ## Status
 
-**Not a game yet.** A Fenji server runs invite-only accounts and the character lobby (M3), and now a shared world, the first piece of M4. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and enters the starting zone. There, players see each other, move and see each other move, and chat nearby, to the whole server or in whispers, and the server's admins have `!tp`, `!kick`, `!announce` and `!invite`. Each character comes back where it last stood. There are no monsters, combat or quests until M5. The desktop launcher is built: from an invite link it makes your account, checks your copy of the game or downloads it from Steam, and starts it on Linux. The rest of M4, hosting with a console for hosts, release archives with start scripts and a guide for hosts, is being finished. The game connection between the client and the server is readable and unauthenticated. It carries no password, but play over a trusted network or a VPN ([PRIVACY.md](PRIVACY.md)). Joining a server means trusting its host: the game client obeys server messages that can write files and run code on your computer. Fenji's server never sends them, but a changed server could ([PRIVACY.md](PRIVACY.md#trusting-a-servers-host)).
+**Not a game yet.** A Fenji server runs invite-only accounts and the character lobby (M3), and now a shared world, the first piece of M4. The real, unmodified client signs in with a single-use ticket, lists, creates and deletes characters, and enters the starting zone. There, players see each other, move and see each other move, and chat nearby, to the whole server or in whispers, and the server's admins have `!tp`, `!kick`, `!announce` and `!invite`. Each character comes back where it last stood. There are no monsters, combat or quests until M5. The desktop launcher is built: from an invite link it makes your account, checks your copy of the game or downloads it from Steam, and starts it on Linux. Hosting, the rest of M4, is being finished: a console for hosts, release archives with start scripts, and [a guide for hosts](docs/hosting.md). The game connection between the client and the server is readable and unauthenticated. It carries no password, but play over a trusted network or a VPN ([PRIVACY.md](PRIVACY.md)). Joining a server means trusting its host: the game client obeys server messages that can write files and run code on your computer. Fenji's server never sends them, but a changed server could ([PRIVACY.md](PRIVACY.md#trusting-a-servers-host)).
 
 | Milestone | What it delivers | State |
 |---|---|---|
@@ -48,10 +48,11 @@ The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-des
 | `crates/fenji-oodle` | An open decoder for the Oodle Kraken compression of the client's archives: a safe Rust port of [ooz](https://github.com/powzix/ooz), GPL-3.0-or-later. |
 | `crates/fenji-lua` | The client's Lua 5.3 dialect: parser, disassembler, normaliser. |
 | `tools/` | Command-line tools: `stub` (test server), `archive`, `luatool`, and `oodle-helper`. |
+| `deploy/` | What releases and hosts use: the server's start scripts and archive files, the reference deployment's systemd units and Caddyfile, and the launcher's notices. |
 | `scripts/` | Machine setup, the sandbox for client runs, and repository checks. |
-| `docs/` | The design, what we've learned about the client, and how we work. |
+| `docs/` | The design, what we've learned about the client, how we work, and [the guide for hosts](docs/hosting.md). |
 
-Monsters, combat and the rest of the game come in M5. A console for hosts (#147) is being finished.
+Monsters, combat and the rest of the game come in M5.
 
 ## Playing
 
@@ -63,6 +64,10 @@ You need the desktop launcher, an invite link from a friend who hosts a Fenji se
 4. **Press Play.** On Linux the launcher starts the game through umu-launcher and Proton. On Windows and macOS, Play isn't available yet; the rest works.
 
 The launcher updates itself (Settings, "Update automatically"), and it sends nothing about you; [PRIVACY.md](PRIVACY.md) lists what it fetches. The command-line `fenji-launch` does the same for scripts.
+
+## Hosting
+
+Anyone can host a Fenji server for the friends they invite, on their own computer or on a VPS, much as they would a Minecraft server: unpack the server's archive from a release (from v0.5.0), run its start script, type `invite` in its console, and send the link. Friends on your network can join at once. [docs/hosting.md](docs/hosting.md) is the guide for hosts: letting friends in over the internet or a VPN, the reference deployment on a VPS with systemd, updating, backups and troubleshooting.
 
 ## For developers
 

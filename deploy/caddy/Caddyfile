@@ -1,0 +1,16 @@
+# Caddy in front of the Fenji server's account API, for a host with a domain name: section 4 of
+# docs/hosting.md. Caddy gets a certificate for the name from Let's Encrypt and renews it by itself,
+# so the name must point at this server, and ports 80 and 443 must be open to the internet.
+#
+# Put your own name in place of play.example.net, here and in fenji.toml. Its [server] section then
+# has these lines, and no tls line, since Caddy holds the certificate:
+#
+#   api_bind = "127.0.0.1:7801"               # only Caddy, on this machine, reaches the API
+#   public_api = "https://play.example.net"   # where invite links send players' launchers
+#   trusted_proxies = ["127.0.0.1"]           # believe Caddy about each player's own address
+#
+# Without trusted_proxies, every request seems to come from Caddy, and all your players share one
+# address's limits. The game connection, port 7800, doesn't go through Caddy.
+play.example.net {
+	reverse_proxy 127.0.0.1:7801
+}
