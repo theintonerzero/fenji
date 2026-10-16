@@ -184,7 +184,9 @@ const PROXY_NOT_TRUSTED: &str = "public_api is set and api_bind is a loopback ad
 /// - a proxy in front of a loopback API (`public_api` set) that `trusted_proxies` doesn't list,
 ///   unless the API serves TLS itself: what's in front of it then passes the players' TLS through
 ///   and can't add `X-Forwarded-For`, so trusting it would let each player name their own address
-///   (the hosting plan's final review, Minor 3).
+///   (the hosting plan's final review, Minor 3);
+/// - for that reason, `trusted_proxies` set under `tls = "self"`, which can only be a mistake
+///   (#359).
 ///
 /// A loopback API without `public_api` is a server for this computer, and warns of nothing.
 fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<String> {
@@ -197,7 +199,22 @@ fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<String> {
     if s.tls.is_none() && s.public_api.is_some() && loopback && s.trusted_proxies.is_empty() {
         warnings.push(PROXY_NOT_TRUSTED.to_owned());
     }
+    if s.tls == Some(Tls::OwnKey) && !s.trusted_proxies.is_empty() {
+        warnings.push(own_key_proxies());
+    }
     warnings
+}
+
+/// What a start warns about when `trusted_proxies` is set under `tls = "self"`.
+fn own_key_proxies() -> String {
+    format!(
+        "trusted_proxies is set, but under tls = \"self\" the account API ends TLS itself, so no \
+         proxy in front of it can be trusted: one that ended TLS would break the pin in your links, \
+         and one that passes TLS through can't add X-Forwarded-For, so trusting it only lets each \
+         player name their own address. Empty trusted_proxies; with Caddy in front, put a # before \
+         tls = \"self\" instead: see {}",
+        crate::config::guide()
+    )
 }
 
 /// The server link a start shows beside "Fenji is running" under `tls = "self"` (M4 hosting spec
@@ -1075,6 +1092,39 @@ mod tests {
             address_warnings(&tunnelled, Some(pin)),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn under_its_own_key_a_trusted_proxy_is_warned_of() {
+        // #359: under tls = "self" the account API ends TLS itself. A proxy in front that ended it
+        // would break the pin in players' links, and one that passes it through can't add
+        // X-Forwarded-For: trusting one can only let each player name their own address.
+        let cfg = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/")).unwrap()
+        };
+        let pin = "q1o9C1M6ufA5UGrUkSYhW-AXXa3S7jdJ9Fxlp0f2cBo";
+        let own = "tls = \"self\"\nlogin_bind = \"0.0.0.0:7800\"\napi_bind = \"0.0.0.0:7801\"\n";
+        let trusted = cfg(&format!("{own}trusted_proxies = [\"127.0.0.1\"]\n"));
+        let warned = address_warnings(&trusted, Some(pin));
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(
+            warned[0].starts_with("trusted_proxies is set, but under tls = \"self\"")
+                && warned[0].contains(&crate::config::guide()),
+            "says why it's a mistake, and where to read more: {}",
+            warned[0]
+        );
+        // A tunnel to a loopback API, which the warnings let be (the final review, Minor 3), is
+        // one too, listed as trusted.
+        let tunnelled = cfg(
+            "tls = \"self\"\npublic_api = \"https://play.example.net:7801\"\n\
+             trusted_proxies = [\"127.0.0.1\"]\n",
+        );
+        assert_eq!(address_warnings(&tunnelled, Some(pin)), warned);
+        // Without its own key, a proxy that adds X-Forwarded-For is what Caddy is: trusted, as the
+        // write-up's section 4 lists it.
+        let caddy =
+            cfg("public_api = \"https://play.example.net\"\ntrusted_proxies = [\"127.0.0.1\"]\n");
+        assert_eq!(address_warnings(&caddy, None), Vec::<String>::new());
     }
 
     #[test]

@@ -172,7 +172,7 @@ Commands work in any case. `help` lists them, and `help <command>` shows one's u
 | `maintenance off` | Turns maintenance off, and everyone in the game reads `Maintenance is over.` |
 | `op <account>` | Makes the account an admin, at once, even for a player in the game. Admins can use `!tp`, `!kick`, `!announce` and `!invite` in the game's chat, and sign in during maintenance. Ops are kept in the database, beside `admins` in `fenji.toml`. |
 | `deop <account>` | Takes the account's op away, at once. An account that `admins` in `fenji.toml` names stays an admin until you take it out of the file and restart the server. |
-| `ops` | Lists the admins, and why each is one: an op, `admins` in `fenji.toml`, or both. |
+| `ops` | Lists the admins, and why each is one: an op, `admins` in `fenji.toml`, or both. A name in `admins` that no account has yet is marked `(no account yet)`: whoever next makes an account with that name becomes an admin, so send that name's invite only to its owner. |
 | `ban <account> [<reason>]` | Bans the account: it can't sign in or start the game, and its player reads the reason, plain text of at most 200 characters. If it's connected, it's let go at once, and the lobby won't let it into the world. |
 | `pardon <account>` | Lifts the account's ban. |
 | `bans` | Lists the bans, with their reasons and since when. |
