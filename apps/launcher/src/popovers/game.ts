@@ -174,6 +174,10 @@ export function gamePopover(ctx: Ctx): PopoverContent {
               button.link("Change folder", pick),
               command === null || client.inSteam ? null : runIt(command, s, "check"),
             ),
+            // Spec §3.5: a copy from Gameforge's launcher is put back by hand, then verified.
+            canRepair
+              ? line("Put them back another way? ", button.link("Verify", act({ type: "check", level: "quick" })))
+              : null,
           ),
         ];
       }
@@ -243,8 +247,11 @@ export function gamePopover(ctx: Ctx): PopoverContent {
           // A repair's own command fetches only the files that need it, then the files are verified.
           const repair = job.kind === "downloading" && job.repair && manual.repair !== null;
           const command = repair ? manual.repair! : manual.download;
-          runCommand = () =>
+          // Two DepotDownloaders would write one folder: Fenji's own, waiting, goes first.
+          runCommand = () => {
+            void ctx.send({ type: "cancelDownload" });
             ctx.show((done) => commandDialog(ctx, command, manual.get, repair ? "check" : "chooseFolder", done));
+          };
         }
         renew(content, "working", () => [working]);
         return;

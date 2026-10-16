@@ -155,7 +155,11 @@ export function stage(root: HTMLElement, ctx: Ctx): Screen {
   const stateId = `stage-${next}-state`;
   const tryId = `stage-${next}-try`;
   const name = h("h1", { class: "name" });
-  const state = h("p", { class: "state", id: stateId, role: "status" });
+  // The state line speaks when the state changes; the ping, which changes with nearly every probe,
+  // is beside it, out of the live region.
+  const live = h("span", { class: "state-live", role: "status" });
+  const ping = h("span", { class: "ping", "aria-hidden": "true" });
+  const state = h("p", { class: "state", id: stateId }, live, ping);
   const host = h("p", { class: "host", hidden: true });
   const playButton = button.play(() => void ctx.send({ type: "play" }));
   playButton.setAttribute("aria-describedby", stateId);
@@ -202,8 +206,12 @@ export function stage(root: HTMLElement, ctx: Ctx): Screen {
       if (name.textContent !== v.name) {
         name.textContent = v.name;
       }
-      const line = stateLine(v, Date.now(), look.kind === "lit");
-      renew(state, `${toneFor(v)}\n${line}`, () => [mark(toneFor(v)), line]);
+      const line = stateLine(v, Date.now(), false);
+      renew(live, `${toneFor(v)}\n${line}`, () => [mark(toneFor(v)), line]);
+      const pinged = look.kind === "lit" && v.status.kind === "online" && v.pingMs !== null ? ` · ${v.pingMs} ms` : "";
+      if (ping.textContent !== pinged) {
+        ping.textContent = pinged;
+      }
 
       const words = hostLine(variant, v);
       host.hidden = words === null;

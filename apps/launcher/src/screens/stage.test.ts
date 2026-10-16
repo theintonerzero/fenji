@@ -141,3 +141,22 @@ test("a failed start: the model's words, Open logs, and Dismiss", () => {
     { type: "dismissNotice", text: "The game couldn't start (code 3). See the logs." },
   ]);
 });
+
+test("a start that ends lit plays no kindled moment: that's for the end of a check", () => {
+  const { root, screen } = mount(stage, golden("play-starting"));
+  screen.update(golden("play-ready"));
+  expect(play(root).classList.contains("kindled")).toBe(false);
+});
+
+test("the state line speaks on a change of state, not on every ping", () => {
+  const { root, screen } = mount(stage, golden("play-ready"));
+  const live = root.querySelector('.state [role="status"]')!;
+  expect(live.textContent).toBe("Online · 3/10 players");
+  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms");
+  const pinged = golden("play-ready");
+  pinged.servers[0]!.pingMs = 31;
+  const before = live.firstChild;
+  screen.update(pinged);
+  expect(live.firstChild).toBe(before);
+  expect(text(root, ".state")).toBe("Online · 3/10 players · 31 ms");
+});

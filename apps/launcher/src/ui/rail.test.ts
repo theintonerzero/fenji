@@ -86,3 +86,16 @@ test("a probe that draws the seals again keeps focus on the same seal", () => {
   part.update(s, false);
   expect(document.activeElement?.getAttribute("data-server")).toBe("3");
 });
+
+test("a seal's menu stays open while a probe redraws the rail, which catches up when it closes", () => {
+  const { part, seals } = mounted();
+  key(seals[2]!, "F10", true);
+  const s = golden("servers");
+  s.servers[2]!.status = { kind: "online" };
+  part.update(s, false);
+  expect(part.el.querySelector('[role="menu"]')).not.toBeNull();
+  expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
+  key(document.activeElement!, "Escape");
+  expect(part.el.querySelector('[role="menu"]')).toBeNull();
+  expect(part.el.querySelector<HTMLElement>('button[data-server="3"]')!.dataset.bar).toBe("ok");
+});

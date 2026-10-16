@@ -136,3 +136,16 @@ test("a probe a minute later leaves a focused Verify integrity where it is (R7)"
     vi.useRealTimers();
   }
 });
+
+test("repair offers a plain Verify too, for files put back another way (launcher spec §3.5)", () => {
+  const { root, sent } = mountPopover(gamePopover, golden("client-repair"));
+  expect(root.textContent).toContain("Put them back another way? Verify");
+  press(root, "Verify");
+  expect(sent).toEqual([{ type: "check", level: "quick" }]);
+});
+
+test("Run it yourself while Fenji's own DepotDownloader waits cancels that one first", () => {
+  const { root, sent } = mountPopover(gamePopover, golden("client-waiting-for-steam"));
+  press(root, "Run it yourself");
+  expect(sent).toEqual([{ type: "cancelDownload" }]);
+});

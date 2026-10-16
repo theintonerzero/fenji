@@ -57,10 +57,12 @@ export function rail(ctx: Ctx): Rail {
   );
   let shown = "";
   let menu: { el: HTMLElement; seal: HTMLElement } | null = null;
+  // A redraw that came while a seal's menu was open: drawn once the menu closes.
+  let deferred: Snapshot | null = null;
 
   const showTip = (seal: HTMLElement, v: ServerView): void => {
     tip.replaceChildren(h("strong", {}, v.name), h("span", {}, sealLine(v)));
-    tip.style.top = `${seal.offsetTop + seal.offsetHeight / 2}px`;
+    tip.style.top = `${seal.offsetTop - list.scrollTop + seal.offsetHeight / 2}px`;
     tip.hidden = false;
   };
   const hideTip = (): void => {
@@ -77,6 +79,11 @@ export function rail(ctx: Ctx): Rail {
     document.removeEventListener("mousedown", outside, true);
     if (refocus && seal.isConnected) {
       seal.focus();
+    }
+    if (deferred !== null) {
+      const s = deferred;
+      deferred = null;
+      draw(s);
     }
   };
   const outside = (event: MouseEvent): void => {
@@ -108,7 +115,7 @@ export function rail(ctx: Ctx): Rail {
       item("Remove from list", () => ctx.removeServer(v)),
     ].filter((b): b is HTMLButtonElement => b !== null);
     const open = h("div", { class: "menu", role: "menu", "aria-label": v.name }, items);
-    open.style.top = `${seal.offsetTop}px`;
+    open.style.top = `${seal.offsetTop - list.scrollTop}px`;
     open.addEventListener("keydown", (event) => {
       const at = items.indexOf(document.activeElement as HTMLButtonElement);
       if (event.key === "Escape" || event.key === "Tab") {
@@ -188,23 +195,31 @@ export function rail(ctx: Ctx): Rail {
     }
   });
 
+  function draw(s: Snapshot): void {
+    const key = JSON.stringify([s.active, s.servers.map((v) => [v.id, v.name, barFor(v), sealLine(v), v.source])]);
+    if (key === shown) {
+      return;
+    }
+    shown = key;
+    // A probe draws the seals again every 15–30 s: the one that had focus keeps it.
+    const focused = (document.activeElement as HTMLElement | null)?.closest?.("[data-server]")?.getAttribute("data-server");
+    hideTip();
+    list.replaceChildren(...s.servers.map((v) => seal(v, v.id === s.active)));
+    if (focused !== null && focused !== undefined) {
+      list.querySelector<HTMLElement>(`[data-server="${focused}"]`)?.focus();
+    }
+  }
+
   return {
     el,
     update(s, adding) {
       add.classList.toggle("open", adding);
-      const key = JSON.stringify([s.active, s.servers.map((v) => [v.id, v.name, barFor(v), sealLine(v), v.source])]);
-      if (key === shown) {
+      // A probe never closes a menu the player has open.
+      if (menu !== null) {
+        deferred = s;
         return;
       }
-      shown = key;
-      // A probe draws the seals again every 15–30 s: the one that had focus keeps it.
-      const focused = (document.activeElement as HTMLElement | null)?.closest?.("[data-server]")?.getAttribute("data-server");
-      closeMenu(false);
-      hideTip();
-      list.replaceChildren(...s.servers.map((v) => seal(v, v.id === s.active)));
-      if (focused !== null && focused !== undefined) {
-        list.querySelector<HTMLElement>(`[data-server="${focused}"]`)?.focus();
-      }
+      draw(s);
     },
   };
 }

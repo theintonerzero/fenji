@@ -16,15 +16,16 @@ function reducedMotion(): boolean {
  * stays on it. Kindling, it fills to `--p` with ember; with no progress to show, the fill drifts.
  */
 export function setPlay(el: HTMLButtonElement, look: PlayLook): void {
-  // Kindling to lit: the fill completes and dissolves into the ember (the redesign's finish review),
-  // unless motion is reduced.
-  if (el.dataset.look === "kindle" && look.kind === "lit" && !reducedMotion()) {
+  // A check's end, kindling to lit: the fill completes and dissolves into the ember (the redesign's
+  // finish review), unless motion is reduced. A start that ends lit was cancelled or failed.
+  if (el.dataset.look === "kindle" && el.dataset.task === "verifying" && look.kind === "lit" && !reducedMotion()) {
     el.classList.add("kindled");
     el.addEventListener("animationend", () => el.classList.remove("kindled"), { once: true });
   } else if (look.kind !== "lit") {
     el.classList.remove("kindled");
   }
   el.dataset.look = look.kind;
+  el.dataset.task = look.kind === "kindle" ? look.task : "";
   el.classList.toggle("ember", look.kind === "lit");
   el.disabled = look.kind !== "lit";
   const percent = look.kind === "kindle" ? look.percent : null;

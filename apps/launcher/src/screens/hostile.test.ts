@@ -41,6 +41,20 @@ function hostile(s: Snapshot): Snapshot {
     s.keyChange.name = HOSTILE;
   }
   s.notice = { text: HOSTILE, error: true };
+  // The player's own folders and commands: anything a folder can be named.
+  for (const v of s.servers) {
+    v.address = HOSTILE;
+  }
+  if (s.client.folder !== null) {
+    s.client.folder = `/${HOSTILE}`;
+  }
+  if (s.client.steam !== null) {
+    s.client.steam.folder = `/${HOSTILE}`;
+  }
+  if (s.client.manual !== null) {
+    s.client.manual.download = HOSTILE;
+    s.client.manual.repair = s.client.manual.repair === null ? null : HOSTILE;
+  }
   return s;
 }
 
@@ -81,6 +95,8 @@ test.each([
 
 test.each([
   ["game", gamePopover, "client-repair"],
+  ["game", gamePopover, "client-steam"],
+  ["game", gamePopover, "client-verified"],
   ["account", accountPopover, "servers"],
   ["settings", settingsPopover, "settings"],
 ] as [string, (ctx: Ctx) => PopoverContent, string][])("the %s popover shows hostile words as text", (which, make, name) => {
