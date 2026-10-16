@@ -837,10 +837,11 @@ else
   bad "a held key and the press after it: hold at '$hold_at', Return at '$return_at'"
 fi
 # Client 1 ended before client 2 was due (#244): client 2 isn't started, since a fresh wineserver would
-# boot Wine's drivers in a new winedevice.exe, which S2 takes for a gate event.
+# boot Wine's drivers in a new winedevice.exe, which S2 takes for a gate event. Client 1's timeout ends
+# it at 1 s, and client 2 is due at 5 s: a slow runner has 4 s to see it end.
 W3=$TESTROOT/w3
 workspace "$W3"
-flow early "$W3" --server "$F/fenji.toml" --clients 2 --display2 98 --second-after 3 --timeout 1 -- --fs=data:_index:_index
+flow early "$W3" --server "$F/fenji.toml" --clients 2 --display2 98 --second-after 5 --timeout 1 -- --fs=data:_index:_index
 OUT3=$W3/out/early
 if [ "$rc" = 0 ] && [ "$(wc -l < "$F/log/early/proton")" = 1 ] && [ -f "$OUT3/io/exit-code" ] &&
   [ ! -e "$OUT3/io/exit-code-2" ] && [ -f "$OUT3/io/2/not-started" ] &&

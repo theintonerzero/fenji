@@ -1047,9 +1047,10 @@ print(*(x.getsockname()[1] for x in s))')
   while read -r p; do kill "$p" 2> /dev/null; done < "$F/log/run-two/fake-pids"
 
   # Client 1 ended before client 2 was due (#244): client 2 isn't started, since a fresh wineserver
-  # would boot Wine's drivers in a new winedevice.exe, which S2 takes for a gate event.
+  # would boot Wine's drivers in a new winedevice.exe, which S2 takes for a gate event. Client 1 plays
+  # 1 s, and client 2 is due at 5 s: a slow runner has 4 s to see it end.
   flow run-two-late "$F/work" with_env FAKE_LAUNCH_SECS=1 cmd_bare_run two2 "${RUNARGS[@]}" \
-    --display 78 "${TWOARGS[@]}" --second-after 3 --timeout 25
+    --display 78 "${TWOARGS[@]}" --second-after 5 --timeout 25
   if [ "$rc" = 0 ] && [ "$(grep -c . "$F/log/run-two-late/launches")" = 1 ] && [ -f "$F/work/io/two2/2/not-started" ] &&
     [ ! -e "$F/work/io/two2/2/.started" ] && [[ $out == *"client 2 not started (client 1 had ended when it was due)"* ]]; then
     ok "client 2 isn't started once client 1 has ended"
