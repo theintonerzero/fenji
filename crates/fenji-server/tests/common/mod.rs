@@ -318,6 +318,16 @@ impl Bot {
         )
     }
 
+    /// Several messages, each a type and a body, written as one write, as the client writes its
+    /// stream: the server reads them in one go.
+    pub async fn send_together(&mut self, messages: &[(u8, Vec<u8>)]) {
+        for (ty, body) in messages {
+            self.client.queue(*ty, body).unwrap();
+        }
+        let out = self.client.flush().unwrap();
+        self.sock.write_all(&out).await.unwrap();
+    }
+
     /// Reads and drops whatever is left until the server closes the connection: true when it
     /// does within `wait`.
     pub async fn ends_within(&mut self, wait: Duration) -> bool {

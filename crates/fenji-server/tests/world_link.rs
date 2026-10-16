@@ -333,6 +333,45 @@ async fn exit_and_leave_end_the_session() {
 }
 
 #[tokio::test]
+async fn a_second_select_sent_with_the_first_is_never_handled_after_the_world() {
+    // #388's review: messages that came in the same read as the 10 waited, while the client was in
+    // the world, and the lobby handled them once it came back. A second 10 then entered the world
+    // again, unasked, under a client on its select screen. They came while the client waited for
+    // 772: the lobby drops them.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    let ten = fenji_proto::packet::script_body(lobby::SELECT_ACTOR, &[Value::Int(pid)]).unwrap();
+    assert!(bot.send_many(0xFF, &ten, 2, Duration::from_secs(5)).await);
+    let m = bot.recv_message().await;
+    let mut v = pickle::decode(&m.body).unwrap();
+    assert_eq!(v.remove(0), Value::Int(world::LOAD_SCENE));
+    enter(&mut bot, pid).await;
+    bot.send_native(Cts::ClientLeave.to_u8(), &[]).await;
+    assert_eq!(bot.recv().await, (world::ACTOR_LOGOUT, Vec::new()));
+    bot.quiet(1_000).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn quitting_in_the_same_read_as_back_to_select_still_quits() {
+    // #388's review: the link returned to the lobby in the middle of a read, dropping what came
+    // after type 4 in it. Sends are off then, but a time sync or a gateway message may follow
+    // (world.md 1.3), and a 392 there was lost: the client waited for a close that never came.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    select(&mut bot, pid).await;
+    enter(&mut bot, pid).await;
+    let exit = fenji_proto::packet::script_body(lobby::CLIENT_EXIT, &[]).unwrap();
+    bot.send_together(&[(Cts::ClientLeave.to_u8(), Vec::new()), (0xFF, exit)])
+        .await;
+    assert_eq!(bot.recv().await, (world::ACTOR_LOGOUT, Vec::new()));
+    assert_eq!(bot.expect_closed().await, CLIENT_EXIT.as_bytes());
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn back_to_character_select_returns_to_the_lobby_on_the_same_connection() {
     // #282: type 4 (`SCENE.RequestLogout`, sent with sends off) waits for 330
     // (`PROTOS2C_ACTOR_LOGOUT`), whose handler turns sends back on and takes the client to its
@@ -352,8 +391,12 @@ async fn back_to_character_select_returns_to_the_lobby_on_the_same_connection() 
     assert!(store.save_place(pid, &older).await.unwrap());
     bot.send_native(Cts::ClientLeave.to_u8(), &[]).await;
     assert_eq!(bot.recv().await, (world::ACTOR_LOGOUT, Vec::new()));
-    // The world lets the character go and saves where it stood.
+    // The world lets the character go and saves where it stood, and the console's `online` lists
+    // the account in the lobby.
     saved_at(store, "tester", pid, START_PLACE).await;
+    let online = s.console().run_line("online").await;
+    let row: Vec<&str> = online.lines[1].split_whitespace().collect();
+    assert_eq!(&row[..3], ["tester", "lobby", "-"], "{online:?}");
     // The connection is the lobby's again: the character is chosen once more, and the world takes
     // it back in, where it stood.
     assert_eq!(select(&mut bot, pid).await, load_scene(pid, 7, START));

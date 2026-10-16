@@ -3,7 +3,7 @@
 //! connection to the link on 10 (world.md §1). Close reasons use the client's own keys where it has
 //! one (docs/protocol/packets/lobby.md §9, world.md §10). The ticket is never logged, and the auth
 //! payload's machine bytes and fingerprint are dropped here, never stored.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -540,7 +540,8 @@ async fn lobby_loop(
                     tracing::info!(%peer, account = %account.username, "left");
                     return Ok(());
                 }
-                for event in server.receive(&buf[..n])? {
+                let mut events: VecDeque<Event> = server.receive(&buf[..n])?.into();
+                while let Some(event) = events.pop_front() {
                     let m = match event {
                         Event::Message(m) => m,
                         // The client's ping display reads only what a server time sync sets: its
@@ -568,8 +569,11 @@ async fn lobby_loop(
                             Entry::Play(c) => {
                                 match link::play(sock, peer, gate, server, account, conn, c, replaced).await? {
                                     link::Ended::Closed => return Ok(()),
-                                    // Back to character select: the lobby carries on (#282).
-                                    link::Ended::Lobby => {}
+                                    // Back to character select: the lobby carries on (#282). What
+                                    // was left of this read came while the client waited for 772,
+                                    // and goes unhandled; what came after type 4 in the world's
+                                    // last read is the lobby's (#388's review).
+                                    link::Ended::Lobby(after) => events = after.into(),
                                 }
                             }
                             Entry::Banned => {

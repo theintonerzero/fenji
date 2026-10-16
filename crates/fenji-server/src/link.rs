@@ -72,12 +72,14 @@ fn filter_machine(i: usize) -> bool {
 }
 
 /// How a session in the world ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ended {
     /// The connection is closed, or about to be.
     Closed,
-    /// Back to character select: the connection is the lobby's again (#282).
-    Lobby,
+    /// Back to character select: the connection is the lobby's again (#282), with what came after
+    /// type 4 in the same read for the lobby to handle. Sends are off then, but a time sync or a
+    /// gateway message, a 392 among them, may follow (world.md 1.3; #388's review).
+    Lobby(Vec<Event>),
 }
 
 /// Plays `character` in the world on the gate's connection, until the client leaves or goes back
@@ -156,7 +158,8 @@ pub(crate) async fn play(
                     return Ok(Ended::Closed);
                 }
                 idle_at = Instant::now() + gate.limits.idle;
-                for event in server.receive(&buf[..n])? {
+                let mut events = server.receive(&buf[..n])?.into_iter();
+                while let Some(event) = events.next() {
                     let m = match event {
                         Event::Message(m) => m,
                         // The client's ping display reads only what a server time sync sets: its
@@ -188,7 +191,7 @@ pub(crate) async fn play(
                             }
                             gate.online.in_lobby(account.id, conn);
                             tracing::info!(%peer, account = %account.username, "back to character select (type 4)");
-                            return Ok(Ended::Lobby);
+                            return Ok(Ended::Lobby(events.collect()));
                         }
                         Step::Quit => {
                             tracing::info!(%peer, account = %account.username, why = "the client is quitting (392)", "left the world");

@@ -476,8 +476,9 @@ enum Leaving {
 
 impl Leaving {
     /// `bot` leaves this way: the server ends its connection, or, back to character select,
-    /// answers 330 and keeps it for the lobby (#282).
-    async fn leave(self, mut bot: Bot) {
+    /// answers 330 and keeps it for the lobby (#282), and the bot is given back still connected,
+    /// so that the 9 the other player hears can't come from a hang-up (#388's review).
+    async fn leave(self, mut bot: Bot) -> Option<Bot> {
         match self {
             Self::Quit => bot.send(lobby::CLIENT_EXIT, &[]).await,
             Self::BackToSelect => {
@@ -486,13 +487,14 @@ impl Leaving {
                     bot.recv().await,
                     (fenji_proto::world::ACTOR_LOGOUT, Vec::new())
                 );
-                return;
+                return Some(bot);
             }
-            Self::HangUp => return,
+            Self::HangUp => return None,
         }
         // The idle timeout is a minute, so an end within 2 s is the server's answer.
         let ends = bot.ends_within(Duration::from_secs(2)).await;
         assert!(ends, "the server ends the connection after {self:?}");
+        None
     }
 }
 
@@ -514,8 +516,12 @@ async fn a_bot_leaving_is_a_9_for_the_other() {
         b.expect_announced(a.pid(), start).await;
         a.pull(b.pid()).await;
         let pid = b.pid();
-        way.leave(b).await;
+        let kept = way.leave(b).await;
         a.expect_left(&[pid]).await;
+        // Back to character select keeps the connection, for the lobby.
+        if let Some(mut bot) = kept {
+            bot.quiet(300).await;
+        }
     }
     nothing_else(&mut a, &mut []).await;
     stop(s, vec![a]).await;
