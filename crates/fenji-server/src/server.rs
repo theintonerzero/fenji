@@ -575,8 +575,11 @@ const CONSOLE_LEFT: &str = "the server has stopped, but the console hasn't ended
      likely gone: it's left behind";
 
 /// [`held`], waited for no longer than `grace` once the server has `stopped`
-/// ([`ConsoleService::stopped`]). A console still running then, such as one whose terminal hung
-/// up, is left to its thread, which `main` doesn't wait for, so that the process ends.
+/// ([`ConsoleService::stopped`]). A console still running then, such as one caught in a write to a
+/// terminal that has stopped reading, is left to its thread, which `main` doesn't wait for, so that
+/// the process ends. The terminal gets its mode back first ([`fenji_console::restore_mode`], which
+/// takes no write), so that the shell after the server reads lines once the terminal reads again
+/// (#359).
 async fn held_until_stopped(
     console: impl Future<Output = std::io::Result<Ending>> + Send + 'static,
     mut stopped: watch::Receiver<bool>,
@@ -589,6 +592,7 @@ async fn held_until_stopped(
     tokio::select! {
         ended = held(console) => ended,
         () = left => {
+            fenji_console::restore_mode();
             tracing::info!("{CONSOLE_LEFT}");
             Err(std::io::Error::other(CONSOLE_LEFT))
         }

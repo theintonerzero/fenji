@@ -51,7 +51,7 @@ The colours are DESIGN.md's tokens: ink-950 `#0c0c0f` (the log's ground), ink-90
 - With `NO_COLOR` set there are no colours: WARN and ERROR lines are bold, and the selected palette row is in reverse video.
 - Fonts are the terminal's own. The write-up suggests Geist Mono (OFL).
 - A terminal smaller than 60 × 15 shows a one-line note asking for a bigger window. The server keeps running.
-- On any exit, a panic included, the console gives the terminal back (main screen, cursor, cooked mode) before it prints anything.
+- On any exit, a panic included, the console gives the terminal back (main screen, cursor, cooked mode) before it prints anything. A console that `run` leaves behind once the server has stopped, caught in a write to a terminal that has stopped reading, gets cooked mode back from `run` with `tcsetattr` alone, which takes no write; the screen stays the console's until the host types `reset` (#359).
 
 ### 3.3 The commands (H5)
 

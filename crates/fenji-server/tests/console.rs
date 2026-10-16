@@ -193,6 +193,8 @@ impl Drop for InTerminal {
 struct Window {
     child: Child,
     master: Option<File>,
+    /// The program's end of the terminal, for its mode and its flow.
+    terminal: File,
     /// True while the window is open: the thread reading the terminal goes on.
     open: Arc<std::sync::atomic::AtomicBool>,
     reader: Option<std::thread::JoinHandle<()>>,
@@ -274,7 +276,7 @@ impl Window {
             .env("TERM", "xterm-256color")
             .stdin(terminal.try_clone().unwrap())
             .stdout(terminal.try_clone().unwrap())
-            .stderr(terminal)
+            .stderr(terminal.try_clone().unwrap())
             .spawn()
             .unwrap();
         let master = File::from(master);
@@ -300,10 +302,19 @@ impl Window {
         Window {
             child,
             master: Some(master),
+            terminal,
             open,
             reader: Some(reader),
             out,
         }
+    }
+
+    /// Whether the terminal is in its usual, cooked mode: lines, echo and signals from keys.
+    fn cooked(&self) -> bool {
+        let modes = rustix::termios::tcgetattr(&self.terminal)
+            .unwrap()
+            .local_modes;
+        modes.contains(LocalModes::ICANON | LocalModes::ECHO | LocalModes::ISIG)
     }
 
     fn shown(&self) -> String {
@@ -340,6 +351,8 @@ impl Drop for Window {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // The test's own end of the terminal keeps it from ending: the reading stops here.
+        self.open.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -623,6 +636,29 @@ fn closed_cleanly(mut window: Window, dir: &Path) {
     // Its log, in the data folder's logs as the full-screen console has it, says why it stopped.
     let logs = logs_of(dir);
     assert!(logs.contains("shutting down signal=SIGHUP"), "{logs}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_console_left_behind_gives_the_terminal_its_mode_back() {
+    // #359: once the server has stopped, `run` waits 2 s at most for a console that hasn't ended,
+    // then leaves it to its thread, caught in a write to a terminal that has stopped reading, as
+    // over a stalled SSH link. The terminal was left raw: once the link came back, the shell after
+    // the server read no lines and echoed nothing, until `reset`. `run` gives it its mode back
+    // before it leaves the console, without a write.
+    let dir = tempfile::tempdir().unwrap();
+    let mut window = Window::open(&window_config(dir.path()), &["run"]);
+    window.drawn("online");
+    assert!(!window.cooked(), "the console holds the terminal raw");
+    // The terminal takes no more output: the console's next frame, at the next second, waits.
+    rustix::termios::tcflow(&window.terminal, rustix::termios::Action::OOff).unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    kill_process(Pid::from_child(&window.child), Signal::TERM).unwrap();
+    let status = exit_of(&mut window.child, || logs_of(dir.path()));
+    assert!(status.success(), "{status}");
+    let logs = logs_of(dir.path());
+    assert!(logs.contains("it's left behind"), "{logs}");
+    assert!(window.cooked(), "the terminal is left raw");
 }
 
 #[cfg(target_os = "linux")]

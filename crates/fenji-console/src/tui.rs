@@ -2,8 +2,12 @@
 //! terminal over and gives it back on every way out, a panic included (Review Focus 2).
 use std::cell::Cell;
 use std::io;
+#[cfg(unix)]
+use std::os::fd::AsFd;
 use std::panic::{self, PanicHookInfo};
 use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -12,9 +16,9 @@ use crossterm::event::KeyEvent;
 #[cfg(not(unix))]
 use crossterm::event::{Event, EventStream};
 use crossterm::execute;
-use crossterm::terminal::{
-    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
+#[cfg(not(unix))]
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 #[cfg(not(unix))]
 use futures_util::StreamExt;
 use ratatui::Terminal;
@@ -349,13 +353,83 @@ impl Screen {
         let screen = Screen {
             _hook: PanicHook::install(give_back),
         };
-        enable_raw_mode()?;
-        RAW.store(true, Ordering::SeqCst);
+        raw_mode()?;
         // Marked first: the switch may be written even if the call then fails.
         ALTERNATE.store(true, Ordering::SeqCst);
         enter_to(&mut io::stdout())?;
         quiet_stderr();
         Ok(screen)
+    }
+}
+
+/// The terminal's mode as the console found it, while the console has it raw: what
+/// [`restore_mode`] gives back.
+#[cfg(unix)]
+static FOUND: Mutex<Option<rustix::termios::Termios>> = Mutex::new(None);
+
+/// Puts the terminal in raw mode, as crossterm does (`cfmakeraw`), keeping the mode it found. On
+/// Linux and macOS the console does it itself, so that [`restore_mode`] can give the mode back from
+/// any thread, with no lock of crossterm's.
+#[cfg(unix)]
+fn raw_mode() -> io::Result<()> {
+    raw_mode_of(rustix::stdio::stdin())
+}
+
+/// [`raw_mode`] for `terminal`.
+#[cfg(unix)]
+fn raw_mode_of(terminal: impl AsFd) -> io::Result<()> {
+    use rustix::termios::{OptionalActions, tcgetattr, tcsetattr};
+    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    if found.is_some() {
+        return Ok(());
+    }
+    let mode = tcgetattr(&terminal)?;
+    let mut raw = mode.clone();
+    raw.make_raw();
+    // Kept before the change: one that fails part-way is given back too.
+    *found = Some(mode);
+    tcsetattr(&terminal, OptionalActions::Now, &raw)?;
+    Ok(())
+}
+
+/// Puts the terminal in raw mode, crossterm's way, which Windows' console takes.
+#[cfg(not(unix))]
+fn raw_mode() -> io::Result<()> {
+    enable_raw_mode()?;
+    RAW.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Gives the terminal back the mode the console found it in, if the console has it raw, and nothing
+/// else: on Linux and macOS with `tcsetattr` alone, which writes nothing to the terminal and reads
+/// nothing from it, so that it never waits on a terminal that has stopped reading. From any thread,
+/// and once: done again, it does nothing.
+///
+/// For a console that is to be left behind, its thread caught in a write to such a terminal, as
+/// `fenji-server run` leaves one once the server has stopped (#359). The screen stays the
+/// console's, as giving it back takes a write, but the shell after it reads lines and echoes them.
+pub fn restore_mode() {
+    #[cfg(unix)]
+    restore_mode_of(rustix::stdio::stdin());
+    #[cfg(not(unix))]
+    if RAW.swap(false, Ordering::SeqCst) {
+        let _ = disable_raw_mode();
+    }
+}
+
+/// [`restore_mode`] for `terminal`. The mode is held only to look at it or change it, never across
+/// a write, so this never waits for another thread's: while one gives it back, this has nothing to
+/// do.
+#[cfg(unix)]
+fn restore_mode_of(terminal: impl AsFd) {
+    let found = match FOUND.try_lock() {
+        Ok(mut found) => found.take(),
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner().take(),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    };
+    if let Some(found) = found {
+        let now = rustix::termios::OptionalActions::Now;
+        let _ = rustix::termios::tcsetattr(&terminal, now, &found);
     }
 }
 
@@ -401,18 +475,20 @@ impl Drop for Screen {
     }
 }
 
-/// Whether the console has the terminal in raw mode.
+/// Whether the console has the terminal in raw mode, on Windows.
+#[cfg(not(unix))]
 static RAW: AtomicBool = AtomicBool::new(false);
 
 /// Whether the console has the terminal on its alternate screen, with the cursor hidden.
 static ALTERNATE: AtomicBool = AtomicBool::new(false);
 
 /// Gives the terminal back: stderr first, so that what is printed next, a panic's message among
-/// it, reaches the terminal; then the main screen, a cursor, the wheel's alternate scroll
-/// ([`AlternateScroll`]) and cooked mode. Each is given back
-/// once, so running it again, as a panic's hook and then the console's end do, changes nothing: a
-/// second switch to the main screen would move the cursor back to where it was when the console
-/// began, and what's printed next would overwrite the panic's message.
+/// it, reaches the terminal; then cooked mode ([`restore_mode`]), which takes no write, so that a
+/// terminal that has stopped reading gets it even if what follows waits; then the main screen, a
+/// cursor and the wheel's alternate scroll ([`AlternateScroll`]). Each is given back once, so
+/// running it again, as a panic's hook and then the console's end do, changes nothing: a second
+/// switch to the main screen would move the cursor back to where it was when the console began,
+/// and what's printed next would overwrite the panic's message.
 fn give_back() {
     give_back_to(&mut io::stdout());
 }
@@ -420,11 +496,9 @@ fn give_back() {
 /// [`give_back`], writing the switch to the main screen to `terminal`.
 fn give_back_to(terminal: &mut impl io::Write) {
     loud_stderr();
+    restore_mode();
     if ALTERNATE.swap(false, Ordering::SeqCst) {
         let _ = execute!(terminal, LeaveAlternateScreen, Show, AlternateScroll(true));
-    }
-    if RAW.swap(false, Ordering::SeqCst) {
-        let _ = disable_raw_mode();
     }
 }
 
@@ -601,6 +675,69 @@ mod tests {
         let given = String::from_utf8(given).unwrap();
         let (screen, wheel) = (given.find("\u{1b}[?1049l"), given.find("\u{1b}[?1007h"));
         assert!(screen.is_some() && wheel > screen, "{given:?}");
+    }
+
+    /// A pseudo-terminal: its master end, and the end a program has, never the test's controlling
+    /// terminal.
+    #[cfg(unix)]
+    fn pty() -> (std::os::fd::OwnedFd, std::fs::File) {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+        let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let name = ptsname(&master, Vec::new()).unwrap();
+        let terminal = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(rustix::fs::OFlags::NOCTTY.bits() as i32)
+            .open(std::ffi::OsStr::from_bytes(name.as_bytes()))
+            .unwrap();
+        (master, terminal)
+    }
+
+    /// Whether `terminal` is in its usual, cooked mode: lines, echo and signals from keys.
+    #[cfg(unix)]
+    fn cooked(terminal: &std::fs::File) -> bool {
+        use rustix::termios::LocalModes;
+        let modes = rustix::termios::tcgetattr(terminal).unwrap().local_modes;
+        modes.contains(LocalModes::ICANON | LocalModes::ECHO | LocalModes::ISIG)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mode_comes_back_from_any_thread_without_a_write_to_the_terminal() {
+        // #359: a console `run` leaves behind, its thread caught in a write to a terminal that
+        // has stopped reading, left that terminal raw. Its mode comes back with tcsetattr alone,
+        // which neither writes to the terminal nor reads it, so it never waits on one like that.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        let (_master, terminal) = pty();
+        raw_mode_of(&terminal).unwrap();
+        assert!(!cooked(&terminal), "raw");
+        // A terminal that takes no more output, as over a stalled SSH link: a write would wait.
+        rustix::termios::tcflow(&terminal, rustix::termios::Action::OOff).unwrap();
+        let (done, given_back) = std::sync::mpsc::channel();
+        let restoring = std::thread::spawn(move || {
+            restore_mode_of(&terminal);
+            done.send(()).unwrap();
+            terminal
+        });
+        given_back
+            .recv_timeout(Duration::from_secs(5))
+            .expect("it waited on the terminal");
+        let terminal = restoring.join().unwrap();
+        assert!(cooked(&terminal), "the mode wasn't given back");
+        // Once: done again, it does nothing.
+        raw_mode_of(&terminal).unwrap();
+        restore_mode_of(&terminal);
+        let mut raw = rustix::termios::tcgetattr(&terminal).unwrap();
+        raw.make_raw();
+        let now = rustix::termios::OptionalActions::Now;
+        rustix::termios::tcsetattr(&terminal, now, &raw).unwrap();
+        restore_mode_of(&terminal);
+        assert!(!cooked(&terminal), "given back twice");
     }
 
     #[test]

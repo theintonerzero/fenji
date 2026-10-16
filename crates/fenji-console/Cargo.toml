@@ -22,10 +22,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
 
-# Stderr pointed away from the terminal while the full-screen console holds it (tui.rs), and the
-# terminal's keys read (keys.rs).
+# Stderr pointed away from the terminal while the full-screen console holds it, and its raw mode,
+# which any thread can give back (tui.rs); the terminal's keys read (keys.rs).
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["stdio"], optional = true }
+rustix = { workspace = true, features = ["stdio", "termios"], optional = true }
 
 [dev-dependencies]
 tokio.workspace = true
