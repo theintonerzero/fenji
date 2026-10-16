@@ -158,10 +158,10 @@ R_SVCCTL_IMAGE = re.compile(rb', 0x[0-9a-f]+, L"((?:[^"\\\n]|\\.)*)"\)\s*$')
 # the service's handle but not its name; and services.exe's svcctl_ChangeServiceConfigW, which logs
 # nothing but its name. ChangeServiceConfigA's line is followed by ChangeServiceConfigW's. With them,
 # in the same pass, +process's creation of a process (its pid, group 3): Wine may give it the pid of
-# one that has ended, whose opens aren't its own.
+# one that has ended, whose opens aren't its own. Its image may be cut short, `L"..."...`.
 R_SVC_CALL = re.compile(
     rb"trace:service:(OpenServiceW|CreateServiceW|ChangeServiceConfigW|svcctl_ChangeServiceConfigW) ([^\n]*)"
-    rb'|NtCreateUserProcess L"[^"\n]*" pid ([0-9a-f]+) tid')
+    rb'|NtCreateUserProcess L"[^"\n]*"(?:\.\.\.)? pid ([0-9a-f]+) tid')
 R_OPEN_NAME = re.compile(rb'[0-9A-Fa-f]+ L"((?:[^"\\\n]|\\.)*)"')
 # ChangeServiceConfigW's "%p %ld %ld %ld %s ...": the handle; the new type, start type and error
 # control (-1, SERVICE_NO_CHANGE, keeps one); the new image ((null) keeps it; `"...` is one cut short,
@@ -554,7 +554,9 @@ class LogRules:
         ChangeServiceConfigW line, which it then takes: the oldest one services.exe may still be
         answering. sechost logs a change before its RPC, so one that never reached services.exe (a
         bad handle) stays pending: it lapses CHANGE_ANSWER_WITHIN seconds after its stamp, so it
-        can't answer for a later caller the log doesn't trace (#174)."""
+        can't answer for a later caller the log doesn't trace (#174). A line with no stamp never
+        lapses, so this needs +timestamp: run-client.sh's CHANNELS_WATCHDOG has it, which its
+        watch_channels adds to every watched run, run-bare.sh's too."""
         pending = self.changes_pending
         while pending and ts is not None and pending[0] is not None and ts - pending[0] > CHANGE_ANSWER_WITHIN:
             pending.popleft()

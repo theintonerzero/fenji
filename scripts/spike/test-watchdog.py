@@ -345,6 +345,13 @@ class S3(unittest.TestCase):
         trig, notes = self.scan(new_0134, open_service("discord-bridge"), change_config(stype=16), SVCCTL_CHANGE)
         self.assertEqual((trig, notes), ([], [USER_MODE_NOTE]))
 
+    def test_a_pid_used_again_by_an_image_cut_short_starts_with_no_open_service(self):  # #373's review
+        # Wine cuts a long image path short, `L"..."...`: the new process's pid still prunes.
+        cut = (r'2.000:0020:0024:trace:process:NtCreateUserProcess L"\\??\\C:\\' + "a" * 300 + r'"... '
+               "pid 0134 tid 0138 handles 0xf8/0xfc")
+        trig, _ = self.scan(open_service("discord-bridge"), cut, change_config(stype=16), SVCCTL_CHANGE)
+        self.assertEqual(trig, [changes("a service the log doesn't name")])
+
 
 SYSTEM_REG = r"""WINE REGISTRY Version 2
 [System\\ControlSet001\\Services\\discord-bridge] 1791759044
