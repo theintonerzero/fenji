@@ -270,13 +270,15 @@ fn write_rows(out: &mut dyn Write, rows: &[Vec<String>]) -> std::io::Result<()> 
     Ok(())
 }
 
-/// Runs one admin command against the configured database, writing plain lines to `out`.
+/// Runs one admin command against the configured database, writing plain lines to `out`. A data
+/// folder that isn't this user's is refused first ([`crate::folder::check`]).
 pub async fn admin(
     cfg: &Config,
     cmd: &Command,
     out: &mut dyn Write,
     clock: &dyn Clock,
 ) -> anyhow::Result<()> {
+    crate::folder::check(&crate::config::data_folder(&cfg.store.path))?;
     let store = crate::server::open_store(cfg).await?;
     let now = clock.now_ms();
     match cmd {

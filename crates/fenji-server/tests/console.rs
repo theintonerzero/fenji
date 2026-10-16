@@ -114,7 +114,13 @@ struct InTerminal {
 }
 
 impl InTerminal {
+    /// `fenji-server console` on `config`'s server.
     fn start(config: &Path) -> Self {
+        InTerminal::spawn(config, &["console"])
+    }
+
+    /// `fenji-server --config <config> <args>`.
+    fn spawn(config: &Path, args: &[&str]) -> Self {
         use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
         let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
         grantpt(&master).unwrap();
@@ -136,7 +142,7 @@ impl InTerminal {
         let child = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
             .arg("--config")
             .arg(config)
-            .arg("console")
+            .args(args)
             .env("TERM", "xterm-256color")
             .stdin(terminal.try_clone().unwrap())
             .stdout(terminal.try_clone().unwrap())
@@ -388,6 +394,37 @@ fn console_run_gives_a_script_the_answer_and_an_exit_code_that_follows_it() {
     let blank = server.console(&["--run", ""], "");
     assert!(blank.status.success(), "{blank:?}");
     assert_eq!(text(&blank.stdout), "");
+}
+
+#[test]
+fn a_full_screen_run_refuses_an_open_data_folder_before_it_writes_its_log() {
+    // The hosting plan's final review, Minor 1: the full-screen console logs to data/logs, so a
+    // run refused for its data folder (one every user may write in here, another user's when a
+    // host types sudo) is refused before that file too, and writes nothing there.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let config = dir.path().join("fenji.toml");
+    std::fs::write(
+        &config,
+        "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n\
+         [store]\npath = \"data/fenji.db\"\n",
+    )
+    .unwrap();
+    let mut run = InTerminal::spawn(&config, &["run"]);
+    let out = Arc::clone(&run.out);
+    let shown = move || String::from_utf8_lossy(&out.lock().unwrap()).into_owned();
+    let status = exit_of(&mut run.child, shown);
+    assert!(!status.success(), "{status}");
+    until(|| run.shown().contains("chmod o-w"), || run.shown());
+    assert_eq!(
+        std::fs::read_dir(&data).unwrap().count(),
+        0,
+        "{}",
+        run.shown()
+    );
 }
 
 #[test]

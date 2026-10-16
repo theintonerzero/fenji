@@ -899,6 +899,125 @@ async fn backup_prints_the_new_copy_which_opens_as_a_store() {
     assert_eq!(invites[0].label.as_deref(), Some("for bob"));
 }
 
+/// The data folder is the server's user's (the hosting plan's final review, Minor 1): on Linux and
+/// macOS, `run` and the admin commands refuse another user's, or one every user may write in,
+/// before they write anything there.
+#[cfg(unix)]
+mod the_data_folder {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A config in `dir` whose data folder is `dir/data`, made with `mode`.
+    fn with_data(dir: &Path, mode: u32) -> Config {
+        let data = dir.join("data");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(mode)).unwrap();
+        let text = "[server]\nname = \"Fenji\"\n[store]\npath = \"data/fenji.db\"\n";
+        std::fs::write(dir.join("fenji.toml"), text).unwrap();
+        Config::parse(text, dir).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_admin_command_refuses_one_every_user_may_write_in_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = with_data(dir.path(), 0o777);
+        let mut out = Vec::new();
+        let backup = Command::Backup { keep: 14 };
+        let clock = TestClock::at(1_800_000_000_000);
+        let e = admin(&cfg, &backup, &mut out, &clock).await.unwrap_err();
+        let e = format!("{e:#}");
+        let data = dir.path().join("data");
+        assert!(e.contains(&format!("chmod o-w {}", data.display())), "{e}");
+        assert_eq!(
+            std::fs::read_dir(&data).unwrap().count(),
+            0,
+            "nothing written"
+        );
+        // One its group may write in is its user's still: with a user's own group and a umask of
+        // 002, every folder its user makes is so.
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o775)).unwrap();
+        admin(&cfg, &backup, &mut out, &clock).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_admin_command_refuses_another_users_folder_and_names_whom_to_run_as() {
+        // As root, the root folder is the test's own: there's nothing to refuse.
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::parse(
+            "[server]\nname = \"Fenji\"\n[store]\npath = \"/fenji.db\"\n",
+            dir.path(),
+        )
+        .unwrap();
+        let list = Command::Account {
+            cmd: AccountCmd::List,
+        };
+        let clock = TestClock::at(1_800_000_000_000);
+        let e = admin(&cfg, &list, &mut Vec::new(), &clock)
+            .await
+            .unwrap_err();
+        let e = format!("{e:#}");
+        assert!(
+            e.contains("the data folder / is root's")
+                && e.contains("(sudo -u root fenji-server …)"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn run_refuses_one_every_user_may_write_in_before_it_writes_anything() {
+        // Not its lock, its socket, its database or its log.
+        let dir = tempfile::tempdir().unwrap();
+        with_data(dir.path(), 0o757);
+        let mut run = Running::start(dir.path(), &["--config", "fenji.toml", "run", "--plain"]);
+        let status = run.wait();
+        let said = run.said();
+        assert!(!status.success(), "{status}: {said}");
+        assert!(said.contains("chmod o-w"), "{said}");
+        let data = dir.path().join("data");
+        assert_eq!(std::fs::read_dir(&data).unwrap().count(), 0, "{said}");
+    }
+
+    #[test]
+    fn a_first_run_under_a_umask_of_002_makes_its_folders_owner_only_and_starts_again() {
+        // The hosting plan's final review, Minor 1: the check mustn't refuse what a first run
+        // makes where every file is made group-writable.
+        let dir = tempfile::tempdir().unwrap();
+        let start = || {
+            let log = tempfile::NamedTempFile::new().unwrap();
+            let child = std::process::Command::new("sh")
+                .args(["-c", "umask 002 && exec \"$0\" \"$@\""])
+                .arg(env!("CARGO_BIN_EXE_fenji-server"))
+                .arg("--plain")
+                .current_dir(dir.path())
+                .env("RUST_LOG", "info")
+                .envs(ANY_PORT)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(log.reopen().unwrap())
+                .spawn()
+                .unwrap();
+            Running { child, log }
+        };
+        let mut first = start();
+        first.wait_for("Fenji is running");
+        assert!(first.stop().success(), "{}", first.said());
+        for folder in ["data", "data/tls"] {
+            let mode = std::fs::metadata(dir.path().join(folder))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700, "{folder}");
+        }
+        let mut again = start();
+        again.wait_for("Fenji is running");
+        assert!(again.stop().success(), "{}", again.said());
+    }
+}
+
 #[test]
 fn durations_parse() {
     use fenji_server::cli::parse_duration;

@@ -29,6 +29,9 @@ async fn fenji_server() -> anyhow::Result<ExitCode> {
         // that's there.
         Command::Run => {
             let loaded = config::load_or_first_run(given)?;
+            // Before anything is written in the data folder, the full-screen console's log file
+            // first (the hosting plan's final review, Minor 1).
+            fenji_server::folder::check(&config::data_folder(&loaded.config().store.path))?;
             // The terminal it started in decides the console, and the console where the log goes
             // (§3.1, §3.4): the process's log is set once, so only now.
             let term = std::env::var("TERM").ok();

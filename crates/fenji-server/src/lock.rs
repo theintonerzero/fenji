@@ -28,13 +28,7 @@ pub fn take(data: &Path) -> anyhow::Result<Lock> {
     crate::config::private_folder(data)
         .with_context(|| format!("can't make the data folder {}", data.display()))?;
     let path = data.join(NAME);
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let file = options
-        .open(&path)
-        .with_context(|| format!("can't open {}", path.display()))?;
+    let file = open_lock_file(&path)?;
     match file.try_lock() {
         Ok(()) => Ok(Lock { _file: file }),
         Err(TryLockError::WouldBlock) => bail!(in_use(data)),
@@ -42,6 +36,41 @@ pub fn take(data: &Path) -> anyhow::Result<Lock> {
             Err(e).with_context(|| format!("can't lock {}", path.display()))
         }
     }
+}
+
+/// Opens the lock file at `path` to take its lock, making it if it's missing. On Linux and macOS
+/// it's never opened through a link in its place, which would make or open the link's target
+/// wherever it points, and it's made owner-only (0600), however it was left (the hosting plan's
+/// final review, Minor 1).
+///
+/// # Errors
+/// If it can't be opened, a link in its place saying so, or its mode set.
+pub(crate) fn open_lock_file(path: &Path) -> anyhow::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let no_link = rustix::fs::OFlags::NOFOLLOW.bits() as i32;
+        options.mode(0o600).custom_flags(no_link);
+    }
+    let file = options.open(path).map_err(|e| {
+        #[cfg(unix)]
+        if rustix::io::Errno::from_io_error(&e) == Some(rustix::io::Errno::LOOP) {
+            return anyhow::anyhow!(
+                "can't open {}: it's a symbolic link, which the server never follows; delete it",
+                path.display()
+            );
+        }
+        anyhow::Error::new(e).context(format!("can't open {}", path.display()))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("can't make {} owner-only", path.display()))?;
+    }
+    Ok(file)
 }
 
 /// Why a server can't start on the data folder `data`.
@@ -76,5 +105,34 @@ mod tests {
         drop(held);
         let _again = take(&data).unwrap();
         assert!(data.join(NAME).is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_locks_place_is_never_followed() {
+        // The hosting plan's final review, Minor 1: a dangling link at server.lock made the server
+        // create its target, wherever it pointed.
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        let target = dir.path().join("elsewhere");
+        std::os::unix::fs::symlink(&target, data.join(NAME)).unwrap();
+        let e = format!("{:#}", take(&data).unwrap_err());
+        assert!(e.contains("link"), "{e}");
+        assert!(!target.exists(), "nothing was made where it pointed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_left_open_to_others_is_made_owner_only() {
+        // The hosting plan's final review, Minor 1: an existing 0644 server.lock stayed 0644.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(NAME);
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let _held = take(dir.path()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }

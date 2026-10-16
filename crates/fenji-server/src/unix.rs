@@ -16,9 +16,47 @@ pub(crate) fn hangup_ignored() -> bool {
     }
 }
 
+/// The name of the user `uid`, if the system has one, for a hint naming whom to run as (the
+/// hosting plan's final review, Minor 1).
+pub(crate) fn user_name(uid: u32) -> Option<String> {
+    let mut buf = vec![0u8; 1024];
+    loop {
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: an all-zero `passwd` is a valid one (integers and null pointers), and
+        // `getpwuid_r` writes only into it, into `buf` up to its length, and into `found`.
+        let (entry, read) = unsafe {
+            let mut entry: libc::passwd = std::mem::zeroed();
+            let read = libc::getpwuid_r(
+                uid,
+                &mut entry,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut found,
+            );
+            (entry, read)
+        };
+        if read == libc::ERANGE && buf.len() < 1 << 20 {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if read != 0 || found.is_null() || entry.pw_name.is_null() {
+            return None;
+        }
+        // SAFETY: found, `pw_name` points to a name ending in NUL in `buf`, which is still here.
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+        return Some(name.to_string_lossy().into_owned());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_user_is_named_as_the_system_names_it() {
+        assert_eq!(user_name(0).as_deref(), Some("root"));
+        assert_eq!(user_name(4_000_000_123), None, "no such user");
+    }
 
     /// Whether the kernel lists SIGHUP among this process's ignored signals: bit 0 of
     /// /proc/self/status's `SigIgn` mask, SIGHUP being signal 1.
