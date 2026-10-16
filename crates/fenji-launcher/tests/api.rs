@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 
 use fenji_launcher::api::{ApiClient, ApiError};
+use fenji_launcher::pin::ServerAddr;
 
 /// Answers every request on a new loopback port with `reply` (a whole HTTP response).
 fn answering(reply: String) -> String {
@@ -37,7 +38,7 @@ async fn a_redirect_is_never_followed() {
     let server = answering(format!(
         "HTTP/1.1 307 Temporary Redirect\r\nlocation: {to}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
     ));
-    let api = ApiClient::new(&server).unwrap();
+    let api = ApiClient::new(&ServerAddr::parse(&server).unwrap()).unwrap();
     let e = api.sign_in("tester", "a long password").await.unwrap_err();
     assert!(matches!(e, ApiError::Server { status: 307, .. }), "{e:?}");
     trap.set_nonblocking(true).unwrap();
@@ -51,7 +52,8 @@ async fn network_errors_say_what_went_wrong() {
         .local_addr()
         .unwrap()
         .port();
-    let api = ApiClient::new(&format!("http://127.0.0.1:{port}")).unwrap();
+    let api =
+        ApiClient::new(&ServerAddr::parse(&format!("http://127.0.0.1:{port}")).unwrap()).unwrap();
     let e = api.server_info().await.unwrap_err().to_string();
     assert!(e.to_ascii_lowercase().contains("connect"), "{e}");
 }
@@ -63,7 +65,7 @@ async fn an_oversized_answer_is_refused() {
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     ));
-    let api = ApiClient::new(&server).unwrap();
+    let api = ApiClient::new(&ServerAddr::parse(&server).unwrap()).unwrap();
     let e = api.server_info().await.unwrap_err().to_string();
     assert!(e.contains("too large"), "{e}");
 }
@@ -75,7 +77,7 @@ async fn a_hostile_error_code_is_not_shown() {
         "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     ));
-    let api = ApiClient::new(&server).unwrap();
+    let api = ApiClient::new(&ServerAddr::parse(&server).unwrap()).unwrap();
     let e = api.sign_in("tester", "a long password").await.unwrap_err();
     assert!(
         matches!(e, ApiError::Server { status: 400, ref code, .. } if code == "unknown"),
@@ -85,7 +87,7 @@ async fn a_hostile_error_code_is_not_shown() {
 
 #[test]
 fn a_bad_address_is_not_echoed() {
-    let e = ApiClient::new("htps://play.example.net/#invite=ABCD-EFGH-JKMN-PQRS")
+    let e = ServerAddr::parse("htps://play.example.net/#invite=ABCD-EFGH-JKMN-PQRS")
         .err()
         .unwrap()
         .to_string();

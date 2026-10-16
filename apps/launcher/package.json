@@ -1,0 +1,27 @@
+{
+  "name": "fenji-launcher",
+  "private": true,
+  "version": "0.5.0",
+  "description": "Fenji's desktop launcher: the view the Tauri shell shows",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "packageManager": "pnpm@12.11.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "tsc --noEmit && node scripts/check-no-html.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.3"
+  },
+  "devDependencies": {
+    "jsdom": "30.1.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.4"
+  }
+}

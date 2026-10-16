@@ -5,8 +5,10 @@ pub enum Error {
     Db(#[from] sqlx::Error),
     #[error("migration: {0}")]
     Migrate(String),
-    #[error("the database file's permissions: {0}")]
-    Permissions(#[from] std::io::Error),
+    /// Creating the database file, or taking group and other access away from it; or creating a
+    /// backup's file, which the message names.
+    #[error("the database file: {0}")]
+    File(#[from] std::io::Error),
     #[error("the invite is unknown, used, revoked or expired")]
     InviteInvalid,
     #[error("that username is taken")]
@@ -15,6 +17,8 @@ pub enum Error {
     NameTaken,
     #[error("the account has as many characters as it may")]
     TooMany,
+    #[error("a place must be finite")]
+    NotFinite,
 }
 
 impl From<sqlx::migrate::MigrateError> for Error {

@@ -1,5 +1,5 @@
 name: Decision gate
-description: Work has stopped at a gate (client patching, the embedded kernel driver, Oodle licensing, …) and needs the owner's decision.
+description: Work has stopped at a gate (the embedded kernel driver, a client reaching a service other than Fenji's, Oodle licensing, …) and needs the owner's decision.
 labels: ["decision-gate", "status:blocked"]
 body:
   - type: textarea

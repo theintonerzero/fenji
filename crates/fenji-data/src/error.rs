@@ -5,7 +5,7 @@ pub enum Error {
     NotPe(&'static str),
     #[error("blob header at {at:#x}: {reason}")]
     BadBlob { at: u64, reason: String },
-    #[error("codec {0} is not available here (codec 4 needs an OodleSpool: M2 plan Task 11)")]
+    #[error("codec {0} isn't one Fenji decodes")]
     CodecUnavailable(u16),
     #[error("Oodle block {0} is spooled: run scripts/spike/run-oodle-helper.sh, then retry")]
     OodlePending(String),
@@ -15,6 +15,8 @@ pub enum Error {
     OodleBadOutput { path: String, problem: String },
     #[error("LZ4 block {index}: {reason}")]
     Lz4 { index: usize, reason: String },
+    #[error("Oodle block {index}: {reason}")]
+    Oodle { index: usize, reason: String },
     #[error("decoded {got} bytes where the header says {want}")]
     SizeMismatch { got: u64, want: u64 },
     #[error("{len} bytes at {va:#x} are not all in one section's file data")]

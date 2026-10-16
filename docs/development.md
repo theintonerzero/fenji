@@ -54,7 +54,7 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 
 ## Commits: Conventional Commits 1.0.0
 
-`<type>(<scope>)<!>: <description>`. The `commit-msg` hook enforces this; CI checks PR titles the same way.
+`<type>(<scope>)<!>: <description>`. The `commit-msg` hook enforces this; CI checks PR titles the same way. A subject is at most 100 characters. A PR title becomes its squash commit's subject with GitHub's ` (#N)` after it, so CI holds it to 100 minus that suffix: 93 characters for a three-digit PR.
 
 - Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
 - Scopes: `proto`, `data`, `lua`, `auth`, `store`, `server`, `launcher`, `tools`, `content`, `deploy`, `docs`, `re`, `deps`, `release`.
@@ -63,7 +63,7 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 
 ## Versioning: SemVer 2.0.0
 
-- One version for the whole monorepo: `[workspace.package] version` in `Cargo.toml`. Every crate inherits it (`version.workspace = true`). The launcher's `tauri.conf.json` and `package.json` are kept equal by the release steps below.
+- One version for the whole monorepo: `[workspace.package] version` in `Cargo.toml`. Every crate inherits it (`version.workspace = true`). The desktop launcher's `apps/launcher/package.json` and `apps/launcher/src-tauri/Cargo.toml` carry it too (its `tauri.conf.json` has none of its own), kept equal by the release steps below and checked in CI by `scripts/check-launcher-version.sh`.
 - Tags: `vX.Y.Z` on `main`. Release candidates: `vX.Y.Z-rc.N` on the release branch.
 - Before 1.0.0, each milestone release bumps the **minor** version: M0 → `0.1.0`, M1 → `0.2.0`, M2 → `0.3.0`, M3 → `0.4.0`, M4 → `0.5.0`. M5 (grind loop, v1) → `1.0.0`.
 - Between milestones: fixes bump **patch**.
@@ -79,28 +79,56 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 ```bash
 git switch dev && git pull
 git switch -c release/vX.Y.Z
-# bump [workspace.package] version in Cargo.toml (+ launcher tauri.conf.json / package.json once they exist)
+# bump the version in Cargo.toml's [workspace.package], apps/launcher/package.json and
+# apps/launcher/src-tauri/Cargo.toml (scripts/check-launcher-version.sh says whether they agree)
 cargo check --workspace          # refreshes Cargo.lock; CI builds with --locked
-# set CLAUDE.md's **Status:** line: this milestone released as vX.Y.Z, and which milestone is next
+(cd apps/launcher/src-tauri && cargo check)   # and the launcher shell's own Cargo.lock
+# set CLAUDE.md's **Status:** line: this milestone released as vX.Y.Z, and which milestone is next;
+# and the public files' status: README.md's status paragraph and milestone table, and the version
+# PRIVACY.md and SECURITY.md name
 git cliff --tag vX.Y.Z -o CHANGELOG.md
 # stage the release files only, so no unrelated local edit rides into the release commit
-git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md   # + the launcher's tauri.conf.json / package.json once they exist
+git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md README.md PRIVACY.md SECURITY.md \
+  apps/launcher/package.json apps/launcher/src-tauri/Cargo.toml apps/launcher/src-tauri/Cargo.lock
 git commit -m "chore(release): vX.Y.Z"
 # PR release/vX.Y.Z → main, merge commit, then:
 git switch main && git pull && git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+# wait for the release workflow, which attaches the server's archives, the launcher's bundles with
+# their updater signatures, latest.json and SHA256SUMS to the tag's draft release; its sign job
+# waits for the owner to approve the release environment's deployment (the run's page, "Review
+# deployments"), and gh run watch waits with it
+until run=$(gh run list --workflow release.yml --branch vX.Y.Z --json databaseId --jq '.[0].databaseId // empty') &&
+  [ -n "$run" ]; do sleep 5; done
+gh run watch "$run" --exit-status
+# check the draft: an archive for each of the server's four targets; the launcher's AppImage,
+# Windows installer (-setup.exe) and Fenji.app.tar.gz, each with its .sig; latest.json, which names
+# all three; and SHA256SUMS, which matches them all
+draft=$(mktemp -d) && gh release download vX.Y.Z --dir "$draft" && ls -l "$draft"
+(cd "$draft" && sha256sum -c SHA256SUMS)   # macOS: shasum -a 256 -c SHA256SUMS
 # merge main back into dev
 git switch dev && git merge --no-ff main && git push
 # release notes: a line naming the pinned build (from docs/re/pinned-build.md), then the changelog section
 notes=$(mktemp)
 { echo "Pinned SoLO client: build <build ID>, bin64/gujianol.exe SHA-256 <exe SHA-256> (docs/re/pinned-build.md)."
   echo
+  echo "The launcher isn't signed by Microsoft or Apple (launcher spec L6). To open it the first time:"
+  echo "on Windows, choose More info, then Run anyway; on macOS, open Fenji once, then choose Open Anyway"
+  echo "in System Settings, Privacy & Security."
+  echo
   git cliff --latest --strip all; } > "$notes"
-gh release create vX.Y.Z --title "vX.Y.Z" --notes-file "$notes"
+# publish the draft, with its notes
+gh release edit vX.Y.Z --draft=false --notes-file "$notes"
 # close the milestone's release issue (PRs into main don't auto-close it) and the milestone
 gh issue close <release issue>
 m=$(gh api 'repos/{owner}/{repo}/milestones' --jq '.[] | select(.title == "<milestone title>") | .number')
 gh api -X PATCH "repos/{owner}/{repo}/milestones/$m" -f state=closed
 ```
+
+The release workflow (`.github/workflows/release.yml`) builds `fenji-server` for four targets, each on a runner of its own system: Linux on x86_64 and arm64 (static, with musl), Windows on x86_64, and macOS on Apple silicon. `scripts/package-server.sh` packs each build with its system's start script (`deploy/start/`), `fenji.example.toml`, `README.txt` (`deploy/archive/`), `LICENSE`, `SOURCE.txt` and `THIRD-PARTY-NOTICES.txt`, and `scripts/test-package-server.sh` checks what it packs. The notices are the licences of every crate the target's build links or runs in its proc-macros, which cargo-about (pinned in `scripts/versions.env`) collects from the locked dependency graph, and, for the static Linux builds, musl's notice (`deploy/archive/musl-COPYRIGHT`). cargo-about's `deploy/archive/about.toml` accepts exactly the licences `deny.toml` allows, and the test fails while the two lists differ. For a crate whose own licence text cargo-about can't find or read, it puts in the licence's standard text, which for MIT and BSD leaves the copyright line a template (`<year> <copyright holders>`), so the script refuses notices that hold one, and names the crates: each needs a checksum-pinned clarification in `about.toml` (#328). CI's `notices` job runs the script on every pull request for each of the workflow's server targets, around a stand-in for the binary, so a dependency change that needs one fails there rather than on a tag. Each build job checks its archive's entries with its own system's tools, and the publish job attaches nothing unless the tag still points at the run's commit. A pull request that changes the workflow, the packaging scripts, what they pack (`deploy/start/`, `deploy/archive/`, the launcher's `tauri.conf.json`) or `scripts/versions.env` runs it as a dry run: it builds every archive and bundle, unsigned, and publishes nothing, and the files stay with the run. So does a run by hand from the Actions tab.
+
+The same workflow builds the desktop launcher's bundles, each on its own runner: the AppImage on Linux (x86_64), the NSIS installer on Windows (x86_64) and the app on macOS (Apple silicon), with `cargo tauri build --bundles <bundle>`. Before each build, `scripts/launcher-notices.sh` writes the bundle's third-party notices (#341). They hold the licences of the shell's crates for the bundle's target, which cargo-about collects from the shell's own lock with `deploy/launcher/about.toml`; it accepts exactly the shell's `deny.toml` licences, has the shell's clarifications, and says where the source of the crates under the MPL-2.0 is. Then come the licence files of the view's production npm packages and the fonts' OFL texts. The script refuses notices with a placeholder where a copyright line belongs (`scripts/check-notices.sh`, as for the server), and `scripts/test-launcher-notices.sh` tests it. Each bundle carries the notices at the root of its resources, as `THIRD-PARTY-NOTICES.txt` (`bundle.resources`, which the build passes with `--config`), and Settings › About opens them. CI's `launcher` job makes the Linux notices on every pull request. On a tag, the tag must match the launcher's version. The builds never see the release key: the `sign` job then signs each bundle for the updater with `cargo tauri signer sign` (launcher spec §3.8, L5), from a fresh tauri-cli with no cache, in the `release` environment (below). The publish job then writes the updater's `latest.json` with `scripts/launcher-latest-json.sh`, whose notes are the tag's changelog section, and attaches it beside the bundles and their `.sig` files. The installed launchers read `latest.json` from the latest release, so the draft must be published, not just made, before players get the update. `scripts/test-launcher-latest-json.sh` checks the script.
+
+**The release key.** Its private half lives only on the owner's game box, in `~/.config/fenji/release-key/` (readable by the owner only), and in the secrets `TAURI_SIGNING_PRIVATE_KEY` (the key file's text) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` of the repository's `release` environment, whose deployment rule admits `v*` tags only: GitHub itself keeps them from any other run, whatever its workflow file says, and only the release workflow's `sign` job names that environment. It never goes into any repository. The environment also has the owner as its required reviewer, with no bypass for administrators: each release's `sign` job waits until the owner approves it, so a pushed tag alone can't sign an update. Its public half is in `apps/launcher/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`, key ID 02D8621117AE26ED). A launcher only installs updates signed with that key, so losing the private half means a new key, a release that carries the new public half, and players updating by hand once.
 
 ## Checks before a PR
 
@@ -110,4 +138,27 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
 scripts/check-forbidden-files.sh
+scripts/check-unsafe-allowed.sh
 ```
+
+The workspace forbids `unsafe_code`. The server and the Oodle helper deny it instead, so that one file each may allow it: `crates/fenji-server/src/unix.rs` and `tools/oodle-helper/src/dll.rs`. `scripts/check-unsafe-allowed.sh` refuses an allow anywhere else (CI's `repo-hygiene` job).
+
+A change under `apps/launcher/` also runs the launcher's checks (CI's `launcher` job), below.
+
+## The desktop launcher
+
+`apps/launcher` is the desktop launcher (spec: `docs/superpowers/specs/2026-10-15-m4-launcher-design.md`). Its model, with all its state and secrets, is the `fenji-launcher` crate in the workspace; `apps/launcher/src-tauri` is a thin Tauri 2 shell, a Cargo workspace of its own outside the repository's; `apps/launcher/src` is the TypeScript view. The model's tests write the view's types (`src/gen/`) and check the golden snapshots (`fixtures/`); see `apps/launcher/fixtures/README.md`.
+
+Building the shell needs Node 24, pnpm 12.11.2 and tauri-cli 2.12.2, and on Linux WebKitGTK's development packages; `scripts/bootstrap.sh` installs them all on Fedora and macOS (CI's `launcher` job lists Ubuntu's packages).
+
+```bash
+cd apps/launcher
+pnpm install --frozen-lockfile
+pnpm run check && pnpm test && pnpm run build && node scripts/check-licences.mjs
+cd src-tauri
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo deny check
+cargo tauri dev                  # the launcher with the view served live by Vite
+cargo tauri build --no-bundle    # a release build, without the installers
+```
+
+The launcher keeps its settings in `~/.config/fenji-launcher/` and its data (the log, fetched tools, the Wine prefix) in `~/.local/share/fenji-launcher/` on Linux. To try it without touching yours, start it with `XDG_CONFIG_HOME` and `XDG_DATA_HOME` pointing at a scratch folder.

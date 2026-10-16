@@ -1,6 +1,6 @@
 [package]
 name = "fenji-archive"
-description = "Reads the SoLO data archives' structure (index chains, records, blob headers, _index and its paths) and dumps the design tables; Oodle data only through the sandboxed helper's spool; writes only under re/"
+description = "Reads the SoLO data archives' structure (index chains, records, blob headers, _index and its paths), extracts files and dumps the design tables, decoding Oodle natively or through the sandboxed helper's spool; counts Oodle chunk headers, and verifies every Oodle block against the client's DLL; writes only under re/"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +15,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 fenji-data.workspace = true
+fenji-oodle = { path = "../../crates/fenji-oodle" }
 sha1.workspace = true
 
 [dev-dependencies]

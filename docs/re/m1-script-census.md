@@ -82,7 +82,7 @@ They hold no `IsServer` checks because the whole file is server-side. The larges
 **Inferred:**
 - **The combat rules are largely in the client's own scripts.** Skills, buffs and effects carry their server-side branches (about 390,000 server-only instructions in those three areas alone). The `server/` directories add the server's combat system itself. This favours the parent spec's hybrid rule (§6.4): the Fenji server could run these scripts in its own Lua VM, with native code supplying the engine functions they call, rather than reimplementing combat from scratch.
 - **The rest holds little or nothing for the server.** The interface, core client modules and locale data are client-side. `move_formular` is large but unguarded, which suggests shared data (movement formulas) that both sides need.
-- **What M5 would need in addition:** the engine API these scripts call on the server (what `IsServer()` code calls), the server's own Lua entry points, and tables from the archives (behind gate #39).
+- **What M5 would need in addition:** the engine API these scripts call on the server (what `IsServer()` code calls), the server's own Lua entry points, and tables from the archives (behind gate #39 then; `fenji-oodle` reads them since #284, [`m1-archives.md`](m1-archives.md) §5).
 
 ## Unknown
 

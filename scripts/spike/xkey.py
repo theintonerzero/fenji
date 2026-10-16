@@ -4,13 +4,24 @@ key presses and typing on the client's own UI (M3 Task 8). Stdlib only (ctypes w
 libXtst). It sends input to that display and nothing else; it never touches the client.
 
     xkey.py --display :99 --key Return       one X keysym (Return, space, Tab, BackSpace, a letter)
+    xkey.py --display :99 --key w --hold 1500
+                                             the same, held down 1,500 ms (1 to 60,000), as a player
+                                             holds a movement key; SIGTERM releases it first
     xkey.py --display :99 --type "Lin Two"   printable ASCII, one key at a time, Shift as needed
+    xkey.py --display :99 --type-file FILE   the same for FILE's first line, so a password typed
+                                             into a form never sits on a command line
 """
 import argparse
 import ctypes
 import ctypes.util
+import signal
 import sys
 import time
+
+# The longest hold, in ms: a run's inputs are seconds apart, and none should keep a key down longer.
+MAX_HOLD_MS = 60_000
+# How long a plain press holds its key, in seconds.
+TAP = 0.03
 
 
 def main():
@@ -19,10 +30,23 @@ def main():
     what = ap.add_mutually_exclusive_group(required=True)
     what.add_argument("--key")
     what.add_argument("--type")
+    what.add_argument("--type-file", metavar="FILE")
+    ap.add_argument("--hold", type=int, metavar="MS")
     a = ap.parse_args()
+    if a.type_file is not None:
+        try:
+            with open(a.type_file, encoding="ascii") as f:
+                a.type = f.readline().rstrip("\r\n")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"xkey: --type-file: {e.__class__.__name__}", file=sys.stderr)
+            return 2
     if a.type is not None and not (a.type and all(" " <= c <= "~" for c in a.type)):
         print("xkey: --type takes printable ASCII only", file=sys.stderr)
         return 2
+    if a.hold is not None and (a.key is None or not 1 <= a.hold <= MAX_HOLD_MS):
+        print(f"xkey: --hold takes 1 to {MAX_HOLD_MS} ms, with --key", file=sys.stderr)
+        return 2
+    held = TAP if a.hold is None else a.hold / 1000
     x11 = ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
     xtst = ctypes.CDLL(ctypes.util.find_library("Xtst") or "libXtst.so.6")
     x11.XOpenDisplay.restype = ctypes.c_void_p
@@ -67,17 +91,22 @@ def main():
                 print(f"xkey: keysym {sym:#x} needs more than Shift on this layout", file=sys.stderr)
                 return 1
             plan.append((code, shifted))
+        # A run that ends during a hold stops it with SIGTERM: the key is released before this ends,
+        # so no key stays down on the display for whatever runs there next.
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
         for code, shifted in plan:
             if shifted:
                 xtst.XTestFakeKeyEvent(dpy, shift, 1, 0)
             xtst.XTestFakeKeyEvent(dpy, code, 1, 0)
             x11.XFlush(dpy)
-            time.sleep(0.03)
-            xtst.XTestFakeKeyEvent(dpy, code, 0, 0)
-            if shifted:
-                xtst.XTestFakeKeyEvent(dpy, shift, 0, 0)
-            x11.XFlush(dpy)
-            time.sleep(0.03)
+            try:
+                time.sleep(held)
+            finally:
+                xtst.XTestFakeKeyEvent(dpy, code, 0, 0)
+                if shifted:
+                    xtst.XTestFakeKeyEvent(dpy, shift, 0, 0)
+                x11.XFlush(dpy)
+            time.sleep(TAP)
     finally:
         x11.XCloseDisplay(dpy)
     return 0

@@ -24,15 +24,131 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # tools/oodle-helper's dll.rs, the workspace's only unsafe code, builds for Windows only.
+      # tools/oodle-helper's dll.rs, unsafe code like fenji-server's unix.rs, builds for Windows only.
       - run: cargo clippy -p fenji-oodle-helper --target x86_64-pc-windows-gnu --locked -- -D warnings
+      # fenji-data without its `oodle` feature, as tools/oodle-helper builds it.
+      - run: cargo clippy -p fenji-data --no-default-features --all-targets --locked -- -D warnings
+      # Its tests without it too: --workspace turns `oodle` on, so codec.rs's no-feature test runs only here.
+      - run: cargo test -p fenji-data --no-default-features --locked
+      - name: The program that loads Epic's Oodle DLL links no GPL code (fenji-oodle)
+        run: |
+          deps=$(cargo tree -p fenji-oodle-helper --target x86_64-pc-windows-gnu -e normal --prefix none --locked)
+          if grep -q '^fenji-oodle v' <<< "$deps"; then
+            echo "fenji-oodle (GPL-3.0-or-later) is in tools/oodle-helper's build" >&2
+            exit 1
+          fi
       - run: cargo test --workspace --locked
+      # The tests write the launcher's golden snapshots' types (ts-rs) and read its snapshots: the
+      # committed files must be what they write (launcher plan LP2, LP13).
+      - name: The launcher's golden snapshots and generated types are current
+        run: |
+          stale=$(git status --porcelain -- apps/launcher/fixtures apps/launcher/src/gen)
+          if [ -n "$stale" ]; then
+            echo "Run fenji-launcher's tests (FENJI_BLESS=1 for the snapshots) and commit:" >&2
+            echo "$stale" >&2
+            git diff -- apps/launcher/fixtures apps/launcher/src/gen >&2
+            exit 1
+          fi
+
+  # The desktop launcher (apps/launcher; launcher spec §3.1): its view, and its Tauri shell, a
+  # workspace of its own whose webview needs WebKitGTK to build.
+  launcher:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Tauri's Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: pnpm, at the version scripts/versions.env pins
+        run: npm install -g pnpm@12.11.2
+      # Before cargo-about's install: the cache brings back ~/.cargo/bin, and cargo install then
+      # finds the pinned version there.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/launcher/src-tauri
+      - name: cargo-about, at the version scripts/versions.env pins
+        run: |
+          source scripts/versions.env
+          # Its program is behind the cli feature: without it, cargo install builds nothing.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
+      - name: The view
+        working-directory: apps/launcher
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run check
+          pnpm test
+          pnpm run build
+          node scripts/check-licences.mjs
+      # The AppImage's third-party notices, which only the release workflow puts in a bundle: a
+      # dependency change that leaves a crate without a licence text of its own shows here (#341).
+      - name: The launcher's third-party notices, for Linux
+        run: scripts/launcher-notices.sh x86_64-unknown-linux-gnu "$RUNNER_TEMP/THIRD-PARTY-NOTICES.txt"
+      # After the view's build: the shell embeds its files (tauri.conf.json's frontendDist).
+      - name: The shell
+        working-directory: apps/launcher/src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+      - name: The shell's licences, advisories and sources
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: apps/launcher/src-tauri/Cargo.toml
+      - name: The launcher's versions are the workspace's
+        run: scripts/check-launcher-version.sh
 
   deny:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+
+  # The release archives' third-party notices, which only the release workflow makes: a dependency
+  # change that leaves a crate without a licence text of its own shows here, not when a tag is
+  # pushed (#328). scripts/package-server.sh packs each of the release workflow's server targets
+  # around a stand-in for the binary, so its cargo about and its placeholder check run without a
+  # build.
+  notices:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install cargo-about, at the version scripts/versions.env pins
+        run: |
+          source scripts/versions.env
+          # Its program is behind the cli feature: without it, cargo install builds nothing.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
+      - name: Each release target's notices
+        run: |
+          # The server's targets: the `- target:` lines of release.yml's build job, not another job's.
+          targets=$(sed -n '/^  build:$/,/^  [a-z]/s/^ *- target: *//p' .github/workflows/release.yml)
+          if [ -z "$targets" ]; then
+            echo "No targets in the matrix of release.yml's build job" >&2
+            exit 1
+          fi
+          : > "$RUNNER_TEMP/stand-in"
+          failed=
+          for target in $targets; do
+            echo "::group::$target"
+            scripts/package-server.sh 0.0.0 "$target" "$RUNNER_TEMP/stand-in" "$RUNNER_TEMP/dist" ||
+              failed="$failed $target"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::No release archive packs for:$failed (each target's group says why)."
+            exit 1
+          fi
 
   repo-hygiene:
     runs-on: ubuntu-24.04
@@ -42,10 +158,20 @@ jobs:
           fetch-depth: 0   # a PR's commits, and dev's, for the session-link check
       - name: No game content or RE artefacts
         run: scripts/check-forbidden-files.sh
+      - name: Unsafe code only in unix.rs and dll.rs
+        run: scripts/check-unsafe-allowed.sh
+      - name: Unsafe-code check tests
+        run: scripts/test-check-unsafe-allowed.sh
       - name: Commit-subject check tests
         run: scripts/test-check-commit-subject.sh
       - name: Session-link check tests
         run: scripts/test-check-no-session-links.sh
+      - name: Release packaging tests
+        run: scripts/test-package-server.sh
+      - name: The launcher's third-party notices tests
+        run: scripts/test-launcher-notices.sh
+      - name: The launcher's latest.json tests
+        run: scripts/test-launcher-latest-json.sh
       - name: No session links in the PR's title, description or new commits
         # In this job, not pr-title, because this one is a required check on dev and main.
         if: github.event_name == 'pull_request'
@@ -62,6 +188,8 @@ jobs:
           locale -a | grep -qi '^tr_TR.utf8$'
       - name: Forbidden-file check tests
         run: scripts/test-check-forbidden-files.sh
+      - name: Launcher version check tests
+        run: scripts/test-check-launcher-version.sh
       - name: Watchdog and runner tests
         run: |
           python3 -I scripts/spike/test-watchdog.py
@@ -71,7 +199,7 @@ jobs:
       - name: ShellCheck
         run: |
           sudo apt-get install -y shellcheck
-          shellcheck scripts/*.sh scripts/spike/*.sh .githooks/*
+          shellcheck scripts/*.sh scripts/spike/*.sh .githooks/* deploy/start/*.sh deploy/start/*.command
       - name: Network isolation self-test
         run: |
           sudo apt-get update
@@ -106,4 +234,5 @@ jobs:
       - name: PR title is a Conventional Commit (it becomes the squash commit)
         env:
           TITLE: ${{ github.event.pull_request.title }}
-        run: scripts/check-commit-subject.sh "$TITLE"
+          PR: ${{ github.event.pull_request.number }}
+        run: scripts/check-commit-subject.sh "$TITLE" "$PR"

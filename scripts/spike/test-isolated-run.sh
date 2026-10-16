@@ -117,7 +117,7 @@ t_usage() {
   # usage() prints a hand-kept range of header lines: it must hold every option's entry and end
   # with the environment note.
   out=$("$run" --bogus -- true 2>&1 >/dev/null) || true
-  for opt in --hosts --bind --ro-bind --x11 --no-root --cpu-topology; do
+  for opt in --hosts --bind --ro-bind --x11 --no-root --cpu-topology --gpu; do
     grep -q "^#   $opt " <<<"$out" || { echo "  the usage text has no entry for $opt" >&2; return 1; }
   done
   [[ $(tail -n 1 <<<"$out") == *"plus BROWSER=/bin/false (and DISPLAY with --x11)." ]] ||
@@ -309,6 +309,133 @@ check "every mount inside is on the allowlist" "$run" --bind "$tmp/bound" -- bas
     esac
   done < /proc/self/mountinfo' _ "$tmp/bound"
 
+# --gpu (#266): the host's render nodes that belong to a device, their devices' sysfs directories
+# read-only with each drm/cardN masked, and their /sys/dev/char links, and nothing more; without
+# it, no GPU and no /sys. The checks that need a render node skip on hosts without one (CI's
+# runners); the refusals run everywhere unshare -rm is allowed.
+gpu_nodes=() gpu_dirs=() gpu_cards=()
+for n in /dev/dri/renderD*; do
+  [ -c "$n" ] || continue
+  st=$(stat -c '%t %T' "$n") || continue
+  d=$(realpath -e "/sys/dev/char/$((16#${st% *})):$((16#${st#* }))/device" 2>/dev/null) || continue
+  gpu_nodes+=("$n")
+  case " ${gpu_dirs[*]} " in *" $d "*) ;; *) gpu_dirs+=("$d"); for c in "$d"/drm/card*; do [ ! -d "$c" ] || gpu_cards+=("$c"); done ;; esac
+done
+gpu_host=${gpu_nodes[0]-}
+t_no_gpu() { "$run" "$@" -- bash -c '[ ! -e /dev/dri ] && [ ! -e /sys ]'; }
+# Inside: /dev/dri holds the nodes alone; /sys holds dev/char and devices; each link leads to a
+# render node's directory in a bound device directory; each card directory is empty.
+t_gpu() {  # [OPTION...]
+  local out want n
+  want=$(for n in "${gpu_nodes[@]}"; do echo "${n##*/}"; done)
+  want+=$'\n''sys: dev devices / char'
+  out=$("$run" "$@" --gpu -- bash -c '
+    ls /dev/dri
+    echo "sys: $(ls /sys | tr "\n" " ")/ $(ls /sys/dev | tr "\n" " " | sed "s/ $//")"
+    for l in /sys/dev/char/*; do
+      t=$(readlink "$l") d=${t%/drm/*}
+      { [ -d "$d" ] && [ -c "/dev/dri/${t##*/}" ]; } || echo "bad link: $l -> $t"
+      for c in "$d"/drm/card*; do [ -z "$(ls -A "$c")" ] || echo "card not masked: $c"; done
+    done' < /dev/null 2>&1) || { echo "  exit: $out" >&2; return 1; }
+  [ "$out" = "$want" ] || { echo "  got: $(tr '\n' '|' <<<"$out"), want: $(tr '\n' '|' <<<"$want")" >&2; return 1; }
+}
+# Every mount in /sys inside is ro by its own mount options (mountinfo field 6): a write would
+# prove nothing, since root owns the attributes; a udev rule can make one group-writable.
+t_gpu_ro() {  # [OPTION...]
+  local out bad
+  out=$("$run" "$@" --gpu -- cut -d' ' -f5,6 /proc/self/mountinfo < /dev/null 2>&1 | LC_ALL=C grep -E '^/sys(/| )') || true
+  bad=$(awk '{ if ((","$2",") !~ /,ro,/) print }' <<<"$out")
+  if [ -z "$out" ] || [ -n "$bad" ]; then echo "  mounts in /sys: $(tr '\n' '|' <<<"$out")" >&2; return 1; fi
+}
+# --gpu adds exactly the nodes, the device directories and the card masks, computed on the host,
+# and removes no mount.
+t_gpu_mounts() {  # [OPTION...]
+  local without with added removed want
+  without=$("$run" "$@" -- cut -d' ' -f5 /proc/self/mountinfo < /dev/null | LC_ALL=C sort) || return 1
+  with=$("$run" "$@" --gpu -- cut -d' ' -f5 /proc/self/mountinfo < /dev/null | LC_ALL=C sort) || return 1
+  added=$(LC_ALL=C comm -13 <(printf '%s\n' "$without") <(printf '%s\n' "$with"))
+  removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$without") <(printf '%s\n' "$with"))
+  want=$(printf '%s\n' "${gpu_nodes[@]}" "${gpu_dirs[@]}" "${gpu_cards[@]}" | LC_ALL=C sort)
+  if [ "$added" != "$want" ] || [ -n "$removed" ]; then
+    echo "  added: $(tr '\n' ' ' <<<"$added")want: $(tr '\n' ' ' <<<"$want")removed: $(tr '\n' ' ' <<<"$removed")" >&2
+    return 1
+  fi
+}
+check "without --gpu there is no /dev/dri and no /sys inside" t_no_gpu
+# shellcheck disable=SC2086 # word splitting intended: $mode is empty or --no-root
+for mode in "" --no-root; do
+  flag="${mode:+$mode }--gpu"
+  if [ -n "$gpu_host" ]; then
+    check "$flag: /dev/dri holds only the render nodes; /sys only their devices' directories (each card masked) and /sys/dev/char links" \
+      t_gpu $mode
+    check "$flag: every mount in /sys has ro among its own mount options" t_gpu_ro $mode
+    check "$flag adds exactly the nodes, the device directories and the card masks, and removes no mount" \
+      t_gpu_mounts $mode
+  else
+    echo "skip - $flag: this host has no GPU render node that belongs to a device"
+  fi
+done
+
+# Nothing can be written but in the tmpfs mounts watchdog.py's S1 scans (/tmp, /dev/shm, /run,
+# /var, HOME) and bound dirs: every other mount is ro or holds no files of its own (proc, devpts,
+# device files), and the root and /dev, whose directories are mount points, refuse a new file.
+t_writable() {  # [OPTION...]
+  local out
+  out=$("$run" "$@" -- bash -c '
+    while read -r _ _ _ _ mp opts _; do
+      case ",$opts," in *,ro,*) continue ;; esac
+      case "$mp" in
+        /tmp|/dev/shm|/run|/var|"$HOME"|/proc|/dev/pts) ;;
+        *) [ -c "$mp" ] || echo "writable mount: $mp" ;;
+      esac
+    done < /proc/self/mountinfo
+    for d in / /dev /etc /dev/dri /sys /sys/dev/char; do
+      [ -d "$d" ] || continue
+      (: > "$d/fenji-probe.sys") 2>/dev/null && echo "a file was made in $d"
+    done
+    true' < /dev/null 2>&1) || { echo "  exit: $out" >&2; return 1; }
+  [ -z "$out" ] || { echo "  $(tr '\n' '|' <<<"$out")" >&2; return 1; }
+}
+for mode in "" --no-root; do
+  check "${mode:+$mode: }nothing can be written outside /tmp, /dev/shm, /run, /var and HOME" t_writable $mode
+  if [ -n "$gpu_host" ]; then
+    check "${mode:+$mode }--gpu: nothing can be written outside /tmp, /dev/shm, /run, /var and HOME" \
+      t_writable $mode --gpu
+  fi
+done
+
+# --gpu is refused (exit 2) when /dev/dri has no render node that belongs to a device, when a
+# render node isn't one, when its link leads elsewhere, or when a mount lies below its device's
+# directory. Each case changes the host's view in a private mount namespace (unshare -rm).
+t_gpu_refused() {  # SETUP WANT
+  unshare -rm bash -c "$1"'
+    err=$("$0" --gpu -- true 2>&1 < /dev/null); rc=$?
+    if ! { [ "$rc" -eq 2 ] && [[ $err == *"$1"* ]]; }; then echo "  exited $rc: $err" >&2; exit 1; fi' \
+    "$run" "$2"
+}
+if [ -z "$gpu_host" ]; then
+  check "--gpu is refused (exit 2) on a host with no GPU render node" \
+    bash -c 'err=$("$1" --gpu -- true 2>&1 < /dev/null); rc=$?; [ "$rc" -eq 2 ] && [[ $err == *"no GPU render node"* ]]' _ "$run"
+fi
+if unshare -rm true 2>/dev/null; then
+  check "--gpu is refused (exit 2) when /dev/dri has no render node" \
+    t_gpu_refused 'mount -t tmpfs fenji-test /dev/dri || exit 1;' "there is no GPU render node in /dev/dri"
+  if [ -n "$gpu_host" ]; then
+    check "--gpu is refused (exit 2) when a render node's name is on another device (/dev/null)" \
+      t_gpu_refused "mount --bind /dev/null $gpu_host || exit 1;" "isn't a DRM render node (major 1"
+    st=$(stat -c '%t %T' "$gpu_host")
+    gpu_link="/sys/dev/char/$((16#${st% *})):$((16#${st#* }))"
+    check "--gpu is refused (exit 2) when a node's /sys/dev/char link leads elsewhere in its device" \
+      t_gpu_refused "mount -t tmpfs fenji-test /sys/dev/char || exit 1; ln -s ${gpu_cards[0]:-${gpu_dirs[0]}/drm/none} $gpu_link || exit 1;" \
+      "not to ${gpu_dirs[0]}/drm/${gpu_host##*/}"
+    check "--gpu is refused (exit 2) when a mount lies below the device's directory" \
+      t_gpu_refused "mount -t tmpfs fenji-test ${gpu_dirs[0]}/power || exit 1;" \
+      "a filesystem (tmpfs) is mounted at ${gpu_dirs[0]}/power"
+  fi
+else
+  echo "skip - unshare -rm not permitted, can't test the --gpu refusals"
+fi
+
 # Host abstract unix sockets are per network namespace: start one on the host and try it.
 abstract="fenji-isolation-test-$$"
 python3 -I -c '
@@ -348,7 +475,8 @@ t_x11_bad() {
   m=$(x11_free) || { echo "  no free display number" >&2; return 1; }
   for spec in "display number|--x11 abc" "display number|--x11 1000" "display number|--x11 042" \
               "display number|--x11 -1" "display number|--x11 --" "display number|--x11 4x2" \
-              "only once|--x11 $m --x11 $m" "no X server socket|--x11 $m"; do
+              "given twice|--x11 $m --x11 $m" "at most twice|--x11 $m --x11 $((m + 1)) --x11 $((m + 2))" \
+              "no X server socket|--x11 $m"; do
     want=${spec%%|*} argv=${spec#*|}
     set +e
     # shellcheck disable=SC2086 # word splitting intended
@@ -361,7 +489,7 @@ t_x11_bad() {
     fi
   done
 }
-check "--x11 is refused for a bad display number, a second --x11 and a missing socket" t_x11_bad
+check "--x11 is refused for a bad display number, one display given twice, a third --x11 and a missing socket" t_x11_bad
 
 # A fake nested X server on the host, on an unused display number: python listening on
 # /tmp/.X11-unix/X<n> and on its abstract twin (as real servers do), accepting and closing, with
@@ -533,7 +661,9 @@ mkdir -p "$tmp/as-run-rw" "$tmp/as-run-ro"
 t_as_run() {
   local out online
   online=$(cat /sys/devices/system/cpu/online) || return 1
-  out=$(DISPLAY=:$xm "$run" --no-root --x11 "$xn" --cpu-topology --hosts "$tmp/hosts" --bind "$tmp/as-run-rw" \
+  local gpu_flag=() gpu_line=()
+  if [ -n "$gpu_host" ]; then gpu_flag=(--gpu) gpu_line=(gpu=render); fi
+  out=$(DISPLAY=:$xm "$run" --no-root --x11 "$xn" --cpu-topology "${gpu_flag[@]}" --hosts "$tmp/hosts" --bind "$tmp/as-run-rw" \
           --ro-bind "$tmp/as-run-ro" -- bash -c '
     [ "$(id -u)" = "$3" ] && echo uid=caller
     [ "$DISPLAY" = ":$1" ] && python3 -I -c "$2" "/tmp/.X11-unix/X$1" && echo x11=connects
@@ -546,10 +676,11 @@ except OSError as e: sys.exit(e.errno != errno.EROFS)
 sys.exit(1)" "$6" && echo ro=readonly
     [ "$(ip -o link show | awk -F": " "{print \$2}")" = lo ] && echo links=lo
     (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null || echo tcp=blocked
-    getent hosts example.com >/dev/null 2>&1 || echo dns=blocked' \
+    getent hosts example.com >/dev/null 2>&1 || echo dns=blocked
+    if [ -e /dev/dri ]; then ls /dev/dri/renderD* >/dev/null 2>&1 && echo gpu=render; fi' \
           _ "$xn" "$x11_probe" "$uid" "$online" "$tmp/as-run-rw" "$tmp/as-run-ro" 2>&1) || true
   [ "$out" = "$(printf '%s\n' uid=caller x11=connects cpu=host hosts=mapped rw=writable ro=readonly links=lo \
-                  tcp=blocked dns=blocked)" ] || { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+                  tcp=blocked dns=blocked "${gpu_line[@]}")" ] || { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
 }
 
 if [ -n "$x11_host" ]; then
@@ -563,7 +694,7 @@ if [ -n "$x11_host" ]; then
     t_x11_session
   check "--no-root --x11 N: COMMAND runs as the caller's uid with DISPLAY=:N, and the nested server's socket takes connections" \
     t_x11_noroot
-  check "the flags as run-client.sh passes them, in one run (--no-root --x11 N --cpu-topology --hosts --bind --ro-bind): each still does its job" \
+  check "the flags as run-client.sh passes them, in one run (--no-root --x11 N --cpu-topology [--gpu] --hosts --bind --ro-bind): each still does its job" \
     t_as_run
 elif [ -n "$fake_x_pid" ]; then
   fail "a fake X server starts in /tmp/.X11-unix (the --x11 checks against it need one): $(head -c 300 "$tmp/fake-x.out")"
@@ -651,6 +782,49 @@ t_x11_refused() {
     server Xwayland -extension MIT-SHM -glamor off || exit 1
     xsock 21; xlock 21 "$pid"
     "$run" --x11 21 -- true || { echo "  control: a nested Xwayland with -glamor off was refused" >&2; exit 1; }' _ "$(dirname "$run")"
+}
+
+# Two displays (M4 world plan, Amendment B, R12: a two-client run gives client 2 its own nested
+# display). Each is checked as one is; the first is DISPLAY, and the second's socket is bound beside
+# it, alone with it in /tmp/.X11-unix. A second display that fails a check refuses the run, and so
+# does DISPLAY naming either.
+t_x11_two() {
+  local out
+  out=$(unshare -rm bash -c "$private_tmp"'
+    server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 5; xlock 5 "$pid"
+    server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 6; xlock 6 "$pid"
+    xsock 7; : > /tmp/.X11-unix/X8
+    "$run" --x11 5 --x11 6 -- bash -c "echo DISPLAY=\$DISPLAY; find /tmp/.X11-unix -mindepth 1 | sort"' \
+    _ "$(dirname "$run")" 2>&1) || true
+  [ "$out" = "$(printf '%s\n' DISPLAY=:5 /tmp/.X11-unix/X5 /tmp/.X11-unix/X6)" ] ||
+    { echo "  got: $(tr '\n' ' ' <<<"$out")" >&2; return 1; }
+}
+
+t_x11_two_refused() {
+  unshare -rm bash -c "$private_tmp"'
+    refused2() {
+      local err rc
+      err=$("$run" --x11 "$1" --x11 "$2" -- true 2>&1 >/dev/null)
+      rc=$?
+      if ! { [ "$rc" -eq 2 ] && [[ $err == *"$3"* ]]; }; then echo "  --x11 $1 --x11 $2 exited $rc: $err" >&2; return 1; fi
+    }
+    server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 5; xlock 5 "$pid"
+    server Xwayland -extension MIT-SHM || exit 1
+    xsock 17; xlock 17 "$pid"
+    server Xwayland -rootless -extension MIT-SHM -shm || exit 1
+    xsock 14; xlock 14 "$pid"
+    refused2 5 17 "glamor" || exit 1
+    refused2 17 5 "glamor" || exit 1
+    refused2 5 14 "-rootless" || exit 1
+    refused2 5 9 "no X server socket" || exit 1
+    server Xwayland -extension MIT-SHM -shm || exit 1
+    xsock 6; xlock 6 "$pid"
+    DISPLAY=:6 refused2 5 6 "is your session" || exit 1
+    "$run" --x11 5 --x11 6 -- true || { echo "  control: two nested displays were refused" >&2; exit 1; }' \
+    _ "$(dirname "$run")"
 }
 
 # Other sockets, and a non-socket, in /tmp/.X11-unix must not come along.
@@ -766,6 +940,8 @@ if unshare -rm true 2>/dev/null; then
   check "--x11 N is refused unless XN is a socket (not a symlink) and /tmp/.XN-lock names a running rootful Xwayland, Xephyr or Xvfb with MIT-SHM and glamor off and no -enable-ei-portal" \
     t_x11_refused
   check "--x11 N: only XN appears inside, whatever else /tmp/.X11-unix holds" t_x11_alone
+  check "--x11 N --x11 M: DISPLAY=:N, and only XN and XM appear inside" t_x11_two
+  check "--x11 N --x11 M is refused when either display fails a check, or DISPLAY names either" t_x11_two_refused
   if [ -n "$rootsock" ]; then
     check "--x11 N is refused when XN is another user's socket" t_x11_foreign
   else

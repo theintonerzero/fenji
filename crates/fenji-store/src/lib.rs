@@ -1,21 +1,25 @@
-//! Fenji's SQLite store (M3 spec D7, §4): accounts, invites, sessions, game tokens and characters,
-//! in one file in WAL mode with foreign keys on. Every write that must be atomic is one
-//! `BEGIN IMMEDIATE` transaction, so two writers queue on the busy timeout instead of failing
-//! halfway. Times are Unix milliseconds; secrets arrive here already hashed.
+//! Fenji's SQLite store (M3 spec D7, §4; M4 hosting spec §3.9, §8): accounts, invites, sessions,
+//! game tokens, characters, ops and bans, and the server's own state, in one file in WAL mode with
+//! foreign keys on. Every write that must be atomic is one `BEGIN IMMEDIATE` transaction, so two
+//! writers queue on the busy timeout instead of failing halfway. Times are Unix milliseconds;
+//! secrets arrive here already hashed.
+use std::io;
 use std::path::Path;
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
+mod access;
 mod accounts;
 mod characters;
 mod error;
 mod invites;
 mod tokens;
 
+pub use access::Ban;
 pub use accounts::{Account, AccountSummary};
-pub use characters::{Character, NewCharacter};
+pub use characters::{CREATE_LEVEL, Character, NewCharacter, Place};
 pub use error::{Error, Result};
 pub use invites::InviteRow;
 
@@ -60,9 +64,83 @@ impl Store {
         Ok(busy == 0)
     }
 
+    /// Writes a consistent copy of the database to `dest`, a new file, with `VACUUM INTO`: it reads
+    /// one snapshot while writers carry on, so it's safe while the server runs. Refuses a `dest`
+    /// that exists, or whose name isn't UTF-8. The copy is owner-only from the start, as the
+    /// database is, and a copy that fails partway is deleted.
+    pub async fn backup_into(&self, dest: &Path) -> Result<()> {
+        let name = dest.to_str().ok_or_else(|| {
+            Error::File(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{}: not UTF-8, which SQLite needs", dest.display()),
+            ))
+        })?;
+        create_new(dest).map_err(|e| {
+            let what = match e.kind() {
+                io::ErrorKind::AlreadyExists => format!(
+                    "{} exists already, and a backup never overwrites a file",
+                    dest.display()
+                ),
+                _ => format!("{}: {e}", dest.display()),
+            };
+            Error::File(io::Error::new(e.kind(), what))
+        })?;
+        if let Err(e) = sqlx::query("VACUUM INTO ?")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+        {
+            // Best effort: SQLite's error is the one to report.
+            let _ = std::fs::remove_file(dest);
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    /// `PRAGMA integrity_check`'s first line: `ok` when SQLite finds the whole file sound,
+    /// otherwise the first problem it found.
+    pub async fn integrity_check(&self) -> Result<String> {
+        Ok(sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
     /// Closes every connection; later calls fail.
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+
+    /// The server's state under `key` (M4 hosting spec §3.9), such as maintenance mode, if it has
+    /// any.
+    pub async fn state(&self, key: &str) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT value FROM server_state WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Keeps `value` under `key`, in place of what was there.
+    pub async fn set_state(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO server_state (key, value) VALUES (?, ?) \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Drops what is under `key`, if anything is.
+    pub async fn clear_state(&self, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM server_state WHERE key = ?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Holds the write lock for `d`, then lets go without writing: for tests of what other writers
@@ -78,6 +156,15 @@ impl Store {
         let _ = held.send(());
         tokio::time::sleep(d).await;
         tx.rollback().await?;
+        Ok(())
+    }
+
+    /// Drops the `bans` table, so that every read of a ban fails as a damaged database's would,
+    /// while the other tables still answer: for tests of what a check for a ban does when the
+    /// store can't say.
+    #[cfg(feature = "test-util")]
+    pub async fn break_bans(&self) -> Result<()> {
+        sqlx::query("DROP TABLE bans").execute(&self.pool).await?;
         Ok(())
     }
 
@@ -119,6 +206,16 @@ fn owner_only(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Creates `path` empty, and owner-only (0600) on Unix, failing if it exists, for `VACUUM INTO` to
+/// fill: SQLite writes into an empty file, though it refuses one with anything in it.
+fn create_new(path: &Path) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+    file.open(path).map(drop)
+}
+
 #[cfg(test)]
 pub(crate) mod test_util {
     pub async fn store() -> (tempfile::TempDir, super::Store) {
@@ -157,6 +254,26 @@ pub(crate) mod test_util {
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_migration_file_is_embedded() {
+        // `sqlx::migrate!` embeds the folder's files when the crate compiles, and only build.rs
+        // tells cargo to compile it again when a file is added (#280). Without it, a local build
+        // after a new migration keeps the old list and opens databases without that migration.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut on_disk: Vec<i64> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter_map(|name| name.strip_suffix(".sql")?.split('_').next()?.parse().ok())
+            .collect();
+        on_disk.sort_unstable();
+        let mut embedded: Vec<i64> = sqlx::migrate!("./migrations")
+            .iter()
+            .map(|m| m.version)
+            .collect();
+        embedded.sort_unstable();
+        assert_eq!(embedded, on_disk);
+    }
+
     #[tokio::test]
     async fn open_uses_wal_and_keeps_data_across_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -178,6 +295,19 @@ mod tests {
         s.close().await;
         let s = Store::open(&path).await.unwrap();
         assert_eq!(s.list_invites().await.unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_missing_directory_is_reported_as_the_files_not_as_its_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = Store::open(&dir.path().join("missing").join("fenji.db"))
+            .await
+            .err()
+            .expect("no such directory")
+            .to_string();
+        assert!(e.starts_with("the database file: "), "{e}");
+        assert!(!e.contains("permissions"), "{e}");
     }
 
     #[tokio::test]
@@ -262,6 +392,79 @@ mod tests {
         assert!(std::fs::metadata(wal(d.path())).unwrap().len() > 0);
         assert!(s.checkpoint().await.unwrap());
         assert_eq!(std::fs::metadata(wal(d.path())).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_backup_taken_while_a_writer_works_is_consistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
+        let writer = {
+            let store = store.clone();
+            tokio::spawn(async move {
+                for n in 0..300u32 {
+                    let mut code = [0u8; 32];
+                    code[..4].copy_from_slice(&n.to_le_bytes());
+                    store.create_invite(&code, None, 1, None).await.unwrap();
+                }
+            })
+        };
+        let dest = dir.path().join("copy.db");
+        store.backup_into(&dest).await.unwrap();
+        writer.await.unwrap();
+        let copy = Store::open(&dest).await.unwrap();
+        assert_eq!(copy.integrity_check().await.unwrap(), "ok");
+        assert!(
+            store.backup_into(&dest).await.is_err(),
+            "an existing file is never overwritten"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_backup_is_owner_only_and_needs_a_utf_8_name() {
+        use std::os::unix::ffi::OsStrExt;
+        let (d, s) = test_util::store().await;
+        let dest = d.path().join("copy.db");
+        s.backup_into(&dest).await.unwrap();
+        assert_eq!(mode(&dest), 0o600, "it holds the password hashes");
+        let odd = d.path().join(std::ffi::OsStr::from_bytes(b"copy-\xff.db"));
+        assert!(s.backup_into(&odd).await.is_err());
+        let names: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .all(|n| n == "copy.db" || n.as_bytes().starts_with(b"fenji.db")),
+            "nothing written under that name or a lossy one: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_state_keeps_one_value_per_key_across_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.db");
+        let s = Store::open(&path).await.unwrap();
+        assert_eq!(s.state("maintenance").await.unwrap(), None);
+        s.set_state("maintenance", "{\"message\":\"a\"}")
+            .await
+            .unwrap();
+        s.set_state("maintenance", "{\"message\":\"b\"}")
+            .await
+            .unwrap();
+        s.set_state("motd", "Welcome").await.unwrap();
+        s.close().await;
+        let s = Store::open(&path).await.unwrap();
+        assert_eq!(
+            s.state("maintenance").await.unwrap().as_deref(),
+            Some("{\"message\":\"b\"}"),
+            "the latest value, kept"
+        );
+        s.clear_state("maintenance").await.unwrap();
+        s.clear_state("maintenance").await.unwrap();
+        assert_eq!(s.state("maintenance").await.unwrap(), None);
+        assert_eq!(s.state("motd").await.unwrap().as_deref(), Some("Welcome"));
     }
 
     #[tokio::test]

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "What the launcher's view may do (launcher spec §3.9, plan LP10): its two commands, the snapshot event, and dragging the window by its header. The shell does the rest when the view asks.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-start-dragging",
+    "view"
+  ]
+}

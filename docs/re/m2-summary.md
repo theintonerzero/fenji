@@ -68,7 +68,7 @@ Also by ledgered rulings:
 |---|---|
 | G1: the hello needs a secret | **Not hit.** The check needs only K, a constant in the client. |
 | G2: the client rejects stored packets | **Not hit.** The owner had pre-decided a dev-only fallback (#72), which was closed unneeded. |
-| G3: P2, the client's Oodle DLL for archives | **Used as approved:** dev analysis only, inside the sandbox, on the owner's machines. Server-side use would be a new gate. |
+| G3: P2, the client's Oodle DLL for archives | **Used as approved:** dev analysis only, inside the sandbox, on the owner's machines. Server-side use would be a new gate. Servers and tools decode with the open `fenji-oodle` instead, which needs no gate (#225, #284). |
 | G4: players on the `gj_uinfo` path (#54) | Stays with M3. |
 | Runner exit 3 | **Never.** The watchdog stayed clean in every run. |
 

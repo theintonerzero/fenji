@@ -1,0 +1,350 @@
+//! The world's thread and its saves in a running server (M4 world spec §3.9), with the test in a
+//! connection task's place on the world's channels.
+mod common;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use common::*;
+use fenji_server::commands::Command;
+use fenji_server::server::{GateLimits, RunningServer};
+use fenji_server::world::{
+    ChatChannel, ChatIn, ChatOut, ConsoleReply, KickReason, Location, Look, Player, Pos, WorldIn,
+    WorldOut,
+};
+use fenji_store::{Character, NewCharacter, Place, Store};
+use tokio::sync::{mpsc, oneshot};
+
+const AT: Location = Location {
+    scene: 5,
+    pos: Pos {
+        x: 1.0,
+        y: 2.0,
+        z: 3.0,
+        yaw: 90.0,
+    },
+};
+
+const SAVED: Place = Place {
+    scene: 5,
+    x: 1.0,
+    y: 2.0,
+    z: 3.0,
+    yaw: 90.0,
+};
+
+/// A character for a new account `name`.
+async fn character(s: &fenji_server::server::RunningServer, name: &str) -> Character {
+    account(s, name).await;
+    let store = s.accounts().store().clone();
+    let a = store.account_by_username(name).await.unwrap().unwrap();
+    let new = NewCharacter {
+        name: format!("{name}c"),
+        vocation: 0,
+        skeleton: 2,
+        appearance: vec![1],
+    };
+    store.create_character(a.id, &new, 9, NOW).await.unwrap()
+}
+
+fn player(conn: u64, c: &Character) -> Player {
+    Player {
+        conn,
+        account: c.account_id,
+        admin: false,
+        pid: c.pid,
+        look: Look {
+            name: c.name.clone(),
+            vocation: c.vocation,
+            skeleton: c.skeleton,
+            level: c.level,
+            appearance: Arc::from(c.appearance.as_slice()),
+        },
+        at: AT,
+    }
+}
+
+async fn next(rx: &mut mpsc::Receiver<WorldOut>) -> WorldOut {
+    tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("within 5 s")
+        .expect("the channel is open")
+}
+
+/// The character's place once the services task has saved it (5 s at most).
+async fn saved(store: &Store, c: &Character) -> Place {
+    for _ in 0..100 {
+        if let Some(p) = store
+            .character(c.account_id, c.pid)
+            .await
+            .unwrap()
+            .unwrap()
+            .place
+        {
+            return p;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no place saved within 5 s");
+}
+
+#[tokio::test]
+async fn a_player_enters_and_its_place_is_saved_when_it_leaves() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), "", GateLimits::default()).await;
+    let c = character(&s, "tester").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    assert!(s.world().send(WorldIn::Join {
+        player: player(1, &c),
+        out: tx
+    }));
+    assert_eq!(
+        next(&mut rx).await,
+        WorldOut::LoadScene { pid: c.pid, at: AT }
+    );
+    s.world().send(WorldIn::Loaded { conn: 1 });
+    assert!(matches!(next(&mut rx).await, WorldOut::SelfEnter { pid, .. } if pid == c.pid));
+    s.world().send(WorldIn::Leave { conn: 1 });
+    assert_eq!(saved(s.accounts().store(), &c).await, SAVED);
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_saves_everyone_still_in_the_world() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), "", GateLimits::default()).await;
+    let a = character(&s, "tester").await;
+    let b = character(&s, "other").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: player(1, &a),
+        out: tx,
+    });
+    let (tx2, mut rx2) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: player(2, &b),
+        out: tx2,
+    });
+    next(&mut rx).await;
+    next(&mut rx2).await;
+    s.shutdown().await.unwrap();
+    assert_eq!(next(&mut rx).await, WorldOut::Kicked(KickReason::Shutdown));
+    let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
+    for c in [&a, &b] {
+        let place = store
+            .character(c.account_id, c.pid)
+            .await
+            .unwrap()
+            .unwrap()
+            .place;
+        assert_eq!(place, Some(SAVED), "saved before the store closed");
+    }
+}
+
+#[tokio::test]
+async fn the_world_ticks_and_reports_its_tick_times() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), "", GateLimits::default()).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let r = s.ticks();
+    assert!(r.ticks >= 5, "{r:?}");
+    assert!(r.p50 <= r.p99 && r.p99 <= r.max, "{r:?}");
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_admins_invite_is_stored_and_its_link_comes_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let extra = "public_api = \"https://play.example.net\"\n";
+    let (s, _clock) = server(dir.path(), extra, GateLimits::default()).await;
+    let c = character(&s, "tester").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: Player {
+            admin: true,
+            ..player(1, &c)
+        },
+        out: tx,
+    });
+    next(&mut rx).await;
+    s.world().send(WorldIn::Loaded { conn: 1 });
+    next(&mut rx).await;
+    s.world().send(WorldIn::Chat {
+        conn: 1,
+        line: ChatIn {
+            channel: ChatChannel::Nearby,
+            text: "!invite for Bob".into(),
+            to: None,
+        },
+    });
+    let WorldOut::Chat(ChatOut::System { text }) = next(&mut rx).await else {
+        panic!("a system line")
+    };
+    assert!(
+        text.starts_with("invite link: https://play.example.net/#invite="),
+        "{text}"
+    );
+    let invites = s.accounts().store().list_invites().await.unwrap();
+    assert!(
+        invites
+            .iter()
+            .any(|i| i.label.as_deref() == Some("for Bob"))
+    );
+    s.shutdown().await.unwrap();
+}
+
+/// Waits (5 s at most) for the server's status to list `want` as the characters in the world.
+async fn names_become(s: &RunningServer, want: &[&str]) {
+    for _ in 0..100 {
+        if *s.status().names() == *want {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the names never became {want:?}: {:?}", s.status().names());
+}
+
+#[tokio::test]
+async fn the_world_tells_the_status_who_is_in_it_and_greets_each_player_with_its_motd() {
+    // M4 hosting spec §3.8 and §8, HA1: the names reach the players list through the server's
+    // status, and the MOTD in effect, the file's or the console's, comes from it.
+    let dir = tempfile::tempdir().unwrap();
+    let extra = "motd = \"Welcome to Fenji\"\n";
+    let (s, _clock) = server(dir.path(), extra, GateLimits::default()).await;
+    let a = character(&s, "tester").await;
+    let b = character(&s, "other").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: player(1, &a),
+        out: tx,
+    });
+    next(&mut rx).await;
+    names_become(&s, &["testerc"]).await;
+    s.world().send(WorldIn::Loaded { conn: 1 });
+    assert!(matches!(next(&mut rx).await, WorldOut::SelfEnter { .. }));
+    let system = |text: &str| WorldOut::Chat(ChatOut::System { text: text.into() });
+    assert_eq!(next(&mut rx).await, system("Welcome to Fenji"));
+    let store = s.accounts().store().clone();
+    s.status()
+        .set_motd(&store, Some("Doors close at 23:00".into()))
+        .await
+        .unwrap();
+    let (tx, mut rx2) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: player(2, &b),
+        out: tx,
+    });
+    next(&mut rx2).await;
+    s.world().send(WorldIn::Loaded { conn: 2 });
+    assert!(matches!(next(&mut rx2).await, WorldOut::SelfEnter { .. }));
+    assert_eq!(next(&mut rx2).await, system("Doors close at 23:00"));
+    names_become(&s, &["otherc", "testerc"]).await;
+    s.world().send(WorldIn::Leave { conn: 1 });
+    names_become(&s, &["otherc"]).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_consoles_commands_run_in_the_world_and_answer_on_their_channel() {
+    // M4 hosting spec §3.3: the shared commands reach the world as `WorldIn::Console`. The
+    // console service makes the console's invites itself (the hosting plan's final review,
+    // Minor 5): one asked of the world is refused, and nothing is made.
+    let dir = tempfile::tempdir().unwrap();
+    let extra = "public_api = \"https://play.example.net\"\n";
+    let (s, _clock) = server(dir.path(), extra, GateLimits::default()).await;
+    let c = character(&s, "tester").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: player(1, &c),
+        out: tx,
+    });
+    next(&mut rx).await;
+    let ask = |order: Command| {
+        let (reply, answer) = oneshot::channel();
+        assert!(s.world().send(WorldIn::Console { order, reply }));
+        async {
+            tokio::time::timeout(Duration::from_secs(5), answer)
+                .await
+                .expect("an answer within 5 s")
+                .expect("the world answers")
+        }
+    };
+    let made = ask(Command::Invite {
+        label: Some("for Lin".into()),
+    })
+    .await;
+    assert_eq!(
+        made,
+        ConsoleReply {
+            ok: false,
+            text: "the console makes its own invites".into()
+        }
+    );
+    // Only the invite the test's account came in by.
+    let invites = s.accounts().store().list_invites().await.unwrap();
+    assert!(
+        invites
+            .iter()
+            .all(|i| i.label.as_deref() != Some("for Lin")),
+        "{invites:?}"
+    );
+    let kicked = ask(Command::Kick {
+        name: "TESTERC".into(),
+    })
+    .await;
+    assert_eq!(
+        kicked,
+        ConsoleReply {
+            ok: true,
+            text: "testerc was kicked".into()
+        }
+    );
+    assert_eq!(next(&mut rx).await, WorldOut::Kicked(KickReason::Kicked));
+    // Nothing to kick: refused, which the console's answer says.
+    let refused = ask(Command::Kick {
+        name: "testerc".into(),
+    })
+    .await;
+    assert_eq!(
+        refused,
+        ConsoleReply {
+            ok: false,
+            text: "no one called testerc is in the game".into()
+        }
+    );
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_invite_the_store_cant_make_gets_the_plain_answer_and_no_detail() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), "", GateLimits::default()).await;
+    let c = character(&s, "tester").await;
+    let (tx, mut rx) = mpsc::channel(64);
+    s.world().send(WorldIn::Join {
+        player: Player {
+            admin: true,
+            ..player(1, &c)
+        },
+        out: tx,
+    });
+    next(&mut rx).await;
+    s.world().send(WorldIn::Loaded { conn: 1 });
+    next(&mut rx).await;
+    s.accounts().store().close().await;
+    s.world().send(WorldIn::Chat {
+        conn: 1,
+        line: ChatIn {
+            channel: ChatChannel::Nearby,
+            text: "!invite for Bob".into(),
+            to: None,
+        },
+    });
+    assert_eq!(
+        next(&mut rx).await,
+        WorldOut::Chat(ChatOut::System {
+            text: "the invite couldn't be made; the server's log says why".into()
+        })
+    );
+    s.shutdown().await.unwrap();
+}

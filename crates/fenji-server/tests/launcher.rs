@@ -1,10 +1,17 @@
 //! The launcher's API client against a running server, then the gate with the ticket it got
-//! (M3 spec §6; M3 plan Task 7).
+//! (M3 spec §6; M3 plan Task 7), and what it reads of the server's facts, maintenance and bans
+//! (M4 hosting spec §3.8, §3.9 and §8).
 mod common;
 
+use std::sync::Arc;
+
 use common::*;
-use fenji_launcher::api::{ApiClient, ApiError};
+use fenji_launcher::api::{ApiClient, ApiError, MaintenanceInfo, Players, ServerInfo, ServerState};
+use fenji_launcher::pin::ServerAddr;
+use fenji_launcher::probe::{Status, probe, probe_within};
 use fenji_server::server::GateLimits;
+use fenji_server::status::Maintenance;
+use serde_json::json;
 
 #[tokio::test]
 async fn the_launcher_registers_signs_in_and_gets_a_ticket_the_gate_takes() {
@@ -16,7 +23,8 @@ async fn the_launcher_registers_signs_in_and_gets_a_ticket_the_gate_takes() {
         .create_invite(&code.hash(), None, NOW, None)
         .await
         .unwrap();
-    let api = ApiClient::new(&format!("http://{}", s.api_addr)).unwrap();
+    let api =
+        ApiClient::new(&ServerAddr::parse(&format!("http://{}", s.api_addr)).unwrap()).unwrap();
     let info = api.server_info().await.unwrap();
     assert_eq!((info.gate_port, info.api_version), (s.login_addr.port(), 1));
     api.register(&code.display(), "tester", "a long password")
@@ -55,5 +63,198 @@ async fn the_launcher_registers_signs_in_and_gets_a_ticket_the_gate_takes() {
         matches!(gone, ApiError::Server { status: 401, ref code, .. } if code == "bad_session"),
         "{gone:?}"
     );
-    s.shutdown().await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_launcher_reads_maintenance_and_the_servers_facts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    let api =
+        ApiClient::new(&ServerAddr::parse(&format!("http://{}", s.api_addr)).unwrap()).unwrap();
+    let until = NOW + 1_800_000;
+    s.status()
+        .set_maintenance(
+            s.accounts().store(),
+            Some(Maintenance {
+                message: "Updating".into(),
+                since_ms: NOW,
+                until_ms: Some(until),
+            }),
+        )
+        .await
+        .unwrap();
+    let e = api.sign_in("tester", "a long password").await.unwrap_err();
+    assert!(
+        matches!(e, ApiError::Maintenance { ref message, until: Some(at) } if message == "Updating" && at == until),
+        "{e:?}"
+    );
+    assert!(
+        e.to_string()
+            .contains("the server is in maintenance: Updating"),
+        "{e}"
+    );
+    assert_eq!(
+        e.to_string(),
+        "the server is in maintenance: Updating (expected back around 2027-01-15 08:30 UTC)"
+    );
+    let info = api.server_info().await.unwrap();
+    assert_eq!(info.state, ServerState::Maintenance);
+    assert_eq!(info.players, Some(Players { online: 0, max: 20 }));
+    assert_eq!(
+        info.maintenance,
+        Some(MaintenanceInfo {
+            message: "Updating".into(),
+            since: NOW,
+            until: Some(until),
+        })
+    );
+    let source = format!(
+        "https://github.com/theintonerzero/fenji/tree/v{}",
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(info.source.as_deref(), Some(source.as_str()));
+    assert_eq!(info.motd, "");
+    // A v0.4 server's answer has only the old fields: it still parses, as a server that's online.
+    let old: ServerInfo = serde_json::from_value(json!({
+        "name": "Fenji",
+        "version": "0.4.1",
+        "pinned_build": "10015727",
+        "gate_host": "127.0.0.1",
+        "gate_port": 7800,
+        "server_id": 1,
+        "api_version": 1,
+    }))
+    .unwrap();
+    assert_eq!(
+        (
+            old.state,
+            old.players,
+            old.maintenance,
+            old.source,
+            old.motd
+        ),
+        (ServerState::Online, None, None, None, String::new())
+    );
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_launcher_names_a_ban_with_its_reason_and_lists_who_is_in_the_world() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    let api =
+        ApiClient::new(&ServerAddr::parse(&format!("http://{}", s.api_addr)).unwrap()).unwrap();
+    let session = api.sign_in("tester", "a long password").await.unwrap();
+    assert!(api.players(&session).await.unwrap().is_empty());
+    s.status()
+        .names_sender()
+        .send_replace(Arc::from(vec!["Lin".to_string(), "Mai".to_string()]));
+    assert_eq!(api.players(&session).await.unwrap(), ["Lin", "Mai"]);
+    let store = s.accounts().store().clone();
+    let id = store
+        .account_by_username("tester")
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    assert!(store.ban(id, "Griefing", NOW).await.unwrap());
+    let e = api.sign_in("tester", "a long password").await.unwrap_err();
+    assert!(
+        matches!(e, ApiError::Banned { ref reason } if reason == "Griefing"),
+        "{e:?}"
+    );
+    assert_eq!(
+        e.to_string(),
+        "this server has banned your account: Griefing"
+    );
+    let e = api.game_token(&session).await.unwrap_err();
+    assert!(matches!(e, ApiError::Banned { .. }), "{e:?}");
+    let e = api.players(&session).await.unwrap_err();
+    assert!(matches!(e, ApiError::Banned { .. }), "{e:?}");
+    s.shutdown().await.unwrap();
+}
+
+/// A server serving the account API over TLS with its own key (hosting spec §3.10).
+async fn started_with_own_key(dir: &std::path::Path) -> fenji_server::server::RunningServer {
+    let extra = "tls = \"self\"\npublic_host = \"127.0.0.1\"\n";
+    server(dir, extra, GateLimits::default()).await.0
+}
+
+#[tokio::test]
+async fn the_launcher_trusts_exactly_the_pinned_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = started_with_own_key(dir.path()).await;
+    let origin = format!("https://127.0.0.1:{}", s.api_addr.port());
+    let right = ServerAddr::parse(&format!("{origin}/#pin={}", s.pin().unwrap())).unwrap();
+    let wrong = ServerAddr::parse(&format!("{origin}/#pin={}", "A".repeat(43))).unwrap();
+    let bare = ServerAddr::parse(&origin).unwrap();
+
+    assert!(ApiClient::new(&right).unwrap().server_info().await.is_ok());
+    assert!(matches!(
+        ApiClient::new(&wrong).unwrap().server_info().await,
+        Err(ApiError::KeyChanged)
+    ));
+    assert!(matches!(
+        ApiClient::new(&bare).unwrap().server_info().await,
+        Err(ApiError::OwnKey)
+    ));
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_probe_reads_a_running_server_and_a_silent_one_goes_offline_in_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    let api =
+        ApiClient::new(&ServerAddr::parse(&format!("http://{}", s.api_addr)).unwrap()).unwrap();
+    let p = probe(&api, "10015727").await;
+    assert_eq!(p.status, Status::Online);
+    assert!(p.ping_ms.is_some() && p.info.is_some());
+    s.shutdown().await.unwrap();
+
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = silent.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((c, _)) = silent.accept().await {
+            held.push(c);
+        }
+    });
+    let api = ApiClient::new(&ServerAddr::parse(&format!("http://{addr}")).unwrap()).unwrap();
+    let started = std::time::Instant::now();
+    let p = probe_within(&api, "10015727", std::time::Duration::from_millis(300)).await;
+    assert_eq!((p.status, p.ping_ms), (Status::Offline, None));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn a_probe_tells_a_changed_key_from_a_missing_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = started_with_own_key(dir.path()).await;
+    let origin = format!("https://127.0.0.1:{}", s.api_addr.port());
+    let wrong = ServerAddr::parse(&format!("{origin}/#pin={}", "A".repeat(43))).unwrap();
+    assert_eq!(
+        probe(&ApiClient::new(&wrong).unwrap(), "10015727")
+            .await
+            .status,
+        Status::KeyChanged
+    );
+    let bare = ServerAddr::parse(&origin).unwrap();
+    assert_eq!(
+        probe(&ApiClient::new(&bare).unwrap(), "10015727")
+            .await
+            .status,
+        Status::OwnKey
+    );
+    let right = ServerAddr::parse(&format!("{origin}/#pin={}", s.pin().unwrap())).unwrap();
+    assert_eq!(
+        probe(&ApiClient::new(&right).unwrap(), "10015727")
+            .await
+            .status,
+        Status::Online
+    );
+    s.shutdown().await.unwrap();
 }

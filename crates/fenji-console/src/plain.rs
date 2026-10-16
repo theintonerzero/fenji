@@ -1,0 +1,620 @@
+//! The console as plain lines (M4 hosting spec §3.1): commands from stdin, a pipe or a terminal
+//! in its usual mode, for systemd, scripts, screen readers and simple terminals.
+use std::collections::HashSet;
+use std::io::{self, Write};
+
+use tokio::io::{AsyncBufRead, AsyncBufReadExt};
+
+use crate::text::{clean, plain};
+use crate::view::{Mode, leaves};
+use crate::wire::{ConsoleMsg, INPUT_MAX, ServerMsg};
+use crate::{Ending, Session};
+
+/// Runs each non-empty line of `input` as a command and writes each answer's lines to `out`, an
+/// answer in parts as its parts come. With `print_logs`, the server's log goes to `err` as
+/// `HH:MM:SS LEVEL message`. Everything printed is cleaned of hidden characters.
+///
+/// At the end of the input it waits for the answers still due, then ends with
+/// [`Ending::InputClosed`]. Attached to a running server ([`Mode::Attached`]), a line `exit` or
+/// `quit` ends the input in the same way, and the console with [`Ending::Detached`]: the word never
+/// reaches the server, which runs on. Once `leave` is done, it ends with [`Ending::Detached`] at
+/// once, the answers due or not: an attached console's signals. A line over [`INPUT_MAX`] bytes,
+/// or with a hidden character, isn't sent, and `err` says why.
+pub async fn run_plain(
+    session: Session,
+    input: impl AsyncBufRead + Unpin,
+    mut out: impl Write,
+    mut err: impl Write,
+    print_logs: bool,
+    mode: Mode,
+    leave: impl Future<Output = ()>,
+) -> io::Result<Ending> {
+    let Session {
+        mut from_server,
+        to_server,
+        ..
+    } = session;
+    let mut leave = std::pin::pin!(leave);
+    let mut lines = Lines::new(input);
+    let mut input_open = true;
+    // A line read and not yet sent: no more is read until it is.
+    let mut queued: Option<String> = None;
+    let mut waiting = HashSet::new();
+    let mut last_id = 0;
+    // Whether the host left an attached console.
+    let mut left = false;
+    loop {
+        if !input_open && queued.is_none() && waiting.is_empty() {
+            return Ok(if left {
+                Ending::Detached
+            } else {
+                Ending::InputClosed
+            });
+        }
+        // No branch goes first, so neither a flood from the server nor a fast pipe of commands
+        // keeps the other waiting.
+        tokio::select! {
+            msg = from_server.recv() => match msg {
+                None => return Ok(Ending::Lost),
+                Some(ServerMsg::Bye { reason }) => return Ok(Ending::ServerStopped(reason)),
+                Some(ServerMsg::Answer { id, lines, more, .. }) => {
+                    for line in &lines {
+                        writeln!(out, "{}", clean(line))?;
+                    }
+                    out.flush()?;
+                    if !more {
+                        waiting.remove(&id);
+                    }
+                }
+                Some(ServerMsg::Log { line }) if print_logs => {
+                    writeln!(err, "{line}")?;
+                    err.flush()?;
+                }
+                Some(ServerMsg::Skipped { lines }) if print_logs => {
+                    writeln!(err, "… {lines} lines skipped")?;
+                    err.flush()?;
+                }
+                Some(_) => {}
+            },
+            permit = to_server.reserve(), if queued.is_some() => {
+                let Ok(permit) = permit else {
+                    return Ok(Ending::Lost);
+                };
+                if let Some(line) = queued.take() {
+                    last_id += 1;
+                    permit.send(ConsoleMsg::Run { id: last_id, line });
+                    waiting.insert(last_id);
+                }
+            }
+            read = lines.next(), if input_open && queued.is_none() => match read? {
+                None => input_open = false,
+                Some(Read::TooLong) => {
+                    writeln!(err, "that line is too long: a command is at most {INPUT_MAX} bytes")?;
+                    err.flush()?;
+                }
+                Some(Read::Line(line)) => match line.trim() {
+                    "" => {}
+                    line if mode == Mode::Attached && leaves(line) => {
+                        input_open = false;
+                        left = true;
+                    }
+                    line if !plain(line) => {
+                        writeln!(err, "commands take plain text only")?;
+                        err.flush()?;
+                    }
+                    line => queued = Some(line.to_owned()),
+                },
+            },
+            () = &mut leave => return Ok(Ending::Detached),
+        }
+    }
+}
+
+/// A line of the input.
+enum Read {
+    Line(String),
+    /// One over [`INPUT_MAX`] bytes, which was let go.
+    TooLong,
+}
+
+/// The input's lines, of which at most [`INPUT_MAX`] bytes are kept, so a long one can't take the
+/// memory. Cancel-safe: a line read in part stays here until its end comes.
+struct Lines<R> {
+    input: R,
+    line: Vec<u8>,
+    too_long: bool,
+}
+
+impl<R: AsyncBufRead + Unpin> Lines<R> {
+    fn new(input: R) -> Self {
+        Lines {
+            input,
+            line: Vec::new(),
+            too_long: false,
+        }
+    }
+
+    /// The next line, without its line ending; `None` at the input's end.
+    async fn next(&mut self) -> io::Result<Option<Read>> {
+        loop {
+            let buf = self.input.fill_buf().await?;
+            if buf.is_empty() {
+                // A last line without its newline counts.
+                let any = !self.line.is_empty() || self.too_long;
+                return Ok(any.then(|| self.take()));
+            }
+            let (part, used) = match buf.iter().position(|&b| b == b'\n') {
+                Some(end) => (&buf[..end], end + 1),
+                None => (buf, buf.len()),
+            };
+            if self.too_long || self.line.len() + part.len() > INPUT_MAX {
+                self.too_long = true;
+                self.line.clear();
+            } else {
+                self.line.extend_from_slice(part);
+            }
+            let ended = used > part.len();
+            self.input.consume(used);
+            if ended {
+                return Ok(Some(self.take()));
+            }
+        }
+    }
+
+    fn take(&mut self) -> Read {
+        let line = std::mem::take(&mut self.line);
+        if std::mem::take(&mut self.too_long) {
+            Read::TooLong
+        } else {
+            Read::Line(String::from_utf8_lossy(&line).into_owned())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::tests::help;
+    use crate::wire::{ConsoleMsg, INPUT_MAX, Level, LogLine, Part, ServerMsg};
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::mpsc;
+
+    /// A writer that keeps what was flushed apart from what was written since.
+    #[derive(Clone, Default)]
+    struct Flushed(Arc<Mutex<(Vec<u8>, Vec<u8>)>>);
+
+    impl Write for Flushed {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().1.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            let mut written = self.0.lock().unwrap();
+            let pending = std::mem::take(&mut written.1);
+            written.0.extend(pending);
+            Ok(())
+        }
+    }
+
+    impl Flushed {
+        /// What was flushed, and what was written after.
+        fn text(&self) -> (String, String) {
+            let written = self.0.lock().unwrap();
+            let text = |bytes: &[u8]| String::from_utf8(bytes.to_vec()).unwrap();
+            (text(&written.0), text(&written.1))
+        }
+    }
+
+    #[tokio::test]
+    async fn attached_exit_and_quit_leave_after_the_answers_due_and_are_never_sent() {
+        // M4 hosting plan, Task 11's carry-forward 1: attached, `exit` or `quit` leaves the console
+        // and the server runs on. What was typed before it is still answered; nothing after it is
+        // read.
+        for leave in ["exit", "QUIT"] {
+            let (to_console, from_server) = mpsc::channel(8);
+            let (to_server, mut console_out) = mpsc::channel(8);
+            let session = Session::for_test(help(), from_server, to_server);
+            let server = tokio::spawn(async move {
+                let ConsoleMsg::Run { id, line } = console_out.recv().await.unwrap();
+                assert_eq!(line, "online");
+                let answer = ServerMsg::Answer {
+                    id,
+                    ok: true,
+                    lines: vec!["nobody is online".into()],
+                    more: false,
+                };
+                to_console.send(answer).await.unwrap();
+                // Held open: the console leaves rather than losing its server.
+                (console_out.recv().await, to_console)
+            });
+            let input = format!("online\n{leave}\nbackup\n");
+            let mut out = Vec::new();
+            let console = run_plain(
+                session,
+                input.as_bytes(),
+                &mut out,
+                std::io::sink(),
+                true,
+                Mode::Attached,
+                std::future::pending(),
+            );
+            // A console that sent `exit` on would wait for its answer: none comes.
+            let ending = tokio::time::timeout(std::time::Duration::from_secs(10), console)
+                .await
+                .unwrap_or_else(|_| panic!("{leave} didn't leave"))
+                .unwrap();
+            assert_eq!(ending, Ending::Detached, "{leave}");
+            assert_eq!(String::from_utf8(out).unwrap(), "nobody is online\n");
+            let (after, _open) = server.await.unwrap();
+            assert_eq!(after, None, "after online, nothing reached the server");
+        }
+        // In-process, `exit` is a command like any other, the server's to answer.
+        let (to_console, from_server) = mpsc::channel(8);
+        let (to_server, mut console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let server = tokio::spawn(async move {
+            let ConsoleMsg::Run { id, line } = console_out.recv().await.unwrap();
+            let answer = ServerMsg::Answer {
+                id,
+                ok: false,
+                lines: vec![format!("no command {line}; type help")],
+                more: false,
+            };
+            to_console.send(answer).await.unwrap();
+        });
+        let mut out = Vec::new();
+        let ending = run_plain(
+            session,
+            &b"exit\n"[..],
+            &mut out,
+            std::io::sink(),
+            false,
+            Mode::InProcess,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert_eq!(ending, Ending::InputClosed);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "no command exit; type help\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn leaving_ends_the_console_at_once_without_its_answers() {
+        // Task 11's review 1, Important 1: an attached console's SIGTERM, SIGHUP, SIGINT or
+        // SIGQUIT leaves it as Ctrl-C leaves the full-screen one, without waiting for the answers
+        // due, the server running on.
+        let (to_console, from_server) = mpsc::channel(8);
+        let (to_server, mut console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let (leave_now, left) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            // The command comes, and its answer never does; then the host leaves.
+            let ConsoleMsg::Run { line, .. } = console_out.recv().await.unwrap();
+            assert_eq!(line, "backup");
+            leave_now.send(()).unwrap();
+            let after = console_out.recv().await;
+            (after, to_console)
+        });
+        // Input that stays open: only leaving ends the console.
+        let (mut typing, input) = tokio::io::duplex(64);
+        typing.write_all(b"backup\n").await.unwrap();
+        let console = run_plain(
+            session,
+            BufReader::new(input),
+            std::io::sink(),
+            std::io::sink(),
+            true,
+            Mode::Attached,
+            async {
+                let _ = left.await;
+            },
+        );
+        let ending = tokio::time::timeout(std::time::Duration::from_secs(10), console)
+            .await
+            .expect("it leaves at once")
+            .unwrap();
+        assert_eq!(ending, Ending::Detached);
+        let (after, _open) = server.await.unwrap();
+        assert_eq!(after, None, "nothing after the host left");
+        drop(typing);
+    }
+
+    #[tokio::test]
+    async fn an_answer_in_parts_is_waited_for_to_its_last() {
+        // Task 11's carry-forward 1: over the socket, an answer too long for one line comes in
+        // parts; the end of the input waits for the last.
+        let (to_console, from_server) = mpsc::channel(8);
+        let (to_server, mut console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let server = tokio::spawn(async move {
+            let ConsoleMsg::Run { id, .. } = console_out.recv().await.unwrap();
+            let part = |line: &str, more| ServerMsg::Answer {
+                id,
+                ok: true,
+                lines: vec![line.into()],
+                more,
+            };
+            to_console.send(part("a", true)).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            to_console.send(part("b", false)).await.unwrap();
+            to_console
+        });
+        let mut out = Vec::new();
+        let ending = run_plain(
+            session,
+            &b"invites\n"[..],
+            &mut out,
+            std::io::sink(),
+            false,
+            Mode::Attached,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ending, Ending::InputClosed);
+        assert_eq!(String::from_utf8(out).unwrap(), "a\nb\n");
+        drop(server.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn refusals_reach_err_at_once() {
+        // Review M5: like everything else plain mode writes, a refusal is flushed.
+        let (_to_console, from_server) = mpsc::channel(8);
+        let (to_server, _console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let err = Flushed::default();
+        let input = format!("{}\nannounce \u{1b}[2J\n", "x".repeat(INPUT_MAX + 1));
+        let ending = run_plain(
+            session,
+            input.as_bytes(),
+            std::io::sink(),
+            err.clone(),
+            true,
+            Mode::InProcess,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ending, Ending::InputClosed);
+        let (flushed, pending) = err.text();
+        assert!(pending.is_empty(), "written, not flushed: {pending:?}");
+        assert!(
+            flushed.contains("too long") && flushed.contains("plain text only"),
+            "{flushed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_flood_from_the_server_doesnt_hold_up_a_typed_command() {
+        // Review M1: with the server's queue never empty, the input still takes its turns.
+        const FLOOD: usize = 10_000;
+        let (to_console, from_server) = mpsc::channel(FLOOD);
+        for n in 0..FLOOD {
+            to_console
+                .try_send(ServerMsg::Log {
+                    line: LogLine {
+                        at_ms: 0,
+                        level: Level::Info,
+                        parts: vec![Part {
+                            text: format!("line {n}"),
+                            name: false,
+                        }],
+                    },
+                })
+                .unwrap();
+        }
+        let (to_server, mut console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let server = tokio::spawn(async move {
+            let ConsoleMsg::Run { id, line } = console_out.recv().await.unwrap();
+            assert_eq!(line, "stop");
+            let unread = to_console.max_capacity() - to_console.capacity();
+            to_console
+                .send(ServerMsg::Answer {
+                    id,
+                    ok: true,
+                    lines: vec![],
+                    more: false,
+                })
+                .await
+                .unwrap();
+            unread
+        });
+        // Typed through tokio's own I/O, which shares the task's budget as stdin does.
+        let (mut typed, input) = tokio::io::duplex(64);
+        typed.write_all(b"stop\n").await.unwrap();
+        drop(typed);
+        let ending = run_plain(
+            session,
+            BufReader::new(input),
+            std::io::sink(),
+            std::io::sink(),
+            true,
+            Mode::InProcess,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        let unread = server.await.unwrap();
+        assert_eq!(ending, Ending::InputClosed);
+        assert!(
+            unread > FLOOD / 2,
+            "`stop` went out only after {} of the {FLOOD} log lines",
+            FLOOD - unread
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_mode_runs_lines_and_prints_answers() {
+        let (to_console, from_server) = mpsc::channel(8);
+        let (to_server, mut console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let answer = tokio::spawn(async move {
+            let ConsoleMsg::Run { id, line } = console_out.recv().await.unwrap();
+            assert_eq!(line, "online");
+            to_console
+                .send(ServerMsg::Answer {
+                    id,
+                    ok: true,
+                    lines: vec!["nobody is online".into()],
+                    more: false,
+                })
+                .await
+                .unwrap();
+        });
+        let mut out = Vec::new();
+        let ending = run_plain(
+            session,
+            &b"online\n"[..],
+            &mut out,
+            std::io::sink(),
+            true,
+            Mode::InProcess,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        answer.await.unwrap();
+        assert_eq!(ending, Ending::InputClosed);
+        assert_eq!(String::from_utf8(out).unwrap(), "nobody is online\n");
+    }
+
+    #[tokio::test]
+    async fn plain_mode_prints_the_log_cleaned_and_ends_with_the_server() {
+        // Review Focus 1: a player's name can't act on the host's terminal.
+        let (to_console, from_server) = mpsc::channel(8);
+        let (to_server, _console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        for msg in [
+            ServerMsg::Log {
+                line: LogLine {
+                    at_ms: 3_723_000,
+                    level: Level::Warn,
+                    parts: vec![
+                        Part {
+                            text: "chat from ".into(),
+                            name: false,
+                        },
+                        Part {
+                            text: "Mai\u{1b}[2J".into(),
+                            name: true,
+                        },
+                    ],
+                },
+            },
+            ServerMsg::Skipped { lines: 37 },
+            ServerMsg::Bye {
+                reason: "the server is stopping".into(),
+            },
+        ] {
+            to_console.send(msg).await.unwrap();
+        }
+        // Input that stays open: the server's goodbye ends the session.
+        let (_open, input) = tokio::io::duplex(64);
+        let mut err = Vec::new();
+        let ending = run_plain(
+            session,
+            BufReader::new(input),
+            std::io::sink(),
+            &mut err,
+            true,
+            Mode::InProcess,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ending,
+            Ending::ServerStopped("the server is stopping".into())
+        );
+        assert_eq!(
+            String::from_utf8(err).unwrap(),
+            "01:02:03 WARN  chat from Mai\\u{1b}[2J\n… 37 lines skipped\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_print_logs_the_log_stays_off_and_a_lost_server_ends_it() {
+        let (to_console, from_server) = mpsc::channel(8);
+        let (to_server, _console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        to_console
+            .send(ServerMsg::Log {
+                line: LogLine {
+                    at_ms: 0,
+                    level: Level::Info,
+                    parts: vec![Part {
+                        text: "listening".into(),
+                        name: false,
+                    }],
+                },
+            })
+            .await
+            .unwrap();
+        drop(to_console);
+        let (_open, input) = tokio::io::duplex(64);
+        let mut err = Vec::new();
+        let ending = run_plain(
+            session,
+            BufReader::new(input),
+            std::io::sink(),
+            &mut err,
+            false,
+            Mode::InProcess,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ending, Ending::Lost);
+        assert!(err.is_empty());
+    }
+
+    #[tokio::test]
+    async fn blank_overlong_and_hidden_lines_are_not_sent() {
+        let (to_console, from_server) = mpsc::channel(8);
+        let (to_server, mut console_out) = mpsc::channel(8);
+        let session = Session::for_test(help(), from_server, to_server);
+        let answer = tokio::spawn(async move {
+            let ConsoleMsg::Run { id, line } = console_out.recv().await.unwrap();
+            assert_eq!(line, "online");
+            to_console
+                .send(ServerMsg::Answer {
+                    id,
+                    ok: false,
+                    lines: vec!["a\u{1b}b".into()],
+                    more: false,
+                })
+                .await
+                .unwrap();
+            assert!(console_out.recv().await.is_none(), "nothing else was sent");
+        });
+        let input = format!(
+            "\n   \r\n{}\nannounce \u{1b}[2J\n  online\r\n",
+            "x".repeat(INPUT_MAX + 1)
+        );
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let ending = run_plain(
+            session,
+            input.as_bytes(),
+            &mut out,
+            &mut err,
+            true,
+            Mode::InProcess,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ending, Ending::InputClosed);
+        answer.await.unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "a\\u{1b}b\n");
+        let err = String::from_utf8(err).unwrap();
+        assert!(err.contains("too long"), "{err}");
+        assert!(err.contains("plain text only"), "{err}");
+    }
+}

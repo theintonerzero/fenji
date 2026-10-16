@@ -1,0 +1,14 @@
+# Runs fenji-backup.service each night at 04:00 in the system's time zone, or up to 30 minutes
+# later, and soon after the next start when the machine was off at that time (docs/hosting.md).
+# It goes in /etc/systemd/system, beside fenji-backup.service.
+[Unit]
+Description=Back up the Fenji server's database each night
+Documentation=https://github.com/theintonerzero/fenji/blob/main/docs/hosting.md
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

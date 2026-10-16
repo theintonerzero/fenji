@@ -8,10 +8,12 @@ use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, bail};
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, ServerInfo, Session};
+use crate::appimage;
 use crate::launch::{LaunchSpec, Platform, base_spec, resolve_ipv4, umu_env};
 use crate::login_path::available;
 use crate::manifest::Manifest;
+use crate::pin::ServerAddr;
 use crate::settings::Os;
 use crate::verify::{Level, verify};
 
@@ -82,7 +84,7 @@ pub fn linux_platform(
 
 /// The first executable file named `name` in the directories of `path`. Empty and relative
 /// entries are skipped: they would name whatever folder the launcher was started from.
-fn on_path(name: &OsStr, path: Option<&OsStr>) -> Option<PathBuf> {
+pub(crate) fn on_path(name: &OsStr, path: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(path?)
         .filter(|d| d.is_absolute())
         .map(|d| d.join(name))
@@ -178,7 +180,8 @@ fn passed_on(name: &OsStr) -> bool {
 }
 
 /// The process for `spec`: its program, arguments and folder, and an environment of `parent`'s
-/// variables less [`SECRET_ENV`] and `gj_*`, then the spec's own.
+/// variables less [`SECRET_ENV`], `gj_*` and an AppImage's ([`appimage::outside`]), then the
+/// spec's own.
 pub fn command(
     spec: &LaunchSpec,
     parent: impl IntoIterator<Item = (OsString, OsString)>,
@@ -186,7 +189,9 @@ pub fn command(
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args)
         .env_clear()
-        .envs(parent.into_iter().filter(|(k, _)| passed_on(k)))
+        .envs(appimage::outside(
+            parent.into_iter().filter(|(k, _)| passed_on(k)),
+        ))
         .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     if !spec.cwd.as_os_str().is_empty() {
         cmd.current_dir(&spec.cwd);
@@ -230,10 +235,29 @@ pub struct Login<'a> {
     pub password: &'a str,
 }
 
-/// The login path's environment for one game token: `gj_uinfo`, `gj_gates` and `gj_ticket`. The
-/// system is checked first ([`check_os`]), the gate before the password is sent (M3 spec §4),
-/// `ready` runs before the token is taken, and the session ends whatever happens; `note` hears
-/// about a failed sign-out.
+/// The login path's environment (`gj_uinfo`, `gj_gates` and `gj_ticket`) for one game token taken
+/// with `session`: the gate from `info` as a dotted IPv4 address, and a token that names another
+/// gate refused.
+pub async fn ticket_env(
+    api: &ApiClient,
+    session: &Session,
+    info: &ServerInfo,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let (host, port) = (info.gate_host.clone(), info.gate_port);
+    // A name's lookup may wait on the network, so not on the caller's thread.
+    let gate = tokio::task::spawn_blocking(move || resolve_ipv4(&host, port)).await??;
+    let grant = api.game_token(session).await?;
+    if (grant.gate_host.as_str(), grant.gate_port) != (info.gate_host.as_str(), info.gate_port) {
+        bail!("the server named one gate in its info and another in the game token");
+    }
+    let paths = available();
+    let path = paths.first().context("this build has no login path")?;
+    Ok(path.env(&grant, gate))
+}
+
+/// The login path's environment for one game token ([`ticket_env`]). The system is checked first
+/// ([`check_os`]), the gate before the password is sent (M3 spec §4), `ready` runs before the
+/// token is taken, and the session ends whatever happens; `note` hears about a failed sign-out.
 pub fn take_ticket(
     os: Os,
     login: &Login,
@@ -241,26 +265,20 @@ pub fn take_ticket(
     note: &mut dyn FnMut(&str),
 ) -> anyhow::Result<Vec<(String, String)>> {
     check_os(os)?;
-    let paths = available();
-    let path = paths.first().context("this build has no login path")?;
-    let api = ApiClient::new(login.server)?;
+    let api = ApiClient::new(&ServerAddr::parse(login.server)?)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let info = rt.block_on(api.server_info())?;
-    let gate = resolve_ipv4(&info.gate_host, info.gate_port)?;
+    resolve_ipv4(&info.gate_host, info.gate_port)?;
     ready()?;
     let session = rt.block_on(api.sign_in(login.username, login.password))?;
-    let grant = rt.block_on(api.game_token(&session));
+    let pairs = rt.block_on(ticket_env(&api, &session, &info));
     // The ticket is all the client needs; the session ends here either way.
     if let Err(e) = rt.block_on(api.sign_out(session)) {
         note(&format!("signing out: {e}"));
     }
-    let grant = grant?;
-    if (grant.gate_host.as_str(), grant.gate_port) != (info.gate_host.as_str(), info.gate_port) {
-        bail!("the server named one gate in its info and another in the game token");
-    }
-    Ok(path.env(&grant, gate))
+    pairs
 }
 
 /// Starts the game as a player's launcher does: checks the system ([`check_os`]), checks `client`
@@ -295,13 +313,7 @@ mod tests {
 
     const REFUSAL: &str = "Fenji can't start the client on this system yet";
 
-    /// Held by every test that starts a process. A child forked while another test still has its
-    /// fresh script open for writing would make that script "Text file busy" (ETXTBSY) to exec.
-    static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn spawning() -> std::sync::MutexGuard<'static, ()> {
-        SPAWN.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    use crate::test_support::spawning;
 
     #[test]
     fn only_linux_may_start_the_client_and_the_refusal_says_nothing_more() {
@@ -572,6 +584,33 @@ mod tests {
             .collect();
         seen.sort();
         assert_eq!(seen, ["PATH=/usr/bin", "gj_ticket=fenji1-new"]);
+    }
+
+    /// #329: umu-run, a Python zipapp, died at once on the AppImage's `PYTHONHOME`.
+    #[cfg(unix)]
+    #[test]
+    fn the_child_gets_nothing_of_the_appimage_the_launcher_runs_in() {
+        let _spawn = spawning();
+        let spec = LaunchSpec {
+            program: "/usr/bin/env".into(),
+            args: vec![],
+            env: vec![],
+            cwd: "/".into(),
+        };
+        let parent = [
+            ("APPDIR", "/tmp/.mount_FenjiAb12"),
+            ("PATH", "/tmp/.mount_FenjiAb12/usr/bin/:/usr/bin"),
+            ("PYTHONHOME", "/tmp/.mount_FenjiAb12/usr/"),
+            ("PYTHONPATH", "/tmp/.mount_FenjiAb12/usr/share/pyshared/:"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let out = command(&spec, parent).output().unwrap();
+        let seen: Vec<String> = String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(seen, ["PATH=/usr/bin"]);
     }
 
     #[cfg(unix)]

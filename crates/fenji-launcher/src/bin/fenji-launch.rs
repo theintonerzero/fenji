@@ -7,8 +7,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use fenji_launcher::api::ApiClient;
+use fenji_launcher::api::{ApiClient, ApiError};
 use fenji_launcher::manifest::{HEADER, Manifest};
+use fenji_launcher::pin::ServerAddr;
 use fenji_launcher::settings::Os;
 use fenji_launcher::start::{self, Login, UmuOptions};
 use fenji_launcher::verify::{Level, verify};
@@ -29,7 +30,8 @@ struct Cli {
 enum Command {
     /// Creates an account with an invite code or link.
     Redeem {
-        /// The server's address; optional when the invite is a link.
+        /// The server's address (https://host[:port], or https://host[:port]/#pin=PIN for a server
+        /// with its own key); optional when the invite is a link.
         #[arg(long)]
         server: Option<String>,
         /// The invite code, or the link that carries it.
@@ -63,6 +65,8 @@ enum Command {
     /// in its environment. With --print, prints the login path's environment as KEY=VALUE lines
     /// instead.
     Play {
+        /// The server's address: https://host[:port], or https://host[:port]/#pin=PIN for a
+        /// server with its own key, as its link gives it.
         #[arg(long)]
         server: String,
         #[arg(long)]
@@ -122,13 +126,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         } => {
             let (from_link, code) = invite_link::parse(&invite)
                 .context("that isn't an invite code or link (XXXX-XXXX-XXXX-XXXX)")?;
-            let server = server
-                .or(from_link)
-                .context("give the server's address with --server")?;
+            let server = match server {
+                Some(given) => ServerAddr::parse(&given)?,
+                None => from_link.context("give the server's address with --server")?,
+            };
             let pw = password(password_file.as_deref())?;
             let api = ApiClient::new(&server)?;
-            runtime()?.block_on(api.register(&code.display(), &username, &pw))?;
-            println!("registered {username} on {server}");
+            runtime()?
+                .block_on(api.register(&code.display(), &username, &pw))
+                .map_err(refused_redeem)?;
+            println!("registered {username} on {}", server.origin);
             Ok(ExitCode::SUCCESS)
         }
         Command::Verify {
@@ -240,8 +247,40 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
 }
 
+/// What `redeem` prints when the server refuses: the error, which carries the host's words for
+/// maintenance and a ban. Maintenance refuses an invite before spending it (M4 hosting spec §3.9),
+/// so the player also hears that it still works.
+fn refused_redeem(e: ApiError) -> anyhow::Error {
+    match e {
+        ApiError::Maintenance { .. } => {
+            anyhow::anyhow!("{e}; the invite wasn't used, so try it again once the server is back")
+        }
+        e => e.into(),
+    }
+}
+
 fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_redeem_held_by_maintenance_says_the_invite_still_works() {
+        let held = ApiError::Maintenance {
+            message: "Updating".into(),
+            until: None,
+        };
+        assert_eq!(
+            refused_redeem(held).to_string(),
+            "the server is in maintenance: Updating; the invite wasn't used, so try it again \
+             once the server is back"
+        );
+        let other = refused_redeem(ApiError::Insecure).to_string();
+        assert_eq!(other, ApiError::Insecure.to_string());
+    }
 }

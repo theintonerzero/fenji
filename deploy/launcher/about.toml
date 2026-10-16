@@ -1,0 +1,405 @@
+# cargo-about's configuration, for the THIRD-PARTY-NOTICES.txt that scripts/launcher-notices.sh
+# writes into each of the launcher's bundles: the licence text of every crate the Tauri shell's build
+# links, or runs in its proc-macros, for the bundle's target. The shell is a workspace of its own
+# (apps/launcher/src-tauri), with its own lock and deny.toml; deploy/archive/about.toml is the
+# server's, under the same rules.
+
+# apps/launcher/src-tauri/deny.toml's [licenses] allow list, in the same order:
+# scripts/test-launcher-notices.sh fails when the two differ, so change both together. Where a crate
+# offers a choice (MIT OR Apache-2.0), the first accepted licence is the one whose text the notices
+# carry. A licence whose standard text writes its copyright line with template fields that
+# scripts/check-notices.sh doesn't look for yet needs them added there.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+]
+
+# Not the crates that only build scripts or tests use. Proc-macros, which the build runs rather than
+# links, are in, with the crates they use: cargo-about doesn't tell them from linked crates.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# The shell and fenji-launcher aren't published, and are under Fenji's licence.
+private = { ignore = true }
+
+# Clarifications, for the crates whose own licence text cargo-about can't find or read on one of the
+# bundles' targets (x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc, aarch64-apple-darwin). Without
+# one, it puts in the licence's standard text, whose MIT and BSD copyright lines are templates
+# ("Copyright (c) <year> <copyright holders>", "<owner>"), and scripts/check-notices.sh then refuses
+# the notices (#328, #341). Each gives the crate's whole licence expression, and the text of the
+# licence the notices carry for it, which `accepted` decides. A clarification is for every version of
+# its crate, and its checksum is of the text it takes. When an update changes that text, cargo-about
+# only warns and goes back to the standard text, so the notices are refused until the checksum is
+# updated; so they are when a `git` file, which cargo-about fetches from GitHub each time, can't be
+# fetched. A target that doesn't link a crate (windows-sys on Linux) gets a warning about that
+# crate's clarification.
+
+# alloc-stdlib packages no licence file: its repository's LICENSE (git: the file at the commit the
+# crate's .cargo_vcs_info.json names), the same BSD text as brotli-decompressor's.
+[alloc-stdlib.clarify]
+license = "BSD-3-Clause"
+
+[[alloc-stdlib.clarify.git]]
+path = "LICENSE"
+license = "BSD-3-Clause"
+checksum = "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae"
+
+# brotli-decompressor is BSD-3-Clause OR MIT, but its package and its repository only ever had the
+# BSD text, and `accepted` would pick MIT: the notices take BSD-3-Clause, whose text it ships.
+[brotli-decompressor.clarify]
+license = "BSD-3-Clause"
+
+[[brotli-decompressor.clarify.files]]
+path = "LICENSE"
+license = "BSD-3-Clause"
+checksum = "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae"
+
+# dlopen2's crates package no licence file: their repository's LICENSE.
+[dlopen2.clarify]
+license = "MIT"
+
+[[dlopen2.clarify.git]]
+path = "LICENSE"
+license = "MIT"
+checksum = "39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2"
+
+[dlopen2_derive.clarify]
+license = "MIT"
+
+[[dlopen2_derive.clarify.git]]
+path = "LICENSE"
+license = "MIT"
+checksum = "39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2"
+
+# dpi (Apache-2.0 AND MIT) ships its MIT text as LICENSE-LIBM-MIT, after a preamble, with the
+# copyrights of the libm code it derives from after it: the whole file, and its Apache LICENSE.
+[dpi.clarify]
+license = "Apache-2.0 AND MIT"
+
+[[dpi.clarify.files]]
+path = "LICENSE"
+license = "Apache-2.0"
+checksum = "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a"
+
+[[dpi.clarify.files]]
+path = "LICENSE-LIBM-MIT"
+license = "MIT"
+checksum = "9eff396a99bafd208e7126602420d6864f6066c08b84485a5b032320a9c01997"
+
+# minisign-verify's LICENSE is its MIT text, then the notice of the rust-crypto code it derives
+# from: the whole file.
+[minisign-verify.clarify]
+license = "MIT"
+
+[[minisign-verify.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+checksum = "42c8695fbc468866d9756be99af0ba4e37d733f8daa3c8827c8d80b8bec1b2f9"
+
+# The objc2 crates (macOS) package no licence file, and their repository had none with a copyright
+# line at the commits they were published from: only LICENSE.md, which says objc2, block2,
+# objc2-foundation and objc2-encode are MIT and the others Zlib OR Apache-2.0 OR MIT. The author
+# added the texts in ee9a7ada ("Include license text in the repository"), so each takes that
+# commit's LICENSE-MIT.txt (override-git-commit).
+[block2.clarify]
+license = "MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[block2.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[dispatch2.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[dispatch2.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[objc2.clarify]
+license = "MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[objc2.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[objc2-app-kit.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[objc2-app-kit.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[objc2-core-foundation.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[objc2-core-foundation.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[objc2-encode.clarify]
+license = "MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[objc2-encode.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[objc2-exception-helper.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[objc2-exception-helper.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[objc2-foundation.clarify]
+license = "MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[objc2-foundation.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[objc2-osa-kit.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[objc2-osa-kit.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[objc2-quartz-core.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[objc2-quartz-core.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+[objc2-web-kit.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+override-git-commit = "ee9a7ada2131f5944b8750428e265c15632f2a19"
+
+[[objc2-web-kit.clarify.git]]
+path = "LICENSE-MIT.txt"
+license = "MIT"
+checksum = "f6a2e783669a0dd7a2c3b8a4f76db40ae49033e66e1bdc30f3aa25fe5577b070"
+
+# Tauri's plugins name theirs LICENSE_MIT, with an underscore, which cargo-about's search for licence
+# files never opens. Two copyright lines: single-instance's names the Tauri Programme.
+[tauri-plugin-dialog.clarify]
+license = "Apache-2.0 OR MIT"
+
+[[tauri-plugin-dialog.clarify.files]]
+path = "LICENSE_MIT"
+license = "MIT"
+checksum = "89ff9689dcf9dd53968785d05a26f7898bb169dbfcada8d032b3e68cf0d55607"
+
+[tauri-plugin-fs.clarify]
+license = "Apache-2.0 OR MIT"
+
+[[tauri-plugin-fs.clarify.files]]
+path = "LICENSE_MIT"
+license = "MIT"
+checksum = "89ff9689dcf9dd53968785d05a26f7898bb169dbfcada8d032b3e68cf0d55607"
+
+[tauri-plugin-opener.clarify]
+license = "Apache-2.0 OR MIT"
+
+[[tauri-plugin-opener.clarify.files]]
+path = "LICENSE_MIT"
+license = "MIT"
+checksum = "89ff9689dcf9dd53968785d05a26f7898bb169dbfcada8d032b3e68cf0d55607"
+
+[tauri-plugin-single-instance.clarify]
+license = "Apache-2.0 OR MIT"
+
+[[tauri-plugin-single-instance.clarify.files]]
+path = "LICENSE_MIT"
+license = "MIT"
+checksum = "b7f455413bfe5f9d7da501a4468d4c5f866a432c325947e98cc9535e8b26cd6d"
+
+[tauri-plugin-updater.clarify]
+license = "Apache-2.0 OR MIT"
+
+[[tauri-plugin-updater.clarify.files]]
+path = "LICENSE_MIT"
+license = "MIT"
+checksum = "89ff9689dcf9dd53968785d05a26f7898bb169dbfcada8d032b3e68cf0d55607"
+
+# webview2-rs's crates (Windows) package no licence file: their repository's LICENSE.
+[webview2-com.clarify]
+license = "MIT"
+
+[[webview2-com.clarify.git]]
+path = "LICENSE"
+license = "MIT"
+checksum = "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+
+[webview2-com-macros.clarify]
+license = "MIT"
+
+[[webview2-com-macros.clarify.git]]
+path = "LICENSE"
+license = "MIT"
+checksum = "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+
+[webview2-com-sys.clarify]
+license = "MIT"
+
+[[webview2-com-sys.clarify.git]]
+path = "LICENSE"
+license = "MIT"
+checksum = "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+
+# windows-rs's crates (Windows) name theirs license-mit, in lower case, which cargo-about's search
+# for licence files never opens. The same text in each.
+[windows.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-collections.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-collections.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-core.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-core.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-future.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-future.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-implement.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-implement.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-interface.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-interface.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-link.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-link.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-numerics.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-numerics.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-registry.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-registry.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-result.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-result.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-strings.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-strings.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-sys.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-sys.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-targets.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-targets.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-threading.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-threading.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-version.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-version.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows_x86_64_msvc.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows_x86_64_msvc.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"

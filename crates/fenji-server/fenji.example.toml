@@ -1,22 +1,36 @@
 # Fenji server configuration (docs/superpowers/specs/2026-10-12-m3-login-lobby-design.md, D16).
-# Changes take effect when the server restarts.
+# Changes take effect when the server restarts. The guide for hosts is docs/hosting.md: letting
+# friends in, a VPS, updating and backups.
 
 [server]
 id = 1                          # sent to the client as gj_uinfo's first field
 name = "Fenji"                  # shown by the client; no colons
-public_host = "127.0.0.1"       # what launchers connect to: an IPv4 address, or a name with one
-login_bind = "127.0.0.1:7800"   # the gate: game connections
-api_bind = "127.0.0.1:7801"     # the account API; put Caddy (TLS) in front of it to face the internet
-# public_api = "https://play.example.net"   # where players reach the account API (invite links
-#                                            # name it); unset, links use api_bind when loopback
+login_bind = "127.0.0.1:7800"   # the gate: game connections (0.0.0.0 listens on every interface)
+api_bind = "127.0.0.1:7801"     # the account API, where launchers sign players in
+# tls = "self"                  # the account API speaks TLS with the server's own key, made in
+#                               # data/tls (keep it with your backups); invite links carry its pin
+# public_host = "203.0.113.5"   # the address players' game clients connect to (the gate); unset,
+#                               # each player's is the one they reached the account API at
+# public_api = "https://play.example.net"   # where players reach the account API, which invite
+#                                            # links name: Caddy (TLS) in front of api_bind, say,
+#                                            # as docs/hosting.md sets it up
 max_players = 20
-trusted_proxies = []            # e.g. ["127.0.0.1"] when Caddy runs on this machine
+trusted_proxies = []            # proxies that add X-Forwarded-For: ["127.0.0.1"] for Caddy here
+#                               # (docs/hosting.md); never a tunnel, or anything else that passes
+#                               # TLS through
+tick_hz = 20                    # the world's ticks per second (1 to 60)
+motd = ""                       # a notice launchers show players: plain text, at most 200 characters
+# host = "Your name"            # who hosts this server, as players' launchers show it ("hosted by");
+#                               # plain text, at most 32 characters
+# source_url = "https://example.net/my-fenji"   # where players get the source of the Fenji you
+#                                               # run (the AGPL's §13): set it if you change Fenji;
+#                                               # unset, Fenji's own at this version's tag
 
 [store]
-path = "fenji.db"               # relative to this file
+path = "fenji.db"               # relative to this file; a first run puts it at data/fenji.db
 
 [data]
-# client_path = "/srv/fenji/solo-client"   # your own copy of the pinned client (not read in M3)
+# client_path = "/srv/fenji/solo-client"   # your own copy of the pinned client (not read yet)
 
 [auth]
 game_token_ttl_secs = 60
@@ -27,4 +41,11 @@ max_characters = 9              # the select screen shows 9 places; more scroll
 
 [access]
 invite_only = true
-admins = []
+admins = []                     # accounts that may use !tp, !kick, !announce and !invite in chat,
+#                               # besides those the console's op makes (docs/hosting.md)
+
+[world]
+start_scene = 5                 # the scene new characters enter
+start_position = [2366.0, -71735.0, 64854.0, 345.0]   # x, y, z (up) and a yaw in degrees
+move_tolerance = 1.5            # how lenient the speed check is (1.0 to 5.0)
+save_every_secs = 300           # how often everyone's place is saved, besides on leaving

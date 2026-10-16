@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Fenji",
+  "identifier": "io.github.theintonerzero.fenji",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Fenji",
+        "width": 1200,
+        "height": 720,
+        "resizable": false,
+        "maximizable": false,
+        "decorations": false,
+        "center": true,
+        "create": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage", "nsis", "app"],
+    "createUpdaterArtifacts": true,
+    "license": "AGPL-3.0-or-later",
+    "shortDescription": "Fenji's launcher",
+    "longDescription": "Play Swords of Legends Online on a private Fenji server that a friend hosts for your group.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDAyRDg2MjExMTdBRTI2RUQKUldUdEpxNFhFV0xZQW8yWHd0VW1kWWE0STdqdVJNOTY2ZGpNaC9sV0d6LzA0L3dqeXVyTUZuQ0UK",
+      "endpoints": [
+        "https://github.com/theintonerzero/fenji/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

@@ -1,8 +1,10 @@
-//! archive: the SoLO data archives' structure (M1 spec §5, docs/re/m1-archives.md). Oodle (codec 4)
-//! is read only through the spool that scripts/spike/run-oodle-helper.sh decodes (M2 plan Task 11):
-//! `paths` decodes `_index` that way, `dump` the design tables' cache (docs/re/m2-tables.md), and
-//! `extract --key` any one file; `extract --part` writes a part's stored files. Writes only under
-//! re/.
+//! archive: the SoLO data archives' structure (M1 spec §5, docs/re/m1-archives.md). `paths` decodes
+//! `_index`, `dump` the design tables' cache (docs/re/m2-tables.md), and `extract --key` any one
+//! file, Oodle (codec 4) included, with fenji-data's own decoder; with `--spool`, Oodle goes through
+//! the spool that scripts/spike/run-oodle-helper.sh decodes with the client's DLL instead (M2 plan
+//! Task 11). `extract --part` writes a part's stored files. `census-oodle` reads only the Oodle
+//! streams' chunk headers, and decodes nothing; `verify-oodle` decodes every Oodle block and checks
+//! it against the DLL's hashes. Writes only under re/.
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -12,13 +14,14 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use fenji_data::archive::{
-    CONTAINER_MAGIC, Record, STATUS_USED, read_blob_header, read_part_header,
+    CONTAINER_MAGIC, OodleSource, Record, STATUS_USED, each_oodle_blob, read_blob_header,
+    read_part_header,
 };
 use fenji_data::oodle_spool::OodleSpool;
 use fenji_data::{Codec, FIXED_LEN, cache, index};
 use sha1::{Digest, Sha1};
 
-/// The SoLO data archives, read without decompression. Writes only under re/.
+/// The SoLO data archives, read and decoded, Oodle included (fenji-oodle). Writes only under re/.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -42,9 +45,9 @@ enum Command {
     /// Write one part's stored (uncompressed) files under OUT/data0NN, named by key; or, with
     /// --key, the one file a live record holds under that key, decoded, as OUT/KEY
     ///
-    /// With --key the file may be Oodle: its blocks go through the spool, and exit 3 means they
-    /// wait for scripts/spike/run-oodle-helper.sh (not a gate event). OUT and the spool must be
-    /// inside re/.
+    /// With --key the file may be Oodle, which is decoded natively. With --spool DIR its blocks go
+    /// through the helper's spool instead, and exit 3 means they wait for
+    /// scripts/spike/run-oodle-helper.sh (not a gate event). OUT, and the spool, must be inside re/.
     Extract {
         #[arg(long, required_unless_present = "key", conflicts_with = "key")]
         part: Option<u32>,
@@ -53,22 +56,24 @@ enum Command {
         /// A file's key: 40 hex digits, as `_index` and `list` print it
         #[arg(long)]
         key: Option<String>,
-        #[arg(long, default_value = "re/oodle-spool")]
-        spool: PathBuf,
+        /// Decode Oodle through this spool and the client's own DLL instead, such as re/oodle-spool
+        #[arg(long)]
+        spool: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
     /// The _index blob header
     Index,
-    /// Decode _index through the Oodle spool and write OUT/paths.tsv
+    /// Decode _index and write OUT/paths.tsv
     ///
     /// Columns: key, path, part (3 digits), offset (hex), size, codec (stored, lz4, oodle, unknown,
     /// or bad-header when the blob header can't be read); `-` in the last four where no live record
-    /// holds the key. OUT and the spool must be inside re/. Exit 3: blocks wait for
-    /// scripts/spike/run-oodle-helper.sh (not a gate event).
+    /// holds the key. OUT, and the spool, must be inside re/. With --spool DIR, exit 3 means blocks
+    /// wait for scripts/spike/run-oodle-helper.sh (not a gate event).
     Paths {
-        #[arg(long, default_value = "re/oodle-spool")]
-        spool: PathBuf,
+        /// Decode Oodle through this spool and the client's own DLL instead, such as re/oodle-spool
+        #[arg(long)]
+        spool: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -77,14 +82,35 @@ enum Command {
     /// TABLE is items, skills, monsters, xp or maps (the sheets items, skill, npcs, upgrade and
     /// maps; docs/re/m2-tables.md §3), or any sheet's name, such as new_npcs. Each line is a JSON
     /// object: "$key", then the row's own fields; an `__index` that names the row itself is left
-    /// out. OUT and the spool must be inside re/. Exit 3: blocks wait for
+    /// out. OUT, and the spool, must be inside re/. With --spool DIR, exit 3 means blocks wait for
     /// scripts/spike/run-oodle-helper.sh (not a gate event).
     Dump {
         #[arg(long)]
         table: String,
-        #[arg(long, default_value = "re/oodle-spool")]
-        spool: PathBuf,
+        /// Decode Oodle through this spool and the client's own DLL instead, such as re/oodle-spool
         #[arg(long)]
+        spool: Option<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Count the Oodle chunk headers of every live Oodle record, decoding nothing. Writes
+    /// OUT/summary.tsv
+    CensusOodle {
+        #[arg(long, default_value = "re/oodle-census")]
+        out: PathBuf,
+    },
+    /// Decode every Oodle block natively, and compare each with the client's own DLL's output
+    ///
+    /// The blocks are _index's, those of every file in the containers, and those of the parts'
+    /// live Oodle records. DLL_HASHES is oodle-helper hash-parts' TSV, which
+    /// scripts/spike/run-oodle-helper.sh --hash-parts writes: one `key, block, raw length, SHA-256`
+    /// line per block. Writes OUT/summary.txt, OUT/mismatches.tsv (each block that doesn't match,
+    /// and why) and OUT/departures.tsv (each block with chunks where fenji-oodle departs from ooz:
+    /// the Oodle decoder plan's Rulings O13 to O15). Exit 0 only when every block matches.
+    VerifyOodle {
+        #[arg(long)]
+        dll_hashes: PathBuf,
+        #[arg(long, default_value = "re/oodle-verify")]
         out: PathBuf,
     },
 }
@@ -129,14 +155,20 @@ fn main() -> Result<ExitCode> {
     match cli.command {
         Command::Info => info(&client),
         Command::List { part } => list(&client, part),
-        Command::Paths { spool, out } => return paths(&client, &spool, &out),
-        Command::Dump { table, spool, out } => return dump(&client, &table, &spool, &out),
+        Command::Paths { spool, out } => return paths(&client, spool.as_deref(), &out),
+        Command::Dump { table, spool, out } => {
+            return dump(&client, &table, spool.as_deref(), &out);
+        }
+        Command::CensusOodle { out } => return census_oodle(&client, &out),
+        Command::VerifyOodle { dll_hashes, out } => {
+            return verify_oodle(&client, &dll_hashes, &out);
+        }
         Command::Extract {
             key: Some(key),
             spool,
             out,
             ..
-        } => return extract_key(&client, &key, &spool, &out),
+        } => return extract_key(&client, &key, spool.as_deref(), &out),
         Command::Extract {
             part: Some(part),
             stored_only,
@@ -145,7 +177,7 @@ fn main() -> Result<ExitCode> {
         } => {
             if !stored_only {
                 bail!(
-                    "with --part, only --stored-only is available: --key reads one file through the spool, Oodle included"
+                    "with --part, only --stored-only is available: --key reads one file, Oodle included"
                 );
             }
             extract_stored(&client, part, &out)
@@ -178,13 +210,35 @@ struct Place {
     codec: &'static str,
 }
 
-/// The output directory and the spool, both inside re/ (the spool holds the client's compressed
-/// blocks).
-fn out_and_spool(out: &Path, spool: &Path) -> Result<(PathBuf, OodleSpool)> {
+/// The output directory, and the spool if one is given, both inside re/ (the spool holds the
+/// client's compressed blocks).
+fn out_and_spool(out: &Path, spool: Option<&Path>) -> Result<(PathBuf, Option<OodleSpool>)> {
     let repo = fenji_data::re_dir::find_repo_root(&std::env::current_dir()?)?;
     let out = fenji_data::re_dir::resolve_out_dir(&repo, out)?;
-    let spool = OodleSpool::new(&fenji_data::re_dir::resolve_out_dir(&repo, spool)?)?;
+    let spool = match spool {
+        Some(dir) => Some(OodleSpool::new(&fenji_data::re_dir::resolve_out_dir(
+            &repo, dir,
+        )?)?),
+        None => None,
+    };
     Ok((out, spool))
+}
+
+/// A blob decoded natively, or through the spool if one is given. Through the spool, the result
+/// may instead be the exit status (3) to stop with while its blocks wait for the helper.
+fn decode(
+    bytes: &[u8],
+    at: u64,
+    spool: Option<&OodleSpool>,
+) -> Result<std::result::Result<Vec<u8>, ExitCode>> {
+    match spool {
+        Some(spool) => decode_spooled(bytes, at, spool),
+        None => Ok(Ok(fenji_data::decode_blob(
+            bytes,
+            at,
+            &fenji_data::BuiltinCodecs,
+        )?)),
+    }
 }
 
 /// A blob decoded through the spool, or the exit status (3) to stop with while its blocks wait for
@@ -211,14 +265,14 @@ fn decode_spooled(
     }
 }
 
-/// `_index` decoded through the spool, or the exit status to stop with.
+/// `_index` decoded natively or through the spool, or the exit status to stop with.
 fn decoded_index(
     client: &Path,
-    spool: &OodleSpool,
+    spool: Option<&OodleSpool>,
 ) -> Result<std::result::Result<index::PathMap, ExitCode>> {
     let index_path = client.join("data").join("_index");
     let bytes = std::fs::read(&index_path).with_context(|| index_path.display().to_string())?;
-    Ok(decode_spooled(&bytes, 0, spool)?.map(|raw| index::build(&raw)))
+    Ok(decode(&bytes, 0, spool)?.map(|raw| index::build(&raw)))
 }
 
 /// Every live record's place by key (the first part's wins), with counts for `paths`' summary.
@@ -303,9 +357,9 @@ fn parse_key(key: &str) -> Result<[u8; 20]> {
     Ok(k)
 }
 
-/// Writes the file a live record holds under `key` as OUT/KEY, decoded through the spool, and says
-/// whether its SHA-1 is the key. Exits 3 when blocks wait for the helper.
-fn extract_key(client: &Path, key: &str, spool: &Path, out: &Path) -> Result<ExitCode> {
+/// Writes the file a live record holds under `key` as OUT/KEY, decoded, and says whether its SHA-1
+/// is the key. Through a spool, exits 3 when blocks wait for the helper.
+fn extract_key(client: &Path, key: &str, spool: Option<&Path>, out: &Path) -> Result<ExitCode> {
     let k = parse_key(key)?;
     let (out, spool) = out_and_spool(out, spool)?;
     let places = live_places(client)?;
@@ -314,7 +368,7 @@ fn extract_key(client: &Path, key: &str, spool: &Path, out: &Path) -> Result<Exi
         .get(&k)
         .with_context(|| format!("no live record holds {}", hex(&k)))?;
     let blob = read_record(client, p)?;
-    let raw = match decode_spooled(&blob, u64::from(p.offset), &spool)? {
+    let raw = match decode(&blob, u64::from(p.offset), spool.as_ref())? {
         Ok(raw) => raw,
         Err(code) => return Ok(code),
     };
@@ -337,11 +391,11 @@ fn extract_key(client: &Path, key: &str, spool: &Path, out: &Path) -> Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
-/// Decodes `_index` through the spool, then writes OUT/paths.tsv. Exits 3 when blocks wait for the
+/// Decodes `_index`, then writes OUT/paths.tsv. Through a spool, exits 3 when blocks wait for the
 /// helper.
-fn paths(client: &Path, spool: &Path, out: &Path) -> Result<ExitCode> {
+fn paths(client: &Path, spool: Option<&Path>, out: &Path) -> Result<ExitCode> {
     let (out, spool) = out_and_spool(out, spool)?;
-    let map = match decoded_index(client, &spool)? {
+    let map = match decoded_index(client, spool.as_ref())? {
         Ok(map) => map,
         Err(code) => return Ok(code),
     };
@@ -398,8 +452,9 @@ fn sheet_name(table: &str) -> &str {
     }
 }
 
-/// Writes one sheet of the table cache as OUT/TABLE.jsonl. Exits 3 when blocks wait for the helper.
-fn dump(client: &Path, table: &str, spool: &Path, out: &Path) -> Result<ExitCode> {
+/// Writes one sheet of the table cache as OUT/TABLE.jsonl. Through a spool, exits 3 when blocks
+/// wait for the helper.
+fn dump(client: &Path, table: &str, spool: Option<&Path>, out: &Path) -> Result<ExitCode> {
     // The name becomes a file name.
     if table.is_empty()
         || !table
@@ -409,7 +464,7 @@ fn dump(client: &Path, table: &str, spool: &Path, out: &Path) -> Result<ExitCode
         bail!("a table name is letters, digits and '_': {table:?}");
     }
     let (out, spool) = out_and_spool(out, spool)?;
-    let map = match decoded_index(client, &spool)? {
+    let map = match decoded_index(client, spool.as_ref())? {
         Ok(map) => map,
         Err(code) => return Ok(code),
     };
@@ -423,16 +478,16 @@ fn dump(client: &Path, table: &str, spool: &Path, out: &Path) -> Result<ExitCode
         .get(key)
         .with_context(|| format!("no live record holds {TABLE_CACHE}"))?;
     let blob = read_record(client, p).with_context(|| TABLE_CACHE.to_string())?;
-    let raw = match decode_spooled(&blob, u64::from(p.offset), &spool)? {
+    let raw = match decode(&blob, u64::from(p.offset), spool.as_ref())? {
         Ok(raw) => raw,
         Err(code) => return Ok(code),
     };
     // A file's key is the SHA-1 of its decoded content (m2-tables.md 1.6), so a mismatch means a
-    // damaged archive or a bad spool output, not the client's tables.
+    // damaged archive or a bad decode, not the client's tables.
     let sha1: [u8; 20] = Sha1::digest(&raw).into();
     if sha1 != *key {
         bail!(
-            "{TABLE_CACHE} decoded to {} bytes whose SHA-1 isn't its key {}: a damaged archive or a bad spool output",
+            "{TABLE_CACHE} decoded to {} bytes whose SHA-1 isn't its key {}: a damaged archive or a bad decode",
             raw.len(),
             hex(key)
         );
@@ -456,6 +511,235 @@ fn dump(client: &Path, table: &str, spool: &Path, out: &Path) -> Result<ExitCode
         file.display()
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// Walks the chunk headers of every live Oodle record's blocks, decoding nothing, and writes
+/// OUT/summary.tsv: the chunks by decoder, mode and checksums; then the files and blocks walked,
+/// the blocks whose `u32` raw length disagrees with the blob header, and the walk's errors by kind.
+fn census_oodle(client: &Path, out: &Path) -> Result<ExitCode> {
+    let repo = fenji_data::re_dir::find_repo_root(&std::env::current_dir()?)?;
+    let out = fenji_data::re_dir::resolve_out_dir(&repo, out)?;
+    let places = live_places(client)?;
+    let (mut files, mut blocks_seen, mut bad_prefix) = (0u64, 0u64, 0u64);
+    let mut chunks: BTreeMap<(u8, &'static str, bool), u64> = BTreeMap::new();
+    let mut errors: BTreeMap<String, u64> = BTreeMap::new();
+    for p in places.by_key.values().filter(|p| p.codec == "oodle") {
+        let blob = read_record(client, p)?;
+        let (_, blocks) = fenji_data::blocks(&blob, u64::from(p.offset))?;
+        files += 1;
+        for b in blocks {
+            blocks_seen += 1;
+            let Ok(stream) = fenji_data::oodle_payload(b.input, b.raw_len, b.index) else {
+                bad_prefix += 1;
+                continue;
+            };
+            for c in fenji_oodle::chunks(stream, b.raw_len) {
+                match c {
+                    Ok(c) => {
+                        let mode = match c.mode {
+                            fenji_oodle::ChunkMode::Uncompressed => "uncompressed",
+                            fenji_oodle::ChunkMode::Memset => "memset",
+                            fenji_oodle::ChunkMode::Stored => "stored",
+                            fenji_oodle::ChunkMode::Compressed => "compressed",
+                        };
+                        *chunks.entry((c.decoder, mode, c.checksums)).or_default() += 1;
+                    }
+                    Err(e) => {
+                        let kind = format!("{e:?}");
+                        let kind = kind.split([' ', '{']).next().unwrap_or("?").to_string();
+                        *errors.entry(kind).or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+    let mut tsv = String::from("decoder\tmode\tchecksums\tchunks\n");
+    for ((d, m, c), n) in &chunks {
+        tsv.push_str(&format!("{d}\t{m}\t{c}\t{n}\n"));
+    }
+    tsv.push_str(&format!(
+        "# files\t{files}\n# blocks\t{blocks_seen}\n# bad_prefix\t{bad_prefix}\n"
+    ));
+    for (e, n) in &errors {
+        tsv.push_str(&format!("# walk_error\t{e}\t{n}\n"));
+    }
+    create_replacing(&out.join("summary.tsv"))?.write_all(tsv.as_bytes())?;
+    print!("{tsv}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What `verify-oodle` found.
+struct Verified {
+    same: u64,
+    differ: u64,
+    native_failed: u64,
+    dll_failed: u64,
+    missing: u64,
+    raw_bytes: u64,
+    /// Files and blocks walked, by where they lie.
+    walked: BTreeMap<OodleSource, (u64, u64)>,
+    /// Chunks, and blocks with any, where fenji-oodle departs from ooz: matches 1 to 7 back, in
+    /// either offset coding, and stored blocks in entropy-only chunks.
+    near: (u64, u64),
+    stored: (u64, u64),
+    /// Blocks with either, and how many of them match the DLL.
+    departing: (u64, u64),
+    mismatches: String,
+    departures: String,
+}
+
+/// Decodes every Oodle block of the client copy natively (`_index`'s, the containers' files' and
+/// the parts' live records'), and compares each with the SHA-256 of what the client's own DLL made
+/// of it, from `oodle-helper hash-parts`. Writes OUT/summary.txt, OUT/mismatches.tsv and
+/// OUT/departures.tsv, and exits 0 only if every block matches.
+fn verify_oodle(client: &Path, dll_hashes: &Path, out: &Path) -> Result<ExitCode> {
+    let repo = fenji_data::re_dir::find_repo_root(&std::env::current_dir()?)?;
+    let out = fenji_data::re_dir::resolve_out_dir(&repo, out)?;
+    let dll =
+        std::fs::read_to_string(dll_hashes).with_context(|| dll_hashes.display().to_string())?;
+    // (key, block) → (raw length, SHA-256 or FAILED)
+    let mut want: HashMap<(String, usize), (usize, String)> = HashMap::new();
+    for (n, line) in dll.lines().enumerate() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if let [key, index, raw, sha] = f[..] {
+            let number = |s: &str| {
+                s.parse::<usize>()
+                    .with_context(|| format!("{}, line {}: {line:?}", dll_hashes.display(), n + 1))
+            };
+            want.insert(
+                (key.to_string(), number(index)?),
+                (number(raw)?, sha.to_string()),
+            );
+        }
+    }
+    let mut v = Verified {
+        same: 0,
+        differ: 0,
+        native_failed: 0,
+        dll_failed: 0,
+        missing: 0,
+        raw_bytes: 0,
+        walked: BTreeMap::new(),
+        near: (0, 0),
+        stored: (0, 0),
+        departing: (0, 0),
+        mismatches: String::from("key\tblock\tproblem\n"),
+        departures: String::from("key\tblock\tnear_match_chunks\tstored_entropy_chunks\tdll\n"),
+    };
+    let started = std::time::Instant::now();
+    each_oodle_blob(&client.join("data"), |source, name, blob| -> Result<()> {
+        let (_, blocks) = fenji_data::blocks(blob, 0).with_context(|| name.to_string())?;
+        let walked = v.walked.entry(source).or_default();
+        walked.0 += 1;
+        walked.1 += blocks.len() as u64;
+        for b in blocks {
+            let native = fenji_data::decode_oodle_block(b.input, b.raw_len, b.index);
+            let problem = match (&native, want.remove(&(name.to_string(), b.index))) {
+                (_, None) => {
+                    v.missing += 1;
+                    Some("no DLL hash".to_string())
+                }
+                (Err(e), Some((_, sha))) if sha == "FAILED" => {
+                    v.dll_failed += 1;
+                    Some(format!("the DLL failed, and natively: {e}"))
+                }
+                (Ok(_), Some((_, sha))) if sha == "FAILED" => {
+                    v.dll_failed += 1;
+                    Some("the DLL failed".to_string())
+                }
+                (Err(e), Some(_)) => {
+                    v.native_failed += 1;
+                    Some(format!("native: {e}"))
+                }
+                (Ok((raw, _)), Some((dll_len, sha))) => {
+                    v.raw_bytes += raw.len() as u64;
+                    if dll_len != raw.len() {
+                        v.differ += 1;
+                        Some(format!("the DLL's raw length is {dll_len}"))
+                    } else if fenji_data::sha256_hex(raw) != sha {
+                        v.differ += 1;
+                        Some("bytes differ".to_string())
+                    } else {
+                        v.same += 1;
+                        None
+                    }
+                }
+            };
+            if let Some(p) = &problem {
+                v.mismatches
+                    .push_str(&format!("{name}\t{}\t{p}\n", b.index));
+            }
+            if let Ok((_, d)) = &native
+                && *d != fenji_oodle::Departures::default()
+            {
+                let (near, stored) = (d.near_match_chunks as u64, d.stored_entropy_chunks as u64);
+                v.near.0 += near;
+                v.near.1 += u64::from(near > 0);
+                v.stored.0 += stored;
+                v.stored.1 += u64::from(stored > 0);
+                v.departing.0 += 1;
+                v.departing.1 += u64::from(problem.is_none());
+                v.departures.push_str(&format!(
+                    "{name}\t{}\t{near}\t{stored}\t{}\n",
+                    b.index,
+                    problem.as_deref().unwrap_or("same")
+                ));
+            }
+        }
+        Ok(())
+    })?;
+    let secs = started.elapsed().as_secs_f64();
+    let mut unmatched: Vec<(String, usize)> = want.into_keys().collect();
+    unmatched.sort();
+    for (key, index) in &unmatched {
+        v.mismatches
+            .push_str(&format!("{key}\t{index}\tno such block here\n"));
+    }
+    let walked = |s| v.walked.get(&s).copied().unwrap_or_default();
+    let (index, inner, parts) = (
+        walked(OodleSource::Index),
+        walked(OodleSource::Container),
+        walked(OodleSource::Part),
+    );
+    let mb = v.raw_bytes as f64 / 1e6;
+    let summary = format!(
+        "{} blocks match, {} differ, {} failed natively, {} failed in the DLL, {} have no DLL hash, \
+         and {} DLL hashes match no block; {mb:.1} MB decoded in {secs:.1} s ({:.0} MB/s)\n\
+         walked {} files and {} blocks in _index, {} files and {} blocks in the containers, \
+         {} files and {} blocks in the parts\n\
+         where fenji-oodle departs from ooz (the Oodle decoder plan's Rulings O13 to O15): {} \
+         chunks in {} blocks match 1 to 7 bytes back, and {} chunks in {} blocks are one \
+         stored block in an entropy-only chunk; {} of those {} blocks match the DLL\n",
+        v.same,
+        v.differ,
+        v.native_failed,
+        v.dll_failed,
+        v.missing,
+        unmatched.len(),
+        mb / secs.max(0.001),
+        index.0,
+        index.1,
+        inner.0,
+        inner.1,
+        parts.0,
+        parts.1,
+        v.near.0,
+        v.near.1,
+        v.stored.0,
+        v.stored.1,
+        v.departing.1,
+        v.departing.0,
+    );
+    create_replacing(&out.join("mismatches.tsv"))?.write_all(v.mismatches.as_bytes())?;
+    create_replacing(&out.join("departures.tsv"))?.write_all(v.departures.as_bytes())?;
+    create_replacing(&out.join("summary.txt"))?.write_all(summary.as_bytes())?;
+    print!("{summary}");
+    let failed = v.differ + v.native_failed + v.dll_failed + v.missing + unmatched.len() as u64;
+    Ok(if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 fn info(client: &Path) -> Result<()> {

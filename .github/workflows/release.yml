@@ -1,0 +1,380 @@
+name: Release
+
+# fenji-server's release archives (M4 hosting spec §3.7, H3): one for each target, from its own
+# runner, packed by scripts/package-server.sh. And the desktop launcher's bundles (launcher spec
+# §3.8): the AppImage, the Windows installer and the macOS app, each from its own runner, with its
+# third-party notices (scripts/launcher-notices.sh, #341) and, on a tag, signed for the updater with
+# Fenji's release key, with the updater's latest.json. A v* tag attaches them all, with SHA256SUMS,
+# to the tag's draft release, which the release steps in docs/development.md check and publish. A
+# pull request that changes this workflow, the packaging scripts, what they pack (deploy/start,
+# deploy/archive, deploy/launcher, the launcher's bundle settings) or the pinned tools builds
+# everything without signing or publishing (Ruling HP4), as does a run by hand; its files stay with
+# the run.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - .github/workflows/release.yml
+      - scripts/package-server.sh
+      - scripts/launcher-notices.sh
+      - scripts/check-notices.sh
+      - scripts/launcher-latest-json.sh
+      - scripts/versions.env
+      - apps/launcher/src-tauri/tauri.conf.json
+      - deploy/start/**
+      - deploy/archive/**
+      - deploy/launcher/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # CI's notices job reads the server's targets from this job's `- target:` lines.
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      # The C runtime linked in, so the server runs on a Windows without the Visual C++
+      # Redistributable.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      # Windows runners check out with CR LF line ends, and the build embeds files: the example
+      # config, and the database's migrations, whose checksums a database is checked against. With
+      # the repository's LF everywhere, every system builds from the same bytes, and a data folder
+      # can move between them.
+      - name: Check out with the repository's line ends
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain from rust-toolchain.toml, and the target
+        run: |
+          rustup set profile minimal
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustc -vV
+      - name: Install cargo-about, for the archive's third-party notices
+        run: |
+          source scripts/versions.env
+          # Its program is behind the cli feature: without it, cargo install builds nothing.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
+      - name: Install musl-tools, for the static Linux builds' C code
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          # cc looks for aarch64-linux-musl-gcc for the ARM target, and Ubuntu's musl-tools has
+          # musl-gcc only.
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build --release --locked -p fenji-server --target "$TARGET"
+      - name: Pack
+        run: |
+          bin=target/$TARGET/release/fenji-server
+          exe=fenji-server
+          script=start-server.sh
+          case $TARGET in
+            *-windows-*) bin=$bin.exe exe=fenji-server.exe script=start-server.bat ;;
+            *-apple-darwin) script=start-server.command ;;
+          esac
+          # The archive carries the binary's own version, which a tag must match.
+          version=$("$bin" --version | tr -d '\r')
+          version=${version##* }
+          if [[ $GITHUB_REF_TYPE == tag && $GITHUB_REF_NAME != "v$version" ]]; then
+            echo "::error::The tag $GITHUB_REF_NAME doesn't match fenji-server's version, $version."
+            exit 1
+          fi
+          archive=$(scripts/package-server.sh "$version" "$TARGET" "$bin" dist)
+          # What the archive must hold, worked out here rather than taken from the script, against
+          # what this system's own tools find in it: GNU tar, bsdtar on macOS, 7-Zip on Windows.
+          name=fenji-server-$version-$TARGET
+          files=("$exe" "$script" fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)
+          deps=$(cargo tree --locked -p fenji-server --target "$TARGET" -e normal --prefix none)
+          if grep -q '^fenji-oodle v' <<< "$deps"; then
+            files+=(fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)
+          fi
+          want=$(for f in "" "${files[@]}"; do printf '%s/%s\n' "$name" "$f"; done | LC_ALL=C sort)
+          case $archive in
+            # 7-Zip lists a block for each entry; a folder's Path has no slash at its end, and on
+            # Windows its separators are backslashes.
+            *.zip)
+              got=$(7z l -slt "$archive" | tr -d '\r' |
+                awk -F ' = ' '$1 == "Path" { p = $2; gsub(/\\/, "/", p) } $1 == "Folder" { print p ($2 == "+" ? "/" : "") }' |
+                LC_ALL=C sort) ;;
+            *) got=$(tar -tzf "$archive" | LC_ALL=C sort) ;;
+          esac
+          if [[ $got != "$want" ]]; then
+            echo "::error::$archive doesn't hold exactly what it should."
+            diff <(echo "$want") <(echo "$got") || true
+            exit 1
+          fi
+          echo "$archive holds:"
+          echo "$got"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fenji-server-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  launcher:
+    name: launcher (${{ matrix.bundle }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The triple is the bundle's Rust target, which its third-party notices are for.
+          - bundle: appimage
+            runner: ubuntu-24.04
+            triple: x86_64-unknown-linux-gnu
+          - bundle: nsis
+            runner: windows-2025
+            triple: x86_64-pc-windows-msvc
+          - bundle: app
+            runner: macos-15
+            triple: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUNDLE: ${{ matrix.bundle }}
+      TRIPLE: ${{ matrix.triple }}
+    steps:
+      - name: Check out with the repository's line ends
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain from rust-toolchain.toml
+        run: |
+          rustup set profile minimal
+          rustup toolchain install
+          rustc -vV
+      - name: Tauri's Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # Before tauri-cli's install: the cache brings back ~/.cargo/bin, and cargo install then
+      # finds the pinned version there.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/launcher/src-tauri
+          key: ${{ matrix.bundle }}
+      - name: pnpm, tauri-cli and cargo-about, at the versions scripts/versions.env pins
+        run: |
+          source scripts/versions.env
+          npm install -g "pnpm@$PNPM_VERSION"
+          cargo install --locked tauri-cli --version "$TAURI_CLI_VERSION"
+          cargo tauri --version
+          # Its program is behind the cli feature: without it, cargo install builds nothing.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
+      - name: The view's packages
+        working-directory: apps/launcher
+        run: pnpm install --frozen-lockfile
+      # After the view's packages, whose licences they carry too (#341).
+      - name: The bundle's third-party notices
+        run: scripts/launcher-notices.sh "$TRIPLE" "$RUNNER_TEMP/notices/THIRD-PARTY-NOTICES.txt"
+      # The build never sees the release key: the sign job, in the tag-only release environment,
+      # signs the bundles afterwards (the launcher's final review, Important 2), so no cache, build
+      # script or npm package here can reach it.
+      - name: Build the bundle
+        working-directory: apps/launcher/src-tauri
+        run: |
+          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [[ $GITHUB_REF_TYPE == tag && $GITHUB_REF_NAME != "v$version" ]]; then
+            echo "::error::The tag $GITHUB_REF_NAME doesn't match the launcher's version, $version."
+            exit 1
+          fi
+          # Every bundle carries the notices at the root of its resources, as THIRD-PARTY-NOTICES.txt,
+          # where the launcher's Settings › About finds them (Tauri's map form: the file, then its
+          # place). Git Bash's backslashes become slashes; Tauri drops a Windows path's drive letter,
+          # so the file must be on the checkout's drive, as RUNNER_TEMP is. No updater artifacts:
+          # the AppImage and the installer are their own, and the app's tarball is packed below.
+          notices=${RUNNER_TEMP//\\//}/notices/THIRD-PARTY-NOTICES.txt
+          config=$(node -e '
+            const [notices] = process.argv.slice(1);
+            const bundle = { resources: { [notices]: "THIRD-PARTY-NOTICES.txt" }, createUpdaterArtifacts: false };
+            process.stdout.write(JSON.stringify({ bundle }));
+          ' "$notices")
+          echo "The bundle's configuration, over tauri.conf.json: $config"
+          cargo tauri build --bundles "$BUNDLE" --ci --config "$config"
+      - name: Collect the bundle
+        working-directory: apps/launcher/src-tauri/target/release/bundle
+        run: |
+          out=$GITHUB_WORKSPACE/dist-launcher
+          mkdir -p "$out"
+          case $BUNDLE in
+            appimage) found=(appimage/*.AppImage) ;;
+            nsis) found=(nsis/*-setup.exe) ;;
+            app)
+              # The updater's form of the app: the .app in a gzipped tarball, as Tauri's own.
+              tar -czf macos/Fenji.app.tar.gz -C macos Fenji.app
+              found=(macos/*.app.tar.gz) ;;
+          esac
+          if [[ ${#found[@]} != 1 || ! -f ${found[0]} ]]; then
+            echo "::error::Want one $BUNDLE bundle, found: ${found[*]}"
+            exit 1
+          fi
+          cp -- "${found[0]}" "$out/"
+          ls -l "$out"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fenji-launcher-${{ matrix.bundle }}
+          path: dist-launcher/
+          if-no-files-found: error
+
+  # The release key signs a tag's bundles here, and only here: its secrets live in the release
+  # environment, whose deployment rule admits v* tags alone, so a branch's run can't read them
+  # whatever its workflow says. tauri-cli is installed fresh, with no cache any run could have
+  # written, before the key is in any environment; only the signing step holds it.
+  sign:
+    name: Sign the launcher's bundles
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: launcher
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain and tauri-cli, at the pinned versions, with no cache
+        run: |
+          rustup set profile minimal
+          rustup toolchain install
+          source scripts/versions.env
+          cargo install --locked tauri-cli --version "$TAURI_CLI_VERSION"
+          cargo tauri --version
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-launcher-*
+          path: launcher
+          merge-multiple: true
+      - name: Sign each bundle with the release key
+        working-directory: launcher
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [[ -z $TAURI_SIGNING_PRIVATE_KEY ]]; then
+            echo "::error::The release environment has no TAURI_SIGNING_PRIVATE_KEY, so the bundles can't be signed."
+            exit 1
+          fi
+          for f in *.AppImage *-setup.exe *.app.tar.gz; do
+            cargo tauri signer sign "$f" > /dev/null
+            [[ -s $f.sig ]] || { echo "::error::$f has no signature."; exit 1; }
+          done
+          ls -l
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: launcher-signatures
+          path: launcher/*.sig
+          if-no-files-found: error
+
+  publish:
+    name: Attach to the draft release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [build, launcher, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # makes the draft release and uploads its files
+    steps:
+      # The whole history, for the changelog's section in latest.json's notes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-server-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-launcher-*
+          path: launcher
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: launcher-signatures
+          path: launcher
+      - name: Install git-cliff, for the update's notes
+        run: |
+          source scripts/versions.env
+          cargo install --locked git-cliff --version "$GIT_CLIFF_VERSION"
+      - name: Write the updater's latest.json
+        run: |
+          git cliff --latest --strip all > "$RUNNER_TEMP/notes.md"
+          scripts/launcher-latest-json.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/notes.md" launcher
+          cat launcher/latest.json
+          mv -- launcher/* dist/
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          files=(*)
+          sha256sum -- "${files[@]}" > SHA256SUMS
+          cat SHA256SUMS
+      - name: Attach the archives and SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A run started again after its tag moved still has the old commit's archives: they must
+          # never replace the draft's files.
+          tagged=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          if [[ $tagged != "$GITHUB_SHA" ]]; then
+            echo "::error::$TAG is now at $tagged, not at this run's commit, $GITHUB_SHA."
+            exit 1
+          fi
+          # The tag's release, from the list of releases, which has the drafts: none yet, a draft
+          # (a run again replaces its files), or a published one, which is never changed.
+          draft=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | select(.tag_name == env.TAG) | .draft')
+          case $draft in
+            "")
+              prerelease=()
+              if [[ $TAG == *-* ]]; then prerelease=(--prerelease); fi
+              gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes "" "${prerelease[@]}" ;;
+            true) ;;
+            false)
+              echo "::error::$TAG's release is already published, so its files stay as they are."
+              exit 1 ;;
+            *)
+              echo "::error::$TAG has more than one release."
+              exit 1 ;;
+          esac
+          gh release upload "$TAG" dist/* --clobber

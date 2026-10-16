@@ -62,19 +62,21 @@ pub mod code {
 }
 
 /// The model's show flags that hide their piece when missing (`x or false`, pregame_actor.luac
-/// `0.0`), so they are sent as `true`.
-pub const SHOW_FLAGS: [&str; 11] = [
-    "prop_sys_show_equip_head",
-    "prop_sys_show_equip_artifact1",
-    "prop_sys_show_equip_artifact2",
-    "prop_sys_show_equip_chest",
-    "prop_sys_show_equip_wrist",
-    "prop_sys_show_equip_boot",
-    "prop_sys_show_equip_weapon",
-    "prop_sys_show_equip_pendantmoon",
-    "prop_sys_show_equip_pendantstar1",
-    "prop_sys_show_equip_pendantstar2",
-    "prop_sys_show_exterior",
+/// `0.0`), with the value each is sent with. The head is hidden, as the creation template hides it
+/// (`CreateShowEquipHead` 0; world.md 9.2), and the world's type 7 hides it too; every other piece
+/// is shown.
+pub const SHOW_FLAGS: [(&str, bool); 11] = [
+    ("prop_sys_show_equip_head", false),
+    ("prop_sys_show_equip_artifact1", true),
+    ("prop_sys_show_equip_artifact2", true),
+    ("prop_sys_show_equip_chest", true),
+    ("prop_sys_show_equip_wrist", true),
+    ("prop_sys_show_equip_boot", true),
+    ("prop_sys_show_equip_weapon", true),
+    ("prop_sys_show_equip_pendantmoon", true),
+    ("prop_sys_show_equip_pendantstar1", true),
+    ("prop_sys_show_equip_pendantstar2", true),
+    ("prop_sys_show_exterior", true),
 ];
 
 /// A name's length in bytes of UTF-8. The client's box holds 24 bytes (FeatureSetting.xml
@@ -302,6 +304,15 @@ pub struct Actor {
 }
 
 impl Actor {
+    /// The outfit the character was created in, as the world shows it: the shipped creation outfit
+    /// of its vocation and stored `equips_id` (world.md §9), since the client never fills it in
+    /// (world.md 9.1). Outside that table, `{}`, which M3 sent.
+    fn outfit(&self) -> Table {
+        crate::world::creation_outfit(self.vocation, self.appearance.equips_id)
+            .map(crate::world::outfit_table)
+            .unwrap_or_default()
+    }
+
     /// The actor's table in place `slot` (1-based). It never carries `enable`, which would break
     /// the select screen's slot builder, or `block_cd`, which shows a character as blocked while
     /// the lobby's server time is 0 (lobby.md §4).
@@ -320,13 +331,16 @@ impl Actor {
                 s("prop_sys_avatar_feature"),
                 Value::Int(self.appearance.base_face),
             ),
-            // No outfit yet: its items live in the client's tables (M3 spec D8).
-            (s("prop_sys_equips"), Value::Table(Table::default())),
+            (s("prop_sys_equips"), Value::Table(self.outfit())),
         ];
         if let Some(f) = &self.appearance.face {
             hash.push((s("prop_sys_avatar_feature_face"), s(f)));
         }
-        hash.extend(SHOW_FLAGS.iter().map(|f| (s(f), Value::Bool(true))));
+        hash.extend(
+            SHOW_FLAGS
+                .iter()
+                .map(|(f, shown)| (s(f), Value::Bool(*shown))),
+        );
         Table {
             array: Vec::new(),
             hash,

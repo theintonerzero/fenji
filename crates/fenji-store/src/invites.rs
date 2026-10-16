@@ -75,6 +75,20 @@ impl Store {
         Ok(open.is_some())
     }
 
+    /// The id and label of the invite the account `account_id` was made with, if it was, for the
+    /// server's line on a new account.
+    pub async fn invite_of_account(
+        &self,
+        account_id: i64,
+    ) -> Result<Option<(i64, Option<String>)>> {
+        Ok(
+            sqlx::query_as("SELECT id, label FROM invites WHERE redeemed_by = ?")
+                .bind(account_id)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
     /// Spends the invite and creates its account in one transaction, and returns the account's id.
     /// The invite is checked first, so only someone holding a valid invite learns whether a
     /// username is taken (M3 spec D12).
@@ -145,6 +159,28 @@ mod tests {
         assert_eq!(rows[0].redeemed_by.as_deref(), Some("bob"));
         assert_eq!(rows[0].redeemed_at, Some(NOW + 1));
         assert_eq!(s.account_by_id(id).await.unwrap().unwrap().username, "bob");
+    }
+
+    #[tokio::test]
+    async fn an_account_names_the_invite_it_came_in_by() {
+        // For the server's line on a new account (the hosting plan's final review B, Minor 2).
+        let (_d, s) = store().await;
+        let first = s
+            .create_invite(&h(1), Some("for Mai"), NOW, None)
+            .await
+            .unwrap();
+        let second = s.create_invite(&h(2), None, NOW, None).await.unwrap();
+        let mai = s.redeem_invite(&h(1), "Mai", "$phc", NOW).await.unwrap();
+        let ren = s.redeem_invite(&h(2), "Ren", "$phc", NOW).await.unwrap();
+        assert_eq!(
+            s.invite_of_account(mai).await.unwrap(),
+            Some((first, Some("for Mai".into())))
+        );
+        assert_eq!(
+            s.invite_of_account(ren).await.unwrap(),
+            Some((second, None))
+        );
+        assert_eq!(s.invite_of_account(ren + 1).await.unwrap(), None);
     }
 
     #[tokio::test]

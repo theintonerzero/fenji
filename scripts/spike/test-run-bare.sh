@@ -8,10 +8,16 @@
 # it set is pointed into TESTROOT before any test runs; every test checks that WORK is still there.
 set -uo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
+# run-bare.sh runs the client on the Linux game box only, and needs GNU tools such as realpath -m,
+# which macOS's realpath lacks.
+if [ "$(uname -s)" != Linux ]; then
+  echo "skip: run-bare.sh and its tests are for Linux"
+  exit 0
+fi
 # shellcheck source=run-bare.sh
 . "$HERE/run-bare.sh"
 set +e # run-bare.sh sets -e; these tests check exit statuses themselves
-unset DISPLAY # the tests set it where they need it, so the caller's session can't change a result
+unset DISPLAY XDG_CACHE_HOME # set where a test needs them, so the caller's session can't change a result
 TESTROOT=$(mktemp -d) || { echo "FATAL: mktemp failed" >&2; exit 2; }
 readonly TESTROOT
 [ -d "$TESTROOT" ] || { echo "FATAL: no test root" >&2; exit 2; }
@@ -76,13 +82,14 @@ NESTED=(--display 98)
 
 # --- arguments
 says 2 "" "run with no name is a usage error" -- cmd_bare_run
-says 2 "" "an unknown option is a usage error" -- cmd_bare_run t --print
+says 2 "" "an unknown option is a usage error" -- cmd_bare_run t --no-such-option
 says 1 "bad run name" "a run name with a slash is refused" -- cmd_bare_run ../t "${GOOD[@]}"
 says 2 "--server is required" "a run needs a local fenji-server" -- cmd_bare_run t --server-data "$WORK/data" --username tester --password-file "$TESTROOT/password"
 says 2 "--server-data is required" "a run needs the server's store folder" -- cmd_bare_run t --server "$TESTROOT/fenji.toml" --username tester --password-file "$TESTROOT/password"
 says 2 "--username" "a username with a space is refused" -- cmd_bare_run t --server "$TESTROOT/fenji.toml" --server-data "$WORK/data" --username "a b" --password-file "$TESTROOT/password"
 says 2 "--password-file" "an unreadable password file is refused" -- cmd_bare_run t --server "$TESTROOT/fenji.toml" --server-data "$WORK/data" --username tester --password-file "$TESTROOT/none"
 says 2 "--key" "a key press after the timeout is refused" -- cmd_bare_run t "${GOOD[@]}" --timeout 60 --key 90:Return
+says 2 "ends after the --timeout" "a held key that outlasts the timeout is refused" -- cmd_bare_run t "${GOOD[@]}" --timeout 60 --key 59:w/1001
 cfg 0.0.0.0:7800 "$WORK/data/fenji.db"
 says 2 "must be 127.0.0.1" "a server that listens beyond loopback is refused" -- cmd_bare_run t "${GOOD[@]}"
 cfg 127.0.0.1:7800 "$TESTROOT/fenji.db"
@@ -107,6 +114,86 @@ says 1 "umu-run not found" "good arguments reach the guards, which stop at a mis
 else
   echo "skip the guard tests: they need Linux"
 fi
+
+# --- the desktop launcher in place of fenji-launch (launcher Task 16)
+APP=$TESTROOT/Fenji_0.5.0_amd64.AppImage
+printf '#!/bin/sh\n' > "$APP"
+chmod +x "$APP"
+says 2 "--launcher-app" "a launcher run is one launcher, never --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --launcher-app "$APP" --clients 2
+says 2 "--launcher-app" "a missing AppImage is refused" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --launcher-app "$TESTROOT/none.AppImage"
+says 2 "--launcher-app" "an AppImage that can't run is refused" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --launcher-app "$TESTROOT/password"
+plan=$(cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --launcher-app "$APP" --print 2>&1)
+rc=$?
+mapfile -t got <<< "$plan"
+has_line() { local l; for l in "${got[@]}"; do [ "$l" = "$1" ] && return 0; done; return 1; }
+binds_prefix() {
+  local i
+  for ((i = 0; i + 2 < ${#got[@]}; i++)); do
+    [ "${got[i]}" = --bind ] && [ "${got[i + 1]}" = "$WORK/compat" ] &&
+      [ "${got[i + 2]}" = "$WORK/runs/t/data/fenji-launcher/prefix" ] && return 0
+  done
+  return 1
+}
+# The launcher's umu-run looks for its runtime in XDG_DATA_HOME/umu, which is the run's: the host's
+# is bound there, or umu-run wants to download it, and the namespace has no network (rehearsal r6).
+binds_umu() {
+  local i
+  for ((i = 0; i + 2 < ${#got[@]}; i++)); do
+    [ "${got[i]}" = --bind ] && [ "${got[i + 1]}" = "${XDG_DATA_HOME:-$HOME/.local/share}/umu" ] &&
+      [ "${got[i + 2]}" = "$WORK/runs/t/data/umu" ] && return 0
+  done
+  return 1
+}
+if [ "$rc" = 0 ] && has_line "XDG_DATA_HOME=$WORK/runs/t/data" && has_line "XDG_CONFIG_HOME=$WORK/runs/t/config" &&
+  has_line "PROTONPATH=$PROTON" && has_line "$WORK/runs/t/launcher/AppRun" && binds_prefix && binds_umu &&
+  ! grep -q "a long password" <<< "$plan"; then
+  ok "--print plans the launcher in the run's own data folder, on the dedicated prefix and umu's runtime, with GE-Proton, and no password"
+else
+  bad "--print's launcher plan (exit $rc): $plan"
+fi
+plan=$(cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --print 2>&1)
+rc=$?
+if [ "$rc" = 0 ] && grep -qxF -- "$STUBBIN/fenji-launch" <<< "$plan" && grep -qx play <<< "$plan" &&
+  grep -qxF -- "$TESTROOT/password" <<< "$plan" &&
+  ! grep -q "a long password" <<< "$plan" && [ ! -e "$WORK/runs/t" ]; then
+  ok "--print plans fenji-launch with the password file's name, not its words, and starts nothing"
+else
+  bad "--print's fenji-launch plan (exit $rc): $plan"
+fi
+
+# A launcher run's GTK folder dialog lists the run's client copy as a bookmark, so the player's
+# step is two clicks, not a typed path, which the dialog's completion mangles (rehearsal r4).
+mark=$(app_bookmark "$WORK/runs/t r1")
+if [ "$mark" = "file://$WORK/runs/t%20r1/client SoLO (this run)" ]; then
+  ok "a launcher run bookmarks its client copy for GTK's folder dialog, as a file URI"
+else
+  bad "app_bookmark: $mark"
+fi
+
+# --- @password: the typist types --password-file's first line through xkey.py's --type-file, so
+# the password is never on a command line and never in keys.log.
+(
+  K=$TESTROOT/typist
+  mkdir -p "$K/here" "$K/out"
+  cat > "$K/here/xkey.py" <<'PY'
+import os, sys
+with open(os.environ["KEYLOG"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+PY
+  touch "$K/out/.running"
+  export KEYLOG=$K/keys
+  # shellcheck disable=SC2034 # start_inputs reads these from its caller
+  type_secret=$TESTROOT/password presses=("1:type:0:@password" "1:type:0:lin_yue") clicks=() clicks2=() display2=""
+  HERE=$K/here start_inputs "$K/out" 98 1
+  wait "$typist" "$clicker" "$shots" 2> /dev/null
+  want=$(printf '%s\n' "--display :98 --type-file=$TESTROOT/password" "--display :98 --type=lin_yue")
+  if [ "$(cat "$K/keys")" = "$want" ] && ! grep -q "a long password" "$K/keys" "$K/out/keys.log" &&
+    grep -q "type 0:@password" "$K/out/keys.log"; then
+    ok "@password is typed from the password file through --type-file, and logged by name"
+  else
+    bad "@password: $(cat "$K/keys" "$K/out/keys.log" 2> /dev/null)"
+  fi
+)
 
 # --- the pinned copy: never a link, never holding one, never in a Steam library
 mkdir -p "$TESTROOT/pinned/bin64" "$TESTROOT/home/.steam/steam/steamapps/common/SoLO/bin64"
@@ -152,9 +239,21 @@ case " ${got[*]} " in
     ok "audio sockets come back, Steam's pipe is masked, and IBus's sockets are hidden" ;;
   *) bad "namespace with audio, a Steam pipe and IBus: ${got[*]}" ;;
 esac
+mkdir -p "$TESTROOT/cache2/ibus"
+mapfile -t got < <(XDG_CACHE_HOME=$TESTROOT/cache2 XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/home2 namespace_cmd 99)
+case " ${got[*]} " in
+  *" --tmpfs $TESTROOT/home2/.cache/ibus --tmpfs $TESTROOT/cache2/ibus "*)
+    ok "IBus's sockets are hidden under XDG_CACHE_HOME too" ;;
+  *) bad "namespace with XDG_CACHE_HOME: ${got[*]}" ;;
+esac
 mapfile -t got < <(namespace_env 99)
-want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:99)
-if [ "${got[*]}" = "${want[*]}" ]; then ok "inside: no session bus, no agents, no Wayland, no password"; else bad "env: ${got[*]}"; fi
+want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD
+  -u FENJI_LOGIN_BIND -u FENJI_API_BIND DISPLAY=:99)
+if [ "${got[*]}" = "${want[*]}" ]; then
+  ok "inside: no session bus, no agents, no Wayland, no password, and the server's binds its config's"
+else
+  bad "env: ${got[*]}"
+fi
 mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt HOME=$TESTROOT/home2 namespace_cmd 99)
 mapfile -t got < <(watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242 "${ns[@]}")
 want=(python3 -I "$WATCHDOG" watch --root "$WORK" --prefix "$WORK/compat" --out "$TESTROOT/out" --sandbox-pid 4242
@@ -226,7 +325,8 @@ case " ${got[*]} " in
   *) bad "desktop watch: ${got[*]}" ;;
 esac
 mapfile -t got < <(namespace_env 0 "$TESTROOT/xauth")
-want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD DISPLAY=:0 XAUTHORITY="$TESTROOT/xauth")
+want=(env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u SSH_AUTH_SOCK -u FENJI_PASSWORD
+  -u FENJI_LOGIN_BIND -u FENJI_API_BIND DISPLAY=:0 XAUTHORITY="$TESTROOT/xauth")
 if [ "${got[*]}" = "${want[*]}" ]; then ok "inside a desktop run: the session's display and its auth file"; else bad "desktop env: ${got[*]}"; fi
 inputs=(stale)
 bare_inputs 1 "$TESTROOT/out" 0 60
@@ -396,6 +496,8 @@ says 2 "--password-file is under $TESTROOT/ns" "a password file the namespace wo
 
 # --- the verdict
 says 7 "didn't start the client" "fenji-launch stopping before the start is exit 7" -- bare_verdict 0 95 0 "$TESTROOT/out"
+launcher_verdict() { local app=$APP; bare_verdict "$@"; }
+says 7 "the desktop launcher didn't start the game" "a launcher run that never starts the game is exit 7, in its own words" -- launcher_verdict 0 95 0 "$TESTROOT/out"
 says 3 "GATE EVENT" "a watchdog trigger is a gate event" -- bare_verdict 3 137 1 "$TESTROOT/out"
 says 5 "never armed" "a watchdog that never armed is exit 5" -- bare_verdict 0 98 0 "$TESTROOT/out"
 guard
@@ -407,6 +509,74 @@ says 4 "WATCHDOG FAILURE" "a watchdog failure wins over Steam starting" -- bare_
 says 1 "Steam started" "Steam starting stops an otherwise clean run" -- bare_verdict 0 137 0 "$TESTROOT/out"
 says 3 "Steam also started" "a gate event still reports that Steam started" -- bare_verdict 3 137 1 "$TESTROOT/out"
 rm -f -- "$TESTROOT/out/steam-started"
+
+
+# --- two clients: arguments and command lines (Amendment B)
+echo "a second long password" > "$TESTROOT/password2"
+TWO=(--clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/password2" --display2 97)
+says 2 "--clients takes 1 or 2" "--clients takes 1 or 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 3
+# Ruling R14, in code by Ruling R25 (#280): no live two-client run until its own umu rehearsal and a
+# go-ahead, which --rehearsed says have happened; every two-client test here passes it.
+says 2 "Ruling R14" "--clients 2 without --rehearsed is refused (Ruling R14)" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --username2 second --password-file2 "$TESTROOT/password2" --display2 97
+says 2 "needs --clients 2" "--rehearsed needs --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --rehearsed
+says 2 "needs --username2" "two clients need client 2's account" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --password-file2 "$TESTROOT/password2" --display2 97
+says 2 "needs --password-file2" "two clients need client 2's password" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --display2 97
+says 2 "another account" "client 2's account is another one" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 tester --password-file2 "$TESTROOT/password2" --display2 97
+says 2 "--password-file2" "an unreadable second password file is refused" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/none" --display2 97
+says 2 "needs --display2" "a nested two-client run needs client 2's display" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/password2"
+says 2 "another display" "client 2's display is another one" -- \
+  cmd_bare_run t "${GOOD[@]}" --display 97 "${TWO[@]}"
+says 1 "0 to 999" "--display2 takes a display number" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/password2" --display2 097
+says 2 "both clients" "--desktop is both clients' display: no --display2" -- \
+  with_env DISPLAY=:0 cmd_bare_run t "${GOOD[@]}" --desktop "${TWO[@]}"
+says 2 "at least 2" "--second-after takes at least 2 s" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" "${TWO[@]}" --second-after 1
+says 2 "--timeout2 takes" "--timeout2 takes whole seconds" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" "${TWO[@]}" --timeout2 x
+says 2 "needs --clients 2" "client 2's account needs --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --username2 second
+says 2 "needs --clients 2" "--display2 needs --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --display2 97
+says 2 "need --clients 2" "2@ inputs need --clients 2" -- cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --key 2@5:Return
+says 2 "--password-file2 is under $TESTROOT/ns" "a second password file the namespace would hide is refused" -- \
+  cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}" --clients 2 --rehearsed --username2 second --password-file2 "$TESTROOT/ns/password" --display2 97
+mkdir -p "$TESTROOT/rt3"
+mapfile -t got < <(XDG_RUNTIME_DIR=$TESTROOT/rt3 HOME=$TESTROOT/nohome namespace_cmd 99 "" 97)
+want=(bwrap --dev-bind / / --proc /proc --tmpfs /run --perms 0700 --dir "$TESTROOT/rt3" --tmpfs /tmp
+  --bind /tmp/.X11-unix/X99 /tmp/.X11-unix/X99 --bind /tmp/.X11-unix/X97 /tmp/.X11-unix/X97 --tmpfs /dev/shm
+  --unshare-net --unshare-pid --die-with-parent --seccomp 7 --)
+if [ "${got[*]}" = "${want[*]}" ]; then ok "a two-client namespace binds both displays' sockets"; else bad "two-client namespace: ${got[*]}"; fi
+mapfile -t ns < <(XDG_RUNTIME_DIR=$TESTROOT/rt3 HOME=$TESTROOT/nohome namespace_cmd 99 "" 97)
+mapfile -t got < <(clients=2 watch_cmd "$TESTROOT/out" "$TESTROOT/io" 4242 "${ns[@]}")
+want=(python3 -I "$WATCHDOG" watch --root "$WORK" --prefix "$WORK/compat" --out "$TESTROOT/out" --sandbox-pid 4242
+  --log "$TESTROOT/io/1/steam-1418100.log" --log "$TESTROOT/io/2/steam-1418100.log" --go "$TESTROOT/io/.go"
+  --tmpfs /run --tmpfs /tmp --bind /tmp/.X11-unix/X99 --bind /tmp/.X11-unix/X97 --tmpfs /dev/shm)
+if [ "${got[*]}" = "${want[*]}" ]; then ok "a two-client watchdog gets each client's log, in order"; else bad "two-client watch: ${got[*]}"; fi
+
+# The backstop's count: the wineserver processes below the namespace's bwrap, and nothing else.
+WSD=$TESTROOT/wsd
+mkdir -p "$WSD"
+ln -s "$(command -v sleep)" "$WSD/wineserver"
+(
+  "$WSD/wineserver" 30 &
+  "$WSD/wineserver" 30 &
+  wait
+) &
+tree=$!
+"$WSD/wineserver" 30 &
+alone=$!
+for _ in $(seq 50); do [ "$(namespace_wineservers "$tree")" = 2 ] && break; sleep 0.1; done
+if [ "$(namespace_wineservers "$tree")" = 2 ] && [ "$(namespace_wineservers "$alone")" = 1 ]; then
+  ok "the backstop counts the wineservers below the namespace, and none outside it"
+else
+  bad "the wineserver count: $(namespace_wineservers "$tree") below the tree, $(namespace_wineservers "$alone") alone"
+fi
+pkill -KILL -P "$tree" 2> /dev/null
+kill -KILL "$tree" "$alone" 2> /dev/null
+{ wait "$tree" "$alone"; } 2> /dev/null
 
 # --- the prefix: primed through Proton's launcher, so Proton's own service is in the watchdog's baseline
 mkdir -p "$TESTROOT/proton/files/lib/wine/discord-rpc-bridge" "$TESTROOT/proton-nobridge" "$WORK/compat/drive_c/windows"
@@ -484,10 +654,13 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   F=$TESTROOT/flow
   mkdir -p "$F/bin" "$F/proton/files/bin" "$F/proton/files/lib/wine/discord-rpc-bridge" "$F/release" \
     "$F/pinned/bin64" "$F/home" "$F/log" "$F/rt"
-  touch "$F/pinned/bin64/gujianol.exe" "$F/proton/files/lib/wine/discord-rpc-bridge/bridge.exe" "$F/xauth"
+  cp -- "$(command -v sleep)" "$F/pinned/bin64/gujianol.exe"
+  touch "$F/proton/files/lib/wine/discord-rpc-bridge/bridge.exe" "$F/xauth"
   echo "1789520217 GE-Proton-flow" > "$F/proton/version"
   printf '#!/bin/sh\nexit 0\n' > "$F/proton/proton"
-  cp -- "$F/proton/proton" "$F/proton/files/bin/wineserver"
+  # wineserver -k: recorded.
+  # shellcheck disable=SC2016 # the stand-in expands its own variables
+  printf '#!/bin/sh\n[ -z "${FAKE_LOG:-}" ] || echo "wineserver $*" >> "$FAKE_LOG/wineserver"\n' > "$F/proton/files/bin/wineserver"
   cat > "$F/bin/bwrap" <<'EOF'
 #!/usr/bin/env bash
 # Records its arguments, then runs what follows --.
@@ -529,8 +702,9 @@ printf '\n[System\\\\ControlSet001\\\\Services\\\\discord-bridge] 1\n"Type"=dwor
 EOF
   cat > "$F/release/fenji-server" <<'EOF'
 #!/usr/bin/env python3
-"""Listens on its config's login and API addresses until it is stopped (`--config FILE run`)."""
-import socket, sys, time, tomllib
+"""Listens on its config's login and API addresses until it is stopped (`--config FILE run`), or its
+parent ends: run-bare.sh's own stop isn't the only way a run ends."""
+import os, socket, sys, time, tomllib
 with open(sys.argv[2], "rb") as f:
     server = tomllib.load(f)["server"]
 held = []
@@ -541,26 +715,48 @@ for key in ("login_bind", "api_bind"):
     s.bind((host, int(port)))
     s.listen()
     held.append(s)
-while True:
-    time.sleep(1)
+parent = os.getppid()
+while os.getppid() == parent:
+    time.sleep(0.2)
 EOF
   cat > "$F/release/fenji-launch" <<'EOF'
 #!/usr/bin/env bash
 # Records its arguments, says what fenji-launch says right before it starts the client, and plays
 # the client for FAKE_LAUNCH_SECS. A client that misbehaves plants a link at FAKE_PLANT, to
-# FAKE_PLANT_TO, or a FIFO at FAKE_FIFO, which a rescuer opens after 15 s, so that a writer stalled
-# on it is let go and the test ends.
+# FAKE_PLANT_TO, or a FIFO at FAKE_FIFO. A rescuer opens the FIFO after 15 s, so that a writer
+# stalled on it is let go and the test ends, but only while the path still is a FIFO: the test
+# removes it once its flow is over, and opening a path that is gone would create a regular file
+# there, where the next flow writes its mark.
 printf '%s\n' "$@" > "$FAKE_LOG/launch"
+echo "$* | PROTON_LOG_DIR=${PROTON_LOG_DIR:-} DISPLAY=${DISPLAY:-}" >> "$FAKE_LOG/launches"
 echo "starting the client" >&2
+# FAKE_CLIENT: the copy's gujianol.exe (sleep) in its own session, outliving this launcher as Wine's
+# processes may. FAKE_WINESERVER: a wineserver of this session's own, as a second umu-run session
+# would start one (Amendment B's backstop).
+client=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = --client ]; then client=$a; fi
+  prev=$a
+done
+if [ -n "${FAKE_CLIENT:-}" ]; then
+  setsid "$client/bin64/gujianol.exe" 60 < /dev/null > /dev/null 2>&1 &
+  echo "$!" >> "$FAKE_LOG/fake-pids"
+fi
+if [ -n "${FAKE_WINESERVER:-}" ]; then
+  "$FAKE_WS" 60 < /dev/null > /dev/null 2>&1 &
+  echo "$!" >> "$FAKE_LOG/fake-pids"
+fi
 if [ -n "${FAKE_PLANT:-}" ]; then ln -s -- "$FAKE_PLANT_TO" "$FAKE_PLANT"; fi
 if [ -n "${FAKE_FIFO:-}" ]; then
   mkfifo -- "$FAKE_FIFO"
-  (sleep 15; exec 3<> "$FAKE_FIFO") > /dev/null 2>&1 &
+  (sleep 15; if [ -p "$FAKE_FIFO" ]; then exec 3<> "$FAKE_FIFO"; fi) > /dev/null 2>&1 &
 fi
 sleep "${FAKE_LAUNCH_SECS:-0}"
 EOF
   cat > "$F/watchdog.py" <<'EOF'
-"""The flow tests' watchdog: watch creates the start signal, waits for the namespace to end and
+"""The flow tests' watchdog: watch creates the start signal, waits for the namespace to end (or,
+with FAKE_WATCH_EARLY, only that many seconds, as a gate event does while the client plays) and
 exits FAKE_WATCH_RC (0 by default); every other mode is the real watchdog's. Each call is
 recorded."""
 import os
@@ -585,11 +781,16 @@ def alive(pid):
         return False
 
 
-deadline = time.monotonic() + 120
+deadline = time.monotonic() + float(os.environ.get("FAKE_WATCH_EARLY", "120"))
 while alive(spid) and time.monotonic() < deadline:
     time.sleep(0.05)
 sys.exit(int(os.environ.get("FAKE_WATCH_RC", "0")))
 EOF
+  mkdir -p "$F/here" "$F/ws"
+  for tool in xclick xkey; do
+    printf 'import os, sys, time\nwith open(os.path.join(os.environ["FAKE_LOG"], "inputs"), "a") as f:\n    f.write("%s " + " ".join(sys.argv[1:]) + "\\n")\n' "$tool" > "$F/here/$tool.py"
+  done
+  ln -s "$(command -v sleep)" "$F/ws/wineserver"
   chmod +x "$F/bin/"* "$F/proton/proton" "$F/proton/files/bin/wineserver" "$F/umu-run" "$F/release/"*
   fake_pgrep ""
   echo "a long password" > "$F/password"
@@ -613,7 +814,8 @@ print(*(x.getsockname()[1] for x in s))')
     rc=0
     t0=$(date +%s)
     (
-      export FAKE_LOG=$F/log/$name FAKE_REAL_SPIKE=$HERE
+      export FAKE_LOG=$F/log/$name FAKE_REAL_SPIKE=$HERE FAKE_WS=$F/ws/wineserver
+      HERE=$F/here
       WORK=$dir PROTON=$F/proton UMU=$F/umu-run STUBBIN=$F/release WATCHDOG=$F/watchdog.py
       PINNED_COPY=$F/pinned HOME=$F/home PATH="$F/bin:$TESTROOT/bin:$PATH" XDG_RUNTIME_DIR=$F/rt
       hash -r
@@ -783,6 +985,83 @@ print(*(x.getsockname()[1] for x in s))')
   else
     bad "a planted FIFO: rc $rc after $secs s: $out"
   fi
+  # A gate event while the client still plays (#174): the watchdog exits first, and the run ends
+  # the namespace, marks the prefix and reports it, long before the client would have stopped.
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  flow run-gate-first "$F/work" with_env FAKE_WATCH_RC=3 with_env FAKE_WATCH_EARLY=2 \
+    with_env FAKE_LAUNCH_SECS=60 cmd_bare_run e1 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 3 ] && [ "$secs" -lt 30 ] && grep -q '^run e1: watchdog exit 3, ' "$F/work/compat/fenji-gate-event" 2> /dev/null; then
+    ok "a watchdog that exits first ends the run: the namespace stops and the prefix is marked"
+  else
+    bad "the watchdog first: rc $rc after $secs s, mark '$(cat "$F/work/compat/fenji-gate-event" 2> /dev/null)': $out"
+  fi
+
+  # --- two clients (M4 world plan, Amendment B; Ruling R14: tested here, not run live yet). Two
+  # reflink copies, two fenji-launch on the one prefix with their own Proton logs and displays, both
+  # logs to the watchdog, client 2 ended by its own pid if it outlives its launcher, and the backstop
+  # that stops a run whose namespace holds a second wineserver.
+  echo "a second long password" > "$F/password2"
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  TWOARGS=(--clients 2 --rehearsed --username2 second --password-file2 "$F/password2" --display2 77 --second-after 2)
+  flow run-two "$F/work" with_env FAKE_LAUNCH_SECS=1 with_env FAKE_CLIENT=1 cmd_bare_run two1 "${RUNARGS[@]}" \
+    --display 78 "${TWOARGS[@]}" --timeout 25 --timeout2 3 --key 1:space --key 2:w/500 --key 2@3:Return
+  BIO=$F/work/io/two1 BOUT=$F/work/out/two1 BRUN=$F/work/runs/two1
+  if [ "$rc" = 0 ] && [[ $out == *"run two1 done:"* ]] && [ -f "$BRUN/client/bin64/gujianol.exe" ] &&
+    [ -f "$BRUN/client2/bin64/gujianol.exe" ]; then
+    ok "a two-client bare run goes end to end, from two copies of the pinned client"
+  else
+    bad "a two-client bare run: rc $rc: $out"
+  fi
+  l1=$(sed -n 1p "$F/log/run-two/launches") l2=$(sed -n 2p "$F/log/run-two/launches")
+  if [[ $l1 == *"--username tester --password-file $F/password --client $BRUN/client --prefix $F/work/compat "*"| PROTON_LOG_DIR=$BIO/1 DISPLAY=:78" ]] &&
+    [[ $l2 == *"--username second --password-file $F/password2 --client $BRUN/client2 --prefix $F/work/compat "*"| PROTON_LOG_DIR=$BIO/2 DISPLAY=:77" ]]; then
+    ok "each client is its own fenji-launch on the one prefix, with its own account, copy, Proton log and display"
+  else
+    bad "the launches: [$l1] [$l2]"
+  fi
+  case " $(grep '^watch ' "$F/log/run-two/watchdog") " in
+    *" --log $BIO/1/steam-1418100.log --log $BIO/2/steam-1418100.log "*" --bind /tmp/.X11-unix/X77 "*)
+      ok "the watchdog gets both logs in order, and leaves client 2's display socket out of its tmpfs scan" ;;
+    *) bad "two clients' watch: $(grep '^watch ' "$F/log/run-two/watchdog")" ;;
+  esac
+  case "$(joined "$F/log/run-two/bwrap")" in
+    *" --bind /tmp/.X11-unix/X78 /tmp/.X11-unix/X78 --bind /tmp/.X11-unix/X77 /tmp/.X11-unix/X77 "*)
+      ok "the namespace has both displays' sockets" ;;
+    *) bad "two clients' namespace: $(joined "$F/log/run-two/bwrap")" ;;
+  esac
+  client2=$(sed -n 2p "$F/log/run-two/fake-pids")
+  if [ "$(sed -n 2p "$BOUT/io/2/ended-by-pid" 2> /dev/null)" = "$client2" ] && [ -f "$BOUT/io/exit-code" ] &&
+    [ -f "$BOUT/io/exit-code-2" ] && [ "$(grep -c . "$F/log/run-two/wineserver")" = 1 ]; then
+    ok "client 2, outliving its fenji-launch, is ended by its own pid; the wineserver stops once, after both"
+  else
+    bad "client 2's end: '$(cat "$BOUT/io/2/ended-by-pid" 2> /dev/null)' vs $client2; wineserver $(cat "$F/log/run-two/wineserver" 2> /dev/null)"
+  fi
+  if grep -qx "xkey --display :78 --key=space" "$F/log/run-two/inputs" && grep -qx "xkey --display :77 --key=Return" "$F/log/run-two/inputs" &&
+    grep -qx "xkey --display :78 --key=w --hold=500" "$F/log/run-two/inputs"; then
+    ok "each client's key presses, held ones too, go to its own display"
+  else
+    bad "two clients' inputs: $(cat "$F/log/run-two/inputs" 2> /dev/null)"
+  fi
+  while read -r p; do kill "$p" 2> /dev/null; done < "$F/log/run-two/fake-pids"
+
+  # The backstop: a second wineserver in the namespace once client 2 has started stops the run at
+  # once (exit 1), and the prefix is marked, so setup and run refuse it until it is rebuilt.
+  flow run-ws "$F/work" with_env FAKE_LAUNCH_SECS=20 with_env FAKE_WINESERVER=1 cmd_bare_run ws1 "${RUNARGS[@]}" \
+    --display 78 "${TWOARGS[@]}" --timeout 30 --timeout2 30
+  if [ "$rc" = 1 ] && [ "$secs" -lt 15 ] && [[ $out == *"a second wineserver for the prefix"* ]] &&
+    grep -q '^run ws1: a second wineserver' "$F/work/compat/fenji-gate-event" 2> /dev/null; then
+    ok "a second wineserver in the namespace stops the run at once, exit 1, and marks the prefix"
+  else
+    bad "a second wineserver: rc $rc after $secs s, mark '$(cat "$F/work/compat/fenji-gate-event" 2> /dev/null)': $out"
+  fi
+  while read -r p; do kill "$p" 2> /dev/null; done < "$F/log/run-ws/fake-pids"
+  flow run-after-ws "$F/work" cmd_bare_run t4 "${RUNARGS[@]}" --display 78
+  if [ "$rc" = 1 ] && [[ $out == *"rebuild it before anything runs in it again"* ]]; then
+    ok "after a second wineserver, the prefix is refused until it is rebuilt"
+  else
+    bad "after a second wineserver: rc $rc: $out"
+  fi
+  rm -f -- "$F/work/compat/fenji-gate-event"
 else
   echo "skip the end-to-end flows: they need Linux on x86_64"
 fi
@@ -796,7 +1075,9 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && command -v bwrap > /dev/null 
   mapfile -t ne < <(namespace_env 99)
   bpf=$(seccomp_filter)
   # shellcheck disable=SC2016 # the probe expands its own variables, inside
-  probe=$("${ns[@]}" "${ne[@]}" sh -c '
+  # Binds in the environment that would move the server off its config's 127.0.0.1 (Ruling HP7)
+  # must not reach it.
+  probe=$(FENJI_LOGIN_BIND=0.0.0.0:7800 FENJI_API_BIND=0.0.0.0:7801 "${ns[@]}" "${ne[@]}" sh -c '
     [ -e /run/dbus/system_bus_socket ] || echo "no system bus"
     [ -e /run/systemd/resolve/io.systemd.Resolve ] || echo "no resolver socket"
     [ -e "$XDG_RUNTIME_DIR/bus" ] || echo "no session bus"
@@ -805,8 +1086,9 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && command -v bwrap > /dev/null 
     [ "$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d " ")" = lo ] && echo "loopback only"
     getent hosts example.org > /dev/null || echo "no name lookups"
     python3 -I -c "import ctypes,sys; c=ctypes.CDLL(None, use_errno=True); r=c.syscall(248, None, None, None, 0, -3); sys.exit(0 if r == -1 and ctypes.get_errno() == 1 else 1)" && echo "no key requests"
+    [ -z "${FENJI_LOGIN_BIND+set}${FENJI_API_BIND+set}" ] && echo "no bind overrides"
   ' 7< <(printf '%b' "$bpf") 2>&1)
-  for want in "no system bus" "no resolver socket" "no session bus" "empty /dev/shm" "the display" "loopback only" "no name lookups" "no key requests"; do
+  for want in "no system bus" "no resolver socket" "no session bus" "empty /dev/shm" "the display" "loopback only" "no name lookups" "no key requests" "no bind overrides"; do
     if grep -qx "$want" <<< "$probe"; then ok "inside the namespace: $want"; else bad "inside the namespace: $want missing ($probe)"; fi
   done
 elif [ "${FENJI_REQUIRE_LIVE_PROBES:-}" = 1 ]; then
