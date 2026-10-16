@@ -475,9 +475,22 @@ impl App {
             .map_err(|e| words::tool_failed(name, &e.to_string()))
     }
 
-    /// A fresh run folder: `<data dir>/depot/<unix ms>`.
+    /// A fresh run folder: `<data dir>/depot/<unix ms>`. The runs before it go first (#348): one
+    /// job runs at a time, so none of them is in use, and the last stays until the next run, for
+    /// what it says if it failed.
     fn run_dir(&self) -> PathBuf {
         let base = self.inner.cfg.data_dir.join("depot");
+        if let Ok(old) = std::fs::read_dir(&base) {
+            for entry in old.flatten() {
+                let run = entry.file_name();
+                if run
+                    .to_str()
+                    .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+                {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
         let mut ms = now_ms();
         loop {
             let dir = base.join(ms.to_string());
@@ -489,7 +502,7 @@ impl App {
     }
 
     /// DepotDownloader finished: a download's folder becomes the client folder, and every file of
-    /// it is checked; a repair checks the files it fetched.
+    /// it is checked, after a repair too.
     fn downloaded(&self, folder: PathBuf, files: Option<Vec<String>>) {
         info!("DepotDownloader finished");
         let job = self.change(|st| {
@@ -854,6 +867,26 @@ exit {code}"#,
             }
             other => panic!("after the repair: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn only_the_last_depot_run_keeps_its_folder() {
+        // #348: each DepotDownloader run left its folder in <data dir>/depot for good. The last
+        // one stays, for what it says if it failed; a new run clears those before it.
+        let t = Testbed::new(&[("a.bin", 10)]);
+        let app = t.app_with_fakes(FakeDd::WritesFiles { code: 0 });
+        for folder in ["d1", "d2", "d3"] {
+            app.intent(Intent::Download {
+                folder: t.root.join(folder).display().to_string(),
+            })
+            .await
+            .unwrap();
+            until(&app, |s| s.job.is_none()).await;
+        }
+        let runs = std::fs::read_dir(t.root.join("data/depot"))
+            .unwrap()
+            .count();
+        assert_eq!(runs, 1);
     }
 
     #[tokio::test]
