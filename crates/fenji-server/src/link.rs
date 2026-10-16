@@ -778,7 +778,7 @@ mod tests {
     use fenji_proto::world::BlobValue;
     use fenji_store::{Place, Store};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpSocket};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -870,6 +870,43 @@ mod tests {
             .await
             .unwrap();
         let (ours, peer) = listener.accept().await.unwrap();
+        at_work(ours, peer, theirs)
+    }
+
+    /// What [`small_session`] sets each socket's send and receive buffers to. Linux doubles it,
+    /// and the two sockets then hold about 256 KiB between them.
+    const SMALL_BUFFER: u32 = 64 * 1024;
+
+    /// [`session`] on sockets with buffers of [`SMALL_BUFFER`], which the host's TCP settings
+    /// can't grow: left to tune themselves, they can hold megabytes, and a test that needs a write
+    /// held until the client reads would pass without one (#378). As tcp(7) asks, they're set
+    /// before `listen` and `connect`, and the gate's socket takes the listener's.
+    async fn small_session() -> (TcpStream, SocketAddr, Server, TcpStream, Client) {
+        let small = || {
+            let socket = TcpSocket::new_v4().unwrap();
+            socket.set_send_buffer_size(SMALL_BUFFER).unwrap();
+            socket.set_recv_buffer_size(SMALL_BUFFER).unwrap();
+            socket
+        };
+        let listening = small();
+        listening
+            .bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .unwrap();
+        let listener = listening.listen(1).unwrap();
+        let theirs = small()
+            .connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (ours, peer) = listener.accept().await.unwrap();
+        at_work(ours, peer, theirs)
+    }
+
+    /// The gate's and the client's ends of a new connection, taken to `WORK`.
+    fn at_work(
+        ours: TcpStream,
+        peer: SocketAddr,
+        theirs: TcpStream,
+    ) -> (TcpStream, SocketAddr, Server, TcpStream, Client) {
         let variants = Variants {
             down: AES128,
             up: AES128,
@@ -1248,24 +1285,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_world_that_let_go_in_time_is_never_blamed_for_a_write_held_past_let_go() {
-        // #363's review: the link's select! is unbiased. When the stop begins and a write is then
-        // held past `let_go`, the world's Kicked(Shutdown) and `let_go`'s end are both ready once
-        // it finishes, and the link took the second about half the time, warning that the world
-        // hadn't let go. Here the client reads nothing for longer than `let_go` while the world
-        // sends more than the socket holds, then lets go.
+    /// #363's race, set up as its review found it: once the server is stopping, the world sends
+    /// 8 MiB in 64 lines, far more than [`small_session`]'s sockets hold, then `end`s its side of
+    /// the channel, while the client reads nothing for three times `let_go`. So a write is held
+    /// past `let_go`; once it finishes, what `end` left and `let_go`'s end are both ready to the
+    /// link's select!, and each line still to send is another draw between them. Returns what the
+    /// client read, and the log.
+    fn held_past_let_go(end: impl FnOnce(mpsc::Sender<WorldOut>)) -> (Vec<ClientEvent>, String) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let (events, log) = logged(|| {
+        logged(|| {
             rt.block_on(async {
                 let dir = tempfile::tempdir().unwrap();
                 let (mut gate, mut inbox) = gate(dir.path()).await;
                 let let_go = Duration::from_millis(200);
                 gate.limits.let_go = let_go;
-                let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+                let (mut ours, peer, mut server, mut theirs, mut client) = small_session().await;
                 let (_newer, mut replaced) = oneshot::channel();
                 let tester = account("tester");
                 let played = play(
@@ -1285,14 +1322,12 @@ mod tests {
                     gate.stopping.send_replace(true);
                     // The link begins its wait for the world to let go.
                     tokio::time::sleep(Duration::from_millis(20)).await;
-                    let text = "x".repeat(512 * 1024);
-                    for _ in 0..16 {
+                    let text = "x".repeat(128 * 1024);
+                    for _ in 0..64 {
                         let line = ChatOut::System { text: text.clone() };
                         out.send(WorldOut::Chat(line)).await.unwrap();
                     }
-                    out.send(WorldOut::Kicked(KickReason::Shutdown))
-                        .await
-                        .unwrap();
+                    end(out);
                     tokio::time::sleep(let_go * 3).await;
                     rest(&mut theirs, &mut client).await
                 };
@@ -1304,6 +1339,18 @@ mod tests {
                 ended.unwrap();
                 events
             })
+        })
+    }
+
+    #[test]
+    fn a_world_that_let_go_in_time_is_never_blamed_for_a_write_held_past_let_go() {
+        // #363's review: the link's select! is unbiased. When the stop begins and a write is then
+        // held past `let_go`, the world's Kicked(Shutdown) and `let_go`'s end are both ready once
+        // it finishes, and the link took the second about half the time, warning that the world
+        // hadn't let go. Here the world lets go with the shutdown's reason.
+        let (events, log) = held_past_let_go(|out| {
+            out.try_send(WorldOut::Kicked(KickReason::Shutdown))
+                .unwrap();
         });
         assert_eq!(
             events.last(),
