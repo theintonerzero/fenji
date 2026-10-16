@@ -80,7 +80,10 @@
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
 # update off (the namespace has no network anyway), then primes it: cmd.exe started once through
 # Proton's launcher, so Proton's own service is in the watchdog's baseline (prefix_primed). A run
-# refuses an unprimed prefix, and setup primes an existing one. A run whose watchdog doesn't exit
+# refuses an unprimed prefix. Setup builds and primes a prefix only in an empty or missing compat/:
+# one that isn't ready for this GE-Proton build is removed first (remove re/bare-metal/compat, then
+# setup), as Wine booting a prefix runs have used would start, unwatched, any driver service a run
+# left there (#148). A run whose watchdog doesn't exit
 # 0 (a gate event, or a watchdog failure) marks the prefix (compat/fenji-gate-event), and setup and
 # run refuse it until it is rebuilt (remove re/bare-metal/compat, then setup): a driver service that
 # run left in the registry would start, unwatched, the next time Wine boots the prefix.
@@ -525,9 +528,16 @@ cmd_bare_setup() {
     echo "the prefix is ready: $WORK/compat"
     return 0
   fi
-  mkdir -p "$WORK/compat"
   need_display "$display"
   nested_display_ok "$desktop" "$display"
+  # Setup builds and primes a prefix only in a compat/ that's empty or missing. One that isn't
+  # ready for this GE-Proton build may be one runs have used (another build's, one primed before
+  # builds were recorded), and a run killed before its watchdog's verdict leaves no gate mark:
+  # booting it would start any driver service a run left in its registry, unwatched (#148).
+  if [ -e "$WORK/compat" ] && [ -n "$(ls -A -- "$WORK/compat")" ]; then
+    die "$WORK/compat holds a prefix that isn't ready for this GE-Proton build, which runs may have used, and setup never starts Wine in one (#148): remove $WORK/compat, then run: $0 setup"
+  fi
+  mkdir -p "$WORK/compat"
   local ns ne se bpf prime
   mapfile -t ns < <(namespace_cmd "$display" "$xauth")
   mapfile -t ne < <(namespace_env "$display" "$xauth")
@@ -717,7 +727,7 @@ PY
   check_unmarked
   prefix_ready || die "no prefix; run: $0 setup"
   if [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" != "$(proton_build)" ]; then
-    die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run; run once: $0 setup"
+    die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run; remove $WORK/compat, then run: $0 setup"
   fi
   prefix_primed || die "the prefix hasn't been through Proton's launcher, so Proton's own service isn't in the watchdog's baseline; run: $0 setup"
   need_display "$display"

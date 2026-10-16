@@ -860,17 +860,24 @@ print(*(x.getsockname()[1] for x in s))')
     bad "setup on a primed prefix: rc $rc: $out"
   fi
 
-  # Setup on a prefix that exists but was never primed: the prime alone.
-  mkdir -p "$F/work2/compat/drive_c/windows"
-  echo "WINE REGISTRY Version 2" > "$F/work2/compat/system.reg"
-  flow setup-unprimed "$F/work2" "${on_desktop[@]}" cmd_bare_setup --desktop
-  mapfile -t calls < <(umu_blocks setup-unprimed)
-  if [ "$rc" = 0 ] && [ "${#calls[@]}" = 1 ] && [[ ${calls[0]} == "--- umu-run $F/work2/compat/drive_c/windows/system32/cmd.exe /c exit "* ]] &&
-    [ -f "$F/work2/compat/fenji-primed" ]; then
-    ok "setup primes an existing prefix without createprefix"
-  else
-    bad "setup on an unprimed prefix: rc $rc, calls $(printf '[%s] ' "${calls[@]}"): $out"
-  fi
+  # Setup starts Wine only in a compat/ that's empty or missing: a prefix there that isn't ready
+  # for this GE-Proton build may be one runs have used, whose registry may hold a driver service a
+  # run left, which booting it would start, unwatched (#148; #373's re-review). One never primed,
+  # one another build primed, and a half-built one are all refused, and nothing starts in them.
+  for case in unprimed other partial; do
+    w=$F/work2-$case
+    mkdir -p "$w/compat/drive_c/windows"
+    if [ "$case" != partial ]; then echo "WINE REGISTRY Version 2" > "$w/compat/system.reg"; fi
+    if [ "$case" = other ]; then echo "1789000000 GE-Proton-other" > "$w/compat/fenji-primed"; fi
+    before=$(cat -- "$w/compat/fenji-primed" 2> /dev/null || echo none)
+    flow "setup-$case" "$w" "${on_desktop[@]}" cmd_bare_setup --desktop
+    if [ "$rc" = 1 ] && [[ $out == *"remove $w/compat, then run: "*" setup"* ]] && [ ! -e "$F/log/setup-$case/umu" ] &&
+      [ "$(cat -- "$w/compat/fenji-primed" 2> /dev/null || echo none)" = "$before" ]; then
+      ok "setup starts nothing in a prefix that isn't ready for this build ($case), and says to remove it"
+    else
+      bad "setup on a used prefix ($case): rc $rc: $out"
+    fi
+  done
 
   # A failing umu-run: exit 1, and no mark.
   flow setup-nobuild "$F/work3" "${on_desktop[@]}" with_env FAKE_UMU_FAIL=createprefix cmd_bare_setup --desktop

@@ -585,7 +585,7 @@ if exe == "cmd.exe":  # setup's prime: Proton makes the prefix, or brings it up 
         f.write("WINE REGISTRY Version 2\n")
     with open(os.path.join(log, "proton"), "a") as f:
         f.write(json.dumps({"t": time.time(), "exe": exe, "args": args}) + "\n")
-    sys.exit(0)
+    sys.exit(1 if os.environ.get("FAKE_PROTON_FAIL") else 0)
 # explorer.exe /desktop=NAME,SIZE PROGRAM ARGS: PROGRAM in a desktop of its own, its argv[0] the
 # Windows path, as Wine shows it.
 program, argv0 = exe, exe
@@ -956,6 +956,26 @@ for case in other unmarked; do
     bad "setup on a used prefix ($case): rc $rc: $out"
   fi
 done
+# Nor with client/ gone: a used compat/ is refused whatever else the workspace holds (#373's
+# re-review).
+mv -- "$PW/client" "$PW/client.kept"
+setup_flow setup-noclient "$PW"
+mv -- "$PW/client.kept" "$PW/client"
+if [ "$rc" = 1 ] && [[ $out == *"remove $PW/compat, then run setup again"* ]] && [ ! -e "$F/log/setup-noclient/proton" ] &&
+  [ ! -e "$F/log/setup-noclient/cp" ]; then
+  ok "setup never starts Wine in a used prefix whose workspace has lost client/"
+else
+  bad "setup on a used prefix with no client/: rc $rc: $out"
+fi
+# An empty compat/, as a first setup that failed on a copy leaves, is no used prefix: made fresh.
+rm -rf -- "$PW/compat"
+mkdir -- "$PW/compat"
+setup_flow setup-empty "$PW"
+if [ "$rc" = 0 ] && [ "$(cat "$PW/compat/fenji-primed")" = "$(cat "$F/proton/version")" ]; then
+  ok "setup makes a fresh prefix in an empty compat/"
+else
+  bad "setup on an empty compat/: rc $rc: $out"
+fi
 # Once the used prefix is removed, setup makes a fresh one, and keeps the client copies.
 rm -rf -- "$PW/compat"
 setup_flow setup-fresh "$PW"
@@ -966,10 +986,12 @@ if [ "$rc" = 0 ] && [ -f "$PW/compat/pfx/system.reg" ] && [ "$(cat "$PW/compat/f
 else
   bad "setup on a removed prefix: rc $rc: $out"
 fi
-# A prime that doesn't run (here the wrapper refuses) leaves the prefix unmarked.
+# A prime whose Proton fails, after making the prefix, leaves it unmarked (#373's re-review: one
+# that doesn't get as far as the prefix can't tell a mark written too early).
 rm -rf -- "$PW/compat"
-FAKE_WRAP_FAIL=1 setup_flow setup-failed "$PW"
-if [ "$rc" = 1 ] && [ ! -e "$PW/compat/fenji-primed" ]; then
+FAKE_PROTON_FAIL=1 setup_flow setup-failed "$PW"
+if [ "$rc" = 1 ] && [[ $out == *"Proton's launcher failed (exit 1)"* ]] && [ -f "$PW/compat/pfx/system.reg" ] &&
+  [ ! -e "$PW/compat/fenji-primed" ]; then
   ok "a prime that fails leaves the prefix unmarked"
 else
   bad "a failed prime: rc $rc, mark '$(cat "$PW/compat/fenji-primed" 2> /dev/null)': $out"

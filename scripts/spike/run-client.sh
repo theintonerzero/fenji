@@ -10,9 +10,9 @@
 #       a second reflink copy for a two-client run's second client; on an existing workspace,
 #       client2/ only. The prefix's mark (compat/fenji-primed) names the GE-Proton build that made
 #       it. A run refuses a prefix another build primed, or one no build marked: that build would
-#       upgrade it during the run, which the watchdog takes for a gate event (#174). Setup never
-#       starts Wine in a prefix that runs have used, as booting it starts every service its registry
-#       holds, a driver service a stopped run left there among them, with no watchdog (#148). So
+#       upgrade it during the run, which the watchdog takes for a gate event (#174). Setup starts
+#       Wine only in an empty or missing compat/, as booting a prefix runs have used starts every
+#       service its registry holds, a driver service a stopped run left there among them, with no watchdog (#148). So
 #       after a GE-Proton bump, remove re/runs/compat and run setup: on an existing workspace it
 #       makes a fresh prefix, and keeps the client copies.
 #   scripts/spike/run-client.sh run NAME [--hosts FILE] [--ports "P1 P2"] [--timeout S]
@@ -197,8 +197,8 @@ prefix_marked() {
   [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" = "$(proton_build)" ]
 }
 
-# prime_prefix: makes a fresh prefix through Proton's own launcher (its steam.exe shim, which also registers Proton's Discord bridge service),
-# and leaves wineserver to exit cleanly so the registry reaches disk: everything Proton sets up
+# prime_prefix: makes a fresh prefix through Proton's own launcher (its steam.exe shim, which also
+# registers Proton's Discord bridge service), and leaves wineserver to exit cleanly so the registry reaches disk: everything Proton sets up
 # belongs to the watchdog's baseline. A prefix, a service or an upgrade appearing during a client run
 # would look like driver activity to the watchdog. Marks the prefix only once Proton's run has
 # exited 0. Uses cmd_setup's display and gpu.
@@ -248,17 +248,17 @@ cmd_setup() {
     echo "client 2's copy ready: $WORK/client2"
     return 0
   fi
-  if [ -e "$WORK/client" ]; then
-    # Setup never starts Wine in a prefix that runs have used: booting it starts every service its
-    # registry holds, a driver service a stopped run left there among them, with no watchdog
-    # (#148). A prefix that isn't this GE-Proton build's is made again, fresh, once it's removed;
-    # the client copies stay.
-    if [ -e "$WORK/compat" ]; then
-      if prefix_marked; then
-        die "$WORK/client exists already, and this GE-Proton build primed its prefix; remove re/runs/ to start over"
-      fi
-      die "another GE-Proton build primed the prefix, or it was primed before builds were recorded, and setup never starts Wine in a prefix that runs have used (#148): remove $WORK/compat, then run setup again; it makes a fresh prefix and keeps the client copies"
+  # Setup starts Wine only in a compat/ that's empty or missing, as booting a prefix that runs have
+  # used starts every service its registry holds, a driver service a stopped run left there among
+  # them, with no watchdog (#148). One that's there is made again, fresh, once it's removed; the
+  # client copies stay.
+  if [ -e "$WORK/compat" ] && [ -n "$(ls -A -- "$WORK/compat")" ]; then
+    if [ -e "$WORK/client" ] && prefix_marked; then
+      die "$WORK/client exists already, and this GE-Proton build primed its prefix; remove re/runs/ to start over"
     fi
+    die "$WORK/compat holds a prefix that runs may have used, another GE-Proton build's or one primed before builds were recorded, and setup never starts Wine in one (#148): remove $WORK/compat, then run setup again; it makes a fresh prefix and keeps the client copies"
+  fi
+  if [ -e "$WORK/client" ]; then
     [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
     need_display "$display"
     mkdir -p "$WORK/compat"
