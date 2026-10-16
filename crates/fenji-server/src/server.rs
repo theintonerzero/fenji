@@ -430,7 +430,9 @@ pub async fn start(
 ///   it waits [`CONSOLE_GRACE`] at most for a console that hasn't ended: one whose terminal has
 ///   stopped reading may never end.
 /// - [`Front::Plain`]: commands from stdin and answers on stdout, the log being on stderr. The end
-///   of stdin leaves the server running.
+///   of stdin leaves the server running. Once the server has stopped, `run` waits
+///   [`CONSOLE_GRACE`] at most for these too: a stdout that takes no more answers, such as a pipe
+///   nobody reads, would hold a write for ever (#359).
 pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()> {
     let (cfg, first_run) = match loaded {
         Loaded::Existing(cfg) => (cfg, None),
@@ -523,7 +525,13 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
             let leave = std::future::pending();
             let lines =
                 fenji_console::run_plain(session, input, out, err, false, Mode::InProcess, leave);
-            if let Err(e) = lines.await {
+            // Bounded as the full-screen console is: a write of an answer to a stdout that takes
+            // no more, such as a pipe nobody reads, never ends (#359).
+            let ended = held_until_stopped(lines, console.stopped(), CONSOLE_GRACE).await;
+            let serving = !served.is_finished() && !*console.stopping().borrow();
+            if let Err(e) = ended
+                && serving
+            {
                 tracing::warn!(error = %e, "the console's lines have stopped: the server runs on");
             }
             joined(served).await
@@ -565,9 +573,10 @@ pub(crate) async fn held(
     }
 }
 
-/// How long `run` waits for its full-screen console once the server has stopped. The console ends
-/// on the server's goodbye at once, unless it's caught in a write to a terminal that has stopped
-/// reading, as over a stalled SSH link (the fix pass's re-review, NB1).
+/// How long `run` waits for its console, full-screen or plain lines, once the server has stopped.
+/// The console ends on the server's goodbye at once, unless it's caught in a write to a terminal
+/// that has stopped reading, as over a stalled SSH link (the fix pass's re-review, NB1), or to a
+/// stdout nobody reads (#359).
 const CONSOLE_GRACE: Duration = Duration::from_secs(2);
 
 /// How long `run` gives the server to begin stopping once its full-screen console's terminal has
@@ -589,17 +598,17 @@ async fn runs_on(mut stopping: watch::Receiver<bool>, wait: Duration) -> bool {
     !matches!(stops, Ok(Ok(_)))
 }
 
-/// Why `run` stops waiting for the full-screen console: the server has stopped, and the console
-/// didn't end within [`CONSOLE_GRACE`].
+/// Why `run` stops waiting for its console: the server has stopped, and the console didn't end
+/// within [`CONSOLE_GRACE`].
 const CONSOLE_LEFT: &str = "the server has stopped, but the console hasn't ended, its terminal \
-     likely gone: it's left behind";
+     or its output likely stalled: it's left behind";
 
 /// [`held`], waited for no longer than `grace` once the server has `stopped`
 /// ([`ConsoleService::stopped`]). A console still running then, such as one caught in a write to a
-/// terminal that has stopped reading, is left to its thread, which `main` doesn't wait for, so that
-/// the process ends. The terminal gets its mode back first ([`fenji_console::restore_mode`], which
-/// takes no write), so that the shell after the server reads lines once the terminal reads again
-/// (#359).
+/// terminal that has stopped reading, or to a stdout nobody reads, is left to its thread, which
+/// `main` doesn't wait for, so that the process ends. The terminal gets its mode back first
+/// ([`fenji_console::restore_mode`], which takes no write, and does nothing for plain lines), so
+/// that the shell after the server reads lines once the terminal reads again (#359).
 async fn held_until_stopped(
     console: impl Future<Output = std::io::Result<Ending>> + Send + 'static,
     mut stopped: watch::Receiver<bool>,

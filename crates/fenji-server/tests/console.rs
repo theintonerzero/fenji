@@ -538,6 +538,52 @@ fn plain_lines_run_commands_and_stop_ends_the_server_with_its_input_still_open()
 }
 
 #[test]
+fn plain_lines_whose_answers_go_unread_are_left_once_the_server_has_stopped() {
+    // #359 (the hosting plan's Task 10, carry line 6): once the server has stopped, `run` waits
+    // 2 s at most for its full-screen console (#356), but it waited on its plain lines without a
+    // bound. With stdout taking no more, as a pipe nobody reads, the write of an answer waited for
+    // ever, and so did `run`: the server stopped, and the process never ended.
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("fenji.toml");
+    std::fs::write(
+        &config,
+        "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n",
+    )
+    .unwrap();
+    let log = tempfile::NamedTempFile::new().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        .arg("--config")
+        .arg(&config)
+        .args(["run", "--plain"])
+        .env("RUST_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(log.reopen().unwrap())
+        .spawn()
+        .unwrap();
+    let said = || String::from_utf8_lossy(&std::fs::read(log.path()).unwrap()).into_owned();
+    // Held open, and never read.
+    let _stdout = child.stdout.take().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    until(|| said().contains("Fenji is running"), said);
+    // Far more answers than the pipe holds (64 KiB on Linux): each `help` is a line a command.
+    for _ in 0..200 {
+        writeln!(stdin, "help").unwrap();
+    }
+    stdin.flush().unwrap();
+    // The console's write of an answer waits on the pipe by now.
+    std::thread::sleep(Duration::from_secs(1));
+    kill_process(Pid::from_child(&child), Signal::TERM).unwrap();
+    let status = exit_of(&mut child, said);
+    let _ = child.kill();
+    assert!(status.success(), "{status}:\n{}", said());
+    let said = said();
+    assert!(said.contains("shutting down signal=SIGTERM"), "{said}");
+    assert!(said.contains("it's left behind"), "{said}");
+    assert!(!dir.path().join("fenji.db-wal").exists(), "{said}");
+}
+
+#[test]
 fn console_run_gives_a_script_the_answer_and_an_exit_code_that_follows_it() {
     // M4 hosting plan, Task 11's carry-forwards 2 and 6.
     let dir = tempfile::tempdir().unwrap();
