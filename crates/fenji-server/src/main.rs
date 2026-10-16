@@ -42,7 +42,7 @@ async fn fenji_server() -> anyhow::Result<ExitCode> {
                 cli.plain,
             );
             let hub = console::log::init(&console::sinks(front, &loaded.config().store.path))?;
-            fenji_server::server::run(loaded, front, hub).await?;
+            fenji_server::server::run(loaded, given, front, hub).await?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Init => {
@@ -61,7 +61,7 @@ async fn fenji_server() -> anyhow::Result<ExitCode> {
             console::log::init(&[Sink::Stderr])?;
             let cfg = config::load_existing(given)?;
             let mut out = std::io::stdout().lock();
-            admin(&cfg, &cmd, &mut out, &SystemClock).await?;
+            admin(&cfg, given, &cmd, &mut out, &SystemClock).await?;
             Ok(ExitCode::SUCCESS)
         }
     }

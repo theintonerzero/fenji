@@ -32,7 +32,7 @@ async fn invite_with(dir: &Path, server: &str) -> String {
 
 async fn run(cfg: &Config, cmd: Command) -> String {
     let mut out = Vec::new();
-    admin(cfg, &cmd, &mut out, &TestClock::at(1_800_000_000_000))
+    admin(cfg, None, &cmd, &mut out, &TestClock::at(1_800_000_000_000))
         .await
         .unwrap();
     String::from_utf8(out).unwrap()
@@ -856,42 +856,52 @@ async fn an_admin_command_never_migrates_a_running_servers_database() {
     let latest = latest_migration(dir.path()).await;
     let store = fenji_store::Store::open_at(&cfg.store.path, latest - 1).await;
     store.unwrap().close().await;
-    let _running = fenji_server::lock::take(dir.path()).unwrap();
+    let _running = fenji_server::lock::take(dir.path(), None).unwrap();
     let list = Command::Invite {
         cmd: InviteCmd::List,
     };
     let clock = TestClock::at(1_800_000_000_000);
-    let e = admin(&cfg, &list, &mut Vec::new(), &clock)
+    let e = admin(&cfg, None, &list, &mut Vec::new(), &clock)
         .await
         .unwrap_err();
     let e = format!("{e:#}");
     assert!(
         e.starts_with("a server is running on this data folder (")
             && e.contains("its database is an older version's than this fenji-server's")
-            && e.ends_with("or stop the server first"),
+            && e.contains("or stop the server first."),
         "{e}"
     );
     #[cfg(unix)]
-    assert!(
-        e.contains("`fenji-server console --run \"invites\"`"),
-        "{e}"
-    );
+    assert!(e.contains("`fenji-server console --run invites`"), "{e}");
     assert_eq!(
         behind_at(&cfg.store.path).await,
         Some(latest - 1),
         "migrated"
     );
+    // Typed as a host types it, with `--config`, the command it suggests has it too (Task 2's
+    // review, Minor 2).
+    #[cfg(unix)]
+    {
+        let refused = fenji_server(dir.path(), &["invite", "list"]);
+        let said = String::from_utf8_lossy(&refused.stderr);
+        let given = dir.path().join("fenji.toml");
+        let suggested = format!(
+            "`fenji-server --config {} console --run invites`",
+            given.display()
+        );
+        assert!(said.contains(&suggested), "{said}");
+    }
     // A command the console has no form of can only wait for the server to stop.
     let delete = Command::Account {
         cmd: AccountCmd::Delete {
             username: "Mai".into(),
         },
     };
-    let e = admin(&cfg, &delete, &mut Vec::new(), &clock)
+    let e = admin(&cfg, None, &delete, &mut Vec::new(), &clock)
         .await
         .unwrap_err();
     let e = format!("{e:#}");
-    assert!(e.ends_with(": stop the server first"), "{e}");
+    assert!(e.contains(": stop the server first."), "{e}");
     assert_eq!(
         behind_at(&cfg.store.path).await,
         Some(latest - 1),
@@ -910,7 +920,7 @@ async fn an_admin_command_uses_a_running_servers_database_of_its_own_version() {
         .unwrap()
         .close()
         .await;
-    let _running = fenji_server::lock::take(dir.path()).unwrap();
+    let _running = fenji_server::lock::take(dir.path(), None).unwrap();
     let text = run(
         &cfg,
         Command::Invite {
@@ -1067,7 +1077,9 @@ mod the_data_folder {
         let mut out = Vec::new();
         let backup = Command::Backup { keep: 14 };
         let clock = TestClock::at(1_800_000_000_000);
-        let e = admin(&cfg, &backup, &mut out, &clock).await.unwrap_err();
+        let e = admin(&cfg, None, &backup, &mut out, &clock)
+            .await
+            .unwrap_err();
         let e = format!("{e:#}");
         let data = dir.path().join("data");
         assert!(e.contains(&format!("chmod o-w {}", data.display())), "{e}");
@@ -1079,7 +1091,7 @@ mod the_data_folder {
         // One its group may write in is its user's still: with a user's own group and a umask of
         // 002, every folder its user makes is so.
         std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o775)).unwrap();
-        admin(&cfg, &backup, &mut out, &clock).await.unwrap();
+        admin(&cfg, None, &backup, &mut out, &clock).await.unwrap();
     }
 
     #[tokio::test]
@@ -1098,7 +1110,7 @@ mod the_data_folder {
             cmd: AccountCmd::List,
         };
         let clock = TestClock::at(1_800_000_000_000);
-        let e = admin(&cfg, &list, &mut Vec::new(), &clock)
+        let e = admin(&cfg, None, &list, &mut Vec::new(), &clock)
             .await
             .unwrap_err();
         let e = format!("{e:#}");

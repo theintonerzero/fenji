@@ -60,7 +60,7 @@ fn refusal(
     me: u32,
     name: impl Fn(u32) -> Option<String>,
 ) -> Option<String> {
-    use crate::text::escape_hidden;
+    use crate::text::{escape_hidden, shell_word};
     let folder = escape_hidden(&data.display().to_string());
     if owner != me {
         let named = |uid: u32| name(uid).map(|n| escape_hidden(&n));
@@ -83,18 +83,6 @@ fn refusal(
         ));
     }
     None
-}
-
-/// `word` as one word for a POSIX shell: as it is when it holds nothing the shell reads, quoted
-/// otherwise.
-#[cfg(unix)]
-fn shell_word(word: &str) -> String {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "/._-+,:@%=".contains(c);
-    if !word.is_empty() && word.chars().all(plain) {
-        word.to_owned()
-    } else {
-        format!("'{}'", word.replace('\'', r"'\''"))
-    }
 }
 
 #[cfg(all(test, unix))]

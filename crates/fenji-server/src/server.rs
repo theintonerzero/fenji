@@ -418,7 +418,8 @@ pub async fn start(
 /// what it wrote before it starts, and what's next once it runs. Under `tls = "self"` the start
 /// shows a server link beside "Fenji is running" (§3.10).
 /// - First it claims its data folder (§3.5): another server using it stops this one before it
-///   opens the store or listens (Review Focus 5). On Linux and macOS the claim is also the console
+///   opens the store or listens (Review Focus 5), saying what to do with the `--config` it was
+///   `given`, if any. On Linux and macOS the claim is also the console
 ///   socket, which consoles attach to while it serves, and are told goodbye on as it stops;
 ///   elsewhere it's the folder's lock alone ([`crate::lock`]).
 /// - [`Front::Full`]: the full-screen console holds the terminal while the server runs on a task
@@ -433,7 +434,12 @@ pub async fn start(
 ///   of stdin leaves the server running. Once the server has stopped, `run` waits
 ///   [`CONSOLE_GRACE`] at most for these too: a stdout that takes no more answers, such as a pipe
 ///   nobody reads, would hold a write for ever (#359).
-pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()> {
+pub async fn run(
+    loaded: Loaded,
+    given: Option<&Path>,
+    front: Front,
+    hub: LogHub,
+) -> anyhow::Result<()> {
     let (cfg, first_run) = match loaded {
         Loaded::Existing(cfg) => (cfg, None),
         Loaded::FirstRun(cfg) => {
@@ -443,14 +449,14 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
     };
     let data = config::data_folder(&cfg.store.path);
     #[cfg(unix)]
-    let claim = console::socket::claim(&data).await?;
+    let claim = console::socket::claim(&data, given).await?;
     #[cfg(unix)]
     if let Some(why) = claim.unattachable() {
         tracing::warn!("{why}");
     }
     // Held until the server has stopped, at the end of `run`.
     #[cfg(not(unix))]
-    let _lock = crate::lock::take(&data)?;
+    let _lock = crate::lock::take(&data, given)?;
     if let Some([wrote, ..]) = &first_run {
         tracing::info!("{wrote}");
     }

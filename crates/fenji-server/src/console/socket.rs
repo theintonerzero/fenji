@@ -113,12 +113,13 @@ impl Claim {
 /// - the new socket is bound 0600 from the start.
 ///
 /// A socket that can't be made, such as one whose path is too long, leaves the server
-/// unattachable ([`Claim::unattachable`]), still one to its data folder.
+/// unattachable ([`Claim::unattachable`]), still one to its data folder. `given` is the `--config`
+/// this run was given, which the command a refusal suggests repeats.
 ///
 /// # Errors
 /// If another server uses the folder, or the folder or its lock can't be made or taken.
-pub async fn claim(data: &Path) -> anyhow::Result<Claim> {
-    let lock = lock::take(data)?;
+pub async fn claim(data: &Path, given: Option<&Path>) -> anyhow::Result<Claim> {
+    let lock = lock::take(data, given)?;
     let path = path(data);
     let unattachable = |why: String| {
         Some(format!(
@@ -134,7 +135,7 @@ pub async fn claim(data: &Path) -> anyhow::Result<Claim> {
     }
     // A server without the lock: one whose lock file was deleted from under it.
     if answers(&path).await? {
-        bail!(lock::in_use(data));
+        bail!(lock::in_use(data, given));
     }
     let (socket, unattachable) = match bind(data, &path) {
         Ok(listener) => (Some(Bound { listener, path }), None),

@@ -64,7 +64,7 @@ async fn started_at(dir: tempfile::TempDir, data: &Path) -> Started {
             .with(LevelFilter::INFO)
             .with(hub.layer()),
     );
-    let claim = console::socket::claim(data).await.unwrap();
+    let claim = console::socket::claim(data, None).await.unwrap();
     let cfg = Config::parse(
         "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n",
         data,
@@ -217,7 +217,7 @@ async fn a_console_attaches_sees_the_backlog_and_runs_a_command() {
 async fn a_second_server_on_the_same_data_folder_refuses_before_opening_anything() {
     // Review Focus 5.
     let s = started_with_socket().await;
-    let e = console::socket::claim(&s.data()).await.unwrap_err();
+    let e = console::socket::claim(&s.data(), None).await.unwrap_err();
     assert!(
         format!("{e:#}").contains("already using this data folder"),
         "{e:#}"
@@ -230,7 +230,7 @@ async fn a_server_whose_lock_file_was_deleted_keeps_its_data_folder_by_its_socke
     // lock file (a host tidying the folder).
     let s = started_with_socket().await;
     std::fs::remove_file(s.data().join("server.lock")).unwrap();
-    let e = console::socket::claim(&s.data()).await.unwrap_err();
+    let e = console::socket::claim(&s.data(), None).await.unwrap_err();
     assert!(
         format!("{e:#}").contains("already using this data folder"),
         "{e:#}"
@@ -242,7 +242,7 @@ async fn a_server_whose_lock_file_was_deleted_keeps_its_data_folder_by_its_socke
 async fn a_stale_socket_is_replaced() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("console.sock"), b"").unwrap();
-    let claim = console::socket::claim(dir.path()).await.unwrap();
+    let claim = console::socket::claim(dir.path(), None).await.unwrap();
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(dir.path().join("console.sock"))
         .unwrap()
@@ -443,7 +443,7 @@ async fn a_stale_socket_left_by_a_killed_server_is_replaced() {
     let path = dir.path().join("console.sock");
     drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
     assert!(path.exists());
-    let claim = console::socket::claim(dir.path()).await.unwrap();
+    let claim = console::socket::claim(dir.path(), None).await.unwrap();
     assert!(claim.unattachable().is_none());
     // It answers now, and the claim left nothing else in the data folder but its lock.
     UnixStream::connect(&path).await.unwrap();
@@ -461,7 +461,7 @@ async fn the_claim_makes_a_missing_data_folder_owner_only() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
-    let _claim = console::socket::claim(&data).await.unwrap();
+    let _claim = console::socket::claim(&data, None).await.unwrap();
     let mode = std::fs::metadata(&data).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o700);
     assert!(data.join("console.sock").exists());
@@ -475,7 +475,7 @@ async fn a_data_folder_too_deep_for_a_socket_still_starts_and_keeps_one_server_t
     let s = started_at(dir, &deep).await;
     assert!(!deep.join("console.sock").exists());
     // One server per data folder holds without the socket.
-    let e = console::socket::claim(&deep).await.unwrap_err();
+    let e = console::socket::claim(&deep, None).await.unwrap_err();
     assert!(
         format!("{e:#}").contains("already using this data folder"),
         "{e:#}"
@@ -495,7 +495,7 @@ async fn a_data_folder_too_deep_for_a_socket_still_starts_and_keeps_one_server_t
     } = s;
     server.shutdown().await.unwrap();
     tokio::time::timeout(WAIT, serving).await.unwrap().unwrap();
-    let claim = console::socket::claim(&deep).await.unwrap();
+    let claim = console::socket::claim(&deep, None).await.unwrap();
     let why = claim
         .unattachable()
         .expect("it says why consoles can't attach");
@@ -546,7 +546,7 @@ async fn the_server_stopping_says_goodbye_and_takes_its_socket_away() {
     tokio::time::timeout(WAIT, serving).await.unwrap().unwrap();
     assert!(!socket.exists());
     // The data folder is free for the next server.
-    console::socket::claim(&data).await.unwrap();
+    console::socket::claim(&data, None).await.unwrap();
 }
 
 #[tokio::test]

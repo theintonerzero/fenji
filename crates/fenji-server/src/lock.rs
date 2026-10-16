@@ -19,15 +19,16 @@ pub struct Lock {
 }
 
 /// Takes the lock of the data folder `data` for this process, making the folder, owner-only on
-/// Unix, if it's missing.
+/// Unix, if it's missing. `given` is the `--config` this run was given, which the command a
+/// refusal suggests repeats.
 ///
 /// # Errors
-/// `a server is already using this data folder (<path>)` while another server holds it, or why the
-/// folder or its lock can't be made or taken.
-pub fn take(data: &Path) -> anyhow::Result<Lock> {
+/// `a server is already using this data folder (<path>)` while another process holds it
+/// ([`in_use`]), or why the folder or its lock can't be made or taken.
+pub fn take(data: &Path, given: Option<&Path>) -> anyhow::Result<Lock> {
     match try_take(data)? {
         Some(lock) => Ok(lock),
-        None => bail!(in_use(data)),
+        None => bail!(in_use(data, given)),
     }
 }
 
@@ -111,17 +112,26 @@ pub(crate) fn is_free(path: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// What a refusal over the data folder's lock ends with: besides a server, an admin command holds
+/// the lock for a moment, while it brings the database up to date (#359).
+pub(crate) const OR_UPDATING: &str = "If no server runs, a fenji-server command is bringing the \
+     database up to date: try again in a moment";
+
 /// Why a server can't start on the data folder `data`, and what to do (the hosting plan's final
-/// review B, Minor 4).
-pub(crate) fn in_use(data: &Path) -> String {
+/// review B, Minor 4): with the server that holds it, attach with the `--config` this run was
+/// `given`, or stop it; with a command bringing the database up to date, try again ([`OR_UPDATING`]).
+pub(crate) fn in_use(data: &Path, given: Option<&Path>) -> String {
     let todo = if cfg!(unix) {
-        "it runs in another window, in tmux or as a service; attach to it with \
-         `fenji-server console`, or stop it first"
+        format!(
+            "it runs in another window, in tmux or as a service; attach to it with `{}`, or stop \
+             it first",
+            crate::cli::command_line(given, "console")
+        )
     } else {
-        "it runs in another window; use that one, or stop it first"
+        "it runs in another window; use that one, or stop it first".to_owned()
     };
     format!(
-        "a server is already using this data folder ({}): {todo}",
+        "a server is already using this data folder ({}): {todo}. {OR_UPDATING}",
         shown(data).display()
     )
 }
@@ -141,23 +151,49 @@ mod tests {
         // double-clicked twice among them, before a second server opens the database.
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
-        let held = take(&data).unwrap();
-        let e = take(&data).unwrap_err();
+        let held = take(&data, None).unwrap();
+        let e = take(&data, None).unwrap_err();
         assert!(
             format!("{e:#}").contains("a server is already using this data folder ("),
             "{e:#}"
         );
-        // And what to do (the hosting plan's final review B, Minor 4).
+        // And what to do (the hosting plan's final review B, Minor 4), and what else may hold it
+        // a moment: a command bringing the database up to date (#359, Task 2's review, Minor 3).
         let todo = if cfg!(unix) {
             "): it runs in another window, in tmux or as a service; attach to it with \
-             `fenji-server console`, or stop it first"
+             `fenji-server console`, or stop it first. "
         } else {
-            "): it runs in another window; use that one, or stop it first"
+            "): it runs in another window; use that one, or stop it first. "
         };
-        assert!(format!("{e:#}").ends_with(todo), "{e:#}");
+        assert!(
+            format!("{e:#}").ends_with(&format!("{todo}{OR_UPDATING}")),
+            "{e:#}"
+        );
         drop(held);
-        let _again = take(&data).unwrap();
+        let _again = take(&data, None).unwrap();
         assert!(data.join(NAME).is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_server_is_told_to_attach_with_the_config_it_was_given() {
+        // #359 (Task 2's review, Minor 2): a server started with `--config` was told to attach
+        // with `fenji-server console` alone, which finds no fenji.toml outside the server's folder.
+        let data = Path::new("/var/lib/fenji");
+        let etc = Path::new("/etc/fenji/fenji.toml");
+        let text = in_use(data, Some(etc));
+        assert!(
+            text.contains(
+                "attach to it with `fenji-server --config /etc/fenji/fenji.toml console`"
+            ),
+            "{text}"
+        );
+        let spaced = Path::new("/home/wen/my fenji/fenji.toml");
+        let text = in_use(data, Some(spaced));
+        assert!(
+            text.contains("`fenji-server --config '/home/wen/my fenji/fenji.toml' console`"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -169,7 +205,7 @@ mod tests {
         let held = try_take(&data).unwrap().expect("free: made and taken");
         assert!(try_take(&data).unwrap().is_none(), "taken twice");
         drop(held);
-        let server = take(&data).unwrap();
+        let server = take(&data, None).unwrap();
         assert!(try_take(&data).unwrap().is_none(), "a server holds it");
         drop(server);
         assert!(try_take(&data).unwrap().is_some());
@@ -182,12 +218,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(NAME);
         assert!(is_free(&path).unwrap(), "none yet");
-        let held = take(dir.path()).unwrap();
+        let held = take(dir.path(), None).unwrap();
         assert!(!is_free(&path).unwrap());
         drop(held);
         assert!(is_free(&path).unwrap());
         // Seeing doesn't keep it.
-        let _again = take(dir.path()).unwrap();
+        let _again = take(dir.path(), None).unwrap();
     }
 
     #[cfg(unix)]
@@ -200,7 +236,7 @@ mod tests {
         std::fs::create_dir(&data).unwrap();
         let target = dir.path().join("elsewhere");
         std::os::unix::fs::symlink(&target, data.join(NAME)).unwrap();
-        let e = format!("{:#}", take(&data).unwrap_err());
+        let e = format!("{:#}", take(&data, None).unwrap_err());
         assert!(e.contains("link"), "{e}");
         assert!(!target.exists(), "nothing was made where it pointed");
     }
@@ -214,7 +250,7 @@ mod tests {
         let path = dir.path().join(NAME);
         std::fs::write(&path, b"").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let _held = take(dir.path()).unwrap();
+        let _held = take(dir.path(), None).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
     }

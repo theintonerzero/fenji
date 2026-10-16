@@ -648,7 +648,7 @@ mod unix {
             // The fix pass's re-review, NB2: after the goodbye, `--run stop` waits for the data
             // folder's lock to be free, within the same bound.
             let dir = tempfile::tempdir().unwrap();
-            let _kept = lock::take(dir.path()).unwrap();
+            let _kept = lock::take(dir.path(), None).unwrap();
             let socket = fake_server(dir.path(), "stopping the server", Then::Goodbye);
             let e = run_once_within(&socket, "stop", STOPS_WITHIN)
                 .await

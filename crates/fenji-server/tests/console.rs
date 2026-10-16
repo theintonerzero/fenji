@@ -969,6 +969,9 @@ fn a_second_server_on_a_data_folder_in_use_refuses_before_it_opens_its_database_
         said.contains("a server is already using this data folder ("),
         "{said}"
     );
+    // To attach, with the config it was given (#359, Task 2's review, Minor 2).
+    let attach = format!("`fenji-server --config {} console`", other.display());
+    assert!(said.contains(&attach), "{said}");
     assert!(
         !dir.path().join("other.db").exists(),
         "its store never opened"
