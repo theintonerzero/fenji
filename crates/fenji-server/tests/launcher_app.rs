@@ -6,6 +6,7 @@
 //! one game at a time, and every refusal in words.
 mod common;
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -431,6 +432,7 @@ impl PlayBed {
     }
 
     /// A first start whose `umu-run createprefix` never ends by itself.
+    #[cfg(target_os = "linux")]
     async fn with_stuck_prefix() -> PlayBed {
         Self::build(Os::Linux, 1, 0, 600).await
     }
@@ -450,6 +452,8 @@ impl PlayBed {
         std::fs::write(client.join("bin64/gujianol.exe"), b"a small program").unwrap();
         let umu_run = dir.path().join("umu-run");
         std::fs::write(&umu_run, FAKE_UMU_RUN).unwrap();
+        // A shell script, run on Linux alone, as Play is (launcher spec L2).
+        #[cfg(unix)]
         std::fs::set_permissions(&umu_run, std::fs::Permissions::from_mode(0o755)).unwrap();
         let record = dir.path().join("record");
         let mut cfg = config(dir.path());
@@ -494,6 +498,7 @@ impl PlayBed {
     }
 
     /// The launcher opened again on the same folders, as a player does after closing it.
+    #[cfg(target_os = "linux")]
     fn reopened(&self) -> App {
         App::start(self.cfg.clone(), tokio::runtime::Handle::current())
     }
