@@ -838,12 +838,14 @@ class Follow:
     def hold(self, look, stalled=False):
         """Notes what the Tail holds back: read, so it counts as shown, and not yet queued, so a line
         of another log stamped at or after it waits for it. A last line still partial after a poll
-        that found nothing new (`stalled`) waits for a writer that stopped mid-line, and no longer
-        holds the others back."""
-        self.held = look
+        that found nothing new (`stalled`) waits for a writer that stopped mid-line: it no longer
+        holds the others back, and it is no look-ahead either, since what would end it hasn't come
+        (a split LoadDriver's name read from it could be cut short)."""
         lines = look.split(b"\n")
         if stalled and lines[-1]:
             lines.pop()
+            look = look[:look.rfind(b"\n") + 1]
+        self.held = look
         stamps, prev = [], self.last
         for line in lines:
             stamp = stamp_of(line)

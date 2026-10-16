@@ -922,6 +922,20 @@ class TwoLogs(unittest.TestCase):
         self.assertEqual(self.trig, [])
         self.assertEqual(self.notes, ["LoadDriver for baseline service winebth (message split across lines)"])
 
+    def test_a_stalled_cut_line_never_completes_a_split_loaddriver(self):  # #244
+        # Log 1's LoadDriver names no service, and the line that would is cut short: its writer
+        # stopped in the middle of it. A quiet poll releases the LoadDriver; the cut line, whose
+        # name may go on, is no look-ahead for it.
+        with open(self.paths[0], "ab") as fh:
+            fh.write((CLIENT + "\n2.000:0098:00a4:err:ntoskrnl:ZwLoadDriver flags 0x1, load_path 0000000000000000, "
+                      "name 0000000000A1F840, base 0000000000A1F838.\n"
+                      r'failed to create driver L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\winebth').encode())
+        self.poll(4)
+        self.assertEqual(self.trig, ["S3 LoadDriver for non-baseline service None"])
+        self.assertEqual(self.notes, [])
+        self.poll(final=True)  # the cut line is scanned in the end, as a line of its own
+        self.assertEqual(self.trig, ["S3 LoadDriver for non-baseline service None"])
+
     def test_lines_come_in_time_order_each_log_in_its_own(self):
         self.write(1, "1.000:0020:0024:trace:a one", "a line without a stamp", "3.000:0020:0024:trace:c three")
         self.write(2, "2.000:0150:0154:trace:b two", "4.000:0150:0154:trace:d four")
