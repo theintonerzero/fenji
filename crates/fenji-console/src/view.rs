@@ -44,8 +44,13 @@ const HINT: &str = "Tab completes · ↑ ↓ choose · Enter runs";
 pub enum Mode {
     /// In the terminal that started the server: Ctrl-C stops it, as `stop` does.
     InProcess,
-    /// Attached to a running server: Ctrl-C or `exit` leaves, and the server runs on.
+    /// Attached to a running server: Ctrl-C, `exit` or `quit` leaves, and the server runs on.
     Attached,
+}
+
+/// Whether `line` leaves an attached console: `exit` or `quit`, in any case.
+pub(crate) fn leaves(line: &str) -> bool {
+    line.eq_ignore_ascii_case("exit") || line.eq_ignore_ascii_case("quit")
 }
 
 /// What a key asks of the console's loop.
@@ -53,7 +58,8 @@ pub enum Mode {
 pub enum Action {
     /// Send this command line to the server.
     Run(String),
-    /// Ctrl-C, or `exit` when attached: stop the server in-process, or leave it when attached.
+    /// Ctrl-C, or `exit` or `quit` when attached: stop the server in-process, or leave it when
+    /// attached.
     Interrupt,
 }
 
@@ -392,7 +398,7 @@ impl View {
         if line.is_empty() {
             return None;
         }
-        if self.mode == Mode::Attached && line.eq_ignore_ascii_case("exit") {
+        if self.mode == Mode::Attached && leaves(&line) {
             return Some(Action::Interrupt);
         }
         if self.history.back().is_none_or(|last| *last != line) {
@@ -1638,11 +1644,13 @@ pub(crate) mod tests {
             id: 1,
             ok: true,
             lines: vec!["nobody is online".into()],
+            more: false,
         });
         view.on_server(ServerMsg::Answer {
             id: 2,
             ok: false,
             lines: vec!["no command dance; type help".into()],
+            more: false,
         });
         view.on_server(ServerMsg::Skipped { lines: 37 });
         let p = Palette::of(Colours::True);
@@ -1667,15 +1675,20 @@ pub(crate) mod tests {
         let rows = rows_of(&drawn(&view, 80, 24, Colours::True));
         assert!(!rows.concat().contains("> stop"));
         assert!(rows[0].contains("Ctrl-C or exit leaves"), "{:?}", rows[0]);
-        // `exit` leaves an attached console too (spec §3.1); in-process it's the server's word.
+        // `exit` leaves an attached console too (spec §3.1), and `quit` as plain lines' does (M4
+        // hosting plan, Task 11's carry-forward 1); in-process they're the server's words.
         type_text(&mut view, "exit");
         assert_eq!(press(&mut view, KeyCode::Enter), Some(Action::Interrupt));
+        type_text(&mut view, "Quit");
+        assert_eq!(press(&mut view, KeyCode::Enter), Some(Action::Interrupt));
         let mut view = View::new("F".into(), help(), Mode::InProcess);
-        type_text(&mut view, "exit");
-        assert_eq!(
-            press(&mut view, KeyCode::Enter),
-            Some(Action::Run("exit".into()))
-        );
+        for word in ["exit", "quit"] {
+            type_text(&mut view, word);
+            assert_eq!(
+                press(&mut view, KeyCode::Enter),
+                Some(Action::Run(word.into()))
+            );
+        }
     }
 
     #[test]

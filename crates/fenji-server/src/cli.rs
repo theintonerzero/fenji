@@ -1,5 +1,6 @@
 //! The command line (M3 spec §4 `cli`): `run`, the default; `init`, which writes a config to edit
-//! (M4 hosting spec §3.6); and the admin's subcommands for invites, accounts and backups (§3.12).
+//! (M4 hosting spec §3.6); `console`, which attaches to a running server (§3.5); and the admin's
+//! subcommands for invites, accounts and backups (§3.12).
 //! Admin commands open the same database as a running server; SQLite's WAL and busy timeout let
 //! both write. The host console's `invite`, `invites`, `accounts` and `revoke` share their code
 //! here (§3.3).
@@ -55,6 +56,13 @@ pub enum Command {
         /// How many backups to keep, this one among them; the oldest beyond go
         #[arg(long, default_value_t = crate::backup::DEFAULT_KEEP, value_parser = parse_keep)]
         keep: usize,
+    },
+    /// Attach to the running server's console (Linux and macOS): Ctrl-C, exit or quit leaves it,
+    /// and the server runs on
+    Console {
+        /// Run one command, print its answer and exit: 0 if it ran, 1 if not
+        #[arg(long, value_name = "COMMAND")]
+        run: Option<String>,
     },
 }
 
@@ -233,6 +241,7 @@ pub async fn admin(
     match cmd {
         Command::Run => anyhow::bail!("`run` isn't an admin command"),
         Command::Init => anyhow::bail!("`init` isn't an admin command"),
+        Command::Console { .. } => anyhow::bail!("`console` isn't an admin command"),
         Command::Invite {
             cmd: InviteCmd::Create { label, expires },
         } => {
@@ -327,6 +336,38 @@ mod tests {
             assert!(matches!(cli.command, None | Some(Command::Run)), "{args:?}");
         }
         assert!(!Cli::try_parse_from(["fenji-server"]).unwrap().plain);
+    }
+
+    #[test]
+    fn console_takes_one_command_to_run_and_the_global_plain() {
+        // M4 hosting spec §3.1; Task 11's carry-forward 5: `--plain` is the global flag, before or
+        // after `console`.
+        let console = |args: &[&str]| match Cli::try_parse_from(args) {
+            Ok(Cli {
+                command: Some(Command::Console { run }),
+                plain,
+                ..
+            }) => Some((run, plain)),
+            _ => None,
+        };
+        assert_eq!(console(&["fenji-server", "console"]), Some((None, false)));
+        assert_eq!(
+            console(&["fenji-server", "console", "--plain"]),
+            Some((None, true))
+        );
+        assert_eq!(
+            console(&["fenji-server", "--plain", "console"]),
+            Some((None, true))
+        );
+        assert_eq!(
+            console(&["fenji-server", "console", "--run", "kick Nobody"]),
+            Some((Some("kick Nobody".into()), false))
+        );
+        assert_eq!(
+            console(&["fenji-server", "console", "--run", ""]),
+            Some((Some(String::new()), false))
+        );
+        assert_eq!(console(&["fenji-server", "console", "--run"]), None);
     }
 
     #[test]

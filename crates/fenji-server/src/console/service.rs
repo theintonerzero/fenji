@@ -199,6 +199,11 @@ impl ConsoleService {
         self.stopping.subscribe()
     }
 
+    /// True once the server has stopped, and each console is told goodbye.
+    pub fn stopped(&self) -> watch::Receiver<bool> {
+        self.stopped.subscribe()
+    }
+
     /// The server is stopping, for whatever reason: its status says so, and `stop` answers so.
     pub(crate) fn begin_stopping(&self) {
         self.stopping.send_replace(true);
@@ -880,7 +885,13 @@ async fn answer(
             return;
         };
         let Answer { ok, lines } = service.run_line(&line).await;
-        if out.send(ServerMsg::Answer { id, ok, lines }).await.is_err() {
+        let answer = ServerMsg::Answer {
+            id,
+            ok,
+            lines,
+            more: false,
+        };
+        if out.send(answer).await.is_err() {
             return;
         }
     }
@@ -1736,7 +1747,8 @@ mod tests {
             ServerMsg::Answer {
                 id: 7,
                 ok: true,
-                lines: vec!["nobody is online".into()]
+                lines: vec!["nobody is online".into()],
+                more: false,
             }
         );
         let served = tokio::spawn(s.serve_until(future::pending()));
@@ -1754,6 +1766,7 @@ mod tests {
             id: 8,
             ok: true,
             lines: vec!["stopping the server".into()],
+            more: false,
         };
         assert!(seen.contains(&stopping), "{seen:?}");
         assert!(
@@ -1856,6 +1869,7 @@ mod tests {
             id: 1,
             ok: true,
             lines: vec!["Mai was kicked".into()],
+            more: false,
         };
         assert!(seen.contains(&kicked), "before the goodbye: {seen:?}");
     }

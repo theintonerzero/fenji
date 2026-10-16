@@ -42,5 +42,9 @@ reqwest.workspace = true
 tempfile.workspace = true
 tower.workspace = true
 
+# The attached console in a pseudo-terminal, and the signals sent to it (tests/console.rs).
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["pty", "termios"] }
+
 [lints]
 workspace = true

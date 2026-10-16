@@ -1162,6 +1162,7 @@ dependencies = [
  "lz4_flex",
  "rcgen",
  "reqwest",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
