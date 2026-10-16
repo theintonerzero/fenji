@@ -710,10 +710,10 @@ class Tail:
         cur = os.fstat(self.fh.fileno())
         return (st.st_dev, st.st_ino) != (cur.st_dev, cur.st_ino) or st.st_size < self.off
 
-    def read(self, limit=16 << 20, final=False):
+    def read(self, limit=16 << 20):
         """Returns (chunk, look): complete lines to scan now, and the text held back after them,
-        which is look-ahead only (it is scanned on a later read). With final=True, or when nothing
-        new arrived (a quiet poll), the held-back complete lines are released too."""
+        which is look-ahead only (it is scanned on a later read). When nothing new arrived (a quiet
+        poll), the held-back complete lines are released too."""
         if self.fh is None:
             try:
                 self.fh = open_regular(self.path)
@@ -736,9 +736,6 @@ class Tail:
             self.fh, self.off, self.rest, self.at_eof = None, 0, b"", False
             return data, b""
         data = self.rest + new
-        if final:
-            self.rest = b""
-            return data, b""
         if not new:
             cut = data.rfind(b"\n")
             self.rest = data[cut + 1:]
@@ -753,6 +750,48 @@ class Tail:
             return b"", b""
         self.rest = data[cut + 1:]
         return data[:cut + 1], self.rest
+
+    def drain(self, limit=16 << 20):
+        """Yields the rest of the log as it stands when the drain begins, in pieces of whole lines,
+        the last line counted as whole even when it is partial: the file being read, up to its size
+        then, and if GE-Proton has since recreated the log, or it was truncated, the file at the path
+        from its start, up to its size when it is opened. What a writer adds after that isn't read,
+        so one that outruns the reader can't keep the drain going (#244)."""
+        for _ in range(2):  # the file being read, then the one that may have taken its place
+            if self.fh is None:
+                try:
+                    self.fh = open_regular(self.path)
+                except FileNotFoundError:
+                    break
+            end = os.fstat(self.fh.fileno()).st_size
+            while self.off < end:
+                self.fh.seek(self.off)
+                new = self.fh.read(min(limit, end - self.off))
+                if not new:
+                    break  # it shrank meanwhile: replaced() says so below
+                self.off += len(new)
+                data = self.rest + new
+                cut = data.rfind(b"\n") + 1
+                self.rest = data[cut:]
+                if cut:
+                    yield data[:cut]
+            if not self.replaced():
+                break
+            rest = self.take_rest()
+            if rest:
+                yield rest
+            self.fh.close()
+            self.fh, self.off = None, 0
+        rest = self.take_rest()
+        if rest:
+            yield rest
+        self.at_eof = True
+
+    def take_rest(self):
+        """What the Tail holds back, its last partial line, if any, counted as whole; the Tail then
+        holds nothing."""
+        rest, self.rest = self.rest, b""
+        return rest if not rest or rest.endswith(b"\n") else rest + b"\n"
 
 
 def stamp_of(line):
@@ -853,15 +892,13 @@ class LogStream:
     def read(self, final=False):
         """One poll: reads every log, then returns the lines to scan now as runs of one log's lines,
         in time order: [(log index, chunk, look)], where look is what follows the run in its own log
-        (look-ahead only). With final=True, everything is read and released."""
+        (look-ahead only). With final=True, every log is read to its end as it stands then
+        (Tail.drain), and everything is released."""
         self.polls += 1
         poll = self.polls
         for f in self.logs:
             if final:
-                while True:
-                    chunk, _ = f.tail.read(final=True)
-                    if not chunk:
-                        break
+                for chunk in f.tail.drain():
                     f.ingest(chunk, poll)
                 f.hold(b"")
                 f.eof_poll = poll

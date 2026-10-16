@@ -733,6 +733,67 @@ class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
             signal.signal(signal.SIGALRM, old)
 
 
+class ReadToTheEnd(unittest.TestCase):  # #244
+    """The read to the end, before the run ends (exit 4 or the sandbox gone), reads what each log
+    held when it began: a writer that outruns the reader can't keep it going, with S1, S2 and S4
+    unchecked meanwhile."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = pathlib.Path(self._tmp.name) / "steam-1418100.log"
+        self.stream = wd.LogStream([str(self.path)])
+        self.addCleanup(self.stream.close)
+
+    def lines(self, final=False):
+        return [ln for _, chunk, _ in self.stream.read(final=final) for ln in chunk.decode().splitlines()]
+
+    def test_a_writer_faster_than_the_reader_cant_keep_the_read_to_the_end_going(self):
+        self.path.write_bytes(b"1.000:0020:0024:trace:a\n" * 3)
+        self.assertEqual(self.lines(), [])  # read, and held back as look-ahead
+        with open(self.path, "ab") as fh:
+            fh.write(b"1.500:0020:0024:trace:b\n" * 2)
+        tail = self.stream.logs[0].tail
+        real, writer, reads = tail.fh, open(self.path, "ab"), []
+        self.addCleanup(writer.close)
+
+        class Racing:
+            """The open log, with a writer that adds a line each time the reader reads."""
+
+            def read(self, n=-1):
+                reads.append(n)
+                if len(reads) > 100:
+                    raise AssertionError("the read to the end never ended")
+                data = real.read(n)
+                writer.write(b"2.000:0020:0024:trace:written since\n")
+                writer.flush()
+                return data
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        tail.fh = Racing()
+        self.assertEqual(self.lines(final=True), ["1.000:0020:0024:trace:a"] * 3 + ["1.500:0020:0024:trace:b"] * 2)
+
+    def test_the_read_to_the_end_takes_the_rest_of_a_log_recreated_since(self):
+        # GE-Proton recreated the log after the last poll: the old file's rest, its last partial line
+        # counted as whole, then the new file from its start.
+        self.path.write_bytes(b"1.000:0020:0024:trace:old\n" * 9 + b"1.001:0020:0024:trace:old, cut")
+        self.assertEqual(self.lines(), ["1.000:0020:0024:trace:old"])  # the rest held back
+        self.path.unlink()
+        self.path.write_bytes(b"3.000:0030:0034:trace:new 1\n3.001:0030:0034:trace:new 2")
+        self.assertEqual(self.lines(final=True), ["1.000:0020:0024:trace:old"] * 8 +
+                         ["1.001:0020:0024:trace:old, cut", "3.000:0030:0034:trace:new 1", "3.001:0030:0034:trace:new 2"])
+
+    def test_a_line_longer_than_a_read_is_one_line(self):
+        # The read to the end takes the log in pieces; a line across two of them stays one line.
+        self.path.write_bytes(b"1.000:0020:0024:trace:" + b"x" * 40 + b"\n1.001:0020:0024:trace:y\n")
+        tail = self.stream.logs[0].tail
+        whole = tail.drain
+        tail.drain = lambda limit=16: whole(limit=limit)
+        self.assertEqual(self.lines(final=True), ["1.000:0020:0024:trace:" + "x" * 40, "1.001:0020:0024:trace:y"])
+
+
 
 # Client 2's creation, in its own log: session 2's shim starting the second copy (Amendment B).
 LOG2_CLIENT = (r'3.000:0150:0154:trace:process:CreateProcessInternalW app (null) cmdline '
