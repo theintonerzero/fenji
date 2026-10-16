@@ -295,7 +295,7 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             with(|s| {
                 no_client(s);
                 s.client.manual_command =
-                    Some(crate::depot::manual_command(Path::new(FOLDER), None));
+                    Some(crate::depot::manual_command(None, Path::new(FOLDER), None));
             }),
         ),
         (

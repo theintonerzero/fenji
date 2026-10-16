@@ -100,10 +100,23 @@ fn quoted(path: &Path) -> String {
 }
 
 /// The command a player without the Steam app runs in their own terminal, their own login left
-/// for them to type; a repair's paths follow it, one a line.
-pub fn manual_command(folder: &Path, files: Option<&[String]>) -> String {
+/// for them to type; a repair's paths follow it, one a line. It runs `dd`, the DepotDownloader
+/// Fenji fetched, by its path; without one, its first line says where to get the pinned release,
+/// and the command runs it from its folder (#348). A shell reads the first line as a comment.
+pub fn manual_command(dd: Option<&Path>, folder: &Path, files: Option<&[String]>) -> String {
+    let (lead, program) = match dd {
+        Some(dd) => (String::new(), quoted(dd)),
+        None => (
+            format!(
+                "# Get DepotDownloader {} for Linux, unpack it, and run this in its folder: {}\n",
+                crate::tools::depot_downloader().version,
+                crate::tools::depot_downloader().url
+            ),
+            "./DepotDownloader".to_string(),
+        ),
+    };
     let mut command = format!(
-        "DepotDownloader {} -username <your Steam login> -dir {}",
+        "{lead}{program} {} -username <your Steam login> -dir {}",
         PINNED_ARGS.join(" "),
         quoted(folder)
     );
@@ -554,13 +567,34 @@ mod tests {
 
     #[test]
     fn the_manual_command_leaves_the_login_to_the_player() {
-        let c = manual_command(Path::new("/home/p/Games/It's SoLO"), None);
-        assert!(c.starts_with(
-            "DepotDownloader -app 1418100 -depot 1418101 -manifest 5002037851744157048"
+        let c = manual_command(None, Path::new("/home/p/Games/It's SoLO"), None);
+        assert!(c.contains(
+            "./DepotDownloader -app 1418100 -depot 1418101 -manifest 5002037851744157048"
         ));
         assert!(
             c.contains("-username <your Steam login>")
                 && c.contains("-dir '/home/p/Games/It'\\''s SoLO'")
         );
+    }
+
+    #[test]
+    fn the_manual_command_names_a_depot_downloader_the_player_has() {
+        // #348: it named a DepotDownloader the player had never got. Fenji's own copy, if it
+        // fetched one, is used by its path; otherwise the first line says where to get it.
+        let dd = Path::new("/home/p/.local/share/fenji-launcher/tools/DepotDownloader");
+        let c = manual_command(Some(dd), Path::new("/home/p/Games/SoLO"), None);
+        assert!(
+            c.starts_with(
+                "'/home/p/.local/share/fenji-launcher/tools/DepotDownloader' -app 1418100"
+            ),
+            "{c}"
+        );
+        let c = manual_command(None, Path::new("/home/p/Games/SoLO"), None);
+        let (first, rest) = c.split_once('\n').unwrap();
+        assert!(
+            first.starts_with("# ") && first.contains(&crate::tools::depot_downloader().url),
+            "{first}"
+        );
+        assert!(rest.starts_with("./DepotDownloader -app 1418100"), "{rest}");
     }
 }

@@ -20,9 +20,9 @@ pub const BAD_CODE: &str = "That isn't an invite code. Check it against the link
 pub const DOWNLOAD_LINUX_ONLY: &str = "Downloading with Steam works on Linux only for now.";
 /// A check, download or repair while another runs.
 pub const BUSY: &str = "Something is already running: wait for it to finish, or stop it.";
-/// No terminal to open DepotDownloader in: the view shows `client.manualCommand` after it.
-pub const NO_TERMINAL: &str =
-    "Fenji couldn't open a terminal for DepotDownloader. Run this in yours:";
+/// No terminal to open DepotDownloader in: the player runs the command from the Client tab's
+/// dialog, on its first screen and on Repair, in a terminal of their own (#348).
+pub const NO_TERMINAL: &str = "Fenji couldn't open a terminal for DepotDownloader. Open one yourself, and run the command under \"No Steam app? Run DepotDownloader yourself\" on the Client tab.";
 pub const CHECK_STOPPED: &str = "The check was stopped.";
 pub const DOWNLOAD_CANCELLED: &str = "The download was cancelled.";
 pub const WINDOW_CLOSED: &str =

@@ -401,9 +401,13 @@ impl State {
         });
         let folder = self.settings.client.as_ref();
         // For a player without a terminal Fenji can open (spec §3.12), wherever a download works.
-        let manual_command = platform
-            .can_download
-            .then(|| crate::depot::manual_command(folder.unwrap_or(&default_folder), None));
+        let manual_command = platform.can_download.then(|| {
+            // Fenji's own DepotDownloader, if it fetched one; the command says where to get it if
+            // not (#348).
+            let tools = cfg.data_dir.join("tools");
+            let dd = crate::tools::installed(&crate::tools::depot_downloader(), &tools);
+            crate::depot::manual_command(dd.as_deref(), folder.unwrap_or(&default_folder), None)
+        });
         Snapshot {
             launcher_version: cfg.version.clone(),
             platform,

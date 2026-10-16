@@ -114,6 +114,18 @@ test("repair names each kind of problem", () => {
   expect(root.textContent).toContain("3 need repair");
 });
 
+test("repair has a way without a terminal: the command, then check every file (#348)", () => {
+  const s = golden("client-repair");
+  s.client.manualCommand = "./DepotDownloader -app 1418100 -dir '/home/player/Games/SoLO'";
+  const { root, sent } = mount(clientRepair, s, undefined, "client");
+  press(root, "No Steam app? Run DepotDownloader yourself");
+  const shown = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(shown.querySelector(".command-line code")!.textContent).toBe(s.client.manualCommand);
+  press(shown, "Check every file");
+  expect(sent).toEqual([{ type: "check", level: "full" }]);
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+
 test("repair off Linux has no Repair from Steam", () => {
   const s = golden("client-repair");
   s.platform = { os: "macos", canPlay: false, canDownload: false, home: "/Users/player" };

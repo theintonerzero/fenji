@@ -9,9 +9,9 @@ import { bladeFor, groundFor } from "../route";
 import type { Snapshot } from "../types";
 import { blade } from "../ui/blade";
 import { button } from "../ui/button";
-import { dialog, type Dialog } from "../ui/dialog";
+import type { Dialog } from "../ui/dialog";
 import { icons } from "../ui/icons";
-import { clientColumn, GAME, pathEnd } from "./client-parts";
+import { clientColumn, commandDialog, GAME, pathEnd } from "./client-parts";
 import { iconLine, noticeSlot, renew } from "./parts";
 
 function choice(icon: Element, title: string, ...body: Child[]): HTMLElement {
@@ -23,58 +23,6 @@ function choice(icon: Element, title: string, ...body: Child[]): HTMLElement {
   );
 }
 
-/** The command, selected, for a player to copy by hand when the clipboard isn't there. */
-function select(el: Element): void {
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-}
-
-/**
- * DepotDownloader's command for the player's own terminal (spec §3.6): their folder and the pinned
- * build filled in, their own Steam login left for them to type. Then they choose the folder.
- */
-function commandDialog(ctx: Ctx, command: string, done: () => void): Dialog {
-  const code = h("code", {}, command);
-  const copy = button.secondary(
-    "Copy",
-    () => {
-      const write = navigator.clipboard?.writeText(command);
-      if (write === undefined) {
-        select(code);
-      } else {
-        write.then(
-          () => {
-            copy.textContent = "Copied";
-          },
-          () => select(code),
-        );
-      }
-    },
-    "small",
-  );
-  const close = (): void => {
-    shown.close();
-    done();
-  };
-  const shown = dialog({
-    title: "Run DepotDownloader yourself",
-    icon: icons.download(20),
-    description: "Run this in your own terminal, typing your Steam login where it asks. Then choose the folder it downloaded to.",
-    body: [h("div", { class: "command-line" }, code, copy)],
-    actions: [
-      button.secondary("Close", close),
-      button.primary("Choose folder", () => {
-        void ctx.send({ type: "pickFolder", purpose: "game" });
-        close();
-      }),
-    ],
-    onClose: close,
-  });
-  return { el: shown.el, close };
-}
 
 export function clientSetup(root: HTMLElement, ctx: Ctx): Screen {
   const art = blade({ kind: "unlit" });
@@ -168,7 +116,7 @@ export function clientSetup(root: HTMLElement, ctx: Ctx): Screen {
               { class: "manual" },
               button.link("No Steam app? Run DepotDownloader yourself", () => {
                 open?.close();
-                open = commandDialog(ctx, command, () => {
+                open = commandDialog(ctx, command, "chooseFolder", () => {
                   open = null;
                 });
                 document.body.append(open.el);
