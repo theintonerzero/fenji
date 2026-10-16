@@ -36,6 +36,7 @@ The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-1
   - T8's and T9's client runs: back to character select and quitting, checked with the client, then `!tp` across scenes;
   - T9's face string, validated as the client's shared validator does;
   - the patcher (#336), whose design waits for the owner.
+  - T15, a server's region.
 
   The ruling of 2026-10-17, while the owner was away: release what's ready, rather than hold the fixes the owner's acceptance session needs behind the work that needs the owner.
 
@@ -151,6 +152,11 @@ Find what the client expects after type 4 in the world, answer it, and return th
 - `scripts/package-server.sh` packs it into the Linux and macOS archives, and `scripts/test-package-server.sh` checks it's there.
 - `scripts/test-update-server.sh` (HB10), run in CI beside the other script tests.
 - `docs/hosting.md`: section 4 installs it as `/usr/local/bin/fenji-update`, and section 5 leads with it, keeping the manual steps. `deploy/archive/README.txt` names it.
+
+### Task 15 (inline): a server's region (hosting spec Amendment C, HC1–HC7)
+- The server: `[server] region`; the guess from the timezone for `init` and the first run, and the start's hint; `GET /api/v1/server`'s `region`.
+- The launcher: the region in the state line and the seal's tip, designed with `impeccable` from DESIGN.md; the model's `ServerView` carries it.
+- `docs/hosting.md` and PRIVACY.md, as HC6 says.
 
 ## Review Focus
 1. **Nothing a player or a host does in the acceptance session should get worse.** A fix that changes a flow a host or player sees has its write-up line updated in the same PR.
