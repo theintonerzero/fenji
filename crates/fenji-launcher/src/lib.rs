@@ -14,6 +14,7 @@ pub mod probe;
 pub mod servers;
 pub mod settings;
 pub mod start;
+pub mod steam;
 #[cfg(test)]
 mod test_support;
 pub mod tools;

@@ -43,6 +43,10 @@ pub const PREFIX_FAILED: &str =
     "Proton couldn't make the game's Wine prefix. The log folder has the details.";
 /// `umu-run createprefix` ran past its limit, `play::PREFIX_LIMIT` (#348).
 pub const PREFIX_TOO_LONG: &str = "Proton was still making the game's Wine prefix after 60 minutes, so Fenji stopped it. The log folder has the details.";
+/// A download into a Steam library (Amendment A, LA2).
+pub const IN_STEAM_LIBRARY: &str = "That folder is in a Steam library, which Steam looks after. Choose another folder, or use the copy Steam installed.";
+/// Repair from Steam of a copy in a Steam library (LA2).
+pub const REPAIR_IN_STEAM: &str = "This copy is in your Steam library, which Steam looks after. In Steam, open the game's Properties, then Installed Files, and choose Verify integrity of game files. Then check the files here.";
 /// Cancel start, before the game ran (#348).
 pub const START_CANCELLED: &str = "The start was cancelled.";
 

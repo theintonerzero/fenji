@@ -126,6 +126,20 @@ pub struct ClientView {
     pub check: CheckView,
     /// DepotDownloader for the player's own terminal, wherever a download works (spec §3.12).
     pub manual: Option<ManualView>,
+    /// The copy Steam installed, if Steam's files name one (Amendment A, LA1).
+    pub steam: Option<SteamCopyView>,
+    /// Whether the chosen folder is in a Steam library, which Steam looks after (LA2).
+    pub in_steam: bool,
+}
+
+/// A copy Steam installed: where, at which build, and whether that's the pinned one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct SteamCopyView {
+    pub folder: String,
+    pub build: String,
+    pub pinned: bool,
 }
 
 /// DepotDownloader's commands for the player's own terminal, each on one line, their own Steam
