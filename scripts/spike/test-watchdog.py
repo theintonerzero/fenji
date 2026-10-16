@@ -1167,8 +1167,21 @@ class ClientCreation(unittest.TestCase):  # Ruling R17 (b): the image actually c
         for line in (EXPLORER_FOR_CLIENT_2, EXPLORER_FOR_CLIENT_2_NT,
                      r'1.0:0020:0024:trace:process:NtCreateUserProcess L"\\??\\Z:\\c\\notgujianol.exe" pid 1 tid 2',
                      r'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline '
-                     r'L"\"C:\\windows\\command\\start.exe\" \"Z:\\c\\gujianol.exe\""'):
+                     r'L"\"C:\\windows\\command\\start.exe\" \"Z:\\c\\gujianol.exe\""',
+                     r'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline '
+                     r'L"\"C:\\users\\Jos\00e9\\start.exe\" \"Z:\\c\\gujianol.exe\""'):
             self.assertFalse(self.created(line), line)
+
+    def test_a_path_with_any_debugstr_escape_counts(self):  # #244: a user name outside ASCII
+        # debugstr_w writes a character outside printable ASCII as a backslash and four hex digits;
+        # a quoted program still ends at its escaped quote.
+        jose = r"C:\\users\\Jos\00e9\\SoLO\\bin64\\gujianol.exe"
+        for line in (rf'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline L"\"{jose}\""',
+                     rf'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline L"\"{jose}\" --x"',
+                     rf'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline L"{jose} --fs=data:_index:_index"',
+                     rf'1.0:0020:0024:trace:process:CreateProcessInternalW app L"{jose}" cmdline L"x"',
+                     rf'1.0:0020:0024:trace:process:NtCreateUserProcess L"\\??\\{jose}" pid 0134 tid 0138'):
+            self.assertTrue(self.created(line), line)
 
 
 class ClientCreationOverdue(unittest.TestCase):

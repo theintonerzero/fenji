@@ -127,12 +127,14 @@ R_ANSWER = re.compile(rb"trace:service:svcctl_")
 # The client's creation (+process), by the image actually created: NtCreateUserProcess's first
 # string, CreateProcessInternalW's application name, or else the first token of its command line,
 # quoted or not. A line that only names the client further on, such as session 2's shim starting
-# `explorer.exe /desktop=… <client>` (Ruling R17), creates something else.
+# `explorer.exe /desktop=… <client>` (Ruling R17), creates something else. A path may hold any of
+# debugstr_w's escapes, such as a backslash and four hex digits for a character outside ASCII (a
+# user's name); a quoted program ends at its escaped quote (#244).
 R_CLIENT_CREATE = re.compile(
     rb'NtCreateUserProcess L"(?:(?:[^"\\\n]|\\.)*\\\\)?gujianol\.exe"'
     rb'|CreateProcessInternalW app (?:L"(?:(?:[^"\\\n]|\\.)*\\\\)?gujianol\.exe"'
-    rb'|\(null\) cmdline L"(?:\\"(?:(?:[^"\\\n]|\\\\)*\\\\)?gujianol\.exe\\"'
-    rb'|(?:(?:[^"\\\s]|\\\\)*\\\\)?gujianol\.exe[\s"]))', re.I)
+    rb'|\(null\) cmdline L"(?:\\"(?:(?:[^"\\\n]|\\[^"\n])*\\\\)?gujianol\.exe\\"'
+    rb'|(?:(?:[^"\\\s]|\\[^"\s])*\\\\)?gujianol\.exe[\s"]))', re.I)
 # +service (r7 on, replacing +reg): sechost's "CreateServiceW <scm> L"name" ..." and services.exe's
 # "svcctl_CreateServiceW (L"name", ...)". The first quoted string on the line is the service name.
 R_CREATESERVICE = re.compile(rb'CreateService\w*[^"\n]*"([^"\n]*)"|CreateService\w*[^\n]*')
