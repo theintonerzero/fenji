@@ -1184,6 +1184,40 @@ mod tests {
     }
 
     #[test]
+    fn a_viewer_that_a_leaver_fills_leaves_in_the_same_tick() {
+        // Cleanup runs again until no one is doomed: taking a player out tells its viewers (9),
+        // and a viewer whose channel that fills is doomed in turn, and taken out in a second pass.
+        let mut h = Harness::new();
+        // LoadScene, SelfEnter and the Announce of Mai fill Lin's channel, which it never reads.
+        h.join_with(player(1, "Lin", at(0.0, 0.0)), 3);
+        h.push(WorldIn::Loaded { conn: 1 });
+        h.tick(50);
+        h.enter(player(2, "Mai", at(0.0, 0.0)));
+        assert_eq!(h.core.players(), 2);
+        // The console's kick dooms Mai in the admin phase, after interest: only cleanup tells Lin.
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        h.push(WorldIn::Console {
+            order: Command::Kick { name: "Mai".into() },
+            reply,
+        });
+        h.tick(50);
+        assert_eq!(h.core.players(), 0, "Lin leaves in the tick Mai does");
+        let mut saved: Vec<ActorId> = h
+            .saves()
+            .into_iter()
+            .map(|s| match s {
+                Service::SavePlace { pid, .. } => pid,
+                Service::CreateInvite { .. } => 0,
+            })
+            .collect();
+        saved.sort_unstable();
+        assert_eq!(saved, [1, 2], "both are saved");
+        assert_eq!(h.take(2), vec![WorldOut::Kicked(KickReason::Kicked)]);
+        h.take(1);
+        assert!(h.closed(1), "the world let go of Lin");
+    }
+
+    #[test]
     fn everyone_is_saved_every_save_period() {
         let mut h = Harness::new();
         h.enter(player(1, "Lin", at(1.0, 2.0)));
