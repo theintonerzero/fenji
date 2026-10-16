@@ -58,7 +58,9 @@
 #       (end_client): wineserver -k would end client 1 too. The
 #       wineserver stops once both clients have ended. Client 2's evidence: OUT/client2/ (its
 #       gujianol.log, Log_gujianol.htm and install-root files), OUT/wine-2.log,
-#       OUT/screen-2-<T>s.png and io/exit-code-2.
+#       OUT/screen-2-<T>s.png and io/exit-code-2. If client 1 has ended when client 2 is due,
+#       client 2 isn't started (io/2/not-started): a fresh wineserver would start Wine's drivers in
+#       a new winedevice.exe, which the watchdog's S2 takes for a gate event.
 #
 # Every run uses isolated-run.sh --no-root --x11 N [--x11 M] --cpu-topology --gpu (CLAUDE.md "Client
 # runs"; without --gpu with --no-gpu), the pinned GE-Proton's own `proton run` (umu's runtime
@@ -707,7 +709,13 @@ cmd_run() {
           [ -z "$pairs2" ] || redact_gj_ticket <<< "$pairs2" > "$IO/2/launch.txt"
         fi
         unset PW2
-        if [ "$LAUNCH2" != failed ]; then
+        if ! kill -0 "$c1" 2>/dev/null; then
+          # Client 1 has ended, and the wineserver may be gone with it: client 2 would boot a fresh
+          # one, which starts Wine drivers in a new winedevice.exe, and S2 takes that for a gate
+          # event (#244).
+          echo "client 1 had ended when client 2 was due; client 2 not started" >&2
+          : > "$IO/2/not-started"
+        elif [ "$LAUNCH2" != failed ]; then
           (
             if [ -n "$pairs2" ]; then while IFS= read -r kv; do export "${kv?}"; done <<< "$pairs2"; fi
             unset pairs2 kv
@@ -891,7 +899,11 @@ finish_run() {
   local wdrc=$1 wrc=$2 ran=$3
   collect_evidence || echo "run-client: collecting the evidence failed (exit $?); the verdict stands" >&2
   local two=""
-  if [ "${clients:-1}" = 2 ]; then two=", client 2's proton exit $(cat "$OUT/io/exit-code-2" 2>/dev/null || echo '?')"; fi
+  if [ "${clients:-1}" = 2 ] && [ -e "$OUT/io/2/not-started" ]; then
+    two=", client 2 not started (client 1 had ended when it was due)"
+  elif [ "${clients:-1}" = 2 ]; then
+    two=", client 2's proton exit $(cat "$OUT/io/exit-code-2" 2>/dev/null || echo '?')"
+  fi
   echo "run $run done: proton exit $(cat "$OUT/io/exit-code" 2>/dev/null || echo '?')$two, sandbox exit $wrc, watchdog exit $wdrc"
   verdict "$wdrc" "$wrc" "$ran" "$OUT"
 }

@@ -795,6 +795,19 @@ if [ -n "$hold_at" ] && [ -n "$return_at" ] &&
 else
   bad "a held key and the press after it: hold at '$hold_at', Return at '$return_at'"
 fi
+# Client 1 ended before client 2 was due (#244): client 2 isn't started, since a fresh wineserver would
+# boot Wine's drivers in a new winedevice.exe, which S2 takes for a gate event.
+W3=$TESTROOT/w3
+workspace "$W3"
+flow early "$W3" --server "$F/fenji.toml" --clients 2 --display2 98 --second-after 3 --timeout 1 -- --fs=data:_index:_index
+OUT3=$W3/out/early
+if [ "$rc" = 0 ] && [ "$(wc -l < "$F/log/early/proton")" = 1 ] && [ -f "$OUT3/io/exit-code" ] &&
+  [ ! -e "$OUT3/io/exit-code-2" ] && [ -f "$OUT3/io/2/not-started" ] &&
+  [[ $out == *"client 2 not started (client 1 had ended when it was due)"* ]]; then
+  ok "client 2 isn't started once client 1 has ended"
+else
+  bad "client 1 ended first: rc $rc, proton $(cat "$F/log/early/proton" 2> /dev/null): $out"
+fi
 mkdir "$W2/client2/settings"
 flow left "$W2" --clients 2 --display2 98 -- --fs=data:_index:_index
 if [ "$rc" = 1 ] && [[ $out == *"leftover settings"*client2* ]]; then

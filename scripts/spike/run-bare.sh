@@ -68,11 +68,14 @@
 # script tests pass it. PROTON_LOG_DIR is $IO/1 and $IO/2, and the watchdog gets
 # both logs in that order. --key, --type and --click take 2@T:... for client 2's display. Client 2's
 # timeout ends its fenji-launch; if its gujianol.exe is still there 10 s later, the namespace ends
-# that process by its own pid. Whether two umu-run sessions share one wineserver is Unknown
-# (world.md 15.5), and a second would boot its own session in the prefix: once client 2 has
-# started, the runner checks every 2 s that the namespace holds one wineserver at most, and a
-# second stops the run at once (the namespace is killed, so neither saves the registry): exit 1, "a
-# second wineserver for the prefix", and the prefix is marked, to be rebuilt as after a gate event.
+# that process by its own pid. If client 1's fenji-launch has ended when client 2 is due, client 2
+# isn't started (io/2/not-started): a fresh wineserver would start Wine's drivers in a new
+# winedevice.exe, which the watchdog's S2 takes for a gate event. Whether two umu-run sessions
+# share one wineserver is Unknown (world.md 15.5), and a second would boot its own session in the
+# prefix: once client 2 has started, the runner checks every 2 s that the namespace holds one
+# wineserver at most, and a second stops the run at once (the namespace is killed, so neither saves
+# the registry): exit 1, "a second wineserver for the prefix", and the prefix is marked, to be
+# rebuilt as after a gate event.
 #
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
 # update off (the namespace has no network anyway), then primes it: cmd.exe started once through
@@ -854,21 +857,29 @@ PY
       c2=""
       if [ "$CLIENTS" = 2 ]; then
         sleep "$AFTER"
-        # From here the runner checks that the namespace holds one wineserver at most.
-        : > "$IO/2/.started"
-        (
-          export PROTON_LOG_DIR="$IO/2"
-          if [ -n "$D2" ]; then export DISPLAY=":$D2"; fi
-          timeout -k 10 "$TMO2" "$BIN/fenji-launch" "${LA2[@]}" > "$IO/2/launch.out" 2> "$IO/2/launch.err"
-          rc=$?
-          if grep -q "starting the client" "$IO/2/launch.err"; then echo "$rc" > "$IO/exit-code-2"; fi
-          # Its timeout ends fenji-launch; a client 2 still there 10 s later is ended by its own pid
-          # (wineserver -k would end client 1 too).
-          sleep 10
-          { date +%s; end_client "$EXE2"; } > "$IO/2/ended-by-pid"
-          exit "$rc"
-        ) &
-        c2=$!
+        if ! kill -0 "$c1" 2>/dev/null; then
+          # Client 1 has ended, and the wineserver may be gone with it: client 2 would boot a fresh
+          # one, which starts Wine drivers in a new winedevice.exe, and S2 takes that for a gate
+          # event (#244).
+          echo "client 1 had ended when client 2 was due; client 2 not started" >&2
+          : > "$IO/2/not-started"
+        else
+          # From here the runner checks that the namespace holds one wineserver at most.
+          : > "$IO/2/.started"
+          (
+            export PROTON_LOG_DIR="$IO/2"
+            if [ -n "$D2" ]; then export DISPLAY=":$D2"; fi
+            timeout -k 10 "$TMO2" "$BIN/fenji-launch" "${LA2[@]}" > "$IO/2/launch.out" 2> "$IO/2/launch.err"
+            rc=$?
+            if grep -q "starting the client" "$IO/2/launch.err"; then echo "$rc" > "$IO/exit-code-2"; fi
+            # Its timeout ends fenji-launch; a client 2 still there 10 s later is ended by its own pid
+            # (wineserver -k would end client 1 too).
+            sleep 10
+            { date +%s; end_client "$EXE2"; } > "$IO/2/ended-by-pid"
+            exit "$rc"
+          ) &
+          c2=$!
+        fi
       fi
       wait "$c1"
       rc=$?
@@ -941,7 +952,11 @@ PY
   date -Is > "$OUT/ended"
   collect_bare_evidence || echo "run-bare: collecting the evidence failed (exit $?); the verdict stands" >&2
   local two=""
-  if [ "$clients" = 2 ]; then two=", client 2's fenji-launch exit $(cat "$IO/exit-code-2" 2>/dev/null || echo '?')"; fi
+  if [ "$clients" = 2 ] && [ -e "$IO/2/not-started" ]; then
+    two=", client 2 not started (client 1 had ended when it was due)"
+  elif [ "$clients" = 2 ]; then
+    two=", client 2's fenji-launch exit $(cat "$IO/exit-code-2" 2>/dev/null || echo '?')"
+  fi
   local what="fenji-launch exit"
   if [ -n "$app" ]; then what="game exit"; fi
   echo "run $run done: $what $(cat "$IO/exit-code" 2>/dev/null || echo '?')$two, namespace exit $wrc, watchdog exit $wdrc"
