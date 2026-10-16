@@ -220,8 +220,25 @@ impl Plain {
 
     /// A server on `config`, with `env` set.
     fn with(config: &Path, env: &[(&str, &str)]) -> Self {
+        Plain::spawn(
+            Command::new(env!("CARGO_BIN_EXE_fenji-server")),
+            config,
+            env,
+        )
+    }
+
+    /// A server on `config` started by `nohup`, which starts it with SIGHUP ignored so that it
+    /// outlives its terminal, as the write-up shows a host.
+    fn nohup(config: &Path) -> Self {
+        let mut nohup = Command::new("nohup");
+        nohup.arg(env!("CARGO_BIN_EXE_fenji-server"));
+        Plain::spawn(nohup, config, &[])
+    }
+
+    /// `program` run as the server on `config`, with `env` set.
+    fn spawn(mut program: Command, config: &Path, env: &[(&str, &str)]) -> Self {
         let log = tempfile::NamedTempFile::new().unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        let mut child = program
             .arg("--config")
             .arg(config)
             .args(["run", "--plain"])
@@ -371,6 +388,59 @@ fn console_run_gives_a_script_the_answer_and_an_exit_code_that_follows_it() {
     let blank = server.console(&["--run", ""], "");
     assert!(blank.status.success(), "{blank:?}");
     assert_eq!(text(&blank.stdout), "");
+}
+
+#[test]
+fn a_hangup_stops_the_server_cleanly() {
+    // The hosting plan's final review, Important 1: closing the terminal or window a server runs
+    // in, or losing its SSH session, sends it SIGHUP, which killed it at once, without its saves,
+    // without the shutdown's reason for the players, and with its write-ahead log left behind.
+    // It stops as `stop` does now.
+    let dir = tempfile::tempdir().unwrap();
+    let mut server = Plain::start(dir.path());
+    server.running();
+    kill_process(Pid::from_child(&server.child), Signal::HUP).unwrap();
+    let status = server.wait();
+    assert!(status.success(), "{status}:\n{}", server.said());
+    let said = server.said();
+    assert!(said.contains("shutting down signal=SIGHUP"), "{said}");
+    for left in ["fenji.db-wal", "fenji.db-shm"] {
+        assert!(!dir.path().join(left).exists(), "{left} is left:\n{said}");
+    }
+}
+
+#[test]
+fn a_server_nohup_started_runs_on_through_a_hangup() {
+    // `nohup` starts a server with SIGHUP ignored, so that it outlives its terminal (the hosting
+    // plan's final review, Important 1): it stays so, and the server runs on until it's stopped.
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("fenji.toml");
+    std::fs::write(
+        &config,
+        "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n",
+    )
+    .unwrap();
+    let mut server = Plain::nohup(&config);
+    server.running();
+    kill_process(Pid::from_child(&server.child), Signal::HUP).unwrap();
+    // A server that took the hangup would be stopping by now, and an idle one stops in well
+    // under a second.
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        server.child.try_wait().unwrap().is_none(),
+        "it stopped:\n{}",
+        server.said()
+    );
+    let online = server.console(&["--run", "online"], "");
+    assert!(online.status.success(), "{online:?}");
+    assert!(
+        !server.said().contains("shutting down"),
+        "{}",
+        server.said()
+    );
+    server.type_line("stop");
+    assert_eq!(server.answer(), "stopping the server");
+    assert!(server.wait().success(), "{}", server.said());
 }
 
 #[test]

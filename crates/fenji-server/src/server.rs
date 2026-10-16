@@ -380,8 +380,10 @@ pub async fn start(
     })
 }
 
-/// `fenji-server run`: serves until Ctrl-C, SIGTERM or the console's `stop`, with `front` in the
-/// terminal it started in (M4 hosting spec §3.1), `hub` being the log's. A first run (§3.6) says
+/// `fenji-server run`: serves until Ctrl-C, SIGTERM, its terminal closing (SIGHUP, unless it came
+/// ignored, as under `nohup`; on Windows, its window closing, logging off or shutting down) or the
+/// console's `stop`, each stopping it cleanly (`signalled`), with `front` in the terminal it
+/// started in (M4 hosting spec §3.1), `hub` being the log's. A first run (§3.6) says
 /// what it wrote before it starts, and what's next once it runs. Under `tls = "self"` the start
 /// shows a server link beside "Fenji is running" (§3.10).
 /// - First it claims its data folder (§3.5): another server using it stops this one before it
@@ -535,9 +537,9 @@ fn closed_note(ended: &std::io::Result<Ending>, serving: bool, logs: &Path) -> O
     let why = still_serving(ended)?;
     serving.then(|| {
         format!(
-            "The console has closed ({why}). The server runs on until Ctrl-C or SIGTERM stops \
-             it; its log is in {}. `fenji-server --plain` gives the console as plain lines, for \
-             a terminal the full-screen one doesn't suit.",
+            "The console has closed ({why}). The server runs on until Ctrl-C, SIGTERM or closing \
+             this terminal stops it; its log is in {}. `fenji-server --plain` gives the console \
+             as plain lines, for a terminal the full-screen one doesn't suit.",
             logs.display()
         )
     })
@@ -573,32 +575,59 @@ async fn no_one_yet(server: &RunningServer) {
     }
 }
 
-/// Ctrl-C or SIGTERM. SIGTERM is caught from this call on, not from the future's first poll, so
-/// that one sent as soon as the server says it runs stops it cleanly.
+/// Ctrl-C, SIGTERM, or SIGHUP, which the server gets when the terminal or window it runs in closes,
+/// or its SSH session is lost (the hosting plan's final review, Important 1), unless SIGHUP came
+/// ignored, as `nohup` starts a server that is to outlive its terminal. SIGTERM and SIGHUP are
+/// caught from this call on, not from the future's first poll, so that one sent as soon as the
+/// server says it runs stops it cleanly.
 #[cfg(unix)]
 fn signalled() -> impl Future<Output = ()> {
-    let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
-    async move {
-        match term {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = term.recv() => {}
-                }
+    use tokio::signal::unix::{Signal, SignalKind, signal};
+    let term = signal(SignalKind::terminate()).ok();
+    // Read first: catching SIGHUP replaces what was there.
+    let hangup = if crate::unix::hangup_ignored() {
+        None
+    } else {
+        signal(SignalKind::hangup()).ok()
+    };
+    // A signal that isn't caught never comes here.
+    async fn caught(signal: Option<Signal>) {
+        match signal {
+            Some(mut signal) => {
+                signal.recv().await;
             }
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-            }
+            None => std::future::pending().await,
         }
-        tracing::info!("shutting down");
+    }
+    async move {
+        let signal = tokio::select! {
+            _ = tokio::signal::ctrl_c() => "SIGINT",
+            () = caught(term) => "SIGTERM",
+            () = caught(hangup) => "SIGHUP",
+        };
+        tracing::info!(signal, "shutting down");
     }
 }
 
-/// Ctrl-C.
-#[cfg(not(unix))]
-async fn signalled() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutting down");
+/// Ctrl-C, or the window closing, the user logging off or the system shutting down (the hosting
+/// plan's final review, Important 1), each caught from this call on. Windows ends the process a few
+/// seconds after the last three, or once it exits: the stop lets the world save everyone first,
+/// before its grace for the players' connections.
+#[cfg(windows)]
+fn signalled() -> impl Future<Output = ()> {
+    use tokio::signal::windows::{ctrl_close, ctrl_logoff, ctrl_shutdown};
+    let close = ctrl_close().ok();
+    let logoff = ctrl_logoff().ok();
+    let shutdown = ctrl_shutdown().ok();
+    async move {
+        let event = tokio::select! {
+            _ = tokio::signal::ctrl_c() => "Ctrl-C",
+            Some(()) = async { close?.recv().await } => "the window closed",
+            Some(()) = async { logoff?.recv().await } => "logging off",
+            Some(()) = async { shutdown?.recv().await } => "the system shutting down",
+        };
+        tracing::info!(event, "shutting down");
+    }
 }
 
 #[cfg(test)]
@@ -761,12 +790,13 @@ mod tests {
         let logs = Path::new("/srv/fenji/data/logs");
         let panicked = || Err(std::io::Error::other(CONSOLE_PANICKED));
         let note = closed_note(&panicked(), true, logs).expect("a note while it serves");
+        // Closing the terminal stops it cleanly too (the hosting plan's final review, Important 1).
         assert_eq!(
             note,
             "The console has closed (a panic ended the console; its message is above). The \
-             server runs on until Ctrl-C or SIGTERM stops it; its log is in /srv/fenji/data/logs. \
-             `fenji-server --plain` gives the console as plain lines, for a terminal the \
-             full-screen one doesn't suit."
+             server runs on until Ctrl-C, SIGTERM or closing this terminal stops it; its log is \
+             in /srv/fenji/data/logs. `fenji-server --plain` gives the console as plain lines, \
+             for a terminal the full-screen one doesn't suit."
         );
         assert_eq!(closed_note(&panicked(), false, logs), None);
         assert_eq!(closed_note(&Ok(Ending::Lost), false, logs), None);

@@ -19,6 +19,8 @@ pub mod server;
 pub mod status;
 pub mod text;
 pub mod tls;
+#[cfg(unix)]
+mod unix;
 pub mod world;
 
 /// The most characters `[lobby] max_characters` may allow.
