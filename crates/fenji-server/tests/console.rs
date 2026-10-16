@@ -104,6 +104,32 @@ impl Drop for AttachedPlain {
     }
 }
 
+/// Waits, 60 s at most, until four consoles attach to the server on `config` at once, all held
+/// open until the last is in: a server takes four, so none of its places is kept by a console
+/// that has gone (#359, the hosting plan's Task 11). One it hasn't seen go yet keeps its place a
+/// moment more (tests/attach.rs's `a_console_that_goes_gives_its_place_back_at_once`).
+fn all_four_places_come_free(config: &Path) {
+    until(
+        || {
+            let consoles: Vec<_> = (0..4).map(|_| AttachedPlain::start(config)).collect();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let said: Vec<String> = consoles.iter().map(AttachedPlain::said).collect();
+                // Attached, each is sent the server's log, its start among it.
+                if said.iter().all(|s| s.contains("Fenji is running")) {
+                    return true;
+                }
+                if said.iter().any(|s| s.contains("turned the console away")) {
+                    return false;
+                }
+                assert!(Instant::now() < deadline, "not attached: {said:?}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        },
+        || "four consoles never attached at once".into(),
+    );
+}
+
 /// `fenji-server console` full-screen on `config`'s server, in a pseudo-terminal of 100 × 30 as a
 /// host's terminal would be: what it writes there is kept. Nothing answers what it might ask the
 /// terminal, and it asks nothing (#359). Killed if the test ends first.
@@ -1061,6 +1087,8 @@ fn a_signal_leaves_an_attached_full_screen_console_with_the_terminal_given_back(
         || server.console(&["--run", "online"], "").status.success(),
         || "no console is answered".into(),
     );
+    // And none of the four that left by a signal keeps its place.
+    all_four_places_come_free(&server.config);
 }
 
 #[test]
@@ -1088,6 +1116,8 @@ fn a_signal_leaves_an_attached_plain_console() {
         || server.console(&["--run", "online"], "").status.success(),
         || "no console is answered".into(),
     );
+    // And none of the four that left by a signal keeps its place.
+    all_four_places_come_free(&server.config);
 }
 
 #[test]

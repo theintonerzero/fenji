@@ -207,6 +207,56 @@ async fn a_console_attaches_sees_the_backlog_and_runs_a_command() {
 }
 
 #[tokio::test]
+async fn a_console_gets_the_hello_then_the_backlog_then_the_status() {
+    // The hosting plan's Task 11 (#359): in that order, the backlog whole and in order before the
+    // status, and what's logged after them comes after.
+    let s = started_with_socket().await;
+    tracing::info!("first before the console");
+    tracing::info!("second before the console");
+    let mut c = Raw::connect(&s.data().join("console.sock")).await;
+    let first = c.next().await;
+    assert!(matches!(first, ServerMsg::Hello { .. }), "{first:?}");
+    let mut backlog = Vec::new();
+    let status = loop {
+        match c.next().await {
+            ServerMsg::Log { line } => backlog.push(line.message()),
+            ServerMsg::Status { status } => break status,
+            other => panic!("before the status: {other:?}"),
+        }
+    };
+    assert_eq!(status.state, State::Online);
+    let at = |text: &str| backlog.iter().position(|m| m == text);
+    let (first, second) = (
+        at("first before the console"),
+        at("second before the console"),
+    );
+    assert!(first.is_some() && first < second, "{backlog:?}");
+    tracing::info!("after the console");
+    assert!(c.until_log_contains("after the console").await);
+}
+
+#[tokio::test]
+async fn a_console_turned_away_as_it_attaches_says_why() {
+    // The hosting plan's Task 11 (#359): a console beyond the fourth is told goodbye in place of
+    // a hello, and `fenji-server console` says why.
+    let s = started_with_socket().await;
+    let socket = s.data().join("console.sock");
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        let mut c = Raw::connect(&socket).await;
+        assert!(matches!(c.next().await, ServerMsg::Hello { .. }));
+        held.push(c);
+    }
+    let e = console::attach::run_once(&socket, "online")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        format!("{e:#}"),
+        "the server turned the console away: too many consoles (4)"
+    );
+}
+
+#[tokio::test]
 async fn a_second_server_on_the_same_data_folder_refuses_before_opening_anything() {
     // Review Focus 5.
     let s = started_with_socket().await;
