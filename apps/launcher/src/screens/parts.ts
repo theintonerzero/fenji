@@ -146,7 +146,7 @@ export function noticeSlot(ctx: Ctx): NoticeSlot {
     const notice = last.notice !== null && last.notice.text !== inline ? last.notice : null;
     const key = notice === null ? "" : `${notice.error}\n${notice.text}\n${extra.length}`;
     renew(el, key, () =>
-      notice === null ? [] : [noticeCard(notice, () => void ctx.send({ type: "dismissNotice" }), ...extra)],
+      notice === null ? [] : [noticeCard(notice, () => void ctx.send({ type: "dismissNotice", text: notice.text }), ...extra)],
     );
   };
   return {
@@ -174,7 +174,7 @@ export function noticeSlot(ctx: Ctx): NoticeSlot {
 export function refused(ctx: Ctx, slot: NoticeSlot, text: string, show: (text: string) => void): void {
   slot.inline(text);
   show(text);
-  void ctx.send({ type: "dismissNotice" });
+  void ctx.send({ type: "dismissNotice", text });
 }
 
 /** A form's own error line, for a refusal that concerns no one field. */

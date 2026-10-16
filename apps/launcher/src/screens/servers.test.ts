@@ -45,7 +45,10 @@ test("the Add dialog sends what was typed and shows a refusal under the field", 
   press(dialog as HTMLElement, "Cancel");
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   // The refusal waited as the notice too: closing the dialog dismisses it.
-  expect(sent.at(-1)).toEqual({ type: "dismissNotice" });
+  expect(sent.at(-1)).toEqual({
+    type: "dismissNotice",
+    text: "That isn't a server address or an invite link. Paste the link your host sent.",
+  });
 });
 
 test("a server the model took closes the Add dialog", async () => {

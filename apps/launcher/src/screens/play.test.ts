@@ -214,5 +214,8 @@ test("a notice shows above the buttons, and its close button dismisses it", () =
   expect(notice.compareDocumentPosition(root.querySelector("button.play")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   press(root, "Open the log folder");
   (notice.querySelector('[aria-label="Dismiss"]') as HTMLButtonElement).click();
-  expect(sent).toEqual([{ type: "openLogFolder" }, { type: "dismissNotice" }]);
+  expect(sent).toEqual([
+    { type: "openLogFolder" },
+    { type: "dismissNotice", text: "The game couldn't start: umu-run ended with 3. The log folder has the details." },
+  ]);
 });

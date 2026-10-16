@@ -68,7 +68,8 @@ function row(v: ServerView, s: Snapshot, ctx: Ctx, now: number): HTMLElement {
 /** Add server (the AddServer board): an address or an invite link, its refusal under the field. Play
  * opens it too, for a server whose link must be added again. */
 export function addDialog(ctx: Ctx, slot: NoticeSlot, done: () => void): Dialog {
-  let refusedHere = false;
+  // The refusal shown under the field, which waited as the notice too.
+  let refusedHere: string | null = null;
   const input = h("input", { type: "text", class: "mono", autocomplete: "off", spellcheck: "false" });
   const box = field("Address or invite link", input);
   const add = button.primary("Add server");
@@ -78,8 +79,8 @@ export function addDialog(ctx: Ctx, slot: NoticeSlot, done: () => void): Dialog 
     shown.close();
     done();
     // A refusal waited as the notice as well as under the field: it goes with the dialog.
-    if (refusedHere) {
-      void ctx.send({ type: "dismissNotice" });
+    if (refusedHere !== null) {
+      void ctx.send({ type: "dismissNotice", text: refusedHere });
     }
   };
   const submit = async (): Promise<void> => {
@@ -95,11 +96,11 @@ export function addDialog(ctx: Ctx, slot: NoticeSlot, done: () => void): Dialog 
     add.disabled = false;
     if (refusal === null) {
       slot.hold(false);
-      refusedHere = false;
+      refusedHere = null;
       close();
       return;
     }
-    refusedHere = true;
+    refusedHere = refusal;
     slot.inline(refusal);
     box.setError(refusal);
     slot.hold(false);

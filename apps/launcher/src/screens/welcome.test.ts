@@ -20,7 +20,7 @@ test("the invite goes to the model, and a refusal shows under the field", async 
   const input = root.querySelector("input")!;
   expect(input.getAttribute("aria-invalid")).toBe("true");
   expect(root.querySelector(`#${input.getAttribute("aria-describedby")}`)!.textContent).toBe(NEED_LINK);
-  expect(sent.at(-1)).toEqual({ type: "dismissNotice" });
+  expect(sent.at(-1)).toEqual({ type: "dismissNotice", text: NEED_LINK });
 });
 
 test("I already have an account asks for the address, then goes to Sign in", async () => {

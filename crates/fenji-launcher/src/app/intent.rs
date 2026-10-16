@@ -79,7 +79,10 @@ pub enum Intent {
     PlayOn {
         id: u32,
     },
-    DismissNotice,
+    /// Dismisses the notice the view showed, by its words, and never a newer one (#348).
+    DismissNotice {
+        text: String,
+    },
     SetAutoUpdate {
         on: bool,
     },
@@ -149,7 +152,7 @@ pub fn name(i: &Intent) -> &'static str {
         Intent::Repair => "repair",
         Intent::Play => "play",
         Intent::PlayOn { .. } => "playOn",
-        Intent::DismissNotice => "dismissNotice",
+        Intent::DismissNotice { .. } => "dismissNotice",
         Intent::SetAutoUpdate { .. } => "setAutoUpdate",
         Intent::SetUmuRun { .. } => "setUmuRun",
         Intent::PickFolder { .. } => "pickFolder",

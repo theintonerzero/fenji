@@ -270,8 +270,13 @@ impl App {
                 self.select_server(id);
                 self.play().await
             }
-            Intent::DismissNotice => {
-                self.change(|st| st.notice = None);
+            Intent::DismissNotice { text } => {
+                // Only the notice the view showed: a newer one came for a reason (#348).
+                self.change(|st| {
+                    if st.notice.as_ref().is_some_and(|n| n.text == text) {
+                        st.notice = None;
+                    }
+                });
                 Ok(())
             }
             Intent::SetAutoUpdate { on } => {
@@ -642,6 +647,28 @@ mod tests {
             password: Secret("a long password".into()),
             remember: true,
         }
+    }
+
+    #[tokio::test]
+    async fn dismissing_a_notice_leaves_a_newer_one_standing() {
+        // #348: the view dismisses the notice it showed; one that came meanwhile stays.
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        app.note("The first.".into(), true);
+        app.note("The second.".into(), false);
+        app.intent(Intent::DismissNotice {
+            text: "The first.".into(),
+        })
+        .await
+        .unwrap();
+        let notice = app.snapshot().notice.map(|n| n.text);
+        assert_eq!(notice.as_deref(), Some("The second."));
+        app.intent(Intent::DismissNotice {
+            text: "The second.".into(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.snapshot().notice, None);
     }
 
     #[tokio::test]

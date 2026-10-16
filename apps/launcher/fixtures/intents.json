@@ -20,7 +20,7 @@
   { "type": "repair" },
   { "type": "play" },
   { "type": "playOn", "id": 1 },
-  { "type": "dismissNotice" },
+  { "type": "dismissNotice", "text": "The download was cancelled." },
   { "type": "setAutoUpdate", "on": false },
   { "type": "setUmuRun", "path": "/home/player/.local/bin/umu-run" },
   { "type": "setUmuRun", "path": null },
