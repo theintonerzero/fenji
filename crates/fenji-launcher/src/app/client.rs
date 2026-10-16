@@ -124,14 +124,14 @@ impl App {
             free(st)?;
             st.settings.client = Some(PathBuf::from(&path));
             self.save(st);
-            self.begin_check(st, LevelView::Quick, None)
+            self.begin_check(st, LevelView::Quick)
         })?;
         self.run_check(job);
         Ok(())
     }
 
     pub(super) fn check(&self, level: LevelView) -> Result<(), IntentError> {
-        let job = self.change(|st| self.begin_check(st, level, None))?;
+        let job = self.change(|st| self.begin_check(st, level))?;
         self.run_check(job);
         Ok(())
     }
@@ -140,7 +140,7 @@ impl App {
     pub(super) fn check_at_start(&self) {
         let job = self.change(|st| {
             st.settings.client.as_ref()?;
-            self.begin_check(st, LevelView::Quick, None).ok()
+            self.begin_check(st, LevelView::Quick).ok()
         });
         if let Some(job) = job {
             self.run_check(job);
@@ -157,30 +157,14 @@ impl App {
 
     /// Marks a check of the saved folder as the running job: of `only` those paths, or of every
     /// file.
-    fn begin_check(
-        &self,
-        st: &mut State,
-        level: LevelView,
-        only: Option<&[String]>,
-    ) -> Result<CheckJob, IntentError> {
+    fn begin_check(&self, st: &mut State, level: LevelView) -> Result<CheckJob, IntentError> {
         free(st)?;
         let folder = st
             .settings
             .client
             .clone()
             .ok_or_else(|| refused(words::NO_FOLDER))?;
-        let all = &self.inner.cfg.manifest;
-        let manifest = match only {
-            None => all.clone(),
-            Some(paths) => Manifest {
-                entries: all
-                    .entries
-                    .iter()
-                    .filter(|e| paths.contains(&e.path))
-                    .cloned()
-                    .collect(),
-            },
-        };
+        let manifest = self.inner.cfg.manifest.clone();
         let stop = Arc::new(AtomicBool::new(false));
         st.client.stop = Some(stop.clone());
         st.client.job = Some(JobView::Checking {
@@ -211,7 +195,7 @@ impl App {
         &self,
         level: LevelView,
     ) -> Result<Option<CheckView>, IntentError> {
-        let job = self.change(|st| self.begin_check(st, level, None))?;
+        let job = self.change(|st| self.begin_check(st, level))?;
         Ok(self.run_check_here(job).await)
     }
 
@@ -514,7 +498,9 @@ impl App {
                 st.settings.client = Some(folder);
                 self.save(st);
             }
-            self.begin_check(st, LevelView::Full, files.as_deref())
+            // Every file, after a repair too: a check of the repaired files alone would say every
+            // file was checked, and miss one damaged since the check that found the others (#348).
+            self.begin_check(st, LevelView::Full)
         });
         match job {
             Ok(job) => self.run_check(job),
@@ -831,6 +817,43 @@ exit {code}"#,
         app.intent(Intent::Repair).await.unwrap();
         until(&app, checked(LevelView::Full)).await;
         assert_eq!(t.fake_dd_filelist(), vec!["bin64/b.dll"]);
+    }
+
+    #[tokio::test]
+    async fn a_repair_ends_with_every_file_checked_again() {
+        // #348: the check after a repair took only the repaired files, yet said every file had
+        // been checked: a file damaged after the check that found the others went unseen.
+        let t = Testbed::new(&[("a.bin", 1000), ("bin64/b.dll", 10)]);
+        let app = t.app_with_fakes(FakeDd::WritesFiles { code: 0 });
+        app.intent(Intent::ChooseFolder {
+            path: t.good.display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Quick)).await;
+        std::fs::write(t.good.join("bin64/b.dll"), b"x").unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Full,
+        })
+        .await
+        .unwrap();
+        until(&app, |s| {
+            matches!(s.client.check, CheckView::NeedsRepair { .. })
+        })
+        .await;
+        // A file that check found fine is damaged before the repair.
+        let mut a = std::fs::read(t.good.join("a.bin")).unwrap();
+        a[0] ^= 0xff;
+        std::fs::write(t.good.join("a.bin"), a).unwrap();
+        app.intent(Intent::Repair).await.unwrap();
+        let s = until(&app, |s| s.job.is_none()).await;
+        match s.client.check {
+            CheckView::NeedsRepair { files, .. } => {
+                let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+                assert_eq!(paths, ["a.bin"]);
+            }
+            other => panic!("after the repair: {other:?}"),
+        }
     }
 
     #[tokio::test]
