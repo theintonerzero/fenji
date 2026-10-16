@@ -467,14 +467,12 @@ prefix_ready() { [ -f "$WORK/compat/system.reg" ] && [ -d "$WORK/compat/drive_c/
 # createprefix never runs the shim. Unprimed, the client's own first launch registers the service,
 # and the watchdog rightly stops the run: a service that isn't in the baseline (bm-1, 2026-10-13).
 # setup primes the prefix by starting cmd.exe once through the shim, then leaves the mark, which
-# names the GE-Proton build that primed it. The prefix is primed when the mark names this build (a
-# new build upgrades the prefix, and its services would be new too) and, if this GE-Proton ships
-# the bridge, the bridge service has reached the registry on disk.
-PRIMED_MARK=fenji-primed
-proton_build() { cat -- "$PROTON/version" 2>/dev/null || echo unknown; }
+# names the GE-Proton build that primed it (run-client.sh's PRIMED_MARK, proton_build and
+# prefix_marked). The prefix is primed when the mark names this build (a new build upgrades the
+# prefix, and its services would be new too) and, if this GE-Proton ships the bridge, the bridge
+# service has reached the registry on disk.
 prefix_primed() {
-  [ -f "$WORK/compat/$PRIMED_MARK" ] || return 1
-  [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" = "$(proton_build)" ] || return 1
+  prefix_marked || return 1
   [ ! -e "$PROTON/files/lib/wine/discord-rpc-bridge/bridge.exe" ] ||
     grep -q '^\[System\\\\ControlSet00[0-9]\\\\Services\\\\discord-bridge\]' "$WORK/compat/system.reg"
 }
