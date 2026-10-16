@@ -24,7 +24,7 @@ pub struct Lock {
 ///
 /// # Errors
 /// `a server is already using this data folder (<path>)` while another process holds it
-/// ([`in_use`]), or why the folder or its lock can't be made or taken.
+/// (`in_use`), or why the folder or its lock can't be made or taken.
 pub fn take(data: &Path, given: Option<&Path>) -> anyhow::Result<Lock> {
     match try_take(data)? {
         Some(lock) => Ok(lock),

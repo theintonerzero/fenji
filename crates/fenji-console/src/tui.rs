@@ -509,6 +509,13 @@ static ALTERNATE: AtomicBool = AtomicBool::new(false);
 /// running it again, as a panic's hook and then the console's end do, changes nothing: a second
 /// switch to the main screen would move the cursor back to where it was when the console began,
 /// and what's printed next would overwrite the panic's message.
+///
+/// Across threads, each part is done by whichever comes to it first, and the other doesn't wait
+/// for it: run at once by a panic's hook and the console's end, one may return, and what its
+/// caller prints may land on the alternate screen, while the other is still writing the switch to
+/// the main screen. That's a window of microseconds, and nothing here waits on a lock, as a
+/// terminal that has stopped reading would hold whoever held it (the hosting plan's Task 10;
+/// #359).
 fn give_back() {
     give_back_to(&mut io::stdout());
 }
@@ -573,6 +580,9 @@ fn loud_stderr() {
     }
 }
 
+/// On Windows stderr stays where it is: a line a library prints there while the console holds the
+/// terminal draws over it. Untested there, as the tests run on Linux (the hosting plan's Task 10;
+/// #359).
 #[cfg(not(unix))]
 fn quiet_stderr() {}
 

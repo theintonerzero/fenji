@@ -36,7 +36,7 @@ pub struct Maintenance {
 }
 
 /// Checks a maintenance message: plain text ([`crate::text::plain`]) of at most [`MESSAGE_MAX`]
-/// characters, as [`commands::check_text`] checks what the console sets for players, a message too
+/// characters, as `commands::check_text` checks what the console sets for players, a message too
 /// long answered with `maintenance`'s usage. It reaches every player's launcher, and the world's
 /// announcement. An MOTD is held to the same.
 pub fn check_message(text: &str) -> Result<(), CommandError> {

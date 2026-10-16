@@ -66,7 +66,8 @@ pub(super) enum Stage {
 }
 
 /// Its own actor has entered once, and it has had the MOTD if there was one: a later load, as a
-/// teleport to another scene would bring (#280), doesn't greet it again.
+/// teleport to another scene would bring (#280), doesn't greet it again. No load comes later yet,
+/// so no test reaches that branch until #280's teleport does.
 #[derive(Component)]
 struct Greeted;
 

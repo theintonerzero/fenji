@@ -7,7 +7,9 @@
 //! - [`serve`] gives each console, four at once, the hello and then [`service::connect`]'s feed as
 //!   JSON lines, each within the wire's limit ([`wire::encode_server`]), and runs its numbered
 //!   commands. A console that stops reading holds up nothing: its socket and its queue fill, and
-//!   it loses log lines, as the log hub has it.
+//!   it loses log lines, as the log hub has it. It keeps its place, one of the four, until it
+//!   reads again, and is told what it lost, or closes: four stalled consoles, such as over frozen
+//!   SSH links, turn the next away until one goes (the hosting plan's Task 11; #359).
 use std::fs::{DirBuilder, File, Permissions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
