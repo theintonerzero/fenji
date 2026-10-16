@@ -559,6 +559,18 @@ fn a_signal_leaves_an_attached_full_screen_console_with_the_terminal_given_back(
         );
         let cursor = last(&out, b"\x1b[?25h");
         assert!(cursor.is_some_and(|at| at > took), "{name}: no cursor");
+        // The wheel's ↑ and ↓ (alternate scroll) off while it held the terminal, and on again
+        // (the hosting plan's final review B, Minor 5).
+        let off = last(&out, b"\x1b[?1007l");
+        assert!(
+            off.is_some_and(|at| at > took),
+            "{name}: the wheel's left on"
+        );
+        let on = last(&out, b"\x1b[?1007h");
+        assert!(
+            on.is_some_and(|at| gave.is_some_and(|gave| at > gave)),
+            "{name}: the wheel isn't given back"
+        );
         assert!(console.cooked(), "{name}: not in cooked mode");
         assert!(
             console.shown().contains(LEFT),

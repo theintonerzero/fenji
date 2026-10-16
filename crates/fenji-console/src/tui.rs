@@ -212,9 +212,39 @@ impl Screen {
         RAW.store(true, Ordering::SeqCst);
         // Marked first: the switch may be written even if the call then fails.
         ALTERNATE.store(true, Ordering::SeqCst);
-        execute!(io::stdout(), EnterAlternateScreen, Hide)?;
+        enter_to(&mut io::stdout())?;
         quiet_stderr();
         Ok(screen)
+    }
+}
+
+/// Takes `terminal`'s screen: the alternate screen, with the cursor hidden and the wheel's ↑ and ↓
+/// turned off ([`AlternateScroll`]).
+fn enter_to(terminal: &mut impl io::Write) -> io::Result<()> {
+    execute!(terminal, EnterAlternateScreen, Hide, AlternateScroll(false))
+}
+
+/// The terminal's alternate-scroll mode (xterm's 1007, which VTE, macOS's Terminal, iTerm2 and
+/// Windows Terminal follow): on the alternate screen of a program that doesn't take the mouse, as
+/// the console doesn't so that a host can select a link, it turns the wheel into ↑ and ↓. Those
+/// walk the console's command history, and what a scrolled-back host typed next was added to a
+/// recalled command (the hosting plan's final review B, Minor 5). Off while the console holds the
+/// terminal (DECRST 1007), and on again once it's given back (DECSET 1007).
+struct AlternateScroll(bool);
+
+impl crossterm::Command for AlternateScroll {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str(if self.0 {
+            "\u{1b}[?1007h"
+        } else {
+            "\u{1b}[?1007l"
+        })
+    }
+
+    /// The legacy Windows console, without escape sequences, has no such mode.
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -231,7 +261,8 @@ static RAW: AtomicBool = AtomicBool::new(false);
 static ALTERNATE: AtomicBool = AtomicBool::new(false);
 
 /// Gives the terminal back: stderr first, so that what is printed next, a panic's message among
-/// it, reaches the terminal; then the main screen, a cursor and cooked mode. Each is given back
+/// it, reaches the terminal; then the main screen, a cursor, the wheel's alternate scroll
+/// ([`AlternateScroll`]) and cooked mode. Each is given back
 /// once, so running it again, as a panic's hook and then the console's end do, changes nothing: a
 /// second switch to the main screen would move the cursor back to where it was when the console
 /// began, and what's printed next would overwrite the panic's message.
@@ -243,7 +274,7 @@ fn give_back() {
 fn give_back_to(terminal: &mut impl io::Write) {
     loud_stderr();
     if ALTERNATE.swap(false, Ordering::SeqCst) {
-        let _ = execute!(terminal, LeaveAlternateScreen, Show);
+        let _ = execute!(terminal, LeaveAlternateScreen, Show, AlternateScroll(true));
     }
     if RAW.swap(false, Ordering::SeqCst) {
         let _ = disable_raw_mode();
@@ -402,6 +433,27 @@ mod tests {
         let mut again = Vec::new();
         give_back_to(&mut again);
         assert!(again.is_empty(), "{again:?}");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_no_commands_while_the_console_holds_the_terminal() {
+        // The hosting plan's final review B, Minor 5: on the alternate screen, terminals turn the
+        // wheel into ↑ and ↓ (alternate scroll, 1007), which walked a scrolled-back host's command
+        // history, and what they typed next was added to a recalled command. It's off while the
+        // console holds the terminal, and on again once it's given back, the panic hook's way
+        // included, as that gives it back here too.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entered = Vec::new();
+        enter_to(&mut entered).unwrap();
+        let entered = String::from_utf8(entered).unwrap();
+        let (screen, wheel) = (entered.find("\u{1b}[?1049h"), entered.find("\u{1b}[?1007l"));
+        assert!(screen.is_some() && wheel > screen, "{entered:?}");
+        ALTERNATE.store(true, Ordering::SeqCst);
+        let mut given = Vec::new();
+        give_back_to(&mut given);
+        let given = String::from_utf8(given).unwrap();
+        let (screen, wheel) = (given.find("\u{1b}[?1049l"), given.find("\u{1b}[?1007h"));
+        assert!(screen.is_some() && wheel > screen, "{given:?}");
     }
 
     /// The hook the tests had, back in place of `before`'s replacement.
