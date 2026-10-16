@@ -458,11 +458,18 @@ impl GameMark {
 /// When process `pid` started, in clock ticks since boot (`/proc/<pid>/stat`'s 22nd field); none
 /// if there's no such process, or no `/proc` (Play is Linux-only, spec L2).
 fn process_start(pid: u32) -> Option<u64> {
+    proc_stat(pid).map(|(_, start)| start)
+}
+
+/// Process `pid`'s parent and its start (`/proc/<pid>/stat`'s 4th and 22nd fields).
+fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // The command's name comes in parentheses and may hold spaces or parentheses: the fields
     // after it start at the last ')', with the state, the third field.
-    let after = stat.get(stat.rfind(')')? + 2..)?;
-    after.split(' ').nth(22 - 3)?.parse().ok()
+    let mut fields = stat.get(stat.rfind(')')? + 2..)?.split(' ');
+    let parent = fields.nth(4 - 3)?.parse().ok()?;
+    let start = fields.nth(22 - 5)?.parse().ok()?;
+    Some((parent, start))
 }
 
 /// Whether a game is starting or running (spec L12: one at a time).
@@ -497,8 +504,6 @@ fn env_var(
     env.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
 }
 
-/// `<data dir>/logs/game.log`, new for each start: what umu-run, Proton and the client print,
-/// which the words "the log folder has the details" point to.
 /// The game's log, twice: for a child's stdout and its stderr.
 fn log_pair(log: &std::fs::File) -> std::io::Result<(std::fs::File, std::fs::File)> {
     Ok((log.try_clone()?, log.try_clone()?))
@@ -516,7 +521,11 @@ enum GroupEnd {
 }
 
 /// Runs `cmd` in a process group of its own until it ends, `cancelled` says so, or `limit` passes.
-/// The last two end the whole group, as umu-run with pressure-vessel, Proton and Wine (#348).
+/// The last two stop everything it started (#348). umu-run 1.4.4 starts Proton in a session of
+/// its own, and passes SIGTERM on to it. So the stop sends umu-run's group SIGTERM and gives it
+/// [`GRACE`]. Then it kills every process under umu-run, and the group. umu-run is a subreaper, so
+/// what it started stays under it while it lives, double forks such as wineserver included; what
+/// was under it as the stop began is killed too, should umu-run end first.
 async fn run_in_group(
     mut cmd: tokio::process::Command,
     cancelled: impl Fn() -> bool,
@@ -542,13 +551,58 @@ async fn run_in_group(
         Ok(None) => GroupEnd::Cancelled,
         Err(_) => GroupEnd::TooLong,
     };
+    let mut tree = group.map(descendants).unwrap_or_default();
     signal_group(group, false);
     let _ = tokio::time::timeout(GRACE, child.wait()).await;
-    // What's left of the group, once its leader has ended or had its time.
+    // What's left, once umu-run has ended or had its time.
+    tree.extend(group.map(descendants).unwrap_or_default());
+    kill_each(&tree);
     signal_group(group, true);
     let _ = child.start_kill();
     end
 }
+
+/// The processes under `root`, by `/proc`'s parent links, each with its start, so that a pid the
+/// system has given to another process since is never killed. None off Linux, which has no
+/// `/proc` (Play is Linux-only, spec L2).
+fn descendants(root: u32) -> Vec<(u32, u64)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let all: Vec<(u32, u32, u64)> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter_map(|pid| proc_stat(pid).map(|(parent, start)| (pid, parent, start)))
+        .collect();
+    let mut found: Vec<(u32, u64)> = Vec::new();
+    let mut parents = vec![root];
+    while let Some(parent) = parents.pop() {
+        for &(pid, of, start) in &all {
+            if of == parent && !found.iter().any(|&(seen, _)| seen == pid) {
+                found.push((pid, start));
+                parents.push(pid);
+            }
+        }
+    }
+    found
+}
+
+/// SIGKILL to each of `processes` that is still the process it was.
+#[cfg(unix)]
+fn kill_each(processes: &[(u32, u64)]) {
+    use rustix::process::{Pid, Signal, kill_process};
+    for &(pid, start) in processes {
+        if process_start(pid) != Some(start) {
+            continue;
+        }
+        if let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) {
+            let _ = kill_process(pid, Signal::KILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_each(_: &[(u32, u64)]) {}
 
 /// SIGTERM to the process group `group` leads, or SIGKILL when `kill`. Off Unix, nothing: the
 /// leader alone is killed there.
@@ -572,6 +626,8 @@ fn signal_group(group: Option<u32>, kill: bool) {
 #[cfg(not(unix))]
 fn signal_group(_: Option<u32>, _: bool) {}
 
+/// `<data dir>/logs/game.log`, new for each start: what umu-run, Proton and the client print,
+/// which the words "the log folder has the details" point to.
 fn game_log(data_dir: &Path) -> std::io::Result<std::fs::File> {
     let logs = data_dir.join("logs");
     std::fs::create_dir_all(&logs)?;
@@ -646,19 +702,35 @@ mod tests {
         assert!(words::PREFIX_TOO_LONG.contains(&minutes));
     }
 
-    /// #348: past its limit, a command is stopped with everything it started, as umu-run with
-    /// Proton and Wine.
+    /// #348: past its limit, a command is stopped with everything it started, even what it put in
+    /// a session of its own that ignores SIGTERM, as umu-run 1.4.4 does with Proton.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn a_run_past_its_limit_ends_with_its_whole_group() {
+    async fn a_run_past_its_limit_ends_with_everything_it_started() {
         let dir = tempfile::tempdir().unwrap();
         let child = dir.path().join("child");
+        let umu_run = dir.path().join("umu-run");
+        std::fs::write(
+            &umu_run,
+            format!(
+                r#"setsid sh -c 'trap "" TERM; sleep 600 & echo $! > "$0"; wait' '{}' &
+proton=$!
+trap 'kill -TERM "$proton" 2>/dev/null' TERM
+while kill -0 "$proton" 2>/dev/null; do wait "$proton"; done
+"#,
+                child.display()
+            ),
+        )
+        .unwrap();
         let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c")
-            .arg(format!("sleep 600 & echo $! > '{}'; wait", child.display()));
+        // Nothing left behind may hold the test's own output open.
+        cmd.arg(&umu_run)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         let started = Instant::now();
         let end = run_in_group(cmd, || false, Duration::from_secs(1)).await;
         assert!(matches!(end, GroupEnd::TooLong), "{end:?}");
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(started.elapsed() < GRACE + Duration::from_secs(5));
         let pid: u32 = std::fs::read_to_string(&child)
             .unwrap()
             .trim()
@@ -675,6 +747,7 @@ mod tests {
     }
 
     /// Whether `pid` runs: a process that has ended but isn't reaped yet doesn't.
+    #[cfg(target_os = "linux")]
     fn alive(pid: u32) -> bool {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(')')
