@@ -21,7 +21,9 @@ pub(crate) use chat::MAX_CHARS as MAX_LINE_CHARS;
 #[cfg(test)]
 pub(crate) use ecs::test_util::{logged, logged_at};
 pub use ecs::{Rules, WorldCore};
-pub use thread::{RunningWorld, SAVE_WAIT, THREAD_WAIT, TickReport, WorldHandle, start};
+pub use thread::{
+    Failure, HUNG, RunningWorld, SAVE_WAIT, THREAD_WAIT, TickReport, WorldHandle, start,
+};
 pub use types::*;
 
 use crate::config::Config;

@@ -1,9 +1,11 @@
 //! The world's thread (Fenji design spec §6.4, §6.7). It ticks at `tick_hz`, takes in what arrived
 //! since the last tick, and keeps the last minute of tick times. A tick over its budget is logged
 //! with its slowest phase, at most once every 10 seconds. A tick that panics ends the world, and
-//! with it the server (Ruling R9).
+//! with it the server (Ruling R9), and so does one that makes no progress for [`HUNG`], which a
+//! watch outside the thread notices (#281).
 use std::any::Any;
 use std::collections::VecDeque;
+use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,6 +27,36 @@ pub const SAVE_WAIT: Duration = Duration::from_secs(5);
 /// How long stopping waits for the world's thread to end after its shutdown tick: [`SAVE_WAIT`]
 /// and a second. A thread still running then has a tick that hangs.
 pub const THREAD_WAIT: Duration = Duration::from_secs(SAVE_WAIT.as_secs() + 1);
+
+/// How long the world's tick count may stand still while the server serves before the world is
+/// taken for hung, and the server stops (#281). The world ticks at least once a second, and a
+/// tick's work takes far less (the 20-bot load test's slowest took 2.3 ms; world.md §13), so only
+/// a tick that never returns comes near it. A pause of the whole process isn't one ([`TickWatch`]).
+pub const HUNG: Duration = Duration::from_secs(30);
+
+/// How many times the watch reads the tick count over [`HUNG`]: once a second.
+const SAMPLES: u32 = 30;
+
+/// How the world failed while the server served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    /// Its thread ended: a tick panicked, and the world let everyone go (Ruling R9).
+    Thread,
+    /// Its services task ended, so its saves have nowhere to go (Ruling R13).
+    Services,
+    /// Its tick count stood still this long: a tick hangs (#281).
+    Hung(Duration),
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Thread => f.write_str("the world's thread has ended"),
+            Self::Services => f.write_str("the world's services task has ended"),
+            Self::Hung(still) => write!(f, "the world's tick has made no progress for {still:?}"),
+        }
+    }
+}
 
 /// How connections reach the world. Clones share the channel.
 #[derive(Clone)]
@@ -132,10 +164,12 @@ pub struct RunningWorld {
     /// Closed when the thread ends, however it ends; nothing is sent on it.
     ended: watch::Receiver<()>,
     services: tokio::task::JoinHandle<()>,
-    /// How the services task ended, once [`RunningWorld::ended`] has seen it end before the world
+    /// How the services task ended, once [`RunningWorld::failed`] has seen it end before the world
     /// (Ruling R13).
     services_ended: Option<Result<(), JoinError>>,
     stats: Arc<Mutex<Stats>>,
+    /// How long the tick count may stand still before the world is taken for hung: [`HUNG`].
+    hang: Duration,
 }
 
 /// Starts the world's thread and its services task, on the current tokio runtime. `invite_base`
@@ -199,6 +233,7 @@ fn launch(
         services,
         services_ended: None,
         stats,
+        hang: HUNG,
     })
 }
 
@@ -220,25 +255,35 @@ impl RunningWorld {
         self.services.abort_handle()
     }
 
-    /// Resolves once the world's thread or its services task has ended, and says which. Before
-    /// [`RunningWorld::stop`] asks them to, either is a failure: a tick panicked and the world has
-    /// let everyone go (Ruling R9), or the world's saves have nowhere to go (Ruling R13).
-    pub async fn ended(&mut self) -> &'static str {
+    /// Takes the world for hung once its tick count has stood still for `still`, rather than
+    /// [`HUNG`] (tests).
+    #[cfg(test)]
+    pub(crate) fn hang_after(&mut self, still: Duration) {
+        self.hang = still;
+    }
+
+    /// Resolves once the world fails, and says how. Before [`RunningWorld::stop`] asks it to end,
+    /// each of these is a failure: its thread ends, as when a tick panicked and the world let
+    /// everyone go (Ruling R9); its services task ends, so its saves have nowhere to go (Ruling
+    /// R13); or its tick count stands still for [`HUNG`], since a tick hangs (#281). The watch over
+    /// the tick count runs here, off the world's thread, for as long as this is awaited.
+    pub async fn failed(&mut self) -> Failure {
         tokio::select! {
             biased;
             // Nothing is sent: `changed` fails once the thread has dropped its end.
-            _ = self.ended.changed() => "the world's thread",
+            _ = self.ended.changed() => Failure::Thread,
             done = &mut self.services, if self.services_ended.is_none() => {
                 let failed = done.is_err();
                 self.services_ended = Some(done);
                 // It returns only once the world has dropped its end of their channel, as the
                 // world's thread ends: that end is the one to report.
                 if failed {
-                    "the world's services task"
+                    Failure::Services
                 } else {
-                    "the world's thread"
+                    Failure::Thread
                 }
             }
+            () = hung(&self.stats, self.hang) => Failure::Hung(self.hang),
         }
     }
 
@@ -309,6 +354,65 @@ impl RunningWorld {
                 Err(anyhow!("the world's last saves took over {SAVE_WAIT:?}"))
             }
         }
+    }
+}
+
+/// Resolves once the tick count in `stats` has stood still for `hang` (#281), as [`TickWatch`]
+/// counts it, reading it [`SAMPLES`] times over that time.
+async fn hung(stats: &Mutex<Stats>, hang: Duration) {
+    let count = || stats.lock().unwrap_or_else(|e| e.into_inner()).ticks;
+    let every = (hang / SAMPLES).max(Duration::from_millis(1));
+    let mut watch = TickWatch::new(count(), Instant::now(), every, hang);
+    let mut readings = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    readings.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        readings.tick().await;
+        if watch.hung(count(), Instant::now()) {
+            return;
+        }
+    }
+}
+
+/// The watch over the world's tick count (#281): how long the count has stood still, as the watch
+/// saw it. A reading that comes more than two periods after the last counts as two: the whole
+/// process was paused (stopped, or a VM paused while the monotonic clock ran on), the world's
+/// thread with it, and that's no hang. A runtime too busy to read on time only makes it slower to
+/// notice.
+struct TickWatch {
+    /// How often it reads the count.
+    every: Duration,
+    /// How long the count may stand still.
+    hang: Duration,
+    /// The count at the last reading, and when that was.
+    ticks: u64,
+    at: Instant,
+    /// How long the count has stood still.
+    still: Duration,
+}
+
+impl TickWatch {
+    fn new(ticks: u64, at: Instant, every: Duration, hang: Duration) -> Self {
+        Self {
+            every,
+            hang,
+            ticks,
+            at,
+            still: Duration::ZERO,
+        }
+    }
+
+    /// Takes the count `ticks`, read at `now`: true once it has stood still for the watch's
+    /// `hang`.
+    fn hung(&mut self, ticks: u64, now: Instant) -> bool {
+        let since = now.saturating_duration_since(self.at).min(self.every * 2);
+        self.at = now;
+        if ticks != self.ticks {
+            self.ticks = ticks;
+            self.still = Duration::ZERO;
+            return false;
+        }
+        self.still += since;
+        self.still >= self.hang
     }
 }
 
@@ -715,9 +819,80 @@ mod tests {
         }) {
             assert_eq!(told(&mut mai).await, WorldOut::Kicked(KickReason::Shutdown));
         }
-        let ended = tokio::time::timeout(Duration::from_secs(5), world.ended()).await;
-        assert_eq!(ended, Ok("the world's thread"));
+        let failed = tokio::time::timeout(Duration::from_secs(5), world.failed()).await;
+        assert_eq!(failed, Ok(Failure::Thread));
         assert!(world.stop().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_world_whose_tick_hangs_fails_and_one_that_ticks_doesnt() {
+        // #281: a tick that never returns left a world that took everything in and answered
+        // nothing, without a word. The watch, outside the world's thread, takes a tick count that
+        // stands still for its time, here a second, for a hang; the world ticks every 50 ms.
+        let mut world = world(rules());
+        world.hang_after(MS * 1_000);
+        let ticking = tokio::time::timeout(MS * 2_500, world.failed()).await;
+        assert!(ticking.is_err(), "a world that ticks failed: {ticking:?}");
+        let (begun, working) = oneshot::channel();
+        let work = Duration::from_secs(12);
+        world.handle().send(WorldIn::Stall { work, begun });
+        tokio::time::timeout(Duration::from_secs(5), working)
+            .await
+            .expect("the tick begins")
+            .unwrap();
+        let began = std::time::Instant::now();
+        let failed = tokio::time::timeout(Duration::from_secs(5), world.failed()).await;
+        assert_eq!(failed, Ok(Failure::Hung(MS * 1_000)));
+        let took = began.elapsed();
+        assert!(took >= MS * 1_000, "noticed early: {took:?}");
+        // The tick still hangs: stopping gives up on it.
+        assert!(world.stop_within(MS * 100).await.is_err());
+    }
+
+    #[test]
+    fn a_count_that_stands_still_for_the_watchs_time_is_a_hang() {
+        // #281: read once a second, a count that stands still for 30 s is a hang, and one that
+        // moves starts the time again.
+        let (every, hang) = (MS * 1_000, MS * 30_000);
+        let t = Instant::now();
+        let mut w = TickWatch::new(7, t, every, hang);
+        for s in 1..30 {
+            assert!(!w.hung(7, t + every * s), "{s} s");
+        }
+        assert!(w.hung(7, t + every * 30), "30 s");
+        let mut w = TickWatch::new(7, t, every, hang);
+        for s in 1..30 {
+            assert!(!w.hung(7, t + every * s), "{s} s");
+        }
+        assert!(!w.hung(8, t + every * 30), "a tick at 30 s");
+        for s in 31..60 {
+            assert!(!w.hung(8, t + every * s), "{s} s");
+        }
+        assert!(w.hung(8, t + every * 60), "30 s after that tick");
+    }
+
+    #[test]
+    fn a_pause_of_the_whole_process_is_no_hang() {
+        // A reading that comes late counts as two periods: the process was stopped, or its VM
+        // paused while the monotonic clock ran on, and the world's thread with it. A minute's
+        // pause, then a tick, is no hang.
+        let (every, hang) = (MS * 1_000, MS * 30_000);
+        let t = Instant::now();
+        let mut w = TickWatch::new(7, t, every, hang);
+        assert!(!w.hung(7, t + every * 60), "a minute's pause");
+        assert!(!w.hung(8, t + every * 61), "then a tick");
+        // Readings that keep coming late, as from a busy runtime, still add up, two periods each:
+        // 14 readings 5 s apart are 28 s, and the 15th is 30.
+        let mut w = TickWatch::new(7, t, every, hang);
+        for n in 1..15 {
+            assert!(!w.hung(7, t + every * 5 * n), "reading {n}");
+        }
+        assert!(w.hung(7, t + every * 75), "reading 15");
+        // A reading from before the last counts nothing.
+        let mut w = TickWatch::new(7, t + every * 10, every, hang);
+        for _ in 0..40 {
+            assert!(!w.hung(7, t));
+        }
     }
 
     #[tokio::test]

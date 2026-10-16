@@ -60,6 +60,10 @@ pub const IDLE: Duration = Duration::from_secs(60);
 pub const LINGER: Duration = Duration::from_secs(2);
 /// How often, by default, a connection in the world checks that its account still exists.
 pub const ACCOUNT_CHECK: Duration = Duration::from_secs(30);
+/// How long, by default, a player in the world waits for the world to let it go once the server is
+/// stopping: the world's next tick does, at most a second away (`tick_hz` is at least 1), unless
+/// the tick hangs (#281).
+pub const LET_GO: Duration = Duration::from_secs(2);
 
 /// The gate's limits (M3 spec D17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +87,10 @@ pub struct GateLimits {
     /// How often a connection in the world checks that its account still exists (Ruling R5): the
     /// lobby checks at every script message, but a player who only moves sends none.
     pub account_check: Duration,
+    /// How long a player in the world waits, once the server is stopping, for the world to let it
+    /// go with the shutdown's reason (#219). Then its connection closes with that reason itself:
+    /// a world whose tick hangs never lets go (#281).
+    pub let_go: Duration,
 }
 
 impl Default for GateLimits {
@@ -96,6 +104,7 @@ impl Default for GateLimits {
             write_deadline: Duration::from_secs(10),
             linger: LINGER,
             account_check: ACCOUNT_CHECK,
+            let_go: LET_GO,
         }
     }
 }
@@ -108,12 +117,12 @@ impl GateLimits {
         }
     }
 
-    /// How long a stopping server gives its connections to end (#219): a player in the world
-    /// writes its close within the write deadline, then lingers for its client to read it, and a
-    /// second more covers the world's last tick (`tick_hz` is at least 1). Connections left after
-    /// it are ended.
+    /// How long a stopping server gives its connections to end (#219): a player in the world is
+    /// let go by the world's last tick, or by itself after `let_go` (#281), then writes its close
+    /// within the write deadline and lingers for its client to read it. Connections left after it
+    /// are ended.
     pub fn grace(&self) -> Duration {
-        self.write_deadline + self.linger + Duration::from_secs(1)
+        self.let_go + self.write_deadline + self.linger
     }
 }
 
@@ -846,14 +855,17 @@ mod tests {
     }
 
     #[test]
-    fn the_shutdowns_grace_is_a_write_deadline_a_linger_and_a_tick() {
+    fn the_shutdowns_grace_is_the_worlds_let_go_a_write_deadline_and_a_linger() {
+        // #281: a player in the world waits up to `let_go` for the world's last tick to let it go,
+        // where the grace counted a second for that tick before.
         let limits = GateLimits {
             write_deadline: Duration::from_secs(3),
             linger: Duration::from_millis(300),
             ..GateLimits::default()
         };
-        assert_eq!(limits.grace(), Duration::from_millis(4_300));
-        assert_eq!(GateLimits::default().grace(), Duration::from_secs(13));
+        assert_eq!(limits.grace(), Duration::from_millis(5_300));
+        assert_eq!(GateLimits::default().grace(), Duration::from_secs(14));
+        assert_eq!(GateLimits::default().let_go, Duration::from_secs(2));
     }
 
     #[tokio::test]

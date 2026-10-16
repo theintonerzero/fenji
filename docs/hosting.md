@@ -668,4 +668,6 @@ To undo either, delete the two `container.conf` files, then `sudo systemctl daem
 
 **"there's no config at /etc/fenji/fenji.toml".** The service's settings are missing: write them with `sudo fenji-server --config /etc/fenji/fenji.toml init` (section 4).
 
+**The server stopped by itself, and its log says "the world's tick has made no progress for 30s".** The world stopped answering, which is a bug in Fenji. Rather than keep players in a world where nothing moves, the server told them it was stopping and stopped, saving them if the world came back in time. Places since the last save (`save_every_secs`, five minutes by default) may be lost. The reference VPS's service starts the server again 5 seconds later; on your own computer, start it again. Please report it on GitHub, with the server's log from that time.
+
 **Players are told the server is in maintenance:** "Moonward is in maintenance: Back soon." in the desktop launcher, or "the server is in maintenance: Back soon" from `fenji-launch`, with your message. Maintenance is on, and stays on through restarts: `maintenance off` turns it off.

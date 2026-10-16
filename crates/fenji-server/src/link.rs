@@ -114,6 +114,14 @@ pub(crate) async fn play(
     // One idle deadline, which only the client's reads move (Ruling R6): the other arms complete
     // without restarting it, so a client gone silent without a FIN still ends.
     let mut idle_at = Instant::now() + gate.limits.idle;
+    // Once the server is stopping, the world's next tick lets the player go with the shutdown's
+    // reason (#219). A world whose tick hangs never does (#281): after `let_go`, the link says
+    // that reason itself. One future for the whole loop, so other arms don't restart its wait.
+    let unreleased = async {
+        gate.stopped().await;
+        tokio::time::sleep(gate.limits.let_go).await;
+    };
+    tokio::pin!(unreleased);
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         tokio::select! {
@@ -189,6 +197,10 @@ pub(crate) async fn play(
             // A newer login, or a ban: the world's own `Ban` may come too, and finds it gone.
             Ok(closing) = &mut *replaced => {
                 return gate::close_told(sock, peer, gate, server, account, closing).await;
+            }
+            () = &mut unreleased => {
+                tracing::warn!(%peer, account = %account.username, "the server is stopping, and the world hasn't let go: closing");
+                return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
             }
             _ = check.tick() => match gate.accounts.store().account_by_id(account.id).await {
                 Ok(Some(_)) => {}
@@ -1131,6 +1143,55 @@ mod tests {
         assert_eq!(
             rest(&mut theirs, &mut client).await,
             [ClientEvent::Closed(gate::BANNED.as_bytes().to_vec())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stopping_server_whose_world_never_lets_go_still_tells_the_player_why() {
+        // #281: a world whose tick hangs never lets its players go with the shutdown's reason
+        // (#219), and they were cut off without a word at the end of the shutdown's grace. Once
+        // the server is stopping, a player the world hasn't let go of within `let_go` closes with
+        // that reason itself.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gate, mut inbox) = gate(dir.path()).await;
+        gate.limits.let_go = Duration::from_millis(300);
+        let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let tester = account("tester");
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        let began = std::time::Instant::now();
+        let world = async {
+            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            gate.stopping.send_replace(true);
+            // Kept open, and nothing comes on it: the world hangs.
+            out
+        };
+        let (ended, _out) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(played, world)
+        })
+        .await
+        .expect("closed within 5 s");
+        ended.unwrap();
+        let took = began.elapsed();
+        assert!(took >= Duration::from_millis(300), "{took:?}");
+        assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
+        drop(ours);
+        assert_eq!(
+            rest(&mut theirs, &mut client).await,
+            [ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            )]
         );
     }
 
