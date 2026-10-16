@@ -49,6 +49,7 @@ mod unix {
     use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
     use tokio::sync::{mpsc, watch};
 
+    use crate::commands::{self, ConsoleCommand};
     use crate::config::{self, Config};
     use crate::console::socket::{self, Line};
     use crate::console::{self, Front};
@@ -70,6 +71,11 @@ mod unix {
 
     /// The command lines the console may send ahead of the socket.
     const TO_SERVER: usize = 16;
+
+    /// How long `--run stop` waits for the server to stop once it has answered: a stop gives the
+    /// players in the world a grace of about 13 s to read why, and the world's last saves come
+    /// after it.
+    pub const STOP_WAIT: Duration = Duration::from_secs(60);
 
     pub(super) async fn console(
         cfg: &Config,
@@ -208,12 +214,25 @@ mod unix {
 
     /// Runs `line` on the server whose console socket is `socket`: whether it ran, and its
     /// answer's lines, an answer in parts put together. Everything else the server sends is let
-    /// go. A blank line is no command, and nothing is sent (carry-forward 2).
+    /// go. A blank line is no command, and nothing is sent (carry-forward 2). After `stop`'s
+    /// answer it reads on to the server's goodbye, which comes once the server has stopped, for
+    /// [`STOP_WAIT`] at most, so that a script can start the server again once it returns (the
+    /// hosting plan's final review, Minor 2).
     ///
     /// # Errors
     /// If no server answers there, or it speaks another protocol, or it closes the console before
-    /// it answers.
+    /// it answers; after `stop`, if it closes the console without its goodbye or hasn't stopped
+    /// within [`STOP_WAIT`].
     pub async fn run_once(socket: &Path, line: &str) -> anyhow::Result<(bool, Vec<String>)> {
+        run_once_within(socket, line, STOP_WAIT).await
+    }
+
+    /// [`run_once`], waiting `stop_wait` at most for a server to stop after `stop`'s answer.
+    async fn run_once_within(
+        socket: &Path,
+        line: &str,
+        stop_wait: Duration,
+    ) -> anyhow::Result<(bool, Vec<String>)> {
         let mut link = Link::connect(socket).await?;
         let line = line.trim();
         if line.is_empty() {
@@ -241,6 +260,9 @@ mod unix {
                 }) if answered == id => {
                     lines.extend(part);
                     if !more {
+                        if ok && stops(line) {
+                            link.stopped(&lines, stop_wait).await?;
+                        }
                         return Ok((ok, lines));
                     }
                 }
@@ -310,6 +332,39 @@ mod unix {
             next(&mut self.reader, &mut self.buf).await
         }
 
+        /// Waits, `wait` at most, for a server that has answered `stop` with `answered` to stop:
+        /// its goodbye, which it says once the world has let everyone go and saved them and the
+        /// store has closed, then the console's end.
+        async fn stopped(&mut self, answered: &[String], wait: Duration) -> anyhow::Result<()> {
+            let until = tokio::time::Instant::now() + wait;
+            let said = || clean(&answered.join(" ")).into_owned();
+            let mut goodbye = false;
+            loop {
+                match tokio::time::timeout_at(until, self.next()).await {
+                    Ok(Ok(Some(ServerMsg::Bye { .. }))) => goodbye = true,
+                    Ok(Ok(Some(_))) => {}
+                    // Gone after its goodbye, or still going: it has stopped.
+                    _ if goodbye => return Ok(()),
+                    Ok(Ok(None)) => bail!(
+                        "the server said \"{}\", then closed the console without its goodbye: it \
+                         may not have stopped cleanly",
+                        said()
+                    ),
+                    Ok(Err(e)) => {
+                        return Err(e).with_context(|| {
+                            format!("the server said \"{}\", then the console lost it", said())
+                        });
+                    }
+                    Err(_) => bail!(
+                        "the server said \"{}\", but hasn't stopped within {} s; it may still be \
+                         stopping",
+                        said(),
+                        wait.as_secs()
+                    ),
+                }
+            }
+        }
+
         async fn send(&mut self, msg: &ConsoleMsg) -> io::Result<()> {
             send(&mut self.writer, msg).await
         }
@@ -345,6 +400,11 @@ mod unix {
                 to_server,
             }
         }
+    }
+
+    /// Whether `line` is the console's `stop`, in any case.
+    fn stops(line: &str) -> bool {
+        matches!(commands::parse_console(line), Ok(ConsoleCommand::Stop))
     }
 
     /// Why no console could attach at `socket`.
@@ -448,6 +508,117 @@ mod unix {
                 note.as_deref(),
                 Some("The console has closed: the terminal has no raw mode.")
             );
+        }
+
+        /// What a [`fake_server`] does once it has answered the first command.
+        #[derive(Clone, Copy)]
+        enum Then {
+            /// Says goodbye, then closes the console.
+            Goodbye,
+            /// Closes the console without a goodbye, as a server killed then would.
+            Closes,
+            /// Holds the console open and says nothing more, as a server stuck in its stop would.
+            Holds,
+        }
+
+        /// A server on a console socket in `dir` that says hello, answers the first command it's
+        /// sent with `answer` (done), then does as `then` says.
+        fn fake_server(dir: &Path, answer: &'static str, then: Then) -> std::path::PathBuf {
+            use tokio::io::AsyncBufReadExt;
+            let path = dir.join("console.sock");
+            let listener = tokio::net::UnixListener::bind(&path).unwrap();
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let say = |msg: ServerMsg| format!("{}\n", wire::encode(&msg));
+                let hello = Hello {
+                    version: "0.0.0".into(),
+                    proto: PROTO,
+                    server: "Fenji".into(),
+                    commands: Vec::new(),
+                };
+                write.write_all(say(hello.into()).as_bytes()).await.unwrap();
+                let mut lines = BufReader::new(read).lines();
+                let _command = lines.next_line().await.unwrap();
+                let answered = ServerMsg::Answer {
+                    id: 1,
+                    ok: true,
+                    lines: vec![answer.into()],
+                    more: false,
+                };
+                write.write_all(say(answered).as_bytes()).await.unwrap();
+                match then {
+                    Then::Goodbye => {
+                        let bye = ServerMsg::Bye {
+                            reason: "the server is stopping".into(),
+                        };
+                        write.write_all(say(bye).as_bytes()).await.unwrap();
+                    }
+                    Then::Closes => {}
+                    Then::Holds => std::future::pending::<()>().await,
+                }
+            });
+            path
+        }
+
+        /// How long the tests give a server to stop after it answers `stop`.
+        const STOPS_WITHIN: Duration = Duration::from_millis(300);
+
+        #[tokio::test]
+        async fn run_stop_returns_on_the_servers_goodbye() {
+            // The hosting plan's final review, Minor 2: `--run stop` reads on to the goodbye,
+            // which the server says once it has stopped.
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_server(dir.path(), "stopping the server", Then::Goodbye);
+            let ran = run_once_within(&socket, "STOP", STOPS_WITHIN)
+                .await
+                .unwrap();
+            assert_eq!(ran, (true, vec!["stopping the server".to_owned()]));
+        }
+
+        #[tokio::test]
+        async fn run_stop_fails_and_says_why_when_the_server_doesnt_stop_in_time() {
+            // Bounded: a server stuck in its stop leaves `--run stop` waiting no longer than the
+            // bound, and it exits 1 saying so.
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_server(dir.path(), "stopping the server", Then::Holds);
+            let began = std::time::Instant::now();
+            let e = run_once_within(&socket, "stop", STOPS_WITHIN)
+                .await
+                .unwrap_err();
+            let took = began.elapsed();
+            assert!(
+                took >= STOPS_WITHIN && took < Duration::from_secs(5),
+                "{took:?}"
+            );
+            let e = format!("{e:#}");
+            assert!(
+                e.contains("stopping the server") && e.contains("hasn't stopped within"),
+                "{e}"
+            );
+        }
+
+        #[tokio::test]
+        async fn run_stop_fails_when_the_server_closes_without_its_goodbye() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_server(dir.path(), "stopping the server", Then::Closes);
+            let e = run_once_within(&socket, "stop", STOPS_WITHIN)
+                .await
+                .unwrap_err();
+            assert!(format!("{e:#}").contains("without its goodbye"), "{e:#}");
+        }
+
+        #[tokio::test]
+        async fn only_stop_waits_for_the_server_to_stop() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_server(dir.path(), "nobody is online", Then::Holds);
+            let ran = tokio::time::timeout(
+                Duration::from_secs(5),
+                run_once_within(&socket, "online", Duration::from_secs(60)),
+            )
+            .await
+            .expect("answered without waiting");
+            assert_eq!(ran.unwrap(), (true, vec!["nobody is online".to_owned()]));
         }
 
         #[tokio::test]

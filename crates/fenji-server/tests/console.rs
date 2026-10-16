@@ -374,6 +374,29 @@ fn console_run_gives_a_script_the_answer_and_an_exit_code_that_follows_it() {
 }
 
 #[test]
+fn console_run_stop_returns_once_the_server_has_stopped() {
+    // The hosting plan's final review, Minor 2: `--run stop` returned as soon as the server
+    // answered, before its stop, so a script that started the server again found the data folder
+    // in use. It reads on to the server's goodbye, which comes once the world has saved everyone
+    // and the store has closed: by then SQLite has folded its write-ahead log in and removed it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut server = Plain::start(dir.path());
+    server.running();
+    let wal = dir.path().join("fenji.db-wal");
+    assert!(wal.exists(), "the store is open: {}", server.said());
+    let stop = server.console(&["--run", "stop"], "");
+    let (wal_left, shm_left) = (wal.exists(), dir.path().join("fenji.db-shm").exists());
+    assert!(stop.status.success(), "{stop:?}");
+    assert_eq!(text(&stop.stdout), "stopping the server\n");
+    assert!(
+        !wal_left && !shm_left,
+        "returned before the store closed:\n{}",
+        server.said()
+    );
+    assert!(server.wait().success(), "{}", server.said());
+}
+
+#[test]
 fn a_second_server_on_a_data_folder_in_use_refuses_before_it_opens_its_database_or_listens() {
     // Review Focus 5 (Task 11's review 1, Minor 6a). The second server's config names another
     // database in the same data folder, which opening its store would make, and it's given the
