@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-10-16
+
+### Fixed
+
+- **server:** Hosting's follow-ups, the terminal, panics and versions (#366)
+- **launcher:** The final review's deferred minors (#364)
+- **deploy:** VPS units in Linux archives, plainer redeem words, no space in a host (#365)
+
+### Documentation
+
+- **docs:** The plan for M4's follow-ups, in 0.5.x releases (#362)
+
 ## [0.5.0] - 2026-10-16
 
 ### Added
