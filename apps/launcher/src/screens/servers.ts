@@ -10,7 +10,7 @@ import type { ServerView, Snapshot } from "../types";
 import { button } from "../ui/button";
 import { facts } from "../ui/card";
 import { dialog, type Dialog } from "../ui/dialog";
-import { field } from "../ui/field";
+import { field, joinWrapsOnPaste } from "../ui/field";
 import { icons } from "../ui/icons";
 import { people } from "../ui/people";
 import { statusMark } from "../ui/status";
@@ -95,6 +95,7 @@ export function addDialog(ctx: Ctx, slot: NoticeSlot, done: () => void): Dialog 
   // The refusal shown under the field, which waited as the notice too.
   let refusedHere: string | null = null;
   const input = h("input", { type: "text", class: "mono", autocomplete: "off", spellcheck: "false" });
+  joinWrapsOnPaste(input);
   const box = field("Address or invite link", input);
   const add = button.primary("Add server");
   add.type = "submit";

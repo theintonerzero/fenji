@@ -80,19 +80,32 @@ impl fmt::Debug for Pin {
 }
 
 /// Text as a player pasted it, without the line breaks and indents a wrapped line adds: the host
-/// console wraps a long link at the window's edge, and chat apps and mail wrap it too (#357). A
-/// link or a URL (with `#` or `://`) never holds whitespace, so all of it goes; elsewhere each
-/// whitespace character becomes a space, which an invite code skips and an address refuses.
+/// console wraps a long link at the window's edge, and chat apps and mail wrap it too (#357). In a
+/// link or a URL (with `#` or `://`), whitespace with a line break in it is a wrap and goes, and so
+/// does any in the fragment, whose invite code and pin check themselves. Whitespace within one line
+/// of the address stays, so an address with a space typed inside its host is refused, never joined
+/// into another host's name (#359): the view's link fields join a pasted wrap before a one-line
+/// field drops its line break. Elsewhere each whitespace character becomes a space, which an invite
+/// code skips and an address refuses.
 pub(crate) fn unwrapped(text: &str) -> String {
     let text = text.trim();
     let link = text.contains('#') || text.contains("://");
-    text.chars()
-        .filter_map(|c| match c.is_whitespace() {
-            true if link => None,
-            true => Some(' '),
-            false => Some(c),
-        })
-        .collect()
+    let (mut out, mut gap) = (String::with_capacity(text.len()), String::new());
+    let mut fragment = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            gap.push(c);
+            continue;
+        }
+        let wrap = gap.contains(['\n', '\r']);
+        if !(link && (wrap || fragment)) {
+            out.extend(gap.chars().map(|_| ' '));
+        }
+        gap.clear();
+        fragment |= c == '#';
+        out.push(c);
+    }
+    out
 }
 
 /// A server's address as players give it: its origin (`https://host[:port]`, or `http://` on this
@@ -322,6 +335,27 @@ mod tests {
             ("https://203.0.113.5:7801", PIN.to_string())
         );
         let a = ServerAddr::parse("https://play.example.\n   net").unwrap();
+        assert_eq!(a.origin, "https://play.example.net");
+    }
+
+    #[test]
+    fn a_space_typed_inside_a_host_is_refused_not_joined() {
+        // #359: `https://play example.net` read as playexample.net, another host, and no pin
+        // guards an address with a certificate from an authority.
+        assert_eq!(
+            unwrapped("https://play example.net"),
+            "https://play example.net"
+        );
+        assert!(matches!(
+            ServerAddr::parse("https://play example.net"),
+            Err(ApiError::BadUrl)
+        ));
+        assert!(matches!(
+            ServerAddr::parse("https://play.example.net:78 01"),
+            Err(ApiError::BadUrl)
+        ));
+        // A line break in the address is still a wrap.
+        let a = ServerAddr::parse("https://play.\r\n   example.net").unwrap();
         assert_eq!(a.origin, "https://play.example.net");
     }
 

@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import type { Ctx } from "../app";
 import type { Intent, Snapshot } from "../types";
 import { servers } from "./servers";
-import { embers, golden, mount, press, settle } from "./test-kit";
+import { embers, golden, mount, paste, press, settle } from "./test-kit";
 
 test("three servers, one ember Play on the selected row, and every state in words", () => {
   const { root, sent } = mount(servers, golden("servers"), undefined, "servers");
@@ -49,6 +49,17 @@ test("the Add dialog sends what was typed and shows a refusal under the field", 
     type: "dismissNotice",
     text: "That isn't a server address or an invite link. Paste the link your host sent.",
   });
+});
+
+test("the Add dialog joins a link pasted from a wrapped line", async () => {
+  // #359: the model refuses a space inside a host, and a one-line field keeps a wrap's indent.
+  const { root, sent } = mount(servers, golden("servers"), undefined, "servers");
+  press(root, "Add server");
+  const dialog = document.querySelector('[role="dialog"]')!;
+  paste(dialog.querySelector("input") as HTMLInputElement, "https://jadehall.example.\n  org:8443");
+  (dialog.querySelector("form") as HTMLFormElement).requestSubmit();
+  await settle();
+  expect(sent).toEqual([{ type: "addServer", text: "https://jadehall.example.org:8443" }]);
 });
 
 test("a server the model took closes the Add dialog", async () => {
