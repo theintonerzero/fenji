@@ -30,7 +30,7 @@ The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-1
 
 - **0.5.1:** T1, T2 and T3, what M4's acceptance session will touch first.
 - **0.5.2:** T4 to T7, robustness, tests, docs and tooling, and T10, a copy Steam installed.
-- **0.5.3:** T8 and T9, what needs the client, and T11 to T13, DepotDownloader inside the launcher.
+- **0.5.3:** T8 and T9, what needs the client, T11 to T13, DepotDownloader inside the launcher, and T14, the update script.
 
 Each release follows `docs/development.md`'s steps, and the owner approves its `sign` job.
 
@@ -138,6 +138,12 @@ Find what the client expects after type 4 in the world, answer it, and return th
 ### Task 13 (inline): Steam's Proton for umu-run (LA6; L22)
 - When a Steam library holds Proton, and the player set none, umu-run gets the newest stable `Proton x.y` there as `PROTONPATH`, after Task 11 showed it works.
 - Tested with fake Steam folders: Experimental and betas skipped, the player's own setting winning.
+
+### Task 14 (subagent): the update script (hosting spec Amendment B, HB1–HB10; #380)
+- `deploy/start/update-server.sh`, as HB1–HB9 say: it updates the folder it's in, or the `fenji` service that runs the program beside it.
+- `scripts/package-server.sh` packs it into the Linux and macOS archives, and `scripts/test-package-server.sh` checks it's there.
+- `scripts/test-update-server.sh` (HB10), run in CI beside the other script tests.
+- `docs/hosting.md`: section 4 installs it as `/usr/local/bin/fenji-update`, and section 5 leads with it, keeping the manual steps. `deploy/archive/README.txt` names it.
 
 ## Review Focus
 1. **Nothing a player or a host does in the acceptance session should get worse.** A fix that changes a flow a host or player sees has its write-up line updated in the same PR.
