@@ -123,6 +123,8 @@ fn base() -> Snapshot {
                 at_ms: CHECKED,
             },
             manual: None,
+            steam: None,
+            in_steam: false,
         },
         job: None,
         game: GameView::Idle,

@@ -48,7 +48,9 @@
       "level": "full",
       "atMs": 1792055400000
     },
-    "manual": null
+    "manual": null,
+    "steam": null,
+    "inSteam": false
   },
   "job": null,
   "game": {

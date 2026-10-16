@@ -97,16 +97,30 @@ export function clientRepair(root: HTMLElement, ctx: Ctx): Screen {
           ),
         ),
       ]);
-      // Off Linux there's no download to repair from (spec §3.6, L2).
-      renew(actions, String(s.platform.canDownload), () => [
-        s.platform.canDownload ? button.primary("Repair from Steam", () => void ctx.send({ type: "repair" })) : null,
+      // Off Linux there's no download to repair from (spec §3.6, L2). A copy in a Steam library is
+      // Steam's to repair, and then its files are checked (Amendment A, LA2): a quick check, which
+      // hashes the files that needed repair in full.
+      const inSteam = s.client.inSteam;
+      renew(actions, `${s.platform.canDownload}\n${inSteam}`, () => [
+        inSteam
+          ? button.primary("Check files", () => void ctx.send({ type: "check", level: "quick" }))
+          : s.platform.canDownload
+            ? button.primary("Repair from Steam", () => void ctx.send({ type: "repair" }))
+            : null,
         button.secondary("Choose another folder", () => void ctx.send({ type: "pickFolder", purpose: "game" })),
       ]);
       const these = one ? "this file" : "these files";
       const commands = s.client.manual;
       const command = commands?.repair ?? null;
-      renew(notes, `${s.platform.canDownload}\n${one}\n${JSON.stringify(commands)}`, () => [
-        s.platform.canDownload
+      renew(notes, `${s.platform.canDownload}\n${one}\n${inSteam}\n${JSON.stringify(commands)}`, () => [
+        inSteam
+          ? h(
+              "p",
+              { class: "repair-note" },
+              `This copy is in your Steam library, which Steam looks after. In Steam, open the game's Properties, then Installed Files, and choose Verify integrity of game files. Then check the files here.`,
+            )
+          : null,
+        s.platform.canDownload && !inSteam
           ? h(
               "p",
               { class: "repair-note" },
@@ -127,7 +141,9 @@ export function clientRepair(root: HTMLElement, ctx: Ctx): Screen {
                 document.body.append(open.el);
               }),
             ),
-        h(
+        inSteam
+          ? null
+          : h(
           "p",
           { class: "gameforge" },
           icons.info(16),

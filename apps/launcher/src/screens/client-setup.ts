@@ -55,17 +55,39 @@ export function clientSetup(root: HTMLElement, ctx: Ctx): Screen {
     slot.update(s);
     const linux = s.platform.canDownload;
     const build = s.client.build;
-    renew(own, `${linux}\n${build}`, () => {
+    const found = s.client.steam;
+    renew(own, JSON.stringify([linux, build, found, s.platform.home]), () => {
+      const pick = (): void => void ctx.send({ type: "pickFolder", purpose: "game" });
+      // A copy Steam installed leads, used where Steam keeps it (Amendment A, LA1).
+      if (found !== null && found.pinned) {
+        return [
+          choice(
+            icons.folder(18),
+            "Use my game folder",
+            h("p", { class: "choice-text" }, "Found in your Steam library:"),
+            h("p", { class: "choice-text" }, pathEnd(found.folder, 64, s.platform.home)),
+            iconLine(icons.circleCheck(16), `Build ${build}, the one Fenji plays. Fenji checks it and leaves it where Steam keeps it.`),
+            h(
+              "div",
+              { class: "choice-foot" },
+              button.primary("Use it", () => void ctx.send({ type: "chooseFolder", path: found.folder })),
+              button.secondary("Choose another folder", pick),
+            ),
+          ),
+        ];
+      }
       // The ClientSetup board's emphasis: Choose folder is the ember everywhere, since most players
       // a host invites have the game installed already (the finish review's fix 2).
-      const choose = button.primary("Choose folder", () => void ctx.send({ type: "pickFolder", purpose: "game" }));
       return [
         choice(
           icons.folder(18),
           "Use my game folder",
           h("p", { class: "choice-text" }, "Already installed the game from Steam or the Gameforge launcher? Choose its folder."),
+          found === null
+            ? null
+            : iconLine(icons.info(16), `Steam has build ${found.build} of the game. Fenji plays build ${build}: update the game in Steam, then come back.`),
           iconLine(icons.circleCheck(16), `Fenji checks it against build ${build} and points out any file that needs repair.`),
-          h("div", { class: "choice-foot" }, choose),
+          h("div", { class: "choice-foot" }, button.primary("Choose folder", pick)),
         ),
       ];
     });

@@ -10,6 +10,7 @@ export type * from "./gen/KeyChangeView";
 export type * from "./gen/ClientView";
 export type * from "./gen/ManualView";
 export type * from "./gen/ToolLinkView";
+export type * from "./gen/SteamCopyView";
 export type * from "./gen/CheckView";
 export type * from "./gen/FileProblem";
 export type * from "./gen/Problem";
