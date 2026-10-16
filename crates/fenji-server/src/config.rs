@@ -235,8 +235,8 @@ fn a_day() -> u64 {
 fn yes() -> bool {
     true
 }
-/// The start point of vocations 0–5 in the client's tables (M4 world spec §2.5; Inferred until
-/// the world's first run checks it).
+/// The start point of vocations 0–5 in the client's tables (M4 world spec §2.5), where Task 11's
+/// runs entered and walked (world.md §13).
 fn start_scene() -> i64 {
     5
 }
@@ -1033,6 +1033,9 @@ mod tests {
         assert_eq!((c.server.public_host, c.server.tls), (None, None));
         assert!(c.server.login_bind.ip().is_loopback() && c.server.api_bind.ip().is_loopback());
         assert_eq!((c.server.tick_hz, c.world.start_scene), (20, 5));
+        // The start of vocations 0 to 5 in the client's tables, which Task 11's runs walked from
+        // (world.md §13).
+        assert_eq!(c.world.start_position, [2366.0, -71735.0, 64854.0, 345.0]);
         assert_eq!(
             (c.world.move_tolerance, c.world.save_every_secs),
             (1.5, 300)
@@ -1087,6 +1090,87 @@ mod tests {
         ] {
             let e = format!("{:#}", parse(extra).unwrap_err());
             assert!(e.contains(place), "{extra}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_worlds_start_takes_the_edges_of_its_limits() {
+        // Each limit is inclusive: its ends are taken, and just past them is refused.
+        let parse = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/"))
+        };
+        let low =
+            parse("[world]\nstart_scene = 1\nstart_position = [-1e7, 1e7, -1e7, -360]\n").unwrap();
+        assert_eq!(low.world.start_scene, 1);
+        assert_eq!(
+            low.world.start_position,
+            [
+                -COORDINATE_LIMIT,
+                COORDINATE_LIMIT,
+                -COORDINATE_LIMIT,
+                -YAW_LIMIT
+            ]
+        );
+        let high = parse("[world]\nstart_scene = 2147483647\nstart_position = [0, 0, 1e7, 360]\n")
+            .unwrap();
+        assert_eq!(high.world.start_scene, i64::from(i32::MAX));
+        assert_eq!(
+            high.world.start_position,
+            [0.0, 0.0, COORDINATE_LIMIT, YAW_LIMIT]
+        );
+        for past in [
+            "[10000000.5, 0, 0, 0]",
+            "[0, -10000000.5, 0, 0]",
+            "[0, 0, 0, -360.5]",
+        ] {
+            let e = parse(&format!("[world]\nstart_position = {past}\n")).unwrap_err();
+            assert!(format!("{e:#}").contains("start_position"), "{past}: {e:#}");
+        }
+    }
+
+    #[test]
+    fn the_example_gives_each_range_the_parser_holds() {
+        // fenji.example.toml names each range beside its setting, and that is the range
+        // `validate` holds: both ends are taken, and just past either is refused.
+        let line = |key: &str| {
+            EXAMPLE
+                .lines()
+                .find(|l| l.starts_with(&format!("{key} = ")))
+                .unwrap_or_else(|| panic!("no {key} in the example"))
+        };
+        for (section, key, range, ends) in [
+            (
+                "server",
+                "max_players",
+                "1 to 200",
+                ["1", "200", "0", "201"],
+            ),
+            ("server", "tick_hz", "1 to 60", ["1", "60", "0", "61"]),
+            (
+                "world",
+                "move_tolerance",
+                "1.0 to 5.0",
+                ["1.0", "5.0", "0.99", "5.01"],
+            ),
+            (
+                "world",
+                "save_every_secs",
+                "30 to 3600",
+                ["30", "3600", "29", "3601"],
+            ),
+        ] {
+            assert!(line(key).contains(range), "{key}: {}", line(key));
+            for (value, taken) in ends.into_iter().zip([true, true, false, false]) {
+                let setting = match section {
+                    "server" => format!("{key} = {value}\n"),
+                    _ => format!("[{section}]\n{key} = {value}\n"),
+                };
+                let parsed = Config::parse(
+                    &format!("[server]\nname = \"F\"\n{setting}"),
+                    Path::new("/"),
+                );
+                assert_eq!(parsed.is_ok(), taken, "{key} = {value}: {parsed:?}");
+            }
         }
     }
 
