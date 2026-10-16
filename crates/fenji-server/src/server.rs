@@ -187,15 +187,15 @@ const PROXY_NOT_TRUSTED: &str = "public_api is set and api_bind is a loopback ad
 ///   (the hosting plan's final review, Minor 3).
 ///
 /// A loopback API without `public_api` is a server for this computer, and warns of nothing.
-fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<&'static str> {
+fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<String> {
     let s = &cfg.server;
     let mut warnings = Vec::new();
     if s.tls.is_none() && cfg.invite_base(pin).is_none() {
-        warnings.push(crate::invite::NO_LINKS);
+        warnings.push(crate::invite::no_links());
     }
     let loopback = s.api_bind.ip().to_canonical().is_loopback();
     if s.tls.is_none() && s.public_api.is_some() && loopback && s.trusted_proxies.is_empty() {
-        warnings.push(PROXY_NOT_TRUSTED);
+        warnings.push(PROXY_NOT_TRUSTED.to_owned());
     }
     warnings
 }
@@ -929,7 +929,7 @@ mod tests {
         ] {
             assert_eq!(
                 address_warnings(&cfg(extra), None),
-                [crate::invite::NO_LINKS],
+                [crate::invite::no_links()],
                 "{extra}"
             );
         }

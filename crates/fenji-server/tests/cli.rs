@@ -171,8 +171,10 @@ fn first_run_writes_the_config_and_data_then_starts() {
     // directory's.
     let dir = tempfile::tempdir().unwrap();
     let mut server = Running::start(dir.path(), &[]);
-    let [wrote, next, last] = FIRST_RUN;
-    let (wrote, _) = wrote.split_once("<folder>").unwrap();
+    let (wrote, _) = FIRST_RUN[0].split_once("<folder>").unwrap();
+    // The other two name no folder; the last points at this version's guide.
+    let [_, next, last] = fenji_server::config::first_run_lines(dir.path());
+    let (next, last) = (next.as_str(), last.as_str());
     // The last line comes once the server catches SIGTERM.
     server.wait_for(last);
     let said = server.said();
@@ -207,7 +209,8 @@ fn first_run_writes_the_config_and_data_then_starts() {
     let (port, pin) = link.split_once("/#pin=").unwrap();
     assert!(port.parse::<u16>().is_ok_and(|p| p != 0), "{link}");
     assert_eq!(pin.trim_end().len(), 43, "{link}");
-    for warning in ["trusted_proxies", fenji_server::invite::NO_LINKS] {
+    let no_links = fenji_server::invite::no_links();
+    for warning in ["trusted_proxies", no_links.as_str()] {
         assert!(!said.contains(warning), "nothing to warn about: {said}");
     }
     assert!(dir.path().join("data/fenji.db").is_file());
@@ -692,6 +695,12 @@ async fn with_the_servers_own_key_every_link_carries_its_pin() {
     assert_eq!(code_at, 2 * links.len(), "the links, then the code: {text}");
     assert!(
         lines[code_at + 1].contains("7800 and 7801") && lines[code_at + 1].contains("VPN"),
+        "{text}"
+    );
+    // The guide is this version's, on the web: the archive holds no docs/hosting.md (the hosting
+    // plan's final review B, Minor 7).
+    assert!(
+        lines[code_at + 1].ends_with(&format!("see {}", fenji_server::config::guide())),
         "{text}"
     );
     // With public_host, one link, there.

@@ -186,10 +186,10 @@ fn link_hint(
             crate::tls::folder(&cfg.store.path).display()
         ))
     } else if bases.is_empty() {
-        Some(format!("link: none; {}", crate::invite::NO_LINKS))
+        Some(format!("link: none; {}", crate::invite::no_links()))
     } else if !own_key && cfg.invite_base(None).is_none() {
         // Links for this computer alone, from an API that listens beyond it.
-        Some(format!("other computers: {}", crate::invite::NO_LINKS))
+        Some(format!("other computers: {}", crate::invite::no_links()))
     } else if own_key
         && s.public_api.is_none()
         && s.public_host.is_none()
@@ -198,7 +198,8 @@ fn link_hint(
         // A link for each of the machine's addresses (HA4), and how to go beyond them.
         Some(format!(
             "friends over the internet: open ports {gate_port} and {api_port} on your router, or \
-             use a VPN: see docs/hosting.md"
+             use a VPN: see {}",
+            crate::config::guide()
         ))
     } else {
         None

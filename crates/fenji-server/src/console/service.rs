@@ -1509,7 +1509,7 @@ mod tests {
         let shown = c.run_line("link").await;
         assert_eq!(
             shown,
-            failed([format!("link: none; {}", crate::invite::NO_LINKS).as_str()])
+            failed([format!("link: none; {}", crate::invite::no_links()).as_str()])
         );
     }
 

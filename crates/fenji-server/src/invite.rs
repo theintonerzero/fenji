@@ -41,9 +41,14 @@ pub fn server_link(base: &InviteBase) -> String {
 }
 
 /// What a server with no link beyond this computer needs (M4 hosting spec §3.11): `run` warns with
-/// it at start, and `invite` and `link` say it.
-pub const NO_LINKS: &str =
-    "invite and server links need [server] public_api or tls = \"self\" (docs/hosting.md)";
+/// it at start, and `invite` and `link` say it. It points at this version's guide on the web, as
+/// the archive holds no `docs/hosting.md` (the hosting plan's final review B, Minor 7).
+pub fn no_links() -> String {
+    format!(
+        "invite and server links need [server] public_api or tls = \"self\": see {}",
+        crate::config::guide()
+    )
+}
 
 /// The label of the link for this computer, whose API is on loopback.
 pub const THIS_COMPUTER: &str = "this computer";
@@ -287,6 +292,18 @@ mod tests {
         assert_eq!(
             bases_among(&gone, Some(PIN), 7801, &interfaces()),
             [labelled("10.9.8.7", "https://10.9.8.7:7801", Some(PIN))]
+        );
+    }
+
+    #[test]
+    fn what_links_need_points_at_this_versions_guide() {
+        // The archive holds no docs/hosting.md (the hosting plan's final review B, Minor 7).
+        assert_eq!(
+            no_links(),
+            format!(
+                "invite and server links need [server] public_api or tls = \"self\": see {}",
+                crate::config::guide()
+            )
         );
     }
 
