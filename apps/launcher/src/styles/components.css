@@ -6,7 +6,6 @@
 :root {
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --ember-hover: #d24b25;
   --play-width: 248px;
   --play-height: 64px;
   --rail-width: 72px;
@@ -1043,7 +1042,7 @@
 
 .dialog-title {
   margin: 0;
-  font: 600 26px/1.15 var(--type-section-family);
+  font: 600 26px/1.15 var(--type-dialog-title-family);
   letter-spacing: 0.02em;
   overflow-wrap: anywhere;
 }
