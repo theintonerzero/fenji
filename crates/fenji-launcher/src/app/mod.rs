@@ -99,7 +99,9 @@ struct State {
     game: GameView,
     /// Cancel start came while the game was starting (#348): the start sees it and ends.
     start_cancelled: bool,
-    pending_invite: Option<(u32, InviteCode)>,
+    /// Each server's invite, waiting to be redeemed there: one per server, so a second server's
+    /// link never drops the first's (#376).
+    pending_invites: HashMap<u32, InviteCode>,
     key_change: Option<KeyChange>,
     notice: Option<Notice>,
     update: UpdateView,
@@ -179,7 +181,7 @@ impl App {
                     since_ms: mark.since_ms,
                 }),
             start_cancelled: false,
-            pending_invite: None,
+            pending_invites: HashMap::new(),
             key_change: None,
             notice: problem.map(|text| Notice { text, error: true }),
             swept_at: None,
@@ -462,13 +464,13 @@ impl State {
                 .filter(|l| l.session.is_some())
                 .and_then(|l| l.lobby.clone()),
             need_sign_in: self.need_sign_in,
-            pending_invite: self
-                .pending_invite
-                .as_ref()
-                .map(|(id, code)| PendingInvite {
-                    server_id: *id,
+            // The active server's: the one Join is for.
+            pending_invite: self.settings.active.and_then(|id| {
+                self.pending_invites.get(&id).map(|code| PendingInvite {
+                    server_id: id,
                     code: code.display(),
-                }),
+                })
+            }),
             key_change: self.key_change.as_ref().map(|k| KeyChangeView {
                 server_id: k.id,
                 name: self.name(k.id),
@@ -794,6 +796,42 @@ mod tests {
         app.intent(Intent::SignOut).await.unwrap();
         app.intent(sign_in()).await.unwrap();
         assert_eq!(pending(&app), None);
+    }
+
+    #[tokio::test]
+    async fn each_server_keeps_its_own_invite() {
+        // #376 (the redesign's final review, Minor 13): the model kept one invite, so a second
+        // server's link dropped the first server's without a word, and the rail lets a player
+        // leave Join to paste one. Each server's invite now waits on it.
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        let pending = |app: &App| app.snapshot().pending_invite.map(|p| (p.server_id, p.code));
+        app.intent(add(&format!(
+            "https://127.0.0.1:9/#invite=ABCD-EFGH-JKMN-PQRS&pin={OLD}"
+        )))
+        .await
+        .unwrap();
+        app.intent(add(&format!(
+            "https://127.0.0.1:10/#invite=K7QM-3XRD-VN2P-HT8B&pin={NEW}"
+        )))
+        .await
+        .unwrap();
+        let ids: Vec<u32> = app.snapshot().servers.iter().map(|s| s.id).collect();
+        let (first, second) = (ids[0], ids[1]);
+        // The snapshot has the active server's: the second's, as adding it made it active.
+        assert_eq!(pending(&app), Some((second, "K7QM-3XRD-VN2P-HT8B".into())));
+        app.intent(Intent::SelectServer { id: first })
+            .await
+            .unwrap();
+        assert_eq!(pending(&app), Some((first, "ABCD-EFGH-JKMN-PQRS".into())));
+        // Removing a server drops its invite alone.
+        app.intent(Intent::RemoveServer { id: first })
+            .await
+            .unwrap();
+        app.intent(Intent::SelectServer { id: second })
+            .await
+            .unwrap();
+        assert_eq!(pending(&app), Some((second, "K7QM-3XRD-VN2P-HT8B".into())));
     }
 
     #[tokio::test]
