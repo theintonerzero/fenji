@@ -1173,6 +1173,14 @@ mod tests {
         });
         h.tick(50);
         assert_eq!(h.core.players(), 0);
+        assert_eq!(
+            h.saves(),
+            vec![Service::SavePlace {
+                pid: 1,
+                at: at(0.0, 0.0)
+            }],
+            "its place is saved as any leaver's"
+        );
     }
 
     #[test]
