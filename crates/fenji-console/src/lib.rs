@@ -28,7 +28,7 @@ pub use plain::run_plain;
 #[cfg(feature = "tui")]
 pub use theme::Colours;
 #[cfg(feature = "tui")]
-pub use tui::{restore_mode, run_tui};
+pub use tui::{PanicLog, restore_mode, run_tui};
 #[cfg(feature = "tui")]
 pub use view::Mode;
 pub use wire::Hello;

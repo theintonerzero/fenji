@@ -105,8 +105,9 @@ mod unix {
         // no more holds the console's thread alone, and the signals still come.
         let shown = async move {
             match front {
+                // No log here: a panic on any thread ends the console, as it did.
                 Front::Full => {
-                    let tui = run_tui(session, Mode::Attached, Colours::from_env(), leave);
+                    let tui = run_tui(session, Mode::Attached, Colours::from_env(), leave, None);
                     server::held(tui).await
                 }
                 Front::Plain => {

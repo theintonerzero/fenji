@@ -101,7 +101,7 @@ The console works like a Minecraft server's. The log scrolls above, the command 
 - The window needs to be at least 60 columns by 15 rows. A smaller one shows a note asking for a bigger window, and the server keeps running.
 - The colours are exact in a terminal with 24-bit colour, and close elsewhere. With `NO_COLOR` set there are none. Any monospaced font works; Geist Mono, under the SIL Open Font License, suits the console's design.
 - This full-screen console also writes the log to files in `data/logs`, one for each day the server runs (`fenji.2026-10-16.log`, by the day in UTC), and keeps those of the last 14 days it ran. Attach the day's file to a bug report.
-- If the console itself fails, it gives the terminal back and says so. The server keeps running, and Ctrl-C, or closing the terminal, stops it.
+- If the console itself fails, it gives the terminal back and says so. The server keeps running, and Ctrl-C, or closing the terminal, stops it. A fault elsewhere in the server shows as an `ERROR` line in the log instead, `a thread panicked at …`, and the console carries on; attach the day's log file to a bug report.
 
 **Plain lines,** for a screen reader or a simple terminal: start the server with `--plain`, and the console reads commands as lines and prints their answers, with the log as plain lines too.
 

@@ -47,6 +47,9 @@ static DRAWING: AtomicBool = AtomicBool::new(false);
 thread_local! {
     /// Whether this thread is the one drawing: a panic in the drawing doesn't wait for itself.
     static DRAWS_HERE: Cell<bool> = const { Cell::new(false) };
+    /// Whether this thread is the console's, running [`run_tui`]: its panics end the console, and
+    /// give the terminal back for their message. Other threads' go to the log, when there's one.
+    static CONSOLE_HERE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// How long a panic on another thread waits for a frame being drawn.
@@ -58,11 +61,16 @@ const FRAME_WAIT: Duration = Duration::from_secs(1);
 /// one's Ctrl-C does, with [`Ending::Detached`] and the terminal given back: an attached console's
 /// signals. A terminal that hangs up ends it with [`Ending::HungUp`], whether a read of its keys or
 /// a frame's write finds it gone (#359).
+///
+/// A panic on the thread that runs it ends it, the terminal given back first for the panic's
+/// message (Review Focus 2). One on another thread goes to `panics`, and the console runs on;
+/// without `panics`, or if it turns the panic away, that one ends the console too.
 pub async fn run_tui(
     session: Session,
     mode: Mode,
     colours: Colours,
     leave: impl Future<Output = ()>,
+    panics: Option<PanicLog>,
 ) -> io::Result<Ending> {
     let Session {
         hello,
@@ -71,10 +79,12 @@ pub async fn run_tui(
     } = session;
     let mut view = View::new(hello.server, hello.commands, mode);
     let palette = Palette::of(colours);
+    // Before the hook is in place: a panic here is the console's.
+    let _here = ConsoleHere::mark();
     // The screen comes cleared ([`enter_to`]), and the terminal's buffers start empty, so the first
     // frame draws it all. Never `Terminal::clear`: it asks the terminal where its cursor is, and
     // waits up to 2 s for an answer that some never give (#359).
-    let _screen = Screen::take()?;
+    let _screen = Screen::take(panics)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut input = Input::open()?;
     let mut second = tokio::time::interval(Duration::from_secs(1));
@@ -340,18 +350,18 @@ fn wait_for_the_frame() {
 }
 
 /// The terminal, taken over: raw mode, the alternate screen, a hidden cursor and stderr pointed
-/// away from it. Dropping it gives the terminal back, and so does a panic on any thread while it's
-/// held.
+/// away from it. Dropping it gives the terminal back, and so does a panic while it's held: on the
+/// console's own thread, or on any other that `panics` doesn't take.
 struct Screen {
     _hook: PanicHook,
 }
 
 impl Screen {
-    fn take() -> io::Result<Screen> {
+    fn take(panics: Option<PanicLog>) -> io::Result<Screen> {
         PANICKED.store(false, Ordering::SeqCst);
         // In place before the first change, so a failure part-way gives back what changed.
         let screen = Screen {
-            _hook: PanicHook::install(give_back),
+            _hook: PanicHook::install(give_back, panics),
         };
         raw_mode()?;
         // Marked first: the switch may be written even if the call then fails.
@@ -562,20 +572,63 @@ fn loud_stderr() {}
 type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Sync + Send + 'static>;
 
 /// A panic hook that runs `give_back` before the hook it replaced prints the panic, so the message
-/// lands on the main screen, readable, once a frame another thread is drawing is done. The
-/// replaced hook comes back when this is dropped.
+/// lands on the main screen, readable, once a frame another thread is drawing is done: for the
+/// console's own thread's panics, which end it. A panic on another thread goes to the log it's
+/// given ([`PanicLog`]) instead, and the console runs on, unless the log turns it away. Each panic
+/// goes on to the hook it replaced, which comes back when this is dropped.
 struct PanicHook {
     previous: Option<Arc<Hook>>,
 }
 
+/// Where a panic on a thread other than the console's goes, given the panic's text: true once it's
+/// logged, and false when it can't be, as when the panic is the log's own code's, whose locks it
+/// may hold. The server passes its log, which cleans what it logs, as every line (the hosting
+/// plan's final review B, Minor 6).
+pub type PanicLog = fn(&str) -> bool;
+
+/// This thread marked as the console's ([`CONSOLE_HERE`]) until dropped.
+struct ConsoleHere {
+    was: bool,
+}
+
+impl ConsoleHere {
+    fn mark() -> ConsoleHere {
+        ConsoleHere {
+            was: CONSOLE_HERE.replace(true),
+        }
+    }
+}
+
+impl Drop for ConsoleHere {
+    fn drop(&mut self) {
+        CONSOLE_HERE.set(self.was);
+    }
+}
+
+/// A panic's text, as one line: where, and what it said. Not the thread's name: a hook that
+/// panicked would abort the process, and `std::thread::current` can, as a thread ends.
+fn panic_text(info: &PanicHookInfo<'_>) -> String {
+    let said = info.payload_as_str().unwrap_or("Box<dyn Any>");
+    match info.location() {
+        Some(at) => format!("a thread panicked at {at}: {said}"),
+        None => format!("a thread panicked: {said}"),
+    }
+}
+
 impl PanicHook {
-    fn install(give_back: fn()) -> PanicHook {
+    /// The hook, `elsewhere` taking the panics of threads other than the console's, if it's given.
+    fn install(give_back: fn(), elsewhere: Option<PanicLog>) -> PanicHook {
         let previous = Arc::new(panic::take_hook());
         let chained = Arc::clone(&previous);
         panic::set_hook(Box::new(move |info| {
-            PANICKED.store(true, Ordering::SeqCst);
-            wait_for_the_frame();
-            give_back();
+            // A thread that can no longer say is taken for the console's: its ending is the safe one.
+            let here = CONSOLE_HERE.try_with(Cell::get).unwrap_or(true);
+            let logged = !here && elsewhere.is_some_and(|log| log(&panic_text(info)));
+            if !logged {
+                PANICKED.store(true, Ordering::SeqCst);
+                wait_for_the_frame();
+                give_back();
+            }
             (*chained)(info);
         }));
         PanicHook {
@@ -762,10 +815,11 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_elsewhere_waits_for_the_frame_being_drawn() {
+    fn a_panic_elsewhere_that_ends_the_console_waits_for_the_frame_being_drawn() {
         // Review Focus 2, as the by-hand check of the M4 hosting plan's Task 10 found it: a panic
-        // on another thread while the console draws a frame. Given back at once, the terminal
-        // would get the rest of the frame on its main screen, under the panic's message.
+        // on another thread while the console draws a frame, here with no log to take it, as an
+        // attached console has none. Given back at once, the terminal would get the rest of the
+        // frame on its main screen, under the panic's message.
         let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
         PANICKED.store(false, Ordering::SeqCst);
         static SEEN: Mutex<Vec<&str>> = Mutex::new(Vec::new());
@@ -779,11 +833,12 @@ mod tests {
             }
         }));
         {
-            let _hook = PanicHook::install(|| {
+            let give_back = || {
                 if on_hook_test_thread() {
                     SEEN.lock().unwrap().push("the terminal given back");
                 }
-            });
+            };
+            let _hook = PanicHook::install(give_back, None);
             let drawing = Drawing::begin().expect("no panic yet");
             let panicking = std::thread::Builder::new()
                 .name(HOOK_TEST.into())
@@ -807,6 +862,116 @@ mod tests {
         );
     }
 
+    /// What the hook tests saw, in order, of their own threads' panics.
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    fn saw(what: impl Into<String>) {
+        SEEN.lock().unwrap().push(what.into());
+    }
+
+    /// Runs `test` with a hook of its own as the one the console's replaces, which notes "the
+    /// previous hook" for the hook test's threads, and hands every other thread's panic on to the
+    /// hook that was there: what the test saw, in order.
+    fn with_previous_hook(test: impl FnOnce()) -> Vec<String> {
+        SEEN.lock().unwrap().clear();
+        let before: Arc<Hook> = Arc::new(panic::take_hook());
+        let others = Arc::clone(&before);
+        panic::set_hook(Box::new(move |info| {
+            if on_hook_test_thread() {
+                saw("the previous hook");
+            } else {
+                (*others)(info);
+            }
+        }));
+        test();
+        PANICKED.store(false, Ordering::SeqCst);
+        restore(before);
+        std::mem::take(&mut *SEEN.lock().unwrap())
+    }
+
+    /// The console's `give_back` for the hook tests: notes it for their threads.
+    fn noted_give_back() {
+        if on_hook_test_thread() {
+            saw("the terminal given back");
+        }
+    }
+
+    /// A log that takes every panic, and notes the hook test's.
+    fn noted_log(text: &str) -> bool {
+        if on_hook_test_thread() {
+            saw(format!("logged: {text}"));
+        }
+        true
+    }
+
+    #[test]
+    fn a_panic_on_another_thread_goes_to_the_log_and_the_console_runs_on() {
+        // The hosting plan's final review B, Minor 6: a panic on any thread ended the console. One
+        // on another of the server's threads goes to the log now, which cleans it, the terminal
+        // stays the console's, and the hook it replaced still hears of it.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        PANICKED.store(false, Ordering::SeqCst);
+        let seen = with_previous_hook(|| {
+            let _hook = PanicHook::install(noted_give_back, Some(noted_log));
+            assert!(panics_on_hook_test_thread("in a task of the server's"));
+            assert!(Drawing::begin().is_some(), "the console draws on");
+        });
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        let logged = &seen[0];
+        assert!(
+            logged.starts_with("logged: a thread panicked at crates/fenji-console/src/tui.rs:")
+                && logged.ends_with(": in a task of the server's"),
+            "{logged}"
+        );
+        assert_eq!(seen[1], "the previous hook");
+    }
+
+    #[test]
+    fn a_panic_on_the_consoles_own_thread_gives_the_terminal_back() {
+        // The console's own panics end it as before: the terminal back first, then the message.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = with_previous_hook(|| {
+            let _hook = PanicHook::install(noted_give_back, Some(noted_log));
+            let panicked = std::thread::Builder::new()
+                .name(HOOK_TEST.into())
+                .spawn(|| {
+                    let _here = ConsoleHere::mark();
+                    panic!("in the console's own code")
+                })
+                .unwrap()
+                .join();
+            assert!(panicked.is_err());
+            assert!(Drawing::begin().is_none(), "no frame after the panic");
+        });
+        assert_eq!(seen, ["the terminal given back", "the previous hook"]);
+    }
+
+    #[test]
+    fn a_panic_the_log_turns_away_ends_the_console_as_before() {
+        // A panic in the log's own code may hold its locks: the log turns it away, and the console
+        // ends as it did, the terminal given back for the message.
+        let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        fn turned_away(_: &str) -> bool {
+            if on_hook_test_thread() {
+                saw("turned away");
+            }
+            false
+        }
+        let seen = with_previous_hook(|| {
+            let _hook = PanicHook::install(noted_give_back, Some(turned_away));
+            assert!(panics_on_hook_test_thread("in the log"));
+            assert!(Drawing::begin().is_none(), "no frame after the panic");
+        });
+        assert_eq!(
+            seen,
+            [
+                "turned away",
+                "the terminal given back",
+                "the previous hook"
+            ]
+        );
+    }
+
     #[test]
     fn a_panic_gives_the_terminal_back_before_the_previous_hook_prints() {
         // Review Focus 2.
@@ -822,15 +987,17 @@ mod tests {
             }
         }));
         {
-            let _hook = PanicHook::install(|| {
+            let give_back = || {
                 if on_hook_test_thread() {
                     SEEN.lock().unwrap().push("the terminal given back");
                 }
-            });
+            };
+            let _hook = PanicHook::install(give_back, None);
             assert!(panics_on_hook_test_thread("in the console"));
         }
         // Gone with its guard: the previous hook alone.
         assert!(panics_on_hook_test_thread("after the console"));
+        PANICKED.store(false, Ordering::SeqCst);
         restore(before);
         assert_eq!(
             *SEEN.lock().unwrap(),

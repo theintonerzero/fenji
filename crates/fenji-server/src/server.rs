@@ -474,11 +474,13 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
     let served = match front {
         // Signals stop the server here (`signalled`), and the console ends on its goodbye.
         Front::Full => {
+            // A panic on another of the server's threads goes to the log, and the console runs on.
             let tui = fenji_console::run_tui(
                 session,
                 Mode::InProcess,
                 Colours::from_env(),
                 std::future::pending(),
+                Some(console::log::log_panic),
             );
             let ended = held_until_stopped(tui, console.stopped(), CONSOLE_GRACE).await;
             if matches!(ended, Ok(Ending::HungUp)) {
