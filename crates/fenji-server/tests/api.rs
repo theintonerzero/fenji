@@ -66,6 +66,7 @@ async fn api_with(trusted: Vec<std::net::IpAddr>, peer: &str) -> Api {
         server_id: 1,
         source: "https://example.net/fenji".into(),
         host: None,
+        region: None,
     };
     let app = router(AppState {
         accounts,
@@ -1199,6 +1200,19 @@ async fn without_tls_there_is_no_key_and_no_pin() {
     assert_eq!(s.server.pin(), None);
     assert!(!s._dir.path().join("tls").exists());
     s.stop().await;
+}
+
+#[tokio::test]
+async fn the_servers_facts_name_its_region_only_when_set() {
+    // Amendment C, HC4: the place players' launchers show.
+    let with = get_json(
+        &started_with("region = \"Australia\"\n").await,
+        "/api/v1/server",
+    )
+    .await;
+    assert_eq!(with["region"], "Australia");
+    let without = get_json(&started().await, "/api/v1/server").await;
+    assert!(without.get("region").is_none(), "{without}");
 }
 
 #[tokio::test]

@@ -82,6 +82,9 @@ pub struct ServerInfo {
     /// Who hosts it (`[server] host`), when the host gave a name (launcher spec L9).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// Where it is (`[server] region`), when the host set it (M4 hosting spec Amendment C, HC4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
 }
 
 /// The API's version in `GET /api/v1/server`.
