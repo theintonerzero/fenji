@@ -246,8 +246,9 @@ async fn the_world_tells_the_status_who_is_in_it_and_greets_each_player_with_its
 
 #[tokio::test]
 async fn the_consoles_commands_run_in_the_world_and_answer_on_their_channel() {
-    // M4 hosting spec §3.3: the shared four reach the world as `WorldIn::Console`, and `invite`
-    // goes on to the services task, as an admin's does.
+    // M4 hosting spec §3.3: the shared commands reach the world as `WorldIn::Console`. The
+    // console service makes the console's invites itself (the hosting plan's final review,
+    // Minor 5): one asked of the world is refused, and nothing is made.
     let dir = tempfile::tempdir().unwrap();
     let extra = "public_api = \"https://play.example.net\"\n";
     let (s, _clock) = server(dir.path(), extra, GateLimits::default()).await;
@@ -272,18 +273,19 @@ async fn the_consoles_commands_run_in_the_world_and_answer_on_their_channel() {
         label: Some("for Lin".into()),
     })
     .await;
-    assert!(
-        made.ok
-            && made
-                .text
-                .starts_with("invite link: https://play.example.net/#invite="),
-        "{made:?}"
+    assert_eq!(
+        made,
+        ConsoleReply {
+            ok: false,
+            text: "the console makes its own invites".into()
+        }
     );
+    // Only the invite the test's account came in by.
     let invites = s.accounts().store().list_invites().await.unwrap();
     assert!(
         invites
             .iter()
-            .any(|i| i.label.as_deref() == Some("for Lin")),
+            .all(|i| i.label.as_deref() != Some("for Lin")),
         "{invites:?}"
     );
     let kicked = ask(Command::Kick {
