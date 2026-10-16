@@ -22,8 +22,10 @@ LimitNOFILE=4096
 # A crash restarts the server. The console's stop, and systemctl stop, don't.
 Restart=on-failure
 RestartSec=5
-# SIGTERM stops it as the console's stop does, saving everyone's place first.
-TimeoutStopSec=30
+# SIGTERM stops it as the console's stop does, saving everyone's place first. A stop takes 30
+# seconds at most: 14 for the players' connections to close, 6 for the world's thread to end, 5
+# for the last saves and 5 for attached consoles to take their goodbye. This gives it 5 more.
+TimeoutStopSec=35
 # The sandbox: the system read-only and home folders hidden, and none of what the server never
 # needs: privileges, devices, the clock, the kernel's settings, new namespaces or writable code.
 ProtectSystem=strict

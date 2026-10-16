@@ -872,6 +872,33 @@ mod tests {
     }
 
     #[test]
+    fn systemd_waits_out_a_stops_worst_case_with_room_to_spare() {
+        // #281: a stop takes at most the connections' grace, the world thread's wait, the last
+        // saves' and the consoles' goodbye, one after another: 30 s. The reference unit gives it
+        // more than that before systemd ends it, so nothing is cut short even then.
+        let worst = GateLimits::default().grace()
+            + world::THREAD_WAIT
+            + world::SAVE_WAIT
+            + crate::console::socket::GOODBYE_WAIT;
+        assert_eq!(worst, Duration::from_secs(30));
+        let unit = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deploy/systemd/fenji.service"
+        ))
+        .unwrap();
+        let secs: u64 = unit
+            .lines()
+            .find_map(|l| l.strip_prefix("TimeoutStopSec="))
+            .expect("the unit sets TimeoutStopSec")
+            .parse()
+            .unwrap();
+        assert!(
+            Duration::from_secs(secs) >= worst + Duration::from_secs(5),
+            "TimeoutStopSec={secs}, for a worst case of {worst:?}"
+        );
+    }
+
+    #[test]
     fn a_console_that_blocks_its_thread_leaves_the_runtimes_workers_free() {
         // Re-review, NB2: a terminal that stops reading (a stalled SSH link) blocks the
         // console's writes. On a host with one CPU, tokio has one worker: a console on it would

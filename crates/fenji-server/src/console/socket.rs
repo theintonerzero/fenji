@@ -57,7 +57,7 @@ const REFUSALS: usize = 16;
 
 /// How long the server's end waits for its consoles to take their goodbye: one that has stopped
 /// reading holds it up no longer.
-const GOODBYE_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const GOODBYE_WAIT: Duration = Duration::from_secs(5);
 
 /// How long a console turned away has to take its goodbye.
 const TURN_AWAY_WAIT: Duration = Duration::from_secs(1);
