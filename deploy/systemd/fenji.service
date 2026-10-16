@@ -24,10 +24,26 @@ Restart=on-failure
 RestartSec=5
 # SIGTERM stops it as the console's stop does, saving everyone's place first.
 TimeoutStopSec=30
+# The sandbox: the system read-only and home folders hidden, and none of what the server never
+# needs: privileges, devices, the clock, the kernel's settings, new namespaces or writable code.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
 
 [Install]
 WantedBy=multi-user.target

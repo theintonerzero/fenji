@@ -36,7 +36,7 @@ In the game world it passes each chat line on to the players it is for and keeps
 
 Players who are signed in to the server's launcher see the names of the characters in the world.
 
-Like any server, it sees the IP address you connect from, and its logs may record it. A server started in its own terminal also writes its log to files in its data folder, one for each day it runs, and keeps those of the last 14 days it ran; under systemd, the system's journal keeps the log. The operator decides how long logs and backups are kept.
+Like any server, it sees the IP address you connect from, and its logs may record it. A server with its full-screen console also writes its log to files in its data folder, one for each day it runs, and keeps those of the last 14 days it ran; under systemd, the system's journal keeps the log. The operator decides how long logs and backups are kept.
 
 ## The game connection
 

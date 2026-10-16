@@ -184,7 +184,7 @@ Hosts with a domain keep parent §8's path: Caddy in front of the account API, w
 
 ### 3.13 The write-up (H2, H12)
 
-`docs/hosting.md` is for hosts, not developers. `deploy/` holds what it installs: the systemd units (the server; the backup service and its timer), a `Caddyfile` for hosts with a domain, and the firewall commands. Its sections:
+`docs/hosting.md` is for hosts, not developers. `deploy/` holds what it installs: the systemd units (the server; the backup service and its timer) and a `Caddyfile` for hosts with a domain. The firewall commands are in the write-up itself. Its sections:
 1. **Before you start.** Every player needs their own copy of the game. Trust goes both ways (PRIVACY.md). The law (the README).
 2. **On your own computer.** Download, run the start script, type `invite`, send the link.
 3. **Letting friends in.**
@@ -192,7 +192,7 @@ Hosts with a domain keep parent §8's path: Caddy in front of the account API, w
    - Over the internet with open ports: router forwarding, the firewall, `tls = "self"`. It says plainly what an open game port exposes: the game connection is readable and authenticates nobody ([`transport.md`](../../protocol/transport.md) 3.9, PRIVACY.md).
    - Over a VPN (WireGuard, Tailscale, ZeroTier): the private option, and the way past carrier-grade NAT.
 4. **On a VPS: the reference deployment.** Parent §8: a `fenji` user, systemd with its hardening, `tls = "self"` or Caddy with a domain, `ufw` with the gate's port and either the API's port or 443, the backup timer, and attaching the console.
-5. **Updating.** `maintenance on 15m Updating Fenji`, `console --run stop`, replace the binary, start, check, then `maintenance off`.
+5. **Updating.** `maintenance on 15m Updating Fenji`, `systemctl stop fenji` (which stops the server as `stop` does, and returns once it has stopped), replace the binary, start, check, then `maintenance off`.
 6. **Backups and restoring.**
 7. **Troubleshooting:** ports, SmartScreen and Gatekeeper, "a server is already using this data folder", "this server's key has changed".
 
