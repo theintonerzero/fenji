@@ -1,7 +1,8 @@
-//! Interest management (Fenji design spec §6.4; world spec §3.3): a grid of 5,000-unit cells (50 m
-//! if the units are centimetres), where each player sees the players in their own cell and the
-//! eight around it, in the same scene. A player coming into view is announced (6); the client
-//! pulls it (5), and the world sends it whole (7). Going out of view, or out of the game, is 9.
+//! Interest management (Fenji design spec §6.4; world spec §3.3): a grid of 5,000-unit cells, 50 m
+//! since the units are centimetres (world.md 16.10), where each player sees the players in their
+//! own cell and the eight around it, in the same scene. A player coming into view is announced
+//! (6); the client pulls it (5), and the world sends it whole (7). Going out of view, or out of the
+//! game, is 9.
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -152,24 +153,43 @@ mod tests {
 
     #[test]
     fn the_eight_cells_around_are_in_view_and_no_further_nor_another_scene() {
+        // All four enter in one tick, so that each one's channel holds whatever it was told.
         let mut h = Harness::new();
-        h.enter(player(1, "Lin", at(100.0, 100.0)));
-        h.enter(player(2, "Mai", at(-4_000.0, 9_999.0)));
-        h.enter(player(3, "Ren", at(10_000.0, 100.0)));
-        h.enter(Player {
+        let kai = Player {
             at: Location {
                 scene: SCENE + 1,
                 ..at(100.0, 100.0)
             },
             ..player(4, "Kai", at(0.0, 0.0))
-        });
+        };
+        for p in [
+            player(1, "Lin", at(100.0, 100.0)),
+            player(2, "Mai", at(-4_000.0, 9_999.0)),
+            player(3, "Ren", at(10_000.0, 100.0)),
+            kai,
+        ] {
+            let conn = p.conn;
+            h.join(p);
+            h.push(WorldIn::Loaded { conn });
+        }
         h.tick(50);
-        assert!(matches!(
-            h.take(1).as_slice(),
-            [WorldOut::Announce { pid: 2, .. }]
-        ));
-        assert!(h.take(3).is_empty());
-        assert!(h.take(4).is_empty());
+        let mut announced = |conn| -> Vec<ActorId> {
+            h.take(conn)
+                .into_iter()
+                .filter_map(|m| match m {
+                    WorldOut::Announce { pid, .. } => Some(pid),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(announced(1), [2], "a cell diagonally next to Lin's");
+        assert_eq!(announced(2), [1]);
+        assert_eq!(
+            announced(3),
+            [] as [ActorId; 0],
+            "two cells along x from Lin"
+        );
+        assert_eq!(announced(4), [] as [ActorId; 0], "another scene");
     }
 
     #[test]
@@ -177,8 +197,17 @@ mod tests {
         let mut h = Harness::new();
         h.enter(player(1, "Lin", at(0.0, 0.0)));
         h.enter(player(2, "Mai", at(6_000.0, 0.0)));
-        h.enter(player(3, "Far", at(20_000.0, 0.0)));
-        assert!(h.take(3).is_empty(), "no one near");
+        // Not `enter`, which empties Far's channel: what Far is told as it enters stays to read.
+        h.join(player(3, "Far", at(20_000.0, 0.0)));
+        h.push(WorldIn::Loaded { conn: 3 });
+        h.tick(50);
+        assert!(
+            matches!(
+                h.take(3).as_slice(),
+                [WorldOut::LoadScene { .. }, WorldOut::SelfEnter { .. }]
+            ),
+            "no one near"
+        );
         h.tick(50);
         // 1 was told of 2 when 2 entered; `enter` emptied 2's channel.
         assert_eq!(
@@ -243,7 +272,7 @@ mod tests {
             match how {
                 "closed" => h.push(WorldIn::Leave { conn: 2 }),
                 "kicked while loading others" => {
-                    for _ in 0..9 {
+                    for _ in 0..flood() {
                         h.push(WorldIn::Pull { conn: 2, pid: 1 });
                     }
                 }

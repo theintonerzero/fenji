@@ -60,6 +60,10 @@ pub const IDLE: Duration = Duration::from_secs(60);
 pub const LINGER: Duration = Duration::from_secs(2);
 /// How often, by default, a connection in the world checks that its account still exists.
 pub const ACCOUNT_CHECK: Duration = Duration::from_secs(30);
+/// How long, by default, a player in the world waits for the world to let it go once the server is
+/// stopping: the world's next tick does, at most a second away (`tick_hz` is at least 1), unless
+/// the tick hangs (#281).
+pub const LET_GO: Duration = Duration::from_secs(2);
 
 /// The gate's limits (M3 spec D17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +87,10 @@ pub struct GateLimits {
     /// How often a connection in the world checks that its account still exists (Ruling R5): the
     /// lobby checks at every script message, but a player who only moves sends none.
     pub account_check: Duration,
+    /// How long a player in the world waits, once the server is stopping, for the world to let it
+    /// go with the shutdown's reason (#219). Then its connection closes with that reason itself:
+    /// a world whose tick hangs never lets go (#281).
+    pub let_go: Duration,
 }
 
 impl Default for GateLimits {
@@ -96,6 +104,7 @@ impl Default for GateLimits {
             write_deadline: Duration::from_secs(10),
             linger: LINGER,
             account_check: ACCOUNT_CHECK,
+            let_go: LET_GO,
         }
     }
 }
@@ -108,12 +117,12 @@ impl GateLimits {
         }
     }
 
-    /// How long a stopping server gives its connections to end (#219): a player in the world
-    /// writes its close within the write deadline, then lingers for its client to read it, and a
-    /// second more covers the world's last tick (`tick_hz` is at least 1). Connections left after
-    /// it are ended.
+    /// How long a stopping server gives its connections to end (#219): a player in the world is
+    /// let go by the world's last tick, or by itself after `let_go` (#281), then writes its close
+    /// within the write deadline and lingers for its client to read it. Connections left after it
+    /// are ended.
     pub fn grace(&self) -> Duration {
-        self.write_deadline + self.linger + Duration::from_secs(1)
+        self.let_go + self.write_deadline + self.linger
     }
 }
 
@@ -384,7 +393,9 @@ pub(crate) async fn send<W: AsyncWrite + Unpin>(
 /// Sends a reply within `deadline`, unless the online registry tells the connection to close
 /// first, for a newer login or a ban: then it gives up at once and returns false. The connection
 /// has lost its place, and a client that stopped reading shouldn't keep this socket until the
-/// deadline, outside the caps.
+/// deadline, outside the caps. False doesn't say which of the two it was, so the callers' log line
+/// names both, "replaced by a newer login, or banned"; the hosting plan's final review kept it so
+/// (#359).
 pub(crate) async fn send_or_replaced<W: AsyncWrite + Unpin>(
     sock: &mut W,
     bytes: &[u8],
@@ -638,7 +649,8 @@ pub(crate) async fn close_told<S: AsyncRead + AsyncWrite + Unpin>(
 /// Closes a connection that a newer login replaced, or that the world let go of with a reason. A
 /// replaced one no longer holds an online place, so it says why and lingers only within a waiting
 /// place, and for `time` at most: a client that stopped reading can't keep its socket outside the
-/// caps (#174). With no waiting place free it closes at once, without a reason.
+/// caps (#174). With no waiting place free it closes at once, without a reason, and says so at
+/// debug (#281).
 pub(crate) async fn close_replaced<S: AsyncRead + AsyncWrite + Unpin>(
     sock: &mut S,
     close: &[u8],
@@ -646,6 +658,7 @@ pub(crate) async fn close_replaced<S: AsyncRead + AsyncWrite + Unpin>(
     time: Duration,
 ) {
     let Some(_place) = place else {
+        tracing::debug!("no waiting place is free: closed without its reason");
         return;
     };
     if send(sock, close, time).await.is_ok() {
@@ -846,14 +859,17 @@ mod tests {
     }
 
     #[test]
-    fn the_shutdowns_grace_is_a_write_deadline_a_linger_and_a_tick() {
+    fn the_shutdowns_grace_is_the_worlds_let_go_a_write_deadline_and_a_linger() {
+        // #281: a player in the world waits up to `let_go` for the world's last tick to let it go,
+        // where the grace counted a second for that tick before.
         let limits = GateLimits {
             write_deadline: Duration::from_secs(3),
             linger: Duration::from_millis(300),
             ..GateLimits::default()
         };
-        assert_eq!(limits.grace(), Duration::from_millis(4_300));
-        assert_eq!(GateLimits::default().grace(), Duration::from_secs(13));
+        assert_eq!(limits.grace(), Duration::from_millis(5_300));
+        assert_eq!(GateLimits::default().grace(), Duration::from_secs(14));
+        assert_eq!(GateLimits::default().let_go, Duration::from_secs(2));
     }
 
     #[tokio::test]
@@ -891,14 +907,30 @@ mod tests {
         assert!(places.take(ip).is_some(), "the waiting place is given back");
     }
 
-    #[tokio::test]
-    async fn with_no_waiting_place_free_a_replaced_connection_closes_without_a_reason() {
-        let (mut sock, mut client) = tokio::io::duplex(1024);
-        close_replaced(&mut sock, b"why", None, Duration::from_secs(30)).await;
-        drop(sock);
-        let mut got = Vec::new();
-        client.read_to_end(&mut got).await.unwrap();
+    #[test]
+    fn with_no_waiting_place_free_a_replaced_connection_closes_without_a_reason() {
+        // The reason it drops is said at debug, for a host wondering why a client showed none
+        // (#281).
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (got, log) = crate::world::logged_at(tracing::Level::DEBUG, || {
+            rt.block_on(async {
+                let (mut sock, mut client) = tokio::io::duplex(1024);
+                close_replaced(&mut sock, b"why", None, Duration::from_secs(30)).await;
+                drop(sock);
+                let mut got = Vec::new();
+                client.read_to_end(&mut got).await.unwrap();
+                got
+            })
+        });
         assert!(got.is_empty());
+        assert!(
+            log.lines()
+                .any(|l| l.contains("DEBUG") && l.contains("closed without its reason")),
+            "{log}"
+        );
     }
 
     #[test]

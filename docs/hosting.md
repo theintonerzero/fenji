@@ -115,6 +115,8 @@ On Windows, open a Command Prompt in the server's folder and run `start-server.b
 ./start-server.sh --plain 2>> fenji.log
 ```
 
+If the terminal stops taking what's written to it, as over a frozen SSH connection, the server doesn't wait for it, and serves on: up to 8,192 lines of the log wait for the terminal, and any more are skipped. When the terminal takes them again, the log first says how many lines it skipped (`WARN  1204 lines of the log were skipped: stderr wasn't being read`). Ctrl-C, SIGTERM or closing the terminal still stops the server cleanly, and so does `./fenji-server console --run stop` from another session. As it exits, it gives the terminal a few seconds for the lines still waiting, then leaves them.
+
 **Over SSH,** on a computer at home or a server without the service of section 4, a server started in a bare SSH session stops cleanly when the connection goes. To keep it running, start it inside `tmux` or `screen`:
 
 ```sh
@@ -213,7 +215,7 @@ On Linux, for example, an invite for a week:
 - `name`: your server's name, which the game and launchers show (at most 32 characters, and no colons);
 - `host`: your name, which launchers show as "hosted by";
 - `motd`: the message of the day, unless the console sets one;
-- `max_players`: how many players can be online at once (20 unless you change it);
+- `max_players`: how many players can be online at once: 20 unless you change it, and at most 200, since a crowd of more would be sent more of each other's moves at once than a player's connection holds. Fenji is built and measured for 20;
 - `admins`: accounts that are admins whatever the console's `op` and `deop` say.
 
 The server keeps a file open for each connection. The start scripts raise the limit on open files to 4,096, as far as the system allows (macOS gives a program 256 by default), and the reference deployment's service sets it (section 4). If you start `fenji-server` some other way, raise it too, in the same shell first:
@@ -274,7 +276,7 @@ Some steps use `VERSION` and `TARGET`, which the first one sets in your shell, a
 Set `VERSION` to the latest release's number, without its `v`, and download that release's archive for your server's processor, with its checksums:
 
 ```sh
-VERSION=0.5.1
+VERSION=0.5.2
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
@@ -394,7 +396,7 @@ With a domain name, Caddy can serve the account API on the usual HTTPS port, wit
 3. Install Fenji's `Caddyfile` from the archive's `caddy` folder, put your name in place of `play.example.net` in it, and reload Caddy. In the folder you unpacked the archive in:
 
    ```sh
-   VERSION=0.5.1
+   VERSION=0.5.2
    TARGET=$(uname -m)-unknown-linux-musl
    sudo install -m 644 fenji-server-$VERSION-$TARGET/caddy/Caddyfile /etc/caddy/Caddyfile
    sudo nano /etc/caddy/Caddyfile
@@ -454,7 +456,7 @@ sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run "mainten
 Download the new version, as in section 4, with its number:
 
 ```sh
-VERSION=0.5.2
+VERSION=0.5.3
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
@@ -474,7 +476,7 @@ sudo systemctl start fenji
 
 The new version's services replace the ones installed. A change of your own to a service belongs in a drop-in file, as the container fix in section 7 makes, which an update leaves alone.
 
-`systemctl stop` stops the server as the console's `stop` does, letting every player go and saving where each one stood, and returns once it has stopped, within 30 seconds.
+`systemctl stop` stops the server as the console's `stop` does, letting every player go and saving where each one stood, and returns once it has stopped. That takes 30 seconds at most, and the service gives it 35.
 
 Check that it runs the new version, still in maintenance, which lasts through restarts:
 
@@ -497,16 +499,16 @@ The update goes into your server's folder, so that its settings, its data and ev
 1. In the console, type `maintenance on 15m Updating Fenji`, then `backup`, then `stop`.
 2. Download the new version's archive (section 2), and unpack it anywhere but your server's folder, such as your Downloads folder.
 3. Copy everything in the new version's folder into your server's folder, replacing the old files. The archive holds no `fenji.toml` and no `data` folder, so yours stay.
-   - On Linux and macOS, delete the old program first, then copy. On macOS, a program copied into the old one's file can be killed as it starts, as macOS remembers the old program's signature; on Linux, a copy can't replace a program something still runs ("Text file busy"). In these two lines, put the new version's folder in place of `~/Downloads/fenji-server-0.5.1-x86_64-unknown-linux-musl`, and your server's folder in place of `~/fenji-server`, if yours are elsewhere or named otherwise:
+   - On Linux and macOS, delete the old program first, then copy. On macOS, a program copied into the old one's file can be killed as it starts, as macOS remembers the old program's signature; on Linux, a copy can't replace a program something still runs ("Text file busy"). In these two lines, put the new version's folder in place of `~/Downloads/fenji-server-0.5.3-x86_64-unknown-linux-musl`, and your server's folder in place of `~/fenji-server`, if yours are elsewhere or named otherwise:
 
      ```sh
      rm ~/fenji-server/fenji-server
-     cp -R ~/Downloads/fenji-server-0.5.1-x86_64-unknown-linux-musl/. ~/fenji-server/
+     cp -R ~/Downloads/fenji-server-0.5.3-x86_64-unknown-linux-musl/. ~/fenji-server/
      ```
 
    - On Windows, copy the new folder's files into your server's folder in Explorer, and choose "Replace the files in the destination".
 4. Start the start script. Windows and macOS may ask again, as on the first start.
-5. Check that it runs the new version: the console's status line shows its number, such as `v0.5.1`, and `maintenance` shows it's still on. Then type `maintenance off`.
+5. Check that it runs the new version: the console's status line shows its number, such as `v0.5.3`, and `maintenance` shows it's still on. Then type `maintenance off`.
 
 ## 6. Backups and restoring
 
@@ -606,9 +608,9 @@ xattr -dr com.apple.quarantine ~/fenji-server
 
 **Windows says Smart App Control blocked the server, with no Run anyway.** Smart App Control, on from the start on some new Windows 11 PCs, blocks programs that aren't signed, and the server isn't. The only way past it is to turn it off, in Windows Security, App & browser control, Smart App Control settings. On many PCs Windows can't turn it on again without a reset of Windows, so weigh that first, or host on another computer: a Linux or macOS one, or a VPS (section 4).
 
-**A player's launcher says "That isn't a server address or an invite link. Paste the link your host sent."** in the desktop launcher, or "that isn't an invite code or link" from `fenji-launch`. What they pasted isn't the whole link: part of it was left out as it was copied, from the console or by a chat app. Copy it again from its first letter to its last (section 2's "Copying a link"), or make it with `./fenji-server invite create`, which prints each link on one line, and send that.
+**A player's launcher says "That isn't an invite link or an address."** in the desktop launcher, or "that isn't an invite code or link" from `fenji-launch`. What they pasted isn't the whole link: part of it was left out as it was copied, from the console or by a chat app. Copy it again from its first letter to its last (section 2's "Copying a link"), or make it with `./fenji-server invite create`, which prints each link on one line, and send that.
 
-**"a server is already using this data folder (…)".** Another `fenji-server` is running with the same data folder: in another window, in `tmux`, or as the reference deployment's service. Use that one (on Linux and macOS, `fenji-server console` attaches to it), or stop it first. The system lets go of a server's lock however it ends, so this never means a stale lock.
+**"another fenji-server holds this data folder (…)".** Another `fenji-server` is using the same data folder, and the message names the two it may be. A server: in another window, in `tmux`, or as the reference deployment's service. Use that one (on Linux and macOS, the `fenji-server console` the message shows attaches to it, with the same `--config`, and as the same user when you ran it with `sudo -u`), or stop it first. Or one of the program's other commands, such as a `backup`, bringing the database up to date just then: try again in a moment. The system lets go of a server's lock however it ends, so this never means a stale lock.
 
 **"the data folder … is fenji's, and this runs as root: run fenji-server as fenji (sudo -u fenji fenji-server …)…".** The server, or one of its commands, was started as another user than the one whose data folder it is, often with `sudo` alone. Run it as the user it names: on the reference VPS, `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`. A file another user made in the data folder would be theirs, and the server couldn't use it.
 
@@ -622,13 +624,13 @@ xattr -dr com.apple.quarantine ~/fenji-server
 
 **A command says "can't read fenji.toml: there's none in this folder (…)".** It was run outside the server's folder, without `--config`. Run it in the server's folder, or give `--config` with the server's `fenji.toml`.
 
-**`fenji-server console` says "no server is running with this data folder (…)".** The server isn't running, or the console uses other settings: give it the same `--config` as the server, or run it in the server's folder.
+**`fenji-server console` says "no server is running with this data folder (…)".** The server isn't running, or the console uses other settings: give it the same `--config` as the server, or run it in the server's folder. If the server is running, it couldn't make its console socket, and its log said why as it started: "`fenji-server console` can't attach to this server: …".
 
 **It says "… its console socket is another user's; attach as the user the server runs as".** Attach as that user: on the reference VPS, `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console`.
 
 **It says "can't attach to the server: the path of its console socket, …, is too long for a socket here".** The server said as much in its log when it started, and runs without a socket. Move the data folder to a shorter path, or start the server from its own folder, as the start scripts do (section 2).
 
-**An SSH connection that froze comes back showing the console, though the server has stopped.** The server stopped while the connection was frozen, and the console couldn't give the screen back. The terminal reads lines again: type `reset` and press Enter.
+**An SSH connection that froze comes back showing the console, though the server has stopped, or the attached console has ended.** The server stopped, or the attached console was stopped (by `kill`, say), while the connection was frozen, and the console couldn't give the screen back. The terminal reads lines again: type `reset` and press Enter.
 
 **The service won't start, and `systemctl status fenji` shows `status=217/USER` or `status=226/NAMESPACE`.** `sudo journalctl -u fenji` says why, such as "Failed to keep CAP_SYS_ADMIN: Operation not permitted". Your VPS is most likely a container itself (LXC, OpenVZ and the like), whose systemd lacks a privilege that part of the service's sandbox needs: the settings that filter the server's system calls. Turn those off, for both services, and start the server again:
 
@@ -667,5 +669,7 @@ To undo either, delete the two `container.conf` files, then `sudo systemctl daem
 **The server won't start, and its log says "can't listen on 0.0.0.0:7800".** Another program, or another Fenji server, uses that port.
 
 **"there's no config at /etc/fenji/fenji.toml".** The service's settings are missing: write them with `sudo fenji-server --config /etc/fenji/fenji.toml init` (section 4).
+
+**The server stopped by itself, and its log says "the world's tick has made no progress for 30s".** The world stopped answering, which is a bug in Fenji. Rather than keep players in a world where nothing moves, the server told them it was stopping and stopped, saving them if the world came back in time. Places since the last save (`save_every_secs`, five minutes by default) may be lost. The reference VPS's service starts the server again 5 seconds later; on your own computer, start it again. Please report it on GitHub, with the server's log from that time.
 
 **Players are told the server is in maintenance:** "Moonward is in maintenance: Back soon." in the desktop launcher, or "the server is in maintenance: Back soon" from `fenji-launch`, with your message. Maintenance is on, and stays on through restarts: `maintenance off` turns it off.

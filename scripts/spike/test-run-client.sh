@@ -353,6 +353,31 @@ if [ "$rc" = 2 ]; then ok "xkey.py holds keys, not typing"; else bad "xkey.py ho
 python3 -I "$XK" --display :9999 --key=w --hold=60000 > /dev/null 2>&1
 rc=$?
 if [ "$rc" = 1 ]; then ok "xkey.py takes a hold of a minute"; else bad "xkey.py takes a hold of a minute: exit $rc"; fi
+# Before each key press, xkey.py moves a pointer that is over no window the shortest way into the
+# display's largest window (#244): with no window manager a press goes to the window under the
+# pointer, and a client in the world leaves the pointer on the bottom row, outside its window.
+if python3 -I - "$XK" << 'EOF'
+import ctypes, importlib.util, sys
+spec = importlib.util.spec_from_file_location("xkey", sys.argv[1])
+x = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(x)
+win, t = (3, 22, 1276, 697), x.pointer_target  # client 1's window on :99 in run m4-s3
+assert t((426, 719), False, [win]) == (426, 718), "from the bottom row, one row up"
+assert t((0, 0), False, [win]) == (3, 22), "from a corner, the nearest point inside"
+assert t((640, 360), True, [win]) is None, "a pointer over a window stays"
+assert t((426, 719), False, []) is None, "no window to go into"
+assert t((1279, 719), False, [(0, 0, 100, 50), win, (10, 10, 20, 20)]) == (1278, 718), "the largest window"
+assert t((0, 0), False, [(0, 10, 10, 10), (50, 50, 10, 10)]) == (50, 50), "the topmost of two equals"
+# XWindowAttributes as X11/Xlib.h lays it out on LP64: the fields read, and its size.
+if ctypes.sizeof(ctypes.c_long) == 8:
+    a = x.XWindowAttributes
+    assert (a.x.offset, a.border_width.offset, a.c_class.offset, a.map_state.offset, ctypes.sizeof(a)) == (0, 16, 40, 92, 136)
+EOF
+then
+  ok "xkey.py moves a pointer over no window the shortest way into the largest window"
+else
+  bad "xkey.py's pointer move"
+fi
 
 # The password reaches the sandbox as one line through a pipe, and nothing without --launch.
 if [ "$(launch_password=$M3/password password_line)" = "secret-for-tests" ] && [ -z "$(launch_password='' password_line)" ]; then
@@ -535,8 +560,10 @@ for a in sys.argv[1:]:
 EOF
 cat > "$F/wrap" <<'EOF'
 #!/usr/bin/env bash
-# Records its arguments, then runs what follows --, with DISPLAY from the first --x11.
+# Records its arguments, then runs what follows --, with DISPLAY from the first --x11; with
+# FAKE_WRAP_FAIL set, it refuses instead, as the wrapper does when a check fails.
 echo "$*" >> "$FAKE_LOG/wrap"
+[ -z "${FAKE_WRAP_FAIL:-}" ] || exit 1
 d=""
 while [ $# -gt 0 ] && [ "$1" != -- ]; do
   if [ "$1" = --x11 ] && [ -z "$d" ]; then d=$2; fi
@@ -551,6 +578,14 @@ cat > "$F/proton/proton" <<'EOF'
 import json, os, subprocess, sys, time
 assert sys.argv[1] == "run"
 exe, args, log = sys.argv[2], sys.argv[3:], os.environ["FAKE_LOG"]
+if exe == "cmd.exe":  # setup's prime: Proton makes the prefix, or brings it up to its build
+    pfx = os.path.join(os.environ["STEAM_COMPAT_DATA_PATH"], "pfx")
+    os.makedirs(pfx, exist_ok=True)
+    with open(os.path.join(pfx, "system.reg"), "a") as f:
+        f.write("WINE REGISTRY Version 2\n")
+    with open(os.path.join(log, "proton"), "a") as f:
+        f.write(json.dumps({"t": time.time(), "exe": exe, "args": args}) + "\n")
+    sys.exit(1 if os.environ.get("FAKE_PROTON_FAIL") else 0)
 # explorer.exe /desktop=NAME,SIZE PROGRAM ARGS: PROGRAM in a desktop of its own, its argv[0] the
 # Windows path, as Wine shows it.
 program, argv0 = exe, exe
@@ -640,6 +675,7 @@ while alive(spid):
     time.sleep(0.05)
 EOF
 chmod +x "$F/bin/"* "$F/wrap" "$F/proton/proton" "$F/proton/files/bin/wineserver" "$F/release/"*
+echo "1789520217 GE-Proton-flow" > "$F/proton/version"
 read -r lp ap < <(python3 -I -c 'import socket
 s = [socket.socket() for _ in range(2)]
 for x in s:
@@ -649,11 +685,13 @@ printf '[server]\nname = "Fenji"\nlogin_bind = "127.0.0.1:%s"\napi_bind = "127.0
 printf 'first-secret\n' > "$F/pw1"
 printf 'second-secret\n' > "$F/pw2"
 
-# workspace DIR: a run workspace as setup makes it, with each copy's gujianol.exe a link to Python.
+# workspace DIR: a run workspace as setup makes it, with each copy's gujianol.exe a link to Python,
+# and its prefix marked as primed by the stand-in GE-Proton.
 workspace() {
   local c
   mkdir -p "$1/compat/pfx" "$1/home" "$1/steamclient" "$1/out" "$1/stub-logs"
   printf 'WINE REGISTRY Version 2\n' > "$1/compat/pfx/system.reg"
+  cp -- "$F/proton/version" "$1/compat/fenji-primed"
   : > "$1/hosts-empty"
   for c in client client2; do
     mkdir -p "$1/$c/bin64" "$1/$c/data"
@@ -786,14 +824,50 @@ if [ "$(sort <<< "$got")" = "$(sort <<< "$want")" ] && [ "$first_two" = "$want_f
 else
   bad "inputs: $got"
 fi
-# Client 1 holds w for 3 s from 1 s; client 2's Return at 3 s goes when it is due, not after the hold.
+# Client 1 holds w for 3 s from 1 s; client 2's Return at 3 s goes when it is due, not after the hold,
+# which would put it 3 s or more after the hold's start. The schedulers count whole seconds, so a
+# Return due 2 s after the hold goes 1 to 2 s after it: 1 s when a second's boundary falls between
+# the hold and the Return's own check (#244).
 hold_at=$(awk '/ press --display :99 --key=w --hold=3000$/ { print $1 }' "$F/log/two/inputs")
 return_at=$(awk '/ press --display :98 --key=Return$/ { print $1 }' "$F/log/two/inputs")
 if [ -n "$hold_at" ] && [ -n "$return_at" ] &&
-  python3 -I -c 'import sys; sys.exit(0 if 1.5 < float(sys.argv[2]) - float(sys.argv[1]) < 2.6 else 1)' "$hold_at" "$return_at"; then
+  python3 -I -c 'import sys; sys.exit(0 if 0.5 < float(sys.argv[2]) - float(sys.argv[1]) < 2.6 else 1)' "$hold_at" "$return_at"; then
   ok "a held key holds up no press after it"
 else
   bad "a held key and the press after it: hold at '$hold_at', Return at '$return_at'"
+fi
+# Client 1 ended before client 2 was due (#244): client 2 isn't started, since a fresh wineserver would
+# boot Wine's drivers in a new winedevice.exe, which S2 takes for a gate event. Client 1's timeout ends
+# it at 1 s, and client 2 is due at 5 s: a slow runner has 4 s to see it end.
+W3=$TESTROOT/w3
+workspace "$W3"
+flow early "$W3" --server "$F/fenji.toml" --clients 2 --display2 98 --second-after 5 --timeout 1 -- --fs=data:_index:_index
+OUT3=$W3/out/early
+if [ "$rc" = 0 ] && [ "$(wc -l < "$F/log/early/proton")" = 1 ] && [ -f "$OUT3/io/exit-code" ] &&
+  [ ! -e "$OUT3/io/exit-code-2" ] && [ -f "$OUT3/io/2/not-started" ] &&
+  [[ $out == *"client 2 not started (client 1 had ended when it was due)"* ]]; then
+  ok "client 2 isn't started once client 1 has ended"
+else
+  bad "client 1 ended first: rc $rc, proton $(cat "$F/log/early/proton" 2> /dev/null): $out"
+fi
+# A prefix no GE-Proton build marked (made before builds were recorded), or that another build primed:
+# this build would upgrade it in the run, which the watchdog takes for a gate event (#174).
+W4=$TESTROOT/w4
+workspace "$W4"
+rm -f -- "$W4/compat/fenji-primed"
+flow unmarked "$W4" --server "$F/fenji.toml" --timeout 3
+if [ "$rc" = 1 ] && [[ $out == *"or before builds were recorded"*"remove "*"/compat, then run: "*" setup"* ]] &&
+  [ ! -e "$F/log/unmarked/proton" ] && [ ! -e "$W4/out/unmarked" ]; then
+  ok "a run refuses a prefix no GE-Proton build marked"
+else
+  bad "an unmarked prefix: rc $rc: $out"
+fi
+echo "1789000000 GE-Proton-other" > "$W4/compat/fenji-primed"
+flow othermark "$W4" --server "$F/fenji.toml" --timeout 3
+if [ "$rc" = 1 ] && [[ $out == *"primed by another GE-Proton build"* ]] && [ ! -e "$F/log/othermark/proton" ]; then
+  ok "a run refuses a prefix another GE-Proton build primed"
+else
+  bad "another build's prefix: rc $rc: $out"
 fi
 mkdir "$W2/client2/settings"
 flow left "$W2" --clients 2 --display2 98 -- --fs=data:_index:_index
@@ -836,6 +910,114 @@ out=$(WORK=$SW FENJI_CLIENT_PATH=$TESTROOT/pinned cmd_setup --clients 2 2>&1) ||
 if [ "$rc" = 1 ] && [[ $out == *"client2 exists already"* ]]; then ok "setup refuses a second client2/"; else bad "setup again: rc $rc: $out"; fi
 usage_setup=$( (cmd_setup --clients 3) 2>&1 > /dev/null)
 if [[ $usage_setup == *"--clients takes 1 or 2"* ]]; then ok "setup's --clients takes 1 or 2"; else bad "setup --clients 3: $usage_setup"; fi
+
+# setup marks the prefix with the GE-Proton build that primed it (#174), and never starts Wine in a
+# prefix that runs have used: one another build primed, or that no build marked, is refused until
+# it's removed, then made fresh, the client copies kept (#373's review; #148).
+# setup_flow NAME WORK ARGS...: cmd_setup ARGS with the stand-ins and WORK as the workspace, its
+# records in $F/log/NAME; sets rc and out.
+setup_flow() {
+  local name=$1 dir=$2
+  shift 2
+  mkdir -p "$F/log/$name"
+  rc=0
+  (
+    export FAKE_LOG=$F/log/$name
+    WORK=$dir PROTON=$F/proton WRAP=$F/wrap FENJI_CLIENT_PATH=$TESTROOT/pinned PATH="$F/bin:$PATH"
+    hash -r
+    need_display() { :; }
+    cmd_setup "$@"
+  ) > "$F/log/$name/out" 2>&1 || rc=$?
+  out=$(cat -- "$F/log/$name/out")
+}
+PW=$TESTROOT/pw
+setup_flow setup-new "$PW"
+if [ "$rc" = 0 ] && [ -f "$PW/compat/pfx/system.reg" ] && [ -f "$PW/client/bin64/gujianol.exe" ] &&
+  [ "$(cat "$PW/compat/fenji-primed" 2> /dev/null)" = "$(cat "$F/proton/version")" ]; then
+  ok "setup makes the prefix through Proton's launcher, and marks it with the GE-Proton build"
+else
+  bad "setup: rc $rc, mark '$(cat "$PW/compat/fenji-primed" 2> /dev/null)': $out"
+fi
+setup_flow setup-again "$PW"
+if [ "$rc" = 1 ] && [[ $out == *"exists already"* ]] && [ ! -e "$F/log/setup-again/proton" ]; then
+  ok "setup leaves alone a workspace whose prefix this GE-Proton build primed"
+else
+  bad "setup again: rc $rc: $out"
+fi
+for case in other unmarked; do
+  if [ "$case" = other ]; then echo "1789000000 GE-Proton-other" > "$PW/compat/fenji-primed"; else rm -f -- "$PW/compat/fenji-primed"; fi
+  before=$(cat -- "$PW/compat/fenji-primed" 2> /dev/null || echo none)
+  setup_flow "setup-$case" "$PW"
+  if [ "$rc" = 1 ] && [[ $out == *"remove $PW/compat, then run setup again"* ]] &&
+    [ ! -e "$F/log/setup-$case/proton" ] && [ ! -e "$F/log/setup-$case/wrap" ] &&
+    [ "$(cat -- "$PW/compat/fenji-primed" 2> /dev/null || echo none)" = "$before" ]; then
+    ok "setup never starts Wine in a used prefix $([ "$case" = other ] && echo "another GE-Proton build primed" || echo "no build marked"), and says to remove it"
+  else
+    bad "setup on a used prefix ($case): rc $rc: $out"
+  fi
+done
+# Nor with client/ gone: a used compat/ is refused whatever else the workspace holds (#373's
+# re-review).
+mv -- "$PW/client" "$PW/client.kept"
+setup_flow setup-noclient "$PW"
+mv -- "$PW/client.kept" "$PW/client"
+if [ "$rc" = 1 ] && [[ $out == *"remove $PW/compat, then run setup again"* ]] && [ ! -e "$F/log/setup-noclient/proton" ] &&
+  [ ! -e "$F/log/setup-noclient/cp" ]; then
+  ok "setup never starts Wine in a used prefix whose workspace has lost client/"
+else
+  bad "setup on a used prefix with no client/: rc $rc: $out"
+fi
+# Nor one setup can't list: the client can write compat/, so it could take the folder's read bit
+# away, and a compat/ that can't be listed counts as held (#373's re-review). Root reads it anyway.
+if [ "$(id -u)" != 0 ]; then
+  chmod 0300 "$PW/compat"
+  setup_flow setup-unlistable "$PW"
+  chmod 0700 "$PW/compat"
+  if [ "$rc" = 1 ] && [[ $out == *"remove $PW/compat, then run setup again"* ]] && [ ! -e "$F/log/setup-unlistable/proton" ]; then
+    ok "setup never starts Wine in a compat/ it can't list"
+  else
+    bad "setup on an unlistable compat/: rc $rc: $out"
+  fi
+fi
+# Nor in a compat/ holding anything at all, a prefix's mark alone here, with no pfx/.
+rm -rf -- "$PW/compat"
+mkdir -- "$PW/compat"
+echo "1789000000 GE-Proton-other" > "$PW/compat/fenji-primed"
+setup_flow setup-partial "$PW"
+if [ "$rc" = 1 ] && [[ $out == *"remove $PW/compat, then run setup again"* ]] && [ ! -e "$F/log/setup-partial/proton" ]; then
+  ok "setup never starts Wine in a compat/ that holds anything, a pfx/ or not"
+else
+  bad "setup on a compat/ with a mark alone: rc $rc: $out"
+fi
+# An empty compat/, as a first setup that failed on a copy leaves, is no used prefix: made fresh.
+rm -rf -- "$PW/compat"
+mkdir -- "$PW/compat"
+setup_flow setup-empty "$PW"
+if [ "$rc" = 0 ] && [ "$(cat "$PW/compat/fenji-primed")" = "$(cat "$F/proton/version")" ]; then
+  ok "setup makes a fresh prefix in an empty compat/"
+else
+  bad "setup on an empty compat/: rc $rc: $out"
+fi
+# Once the used prefix is removed, setup makes a fresh one, and keeps the client copies.
+rm -rf -- "$PW/compat"
+setup_flow setup-fresh "$PW"
+if [ "$rc" = 0 ] && [ -f "$PW/compat/pfx/system.reg" ] && [ "$(cat "$PW/compat/fenji-primed")" = "$(cat "$F/proton/version")" ] &&
+  [ "$(grep -c '"exe": "cmd.exe"' "$F/log/setup-fresh/proton" 2> /dev/null)" = 1 ] && [ ! -e "$F/log/setup-fresh/cp" ] &&
+  [ -f "$PW/client/bin64/gujianol.exe" ]; then
+  ok "setup makes a removed prefix fresh, and keeps the client copies"
+else
+  bad "setup on a removed prefix: rc $rc: $out"
+fi
+# A prime whose Proton fails, after making the prefix, leaves it unmarked (#373's re-review: one
+# that doesn't get as far as the prefix can't tell a mark written too early).
+rm -rf -- "$PW/compat"
+FAKE_PROTON_FAIL=1 setup_flow setup-failed "$PW"
+if [ "$rc" = 1 ] && [[ $out == *"Proton's launcher failed (exit 1)"* ]] && [ -f "$PW/compat/pfx/system.reg" ] &&
+  [ ! -e "$PW/compat/fenji-primed" ]; then
+  ok "a prime that fails leaves the prefix unmarked"
+else
+  bad "a failed prime: rc $rc, mark '$(cat "$PW/compat/fenji-primed" 2> /dev/null)': $out"
+fi
 
 guard
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }

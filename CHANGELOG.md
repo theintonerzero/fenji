@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-10-16
+
+### Added
+
+- **launcher:** Find and use a copy Steam installed, and leave Steam's libraries to Steam (#370)
+- **launcher:** One stage where PLAY kindles (#375)
+
+### Fixed
+
+- **server:** The world's robustness: a hung tick, a busy store, a stalled link (#363)
+- **server:** Hosting's minors, tests and refactors (#371)
+- **tools:** Harden the runners and the watchdog (#373)
+
+### Documentation
+
+- **launcher:** Steam copies, and DepotDownloader inside the launcher (#369)
+- **launcher:** The redesign, one stage where PLAY kindles (#372)
+
 ## [0.5.1] - 2026-10-16
 
 ### Fixed

@@ -174,6 +174,25 @@ impl Store {
         Ok(())
     }
 
+    /// Holds every connection of the pool for `d`, then gives them back: for tests of what waits
+    /// on the store while busy writers, or a backup's `VACUUM INTO`, hold all of it. `held` is
+    /// sent once they are all taken.
+    #[cfg(feature = "test-util")]
+    pub async fn hold_pool(
+        &self,
+        d: Duration,
+        held: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<()> {
+        let mut all = Vec::new();
+        for _ in 0..self.pool.options().get_max_connections() {
+            all.push(self.pool.acquire().await?);
+        }
+        let _ = held.send(());
+        tokio::time::sleep(d).await;
+        drop(all);
+        Ok(())
+    }
+
     /// Drops the `bans` table, so that every read of a ban fails as a damaged database's would,
     /// while the other tables still answer: for tests of what a check for a ban does when the
     /// store can't say.

@@ -100,11 +100,12 @@ impl RunningServer {
         self.world.report()
     }
 
-    /// Serves until `stop` completes or the console's `stop` asks it to, or until the world's
-    /// thread or its services task ends by itself, then shuts down: what `fenji-server run` awaits.
-    /// Either ending early takes the server with it, so that no login waits for a world that isn't
-    /// there (Ruling R9) or plays in one that can't save (Ruling R13), and the error makes
-    /// `fenji-server run` exit non-zero for systemd to restart it.
+    /// Serves until `stop` completes or the console's `stop` asks it to, or until the world fails
+    /// (`RunningWorld::failed`): its thread or its services task ends by itself, or its tick hangs.
+    /// Then it shuts down: what `fenji-server run` awaits. A world that fails takes the server with
+    /// it, so that no login waits for a world that isn't there (Ruling R9) or doesn't answer
+    /// (#281), or plays in one that can't save (Ruling R13), and the error makes `fenji-server run`
+    /// exit non-zero for systemd to restart it.
     pub async fn serve_until(mut self, stop: impl Future<Output = ()>) -> anyhow::Result<()> {
         let mut stopping = self.console.stopping();
         let failed = tokio::select! {
@@ -115,13 +116,13 @@ impl RunningServer {
                 tracing::info!("shutting down, as the console asked");
                 None
             }
-            what = self.world.ended() => {
-                tracing::error!("{what} has ended: stopping the server");
-                Some(what)
+            failure = self.world.failed() => {
+                tracing::error!("{failure}: stopping the server");
+                Some(failure)
             }
         };
         match (self.shutdown().await, failed) {
-            (Ok(()), Some(what)) => Err(anyhow::anyhow!("{what} ended before the server")),
+            (Ok(()), Some(failure)) => Err(anyhow::anyhow!("the server stopped: {failure}")),
             (stopped, _) => stopped,
         }
     }
@@ -417,7 +418,8 @@ pub async fn start(
 /// what it wrote before it starts, and what's next once it runs. Under `tls = "self"` the start
 /// shows a server link beside "Fenji is running" (§3.10).
 /// - First it claims its data folder (§3.5): another server using it stops this one before it
-///   opens the store or listens (Review Focus 5). On Linux and macOS the claim is also the console
+///   opens the store or listens (Review Focus 5), saying what to do with the `--config` it was
+///   `given`, if any. On Linux and macOS the claim is also the console
 ///   socket, which consoles attach to while it serves, and are told goodbye on as it stops;
 ///   elsewhere it's the folder's lock alone ([`crate::lock`]).
 /// - [`Front::Full`]: the full-screen console holds the terminal while the server runs on a task
@@ -429,8 +431,15 @@ pub async fn start(
 ///   it waits [`CONSOLE_GRACE`] at most for a console that hasn't ended: one whose terminal has
 ///   stopped reading may never end.
 /// - [`Front::Plain`]: commands from stdin and answers on stdout, the log being on stderr. The end
-///   of stdin leaves the server running.
-pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()> {
+///   of stdin leaves the server running. Once the server has stopped, `run` waits
+///   [`CONSOLE_GRACE`] at most for these too: a stdout that takes no more answers, such as a pipe
+///   nobody reads, would hold a write for ever (#359).
+pub async fn run(
+    loaded: Loaded,
+    given: Option<&Path>,
+    front: Front,
+    hub: LogHub,
+) -> anyhow::Result<()> {
     let (cfg, first_run) = match loaded {
         Loaded::Existing(cfg) => (cfg, None),
         Loaded::FirstRun(cfg) => {
@@ -440,14 +449,14 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
     };
     let data = config::data_folder(&cfg.store.path);
     #[cfg(unix)]
-    let claim = console::socket::claim(&data).await?;
+    let claim = console::socket::claim(&data, given).await?;
     #[cfg(unix)]
     if let Some(why) = claim.unattachable() {
         tracing::warn!("{why}");
     }
     // Held until the server has stopped, at the end of `run`.
     #[cfg(not(unix))]
-    let _lock = crate::lock::take(&data)?;
+    let _lock = crate::lock::take(&data, given)?;
     if let Some([wrote, ..]) = &first_run {
         tracing::info!("{wrote}");
     }
@@ -522,7 +531,13 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
             let leave = std::future::pending();
             let lines =
                 fenji_console::run_plain(session, input, out, err, false, Mode::InProcess, leave);
-            if let Err(e) = lines.await {
+            // Bounded as the full-screen console is: a write of an answer to a stdout that takes
+            // no more, such as a pipe nobody reads, never ends (#359).
+            let ended = held_until_stopped(lines, console.stopped(), CONSOLE_GRACE).await;
+            let serving = !served.is_finished() && !*console.stopping().borrow();
+            if let Err(e) = ended
+                && serving
+            {
                 tracing::warn!(error = %e, "the console's lines have stopped: the server runs on");
             }
             joined(served).await
@@ -564,10 +579,18 @@ pub(crate) async fn held(
     }
 }
 
-/// How long `run` waits for its full-screen console once the server has stopped. The console ends
-/// on the server's goodbye at once, unless it's caught in a write to a terminal that has stopped
-/// reading, as over a stalled SSH link (the fix pass's re-review, NB1).
-const CONSOLE_GRACE: Duration = Duration::from_secs(2);
+/// How long `run` waits for its console, full-screen or plain lines, once the server has stopped,
+/// and the process for the log's stderr as it exits ([`crate::console::log::finish`]). The console
+/// ends on the server's goodbye, unless it's caught in a write to a terminal that has stopped
+/// reading, as over a stalled SSH link (the fix pass's re-review, NB1), or to a stdout nobody reads
+/// (#359). The goodbye itself may wait `ANSWERS_WAIT` for an answer still due, from the same
+/// moment, so this is a second longer: a console is never left as its goodbye comes.
+pub const CONSOLE_GRACE: Duration =
+    crate::console::service::ANSWERS_WAIT.saturating_add(Duration::from_secs(1));
+
+// The order the grace's doc promises.
+const _: () =
+    assert!(CONSOLE_GRACE.as_millis() > crate::console::service::ANSWERS_WAIT.as_millis());
 
 /// How long `run` gives the server to begin stopping once its full-screen console's terminal has
 /// gone: the hang-up's SIGHUP stops it, unless SIGHUP came ignored.
@@ -588,17 +611,17 @@ async fn runs_on(mut stopping: watch::Receiver<bool>, wait: Duration) -> bool {
     !matches!(stops, Ok(Ok(_)))
 }
 
-/// Why `run` stops waiting for the full-screen console: the server has stopped, and the console
-/// didn't end within [`CONSOLE_GRACE`].
+/// Why `run` stops waiting for its console: the server has stopped, and the console didn't end
+/// within [`CONSOLE_GRACE`].
 const CONSOLE_LEFT: &str = "the server has stopped, but the console hasn't ended, its terminal \
-     likely gone: it's left behind";
+     or its output likely stalled: it's left behind";
 
 /// [`held`], waited for no longer than `grace` once the server has `stopped`
 /// ([`ConsoleService::stopped`]). A console still running then, such as one caught in a write to a
-/// terminal that has stopped reading, is left to its thread, which `main` doesn't wait for, so that
-/// the process ends. The terminal gets its mode back first ([`fenji_console::restore_mode`], which
-/// takes no write), so that the shell after the server reads lines once the terminal reads again
-/// (#359).
+/// terminal that has stopped reading, or to a stdout nobody reads, is left to its thread, which
+/// `main` doesn't wait for, so that the process ends. The terminal gets its mode back first
+/// ([`fenji_console::restore_mode`], which takes no write, and does nothing for plain lines), so
+/// that the shell after the server reads lines once the terminal reads again (#359).
 async fn held_until_stopped(
     console: impl Future<Output = std::io::Result<Ending>> + Send + 'static,
     mut stopped: watch::Receiver<bool>,
@@ -737,7 +760,7 @@ mod tests {
 
     use fenji_store::{Character, NewCharacter, Place};
     use tokio::net::TcpStream;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
 
     use super::*;
     use crate::clock::TestClock;
@@ -849,6 +872,33 @@ mod tests {
     }
 
     #[test]
+    fn systemd_waits_out_a_stops_worst_case_with_room_to_spare() {
+        // #281: a stop takes at most the connections' grace, the world thread's wait, the last
+        // saves' and the consoles' goodbye, one after another: 30 s. The reference unit gives it
+        // more than that before systemd ends it, so nothing is cut short even then.
+        let worst = GateLimits::default().grace()
+            + world::THREAD_WAIT
+            + world::SAVE_WAIT
+            + crate::console::socket::GOODBYE_WAIT;
+        assert_eq!(worst, Duration::from_secs(30));
+        let unit = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deploy/systemd/fenji.service"
+        ))
+        .unwrap();
+        let secs: u64 = unit
+            .lines()
+            .find_map(|l| l.strip_prefix("TimeoutStopSec="))
+            .expect("the unit sets TimeoutStopSec")
+            .parse()
+            .unwrap();
+        assert!(
+            Duration::from_secs(secs) >= worst + Duration::from_secs(5),
+            "TimeoutStopSec={secs}, for a worst case of {worst:?}"
+        );
+    }
+
+    #[test]
     fn a_console_that_blocks_its_thread_leaves_the_runtimes_workers_free() {
         // Re-review, NB2: a terminal that stops reading (a stalled SSH link) blocks the
         // console's writes. On a host with one CPU, tokio has one worker: a console on it would
@@ -881,6 +931,19 @@ mod tests {
             );
             assert_eq!(console.await.unwrap(), Ending::InputClosed);
         });
+    }
+
+    #[test]
+    fn run_waits_for_its_console_longer_than_a_goodbye_waits_for_an_answer() {
+        // #359 (Task 7's review, Minor 3): a console's goodbye may wait ANSWERS_WAIT for an
+        // answer still due as the server stops, and both waits count from its stop. Equal, `run`
+        // could leave a console at the instant its goodbye came: the last answer lost, and a
+        // full-screen console's screen never given back.
+        let answers = crate::console::service::ANSWERS_WAIT;
+        assert!(
+            CONSOLE_GRACE >= answers + Duration::from_secs(1),
+            "CONSOLE_GRACE {CONSOLE_GRACE:?}, ANSWERS_WAIT {answers:?}"
+        );
     }
 
     #[test]
@@ -1215,6 +1278,53 @@ mod tests {
             let place = store.character(c.account_id, c.pid).await.unwrap();
             assert_eq!(place.unwrap().place, Some(saved), "{}", c.name);
         }
+    }
+
+    #[test]
+    fn a_tick_that_hangs_stops_the_server_with_an_error_that_says_so() {
+        // #281: a tick that never returned left a server that took logins into a world that
+        // never answered, without a word. The watch takes a tick count that stands still for its
+        // time, here a second, for a hang. The server logs it as an error and stops as it always
+        // does: the gate stops, and the world's shutdown tick, once the tick returns, lets
+        // everyone go with its reason and saves them. It ends with an error, so `fenji-server run`
+        // exits non-zero and systemd restarts it. The log is caught by the process's own
+        // subscriber (`world::logged`), on the one thread of this test's runtime.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (stopped, log) = crate::world::logged(|| {
+            rt.block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut server, characters) = server_with_characters(dir.path()).await;
+                server.world.hang_after(Duration::from_secs(1));
+                let (login, world) = (server.login_addr, server.world());
+                let served = tokio::spawn(server.serve_until(future::pending()));
+                let mut links = enter(&world, &characters).await;
+                // A tick that hangs for 3 s: past the watch's second, and over within the stop's
+                // wait for the world's thread.
+                let (begun, working) = oneshot::channel();
+                let work = Duration::from_secs(3);
+                world.send(WorldIn::Stall { work, begun });
+                working.await.unwrap();
+                for link in &mut links {
+                    assert_eq!(next(link).await, WorldOut::Kicked(KickReason::Shutdown));
+                }
+                let e = failure(served).await;
+                assert!(TcpStream::connect(login).await.is_err(), "no more logins");
+                let store = Store::open(&dir.path().join("fenji.db")).await.unwrap();
+                for c in &characters {
+                    let place = store.character(c.account_id, c.pid).await.unwrap();
+                    assert!(place.unwrap().place.is_some(), "{} was saved", c.name);
+                }
+                format!("{e:#}")
+            })
+        });
+        assert!(stopped.contains("no progress for 1s"), "{stopped}");
+        let said = log
+            .lines()
+            .any(|l| l.contains("ERROR") && l.contains("made no progress for 1s"));
+        assert!(said, "{log}");
     }
 
     #[tokio::test]

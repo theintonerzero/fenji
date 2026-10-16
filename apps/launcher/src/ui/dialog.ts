@@ -1,11 +1,10 @@
-// A modal dialog (DESIGN.md, Dialogs): 480 px over the scrim, role="dialog" with aria-modal,
-// Escape to close, focus kept inside while it's open and given back when it closes. Actions sit
-// bottom right: secondary first, then the one primary.
+// A centred dialog (R7: Add a server, a changed key, Remove): 500 px over a scrim on the stage,
+// role="dialog" with aria-modal, Escape to close, focus kept inside while it's open and given back
+// when it closes. Actions sit bottom right: the secondary first, then the one primary.
 import { h, type Child } from "../dom";
 
 export interface DialogParts {
   title: string;
-  icon?: Element;
   description?: Child;
   body?: Child[];
   actions: HTMLElement[];
@@ -22,6 +21,41 @@ let next = 0;
 
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
 
+/** The first control inside `box` a player can reach, or `box` itself. */
+export function firstFocusable(box: HTMLElement): HTMLElement {
+  return [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].find((el) => !el.closest("[hidden]")) ?? box;
+}
+
+/** Keeps Tab inside `box`, and calls `onEscape` for Escape. */
+export function trapFocus(box: HTMLElement, onEscape: () => void): void {
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onEscape();
+      return;
+    }
+    if (event.key !== "Tab") {
+      return;
+    }
+    const focusable = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.closest("[hidden]"));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+    // The box itself (a popover's panel, focused as it opens) is the first stop for Shift+Tab.
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === box)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+}
+
 export function dialog(parts: DialogParts): Dialog {
   next += 1;
   const titleId = `dialog-${next}-title`;
@@ -29,18 +63,8 @@ export function dialog(parts: DialogParts): Dialog {
   const box = h(
     "div",
     { class: "dialog", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId, tabindex: "-1" },
-    // The title and its description in one column beside the tile (the AddServer and Update boards).
-    h(
-      "div",
-      { class: "dialog-head" },
-      parts.icon ? h("span", { class: "tile" }, parts.icon) : null,
-      h(
-        "div",
-        { class: "dialog-heading" },
-        h("h2", { class: "dialog-title", id: titleId }, parts.title),
-        parts.description === undefined ? null : h("p", { class: "dialog-description" }, parts.description),
-      ),
-    ),
+    h("h2", { class: "dialog-title", id: titleId }, parts.title),
+    parts.description === undefined ? null : h("p", { class: "dialog-description" }, parts.description),
     parts.body ? h("div", { class: "dialog-body" }, ...parts.body) : null,
     h("div", { class: "dialog-actions" }, ...parts.actions),
   );
@@ -50,36 +74,15 @@ export function dialog(parts: DialogParts): Dialog {
       parts.onClose();
     }
   });
-  box.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      parts.onClose();
-      return;
-    }
-    if (event.key !== "Tab") {
-      return;
-    }
-    const focusable = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)];
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (!first || !last) {
-      event.preventDefault();
-      return;
-    }
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  });
-  queueMicrotask(() => (box.querySelector<HTMLElement>(FOCUSABLE) ?? box).focus());
+  trapFocus(box, parts.onClose);
+  queueMicrotask(() => firstFocusable(box).focus());
   return {
     el,
     close() {
       el.remove();
-      returnTo?.focus();
+      if (returnTo?.isConnected) {
+        returnTo.focus();
+      }
     },
   };
 }

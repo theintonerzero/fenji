@@ -227,6 +227,9 @@ mod tests {
             ),
             ("Lin", CREATE_LEVEL, 1, 2, &[1u8, 2, 3][..], NOW, None)
         );
+        // The client's `CreateLv` (M4 world spec §2.5), as a literal: migration 0002 raised M3's
+        // characters to it, and a migration never changes once it has run.
+        assert_eq!(c.level, 37);
         assert!(c.pid > 0);
         assert_eq!(s.list_characters(a).await.unwrap(), vec![c.clone()]);
         let other = account(&s, 2, "eve").await;
@@ -305,6 +308,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_place_is_saved_for_its_own_character_alone() {
+        // Two characters, so that a save that lost its `WHERE pid` would move both.
+        let (_d, s) = store().await;
+        let a = account(&s, 1, "bob").await;
+        let lin = s.create_character(a, &new("Lin"), 4, NOW).await.unwrap();
+        let mai = s.create_character(a, &new("Mai"), 4, NOW).await.unwrap();
+        assert!(s.save_place(lin.pid, &PLACE).await.unwrap());
+        assert_eq!(s.character(a, mai.pid).await.unwrap().unwrap().place, None);
+        let there = Place {
+            scene: 7,
+            x: -1.0,
+            y: 2.0,
+            z: -3.5,
+            yaw: -90.0,
+        };
+        assert!(s.save_place(mai.pid, &there).await.unwrap());
+        assert_eq!(
+            s.character(a, lin.pid).await.unwrap().unwrap().place,
+            Some(PLACE)
+        );
+        assert_eq!(
+            s.character(a, mai.pid).await.unwrap().unwrap().place,
+            Some(there),
+            "every field, z among them"
+        );
+    }
+
+    #[tokio::test]
     async fn character_finds_only_the_accounts_own() {
         let (_d, s) = store().await;
         let a = account(&s, 1, "bob").await;
@@ -327,6 +358,10 @@ mod tests {
             },
             Place {
                 y: f64::INFINITY,
+                ..PLACE
+            },
+            Place {
+                z: f64::NAN,
                 ..PLACE
             },
             Place {
@@ -374,9 +409,10 @@ mod tests {
         pool.close().await;
         let s = crate::Store::open(&path).await.unwrap();
         let list = s.list_characters(1).await.unwrap();
+        // 37 as migration 0002 wrote it, whatever `CREATE_LEVEL` becomes.
         assert_eq!(
             (list[0].name.as_str(), list[0].level, list[0].place),
-            ("Lin", CREATE_LEVEL, None)
+            ("Lin", 37, None)
         );
     }
 }

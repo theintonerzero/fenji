@@ -248,6 +248,18 @@ if unshare -rm true 2>/dev/null; then
 else
   echo "skip - unshare -rm not permitted, can't test the filesystem-type refusal or a socket mounted over a file"
 fi
+# No unprivileged mount can make smackfs, nfsd, binder or resctrl, so refused_fstype, read out of
+# the wrapper, runs alone here: it refuses each of them as a kernel interface, as it does sysfs and
+# cgroup2, and takes a disk's filesystem or a tmpfs (#281).
+fstype_fn=$(sed -n '/^refused_fstype() {$/,/^}$/p' "$run")
+check "smackfs, nfsd, binder and resctrl are refused by type, as kernel interfaces" \
+  bash -c 'eval "$1"
+    for t in smackfs nfsd binder resctrl sysfs cgroup2; do
+      [[ $(refused_fstype "$t") == *"kernel"*"own interface"* ]] || { echo "  $t: not refused" >&2; exit 1; }
+    done
+    for t in ext4 btrfs xfs tmpfs; do
+      if refused_fstype "$t" >/dev/null; then echo "  $t: refused" >&2; exit 1; fi
+    done' _ "$fstype_fn"
 
 # --- host daemons are unreachable (unix sockets cross network namespaces) -------------------
 check "host systemd-resolved, system bus and nscd sockets are absent and unconnectable" "$run" -- bash -c '

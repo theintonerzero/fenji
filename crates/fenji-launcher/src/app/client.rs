@@ -40,6 +40,8 @@ pub(super) struct Client {
     /// DepotDownloader's `-filelist` of the files the last check found wrong, once written, for
     /// the repair's command in the player's own terminal (#348).
     repair_list: Option<PathBuf>,
+    /// Whether the chosen folder is in a Steam library, which Steam looks after (Amendment A, LA2).
+    pub(super) in_steam: bool,
 }
 
 impl Default for Client {
@@ -51,6 +53,7 @@ impl Default for Client {
             run: None,
             cancelled: false,
             repair_list: None,
+            in_steam: false,
         }
     }
 }
@@ -154,10 +157,12 @@ impl App {
         if path.trim().is_empty() {
             return Err(refused(words::NO_FOLDER));
         }
+        let in_steam = crate::steam::in_library(Path::new(&path), &self.inner.steam_roots);
         let job = self.change(|st| {
             not_playing(st)?;
             free(st)?;
             st.settings.client = Some(PathBuf::from(&path));
+            st.client.in_steam = in_steam;
             self.save(st);
             self.begin_check(st, LevelView::Quick)
         })?;
@@ -169,6 +174,25 @@ impl App {
         let job = self.change(|st| self.begin_check(st, level))?;
         self.run_check(job);
         Ok(())
+    }
+
+    /// The copy Steam installed, looked for once as the launcher starts, and whether the saved
+    /// folder is in a Steam library (Amendment A, LA1 and LA2): a few small files, off the start.
+    pub(super) fn find_steam(&self) {
+        let app = self.clone();
+        self.inner.rt.spawn_blocking(move || {
+            let roots = &app.inner.steam_roots;
+            let found = crate::steam::find(roots);
+            let saved = app.inner.lock().settings.client.clone();
+            let in_steam = (saved.as_deref()).is_some_and(|f| crate::steam::in_library(f, roots));
+            app.change(|st| {
+                st.steam = found;
+                // Unless the player chose another folder meanwhile.
+                if st.settings.client == saved {
+                    st.client.in_steam = in_steam;
+                }
+            });
+        });
     }
 
     /// The saved folder's quick check when the launcher starts (spec L11).
@@ -381,6 +405,10 @@ impl App {
         if folder.trim().is_empty() {
             return Err(refused(words::NO_FOLDER));
         }
+        // Steam looks after its libraries (Amendment A, LA2).
+        if crate::steam::in_library(Path::new(&folder), &self.inner.steam_roots) {
+            return Err(refused(words::IN_STEAM_LIBRARY));
+        }
         self.start_download(PathBuf::from(folder), None)
     }
 
@@ -391,6 +419,10 @@ impl App {
             let CheckView::NeedsRepair { files, .. } = &st.client.check else {
                 return Err(refused(words::NOTHING_TO_REPAIR));
             };
+            // Steam repairs a copy in its library (Amendment A, LA2).
+            if st.client.in_steam {
+                return Err(refused(words::REPAIR_IN_STEAM));
+            }
             let folder = st
                 .settings
                 .client
@@ -595,6 +627,8 @@ impl App {
             (st.client.job, st.client.run) = (None, None);
             if files.is_none() {
                 st.settings.client = Some(folder);
+                // A download never goes into a Steam library.
+                st.client.in_steam = false;
                 self.save(st);
             }
             // After a download, every file in full. After a repair, a quick check, which hashes
@@ -645,7 +679,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use super::super::{App, AppConfig, CheckView, Intent, JobView, LevelView, words};
+    use super::super::{
+        App, AppConfig, CheckView, Intent, JobView, LevelView, SteamCopyView, words,
+    };
     use crate::depot::Terminal;
     use crate::manifest::Manifest;
     use crate::settings::Os;
@@ -1079,6 +1115,103 @@ exit {code}"#,
         assert_eq!(s.client.manual.unwrap().repair, None);
     }
 
+    /// A Steam folder in the testbed's home holding the build, as Steam installs it: the list of
+    /// its libraries, the game's manifest at `build`, and the game's files.
+    fn steam_install(t: &Testbed, build: &str) -> PathBuf {
+        let steam = t.root.join("home/.local/share/Steam");
+        let apps = steam.join("steamapps");
+        let game = apps.join("common/Swords of Legends Online");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(
+            apps.join("libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\" {{ \"0\" {{ \"path\" \"{}\" }} }}",
+                steam.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            apps.join("appmanifest_1418100.acf"),
+            format!(
+                "\"AppState\" {{ \"installdir\" \"Swords of Legends Online\" \"buildid\" \"{build}\" }}"
+            ),
+        )
+        .unwrap();
+        for e in &t.manifest.entries {
+            let to = game.join(&e.path);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(t.pristine.join(&e.path), to).unwrap();
+        }
+        game
+    }
+
+    #[tokio::test]
+    async fn a_copy_steam_installed_is_offered_and_used_where_it_is() {
+        // The launcher spec's Amendment A, LA1: a player whose copy Steam installed uses it.
+        let t = Testbed::new(&[("bin64/a.dll", 10), ("data/c.pak", 100)]);
+        let game = steam_install(&t, "10015727");
+        let app = t.app();
+        let s = until(&app, |s| s.client.steam.is_some()).await;
+        assert_eq!(
+            s.client.steam,
+            Some(SteamCopyView {
+                folder: game.display().to_string(),
+                build: "10015727".into(),
+                pinned: true,
+            })
+        );
+        assert!(!s.client.in_steam);
+        app.intent(Intent::ChooseFolder {
+            path: game.display().to_string(),
+        })
+        .await
+        .unwrap();
+        let s = until(&app, checked(LevelView::Quick)).await;
+        assert!(s.client.in_steam);
+        assert_eq!(s.client.folder.as_deref(), game.to_str());
+    }
+
+    #[tokio::test]
+    async fn fenji_never_writes_into_a_steam_library() {
+        // LA2: Steam looks after what's in its libraries.
+        let t = Testbed::new(&[("bin64/a.dll", 10), ("data/c.pak", 100)]);
+        let game = steam_install(&t, "10015727");
+        let app = t.app_with_fakes(FakeDd::WritesFiles { code: 0 });
+        until(&app, |s| s.client.steam.is_some()).await;
+        // A new folder inside the library is Steam's too.
+        let into = game.with_file_name("Another Copy");
+        assert_eq!(
+            app.intent(Intent::Download {
+                folder: into.display().to_string(),
+            })
+            .await
+            .unwrap_err()
+            .to_string(),
+            words::IN_STEAM_LIBRARY
+        );
+        app.intent(Intent::ChooseFolder {
+            path: game.display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Quick)).await;
+        std::fs::write(game.join("data/c.pak"), b"short").unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        let s = until(&app, |s| {
+            matches!(s.client.check, CheckView::NeedsRepair { .. })
+        })
+        .await;
+        assert_eq!(s.client.manual.unwrap().repair, None);
+        assert_eq!(
+            app.intent(Intent::Repair).await.unwrap_err().to_string(),
+            words::REPAIR_IN_STEAM
+        );
+    }
+
     #[tokio::test]
     async fn a_cancel_ends_the_work_it_waits_on_at_once() {
         // #348: Cancel didn't stop "Getting DepotDownloader…" until the fetch had ended.
@@ -1137,7 +1270,7 @@ exit {code}"#,
         let s = until(&app, |s| s.notice.is_some()).await;
         assert_eq!(
             s.notice.unwrap().text,
-            "The download stopped: DepotDownloader ended with 5. Try again."
+            "The download stopped (code 5). Try again."
         );
         let app = t.app_with_fakes(FakeDd::Hangs);
         app.intent(Intent::Download {

@@ -21,9 +21,10 @@ use fenji_proto::opcode::{Cts, Stc};
 use fenji_proto::packet::Up;
 use fenji_proto::pickle::{Table, Value};
 use fenji_proto::world::{self, PlayerActor};
-use fenji_store::{Account, Character};
+use fenji_store::{Account, Character, Store};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, MissedTickBehavior};
 
@@ -43,6 +44,10 @@ use crate::world::{
 pub(crate) const OUTBOUND: usize = 256;
 // No later slice may shrink it: it is the slack for a client that pauses its reads for a moment.
 const _: () = assert!(OUTBOUND >= 256);
+// With everyone in one view, a tick relays a move of each of the others to every player, so
+// `[server] max_players` stays below the queue, with a fifth of it left for the tick's other
+// messages: its announces and lines, a leave, a correction (#281).
+const _: () = assert!(crate::config::MAX_PLAYERS as usize * 5 <= OUTBOUND * 4);
 
 // The codec refuses a text over the client's own 2,048 bytes before it reaches the world, which
 // checks the same limit again (#280): one limit, on both sides.
@@ -108,12 +113,23 @@ pub(crate) async fn play(
     };
     tracing::info!(%peer, account = %account.username, pid, "entering the world");
     // A player who only moves sends no script message for the lobby's account check (Ruling R5).
+    // It runs on a task of its own, which ends with the connection.
     let every = gate.limits.account_check.max(Duration::from_millis(10));
-    let mut check = tokio::time::interval_at(Instant::now() + every, every);
-    check.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let store = gate.accounts.store().clone();
+    let mut checks = Ends(tokio::spawn(account_gone(store, account.id, every)));
+    // Until the checks fail for good, which only a bug in them does.
+    let mut checking = true;
     // One idle deadline, which only the client's reads move (Ruling R6): the other arms complete
     // without restarting it, so a client gone silent without a FIN still ends.
     let mut idle_at = Instant::now() + gate.limits.idle;
+    // Once the server is stopping, the world's next tick lets the player go with the shutdown's
+    // reason (#219). A world whose tick hangs never does (#281): after `let_go`, the link says
+    // that reason itself. One future for the whole loop, so other arms don't restart its wait.
+    let unreleased = async {
+        gate.stopped().await;
+        tokio::time::sleep(gate.limits.let_go).await;
+    };
+    tokio::pin!(unreleased);
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         tokio::select! {
@@ -190,16 +206,65 @@ pub(crate) async fn play(
             Ok(closing) = &mut *replaced => {
                 return gate::close_told(sock, peer, gate, server, account, closing).await;
             }
-            _ = check.tick() => match gate.accounts.store().account_by_id(account.id).await {
-                Ok(Some(_)) => {}
-                Ok(None) => {
+            () = &mut unreleased => {
+                // The select! is unbiased: after a write held past `let_go`, the world's Kicked
+                // may be waiting too. What the world sent is read first, and only a world that
+                // has sent nothing to end on is said not to have let go. The rest goes unsent: the
+                // server is stopping.
+                loop {
+                    match rx.try_recv() {
+                        Ok(WorldOut::Kicked(reason)) => {
+                            return kicked(sock, peer, gate, server, account, reason).await;
+                        }
+                        Ok(_) => {}
+                        Err(TryRecvError::Disconnected) => {
+                            tracing::info!(%peer, account = %account.username, "the world let go: closing");
+                            return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                    }
+                }
+                tracing::warn!(%peer, account = %account.username, "the server is stopping, and the world hasn't let go: closing");
+                return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
+            }
+            checked = &mut checks.0, if checking => match checked {
+                Ok(()) => {
                     tracing::info!(%peer, account = %account.username, "the account was deleted: closing");
                     return gate::close_with(sock, peer, gate, server, gate::AUTH_FAILED).await;
                 }
-                // As in the lobby: a store that fails now may answer at the next check.
-                Err(e) => tracing::error!(error = %e, "account check failed"),
+                Err(e) => {
+                    checking = false;
+                    tracing::error!(%peer, account = %account.username, error = %e, "the account checks have stopped: the player stays, unchecked");
+                }
             },
         }
+    }
+}
+
+/// Resolves once account `id` no longer exists, checking every `every` (Ruling R5). It runs as a
+/// task of its own, never in the link's loop, so that a store whose pool busy writers or a backup
+/// hold never stops the connection reading or writing (#281). As in the lobby, a store that fails
+/// now may answer at the next check: the error is logged, and the checks go on. A check that
+/// waits on the store puts the next one off.
+async fn account_gone(store: Store, id: i64, every: Duration) {
+    let mut check = tokio::time::interval_at(Instant::now() + every, every);
+    check.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        check.tick().await;
+        match store.account_by_id(id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return,
+            Err(e) => tracing::error!(error = %e, "account check failed"),
+        }
+    }
+}
+
+/// A task that ends when this is dropped, however its owner ends.
+struct Ends(tokio::task::JoinHandle<()>);
+
+impl Drop for Ends {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -1135,6 +1200,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stopping_server_whose_world_never_lets_go_still_tells_the_player_why() {
+        // #281: a world whose tick hangs never lets its players go with the shutdown's reason
+        // (#219), and they were cut off without a word at the end of the shutdown's grace. Once
+        // the server is stopping, a player the world hasn't let go of within `let_go` closes with
+        // that reason itself.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gate, mut inbox) = gate(dir.path()).await;
+        gate.limits.let_go = Duration::from_millis(300);
+        let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let tester = account("tester");
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        let began = std::time::Instant::now();
+        let world = async {
+            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            gate.stopping.send_replace(true);
+            // Kept open, and nothing comes on it: the world hangs.
+            out
+        };
+        let (ended, _out) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(played, world)
+        })
+        .await
+        .expect("closed within 5 s");
+        ended.unwrap();
+        let took = began.elapsed();
+        assert!(took >= Duration::from_millis(300), "{took:?}");
+        assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
+        drop(ours);
+        assert_eq!(
+            rest(&mut theirs, &mut client).await,
+            [ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_world_that_let_go_in_time_is_never_blamed_for_a_write_held_past_let_go() {
+        // #363's review: the link's select! is unbiased. When the stop begins and a write is then
+        // held past `let_go`, the world's Kicked(Shutdown) and `let_go`'s end are both ready once
+        // it finishes, and the link took the second about half the time, warning that the world
+        // hadn't let go. Here the client reads nothing for longer than `let_go` while the world
+        // sends more than the socket holds, then lets go.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (events, log) = logged(|| {
+            rt.block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut gate, mut inbox) = gate(dir.path()).await;
+                let let_go = Duration::from_millis(200);
+                gate.limits.let_go = let_go;
+                let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+                let (_newer, mut replaced) = oneshot::channel();
+                let tester = account("tester");
+                let played = play(
+                    &mut ours,
+                    peer,
+                    &gate,
+                    &mut server,
+                    &tester,
+                    1,
+                    lin(None),
+                    &mut replaced,
+                );
+                let world = async {
+                    let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                        panic!("a join first")
+                    };
+                    gate.stopping.send_replace(true);
+                    // The link begins its wait for the world to let go.
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let text = "x".repeat(512 * 1024);
+                    for _ in 0..16 {
+                        let line = ChatOut::System { text: text.clone() };
+                        out.send(WorldOut::Chat(line)).await.unwrap();
+                    }
+                    out.send(WorldOut::Kicked(KickReason::Shutdown))
+                        .await
+                        .unwrap();
+                    tokio::time::sleep(let_go * 3).await;
+                    rest(&mut theirs, &mut client).await
+                };
+                let (ended, events) = tokio::time::timeout(Duration::from_secs(20), async {
+                    tokio::join!(played, world)
+                })
+                .await
+                .expect("within 20 s");
+                ended.unwrap();
+                events
+            })
+        });
+        assert_eq!(
+            events.last(),
+            Some(&ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            ))
+        );
+        assert!(!log.contains("hasn't let go"), "{log}");
+    }
+
+    #[tokio::test]
     async fn the_world_letting_go_closes_the_connection() {
         // The world drops a full channel without a Kicked (carry-forward 3).
         let dir = tempfile::tempdir().unwrap();
@@ -1217,8 +1397,9 @@ mod tests {
     #[test]
     fn a_store_error_in_the_account_check_keeps_the_player() {
         // Ruling R5, as in the lobby: a store that fails now may answer at the next check, so the
-        // check logs the error and keeps the connection. The log is caught by the process's own
-        // subscriber (`world::logged`), which no other test's thread can make blind to its lines.
+        // check logs the error and keeps the connection. The checks, on a task of their own
+        // (#281), end with the connection. The log is caught by the process's own subscriber
+        // (`world::logged`), which no other test's thread can make blind to its lines.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1250,11 +1431,89 @@ mod tests {
                 };
                 drop(out);
                 let ended = tokio::time::timeout(Duration::from_secs(5), played).await;
-                ended.expect("the world letting go ends it")
+                let ended = ended.expect("the world letting go ends it");
+                tracing::info!("the connection has ended");
+                // Six checks' time.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                ended
             })
         });
         checked.unwrap();
-        assert!(text.matches("account check failed").count() >= 3, "{text}");
+        let (open, closed) = text
+            .split_once("the connection has ended")
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(open.matches("account check failed").count() >= 3, "{text}");
+        assert!(
+            !closed.contains("account check failed"),
+            "the checks outlived the connection: {closed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_busy_store_never_stalls_the_connection() {
+        // #281: the account check (Ruling R5) awaited the store inside the link's select!, so
+        // while busy writers or a backup's VACUUM INTO held the store's whole pool, the connection
+        // neither read nor wrote: 256 messages fill its queue in about 0.6 s with 20 players
+        // moving, and the world then lets go of it. Here checks fall due every 50 ms while the
+        // pool is held for 3 s, and the link still answers a time sync and writes more than its
+        // queue holds.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gate, mut inbox) = gate(dir.path()).await;
+        gate.limits.account_check = Duration::from_millis(50);
+        let tester = registered(&gate, "tester").await;
+        let (mut ours, peer, mut server, theirs, client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        let world = async {
+            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            let mut l = Linked {
+                out,
+                theirs,
+                client,
+                inbox,
+            };
+            let store = gate.accounts.store().clone();
+            let (held, holding) = oneshot::channel();
+            let busy =
+                tokio::spawn(async move { store.hold_pool(Duration::from_secs(3), held).await });
+            holding.await.unwrap();
+            // Checks fall due while the pool is held.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let answered = tokio::time::timeout(Duration::from_secs(1), still_open(&mut l)).await;
+            assert!(answered.is_ok(), "a time sync waited for the store");
+            let n = OUTBOUND + 44;
+            let written = tokio::time::timeout(Duration::from_secs(2), async {
+                for _ in 0..n {
+                    let at = WorldOut::Announce { pid: 300, pos: AT };
+                    l.out.send(at).await.unwrap();
+                }
+                l.messages(n).await.len()
+            })
+            .await;
+            assert_eq!(written, Ok(n), "the world's messages waited for the store");
+            assert!(!busy.is_finished(), "the pool was held throughout");
+            busy.await.unwrap().unwrap();
+            // The checks go on once the store answers, and find the account.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            still_open(&mut l).await;
+        };
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let (ended, ()) = tokio::join!(played, world);
+            ended.unwrap();
+        })
+        .await
+        .expect("within 15 s");
     }
 
     // --- Slice 2 (Amendment B): seeing each other.

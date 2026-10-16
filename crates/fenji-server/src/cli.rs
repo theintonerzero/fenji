@@ -16,7 +16,7 @@ use fenji_store::{SchemaDiffers, Store};
 use crate::clock::{Clock, Utc};
 use crate::config::{Config, Tls};
 use crate::invite::{InviteBase, server_link};
-use crate::text::escape_hidden;
+use crate::text::{escape_hidden, shell_word};
 
 /// `--expires`'s durations, which the console's `maintenance on` takes too.
 pub use crate::commands::parse_duration;
@@ -275,16 +275,18 @@ fn write_rows(out: &mut dyn Write, rows: &[Vec<String>]) -> std::io::Result<()> 
 
 /// Runs one admin command against the configured database, writing plain lines to `out`. A data
 /// folder that isn't this user's is refused first ([`crate::folder::check`]). Beside a running
-/// server, the database is never migrated ([`admin_store`]).
+/// server, the database is never migrated ([`admin_store`]). `given` is the `--config` the command
+/// was given, which the commands a refusal suggests repeat.
 pub async fn admin(
     cfg: &Config,
+    given: Option<&Path>,
     cmd: &Command,
     out: &mut dyn Write,
     clock: &dyn Clock,
 ) -> anyhow::Result<()> {
     let data = crate::config::data_folder(&cfg.store.path);
     crate::folder::check(&data)?;
-    let store = admin_store(cfg, &data, cmd).await?;
+    let store = admin_store(cfg, given, &data, cmd).await?;
     let now = clock.now_ms();
     match cmd {
         Command::Run => anyhow::bail!("`run` isn't an admin command"),
@@ -348,58 +350,136 @@ pub async fn admin(
 /// The store for admin command `cmd`, its data folder being `data` (#359). While a server runs
 /// there, holding the folder's lock, it's opened as it is and never migrated: a newer
 /// fenji-server's migrations would change the database under an older server. A database of
-/// another version than this build's is refused then, saying what to do instead. With no server
-/// running, it's opened as `run` opens it ([`crate::server::open_store`]), its schema brought up to
-/// date, with the lock held meanwhile: a server starting then is refused, rather than migrating the
-/// database beside the command.
-async fn admin_store(cfg: &Config, data: &Path, cmd: &Command) -> anyhow::Result<Store> {
+/// another version than this build's is refused then, saying what to do instead, with the
+/// `--config` the command was `given`. With no server running, it's opened as `run` opens it
+/// ([`crate::server::open_store`]), its schema brought up to date, with the lock held meanwhile: a
+/// server starting then is refused, rather than migrating the database beside the command.
+async fn admin_store(
+    cfg: &Config,
+    given: Option<&Path>,
+    data: &Path,
+    cmd: &Command,
+) -> anyhow::Result<Store> {
     if let Some(_held) = crate::lock::try_take(data)? {
         return crate::server::open_store(cfg).await;
     }
     match Store::open_as_is(&cfg.store.path).await {
         Ok(store) => Ok(store),
-        Err(fenji_store::Error::Schema(differs)) => bail!(another_version(data, &differs, cmd)),
+        Err(fenji_store::Error::Schema(differs)) => {
+            bail!(another_version(data, &differs, cmd, given))
+        }
         Err(e) => {
             Err(anyhow::Error::new(e).context(format!("opening {}", cfg.store.path.display())))
         }
     }
 }
 
-/// Why admin command `cmd` won't open the database of the server running on `data`, laid out for
-/// another version of Fenji (`differs`), and what to do instead (#359).
-fn another_version(data: &Path, differs: &SchemaDiffers, cmd: &Command) -> String {
+/// Why admin command `cmd` won't open the database of the data folder `data`, which another
+/// fenji-server holds, laid out for another version of Fenji (`differs`): the two holders it may
+/// be, a server or a command bringing the database up to date, and what to do about each (#359),
+/// `given` being the `--config` the command was given.
+fn another_version(
+    data: &Path,
+    differs: &SchemaDiffers,
+    cmd: &Command,
+    given: Option<&Path>,
+) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let (whose, otherwise) = if differs.newer() {
         (
             format!("a newer version's than this fenji-server (v{version}) knows"),
-            "use the fenji-server of the server's version",
+            "use the fenji-server of its version",
         )
     } else {
         (
             format!(
                 "an older version's than this fenji-server's (v{version}), which won't update it \
-                 under the server"
+                 while the folder is held"
             ),
-            "stop the server first",
+            "stop it first",
         )
     };
-    let instead = match console_form(cmd) {
-        Some(line) if cfg!(unix) => format!(
-            "run the command through the server instead, `fenji-server console --run \"{line}\"`, \
-             or {otherwise}"
-        ),
-        Some(line) => {
-            format!("type `{line}` in the server's window instead, or {otherwise}")
+    let server = match console_form(cmd) {
+        Some(line) if cfg!(unix) => {
+            let run = command_line(given, &format!("console --run {}", shell_word(&line)));
+            format!("run the command through it instead, `{run}`, or {otherwise}")
         }
+        Some(line) => format!("type `{line}` in its window instead, or {otherwise}"),
         None => otherwise.to_owned(),
     };
     format!(
-        "a server is running on this data folder ({}), and its database is {whose}: {instead}",
-        crate::lock::shown(data).display()
+        "another fenji-server holds this data folder ({}), and the database is {whose}: a server \
+         ({server}), {}",
+        crate::lock::shown(data).display(),
+        crate::lock::OR_UPDATING
     )
 }
 
-/// The console's command that does what admin command `cmd` does, if there's one.
+/// The program, as a command to copy names it.
+const PROGRAM: &str = "fenji-server";
+
+/// `fenji-server <args>` as a host types it in a shell, with the `--config` the program was
+/// `given`, quoted where the shell needs it, and run as the same user when sudo ran it as another
+/// (`sudo -u`): a command a message gives the host to copy, which finds the same config and files
+/// as the program that gave it (#359). A hidden character in the path shows as its escape.
+pub(crate) fn command_line(given: Option<&Path>, args: &str) -> String {
+    command_line_as(run_as().as_deref(), given, args)
+}
+
+/// [`command_line`], run as `user`, `sudo -u`'s word for them, when it's given.
+fn command_line_as(user: Option<&str>, given: Option<&Path>, args: &str) -> String {
+    let sudo = user
+        .map(|user| format!("sudo -u {user} "))
+        .unwrap_or_default();
+    match given {
+        Some(config) => {
+            let config = shell_word(&escape_hidden(&config.display().to_string()));
+            format!("{sudo}{PROGRAM} --config {config} {args}")
+        }
+        None => format!("{sudo}{PROGRAM} {args}"),
+    }
+}
+
+/// Whom a command to copy runs as, `sudo -u`'s word for them: this program's user, when sudo ran
+/// the program as them for another user, as the guide's `sudo -u fenji fenji-server …` does.
+/// Nobody otherwise, in a shell sudo opened as them among others, and on Windows.
+fn run_as() -> Option<String> {
+    #[cfg(unix)]
+    {
+        let typed_by = std::env::var("SUDO_USER").ok()?;
+        let command = std::env::var("SUDO_COMMAND").unwrap_or_default();
+        let uid = rustix::process::geteuid().as_raw();
+        sudo_user(&typed_by, &command, uid, crate::unix::user_name(uid))
+    }
+    #[cfg(not(unix))]
+    None
+}
+
+/// `sudo -u`'s word for the user `uid`, named `name` where the system names them, when sudo ran
+/// this program as them for another user, `typed_by` (`SUDO_USER`): when sudo's `command`
+/// (`SUDO_COMMAND`) names fenji-server, which it ran directly or through a shell's `-c`
+/// (`sudo -iu fenji fenji-server …`). In a shell sudo opened as them (`sudo -iu fenji`), whose
+/// command is that shell, the bare command works, and they may not use sudo. A user without a name
+/// is given by number, as sudo takes one, and a name is quoted where the shell needs it.
+#[cfg(unix)]
+fn sudo_user(typed_by: &str, command: &str, uid: u32, name: Option<String>) -> Option<String> {
+    let ran_this = command.split_whitespace().any(|word| {
+        Path::new(word)
+            .file_name()
+            .is_some_and(|file| file == PROGRAM)
+    });
+    if !ran_this {
+        return None;
+    }
+    match name {
+        Some(name) if name == typed_by => None,
+        Some(name) => Some(shell_word(&escape_hidden(&name))),
+        None => Some(format!("'#{uid}'")),
+    }
+}
+
+/// The console's command that does what admin command `cmd` does, if there's one: as the host
+/// types it, with its arguments. An invite's label the console would refuse gives none.
 fn console_form(cmd: &Command) -> Option<String> {
     let line = match cmd {
         Command::Invite {
@@ -408,9 +488,10 @@ fn console_form(cmd: &Command) -> Option<String> {
                     label,
                     expires: None,
                 },
-        } => match label {
-            Some(_) => "invite <label>".to_owned(),
-            None => "invite".to_owned(),
+        } => match label.as_deref().map(str::trim) {
+            Some(label) if crate::commands::check_label(label).is_err() => return None,
+            Some(label) if !label.is_empty() => format!("invite {label}"),
+            _ => "invite".to_owned(),
         },
         Command::Invite {
             cmd: InviteCmd::List,
@@ -538,32 +619,164 @@ mod tests {
         let revoke = Command::Invite {
             cmd: InviteCmd::Revoke { id: 7 },
         };
-        let text = another_version(data, &older, &revoke);
+        let text = another_version(data, &older, &revoke, None);
+        // The two holders it may have, up front (Task 2's review, Minor 3, and Task 7's review,
+        // Minor 1): a server, and what to do about it, or a command bringing the database up to
+        // date.
         assert!(
-            text.starts_with("a server is running on this data folder (/srv/fenji/data)")
-                && text.contains("its database is an older version's")
-                && text.ends_with("or stop the server first"),
+            text.starts_with(
+                "another fenji-server holds this data folder (/srv/fenji/data), and the database \
+                 is an older version's"
+            ) && text.contains(": a server (")
+                && text.contains(", or stop it first), "),
             "{text}"
         );
         let through = if cfg!(unix) {
-            "`fenji-server console --run \"revoke 7\"`"
+            "run the command through it instead, `fenji-server console --run 'revoke 7'`"
         } else {
-            "type `revoke 7` in the server's window"
+            "type `revoke 7` in its window instead"
         };
         assert!(text.contains(through), "{text}");
+        assert!(text.ends_with(crate::lock::OR_UPDATING), "{text}");
         // A newer one: stopping the server wouldn't help this fenji-server, which doesn't know it.
-        let text = another_version(data, &newer, &revoke);
+        let text = another_version(data, &newer, &revoke, None);
         assert!(
-            text.contains("its database is a newer version's")
-                && text.ends_with("or use the fenji-server of the server's version"),
+            text.contains("and the database is a newer version's")
+                && text.contains(", or use the fenji-server of its version), "),
             "{text}"
         );
         // `backup --keep 3` keeps another number than the console's `backup`: no console form.
         let backup = Command::Backup { keep: 3 };
-        let text = another_version(data, &newer, &backup);
+        let text = another_version(data, &newer, &backup, None);
         assert!(
-            text.ends_with(": use the fenji-server of the server's version"),
+            text.contains(": a server (use the fenji-server of its version), "),
             "{text}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_command_a_refusal_suggests_runs_as_it_is_copied() {
+        // #359 (Task 2's review, Minors 1 and 2): `invite create --label Bob` was told to run
+        // `invite <label>` through the console, and a host who copied it made an invite labelled
+        // `<label>`; and the command left out the `--config` the host gave, without which it fails.
+        use std::path::Path;
+
+        use fenji_store::SchemaDiffers;
+
+        use super::{InviteCmd, another_version};
+        let data = Path::new("/var/lib/fenji");
+        let older = SchemaDiffers {
+            database: Some(3),
+            build: 4,
+        };
+        let invite = |label: &str| Command::Invite {
+            cmd: InviteCmd::Create {
+                label: Some(label.into()),
+                expires: None,
+            },
+        };
+        let text = another_version(data, &older, &invite("Bob"), None);
+        assert!(
+            text.contains("`fenji-server console --run 'invite Bob'`"),
+            "{text}"
+        );
+        // Quoted as a POSIX shell needs it.
+        let text = another_version(data, &older, &invite("Bob's $HOME"), None);
+        assert!(
+            text.contains(r"`fenji-server console --run 'invite Bob'\''s $HOME'`"),
+            "{text}"
+        );
+        // A label the console's `invite` would refuse gives no console form.
+        let text = another_version(data, &older, &invite(&"x".repeat(65)), None);
+        assert!(text.contains(": a server (stop it first), "), "{text}");
+        // With the config the command was given, quoted where it needs to be.
+        let list = Command::Invite {
+            cmd: InviteCmd::List,
+        };
+        let etc = Path::new("/etc/fenji/fenji.toml");
+        let text = another_version(data, &older, &list, Some(etc));
+        assert!(
+            text.contains("`fenji-server --config /etc/fenji/fenji.toml console --run invites`"),
+            "{text}"
+        );
+        let spaced = Path::new("/srv/my fenji/fenji.toml");
+        let text = another_version(data, &older, &list, Some(spaced));
+        assert!(
+            text.contains(
+                "`fenji-server --config '/srv/my fenji/fenji.toml' console --run invites`"
+            ),
+            "{text}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_to_copy_runs_as_the_user_sudo_ran_this_as() {
+        // #359 (Task 7's review, Minor 2): the guide runs everything as `sudo -u fenji
+        // fenji-server --config …`, and a refusal's command, copied as printed, ran as the host
+        // and met a second refusal: the console socket is another user's.
+        use std::path::Path;
+
+        use super::{command_line_as, sudo_user};
+        let etc = Path::new("/etc/fenji/fenji.toml");
+        assert_eq!(
+            command_line_as(Some("fenji"), Some(etc), "console --run invites"),
+            "sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run invites"
+        );
+        assert_eq!(
+            command_line_as(None, None, "console"),
+            "fenji-server console"
+        );
+        // Run by sudo as fenji for wen, the copy runs as fenji; as wen for wen, it needs no sudo.
+        let ran = "/usr/local/bin/fenji-server --config /etc/fenji/fenji.toml console";
+        assert_eq!(
+            sudo_user("wen", ran, 998, Some("fenji".into())).as_deref(),
+            Some("fenji")
+        );
+        assert_eq!(sudo_user("wen", ran, 1000, Some("wen".into())), None);
+        // A user the system doesn't name, by number, as sudo takes one; an odd name, quoted.
+        assert_eq!(
+            sudo_user("wen", ran, 1234, None).as_deref(),
+            Some("'#1234'")
+        );
+        assert_eq!(
+            sudo_user("wen", ran, 1001, Some("a b".into())).as_deref(),
+            Some("'a b'")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_to_copy_needs_no_sudo_in_a_shell_sudo_opened() {
+        // #359 (Task 7's re-review, new Minor): `SUDO_USER` stays set in a shell sudo opened as
+        // the server's user (`sudo -iu fenji`, `sudo -su fenji`), where the copy's `sudo -u fenji`
+        // failed, as the server's user may not use sudo, and the bare command works. Sudo's
+        // command (`SUDO_COMMAND`) is that shell.
+        use super::sudo_user;
+        let fenji = || Some("fenji".to_owned());
+        assert_eq!(sudo_user("wen", "/bin/bash", 998, fenji()), None);
+        assert_eq!(sudo_user("wen", "/usr/bin/zsh", 998, fenji()), None);
+        assert_eq!(sudo_user("wen", "", 998, fenji()), None);
+        // Sudo ran fenji-server itself, or a shell to run it (`sudo -iu fenji fenji-server …`).
+        assert_eq!(
+            sudo_user("wen", "/usr/local/bin/fenji-server console", 998, fenji()).as_deref(),
+            Some("fenji")
+        );
+        assert_eq!(
+            sudo_user(
+                "wen",
+                "/bin/bash -c fenji-server --config /etc/fenji/fenji.toml console",
+                998,
+                fenji()
+            )
+            .as_deref(),
+            Some("fenji")
+        );
+        // A program whose name only begins with it is another.
+        assert_eq!(
+            sudo_user("wen", "/opt/fenji-server-tools/bin/bash", 998, fenji()),
+            None
         );
     }
 

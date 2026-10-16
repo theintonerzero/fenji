@@ -6,6 +6,7 @@
 //! one game at a time, and every refusal in words.
 mod common;
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -57,30 +58,11 @@ fn password() -> Secret {
     Secret("a long password".into())
 }
 
-/// A `std::io::Write` over a shared buffer, for the log.
-struct Writer(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for Writer {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn a_new_player_goes_from_a_link_to_signed_in_and_no_secret_leaks() {
-    let logs = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let sink = logs.clone();
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_writer(move || Writer(sink.clone()))
-            .finish(),
-    );
+    // The log is caught by the process's own subscriber, which no other test's thread can make
+    // blind to a line (#359).
+    let log = caught::as_text(tracing::Level::TRACE);
     let dir = tempfile::tempdir().unwrap();
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
     let code = fenji_auth::invite::InviteCode::generate().unwrap();
@@ -135,7 +117,11 @@ async fn a_new_player_goes_from_a_link_to_signed_in_and_no_secret_leaks() {
         seen.len()
     );
     let settings = std::fs::read_to_string(dir.path().join("config/settings.json")).unwrap();
-    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    let logs = log.text();
+    assert!(
+        logs.contains("made an account with an invite"),
+        "the log wasn't caught: {logs}"
+    );
     for text in seen.iter().chain([&settings, &logs]) {
         assert!(
             !text.contains("a long password") && !text.contains("fenji1-"),
@@ -189,6 +175,51 @@ async fn a_silent_server_never_holds_up_the_rest() {
         started.elapsed()
     );
     s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn every_server_in_the_rail_is_probed_with_no_servers_tab() {
+    // The redesign's R8: the rail always shows every server, so the model probes them all every
+    // 30 s, not only while a Servers tab shows. A launcher opened again on saved servers knew
+    // only the active one's state.
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (a, _ca) = server(one.path(), "", GateLimits::default()).await;
+    let (b, _cb) = server(two.path(), "", GateLimits::default()).await;
+    let cfg = config(one.path());
+    let first = App::start(cfg.clone(), tokio::runtime::Handle::current());
+    for s in [&a, &b] {
+        first
+            .intent(Intent::AddServer {
+                text: format!("http://{}", s.api_addr),
+            })
+            .await
+            .unwrap();
+    }
+    until(&first, |s| {
+        s.servers.len() == 2
+            && s.servers
+                .iter()
+                .all(|v| matches!(v.status, StatusView::Online))
+    })
+    .await;
+    let active = first.snapshot().servers[0].id;
+    first
+        .intent(Intent::SelectServer { id: active })
+        .await
+        .unwrap();
+    drop(first);
+    // Opened again, as a player does: no tab is ever shown.
+    let next = App::start(cfg, tokio::runtime::Handle::current());
+    let s = until(&next, |s| {
+        s.servers.len() == 2
+            && s.servers
+                .iter()
+                .all(|v| matches!(v.status, StatusView::Online))
+    })
+    .await;
+    assert_eq!(s.active, Some(active));
+    a.shutdown().await.unwrap();
+    b.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -446,6 +477,7 @@ impl PlayBed {
     }
 
     /// A first start whose `umu-run createprefix` never ends by itself.
+    #[cfg(target_os = "linux")]
     async fn with_stuck_prefix() -> PlayBed {
         Self::build(Os::Linux, 1, 0, 600).await
     }
@@ -465,6 +497,8 @@ impl PlayBed {
         std::fs::write(client.join("bin64/gujianol.exe"), b"a small program").unwrap();
         let umu_run = dir.path().join("umu-run");
         std::fs::write(&umu_run, FAKE_UMU_RUN).unwrap();
+        // A shell script, run on Linux alone, as Play is (launcher spec L2).
+        #[cfg(unix)]
         std::fs::set_permissions(&umu_run, std::fs::Permissions::from_mode(0o755)).unwrap();
         let record = dir.path().join("record");
         let mut cfg = config(dir.path());
@@ -509,6 +543,7 @@ impl PlayBed {
     }
 
     /// The launcher opened again on the same folders, as a player does after closing it.
+    #[cfg(target_os = "linux")]
     fn reopened(&self) -> App {
         App::start(self.cfg.clone(), tokio::runtime::Handle::current())
     }
@@ -591,15 +626,9 @@ impl PlayBed {
 #[tokio::test]
 async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
     // Review Focus 1 to its end (#348): redeem, sign in and Play leave the password, the session
-    // token and the ticket in no snapshot, log line or settings file.
-    let logs = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let sink = logs.clone();
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_writer(move || Writer(sink.clone()))
-            .finish(),
-    );
+    // token and the ticket in no snapshot, log line or settings file. The log is caught by the
+    // process's own subscriber, which no other test's thread can make blind to a line (#359).
+    let log = caught::as_text(tracing::Level::TRACE);
     let t = PlayBed::new().await;
     let seen = t.collect_snapshots();
     t.signed_in().await;
@@ -617,7 +646,7 @@ async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
     );
     assert!(record.contains("gj_uinfo=") && record.contains("gj_gates="));
     let settings = std::fs::read_to_string(t.cfg.config_dir.join("settings.json")).unwrap();
-    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    let logs = log.text();
     assert!(
         logs.contains("the game is running"),
         "the log wasn't caught"
@@ -667,7 +696,7 @@ async fn one_game_at_a_time_and_play_refuses_in_words() {
     let w = PlayBed::on(Os::Windows).await;
     assert_eq!(
         w.app.intent(Intent::Play).await.unwrap_err().to_string(),
-        "Fenji can't start the client on this system yet"
+        "Playing on this system isn't supported yet"
     );
     let m = PlayBed::new().await;
     m.signed_in().await;
@@ -733,7 +762,7 @@ async fn the_folder_and_downloads_wait_while_the_game_starts_or_runs() {
     ] {
         assert_eq!(
             t.app.intent(intent).await.unwrap_err().to_string(),
-            "Not while the game is starting or running. Try again once it has ended."
+            "Not while the game is running."
         );
     }
     assert_eq!(
@@ -773,7 +802,7 @@ async fn a_start_stuck_making_the_prefix_can_be_cancelled() {
     t.app.intent(Intent::CancelStart).await.unwrap();
     let s = until(&t.app, |s| matches!(s.game, GameView::Idle)).await;
     let notice = s.notice.unwrap();
-    assert_eq!(notice.text, "The start was cancelled.");
+    assert_eq!(notice.text, "Start cancelled.");
     assert!(!notice.error);
     // Everything umu-run started ends, though Proton has a session of its own and ignores SIGTERM
     // (#348's final review).
@@ -809,7 +838,7 @@ async fn a_client_that_fails_its_check_never_starts() {
     std::fs::write(t.client.join("bin64/a.dll"), b"tampered").unwrap();
     assert_eq!(
         t.app.intent(Intent::Play).await.unwrap_err().to_string(),
-        "Some game files need repair. The Client tab shows which."
+        "Some game files need repair. Open Game."
     );
     assert!(!t.record.exists(), "the client was started");
     t.s.shutdown().await.unwrap();
@@ -823,7 +852,7 @@ async fn a_client_that_dies_at_once_says_it_couldnt_start() {
     let s = until(&t.app, |s| matches!(s.game, GameView::Ended { .. })).await;
     assert_eq!(
         s.notice.unwrap().text,
-        "The game couldn't start: umu-run ended with 7. The log folder has the details."
+        "The game couldn't start (code 7). See the logs."
     );
     t.s.shutdown().await.unwrap();
 }

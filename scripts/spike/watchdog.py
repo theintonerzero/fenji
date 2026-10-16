@@ -56,28 +56,40 @@ Signs (any one triggers):
      path other than its baseline one or none readable (needs +service, r7 on); ChangeServiceConfigW
      (needs +service; issue #202) that sets a type other than a user-mode one or a driver image, or
      none readable, or that changes the type or image while its process has opened (OpenServiceW,
-     CreateServiceW) a baseline driver service, a service that isn't a user-mode baseline one, or
-     none the log names (sechost's line has the service's handle, not its name); services.exe's
-     svcctl_ChangeServiceConfigW, which logs only its name, with no ChangeServiceConfigW before it
-     (a caller the log doesn't trace); the strings ProcessProtect, AGTDriver or AurogonGameTrust.
+     CreateServiceW; since its pid's creation, as Wine gives an ended process's pid to a new one) a
+     baseline driver service, a service that isn't a user-mode baseline one (by its baseline type:
+     its own process or a shared one; #174), or none the log names (sechost's line has the
+     service's handle, not its name); services.exe's svcctl_ChangeServiceConfigW, which logs only
+     its name, with no unanswered ChangeServiceConfigW from the 5 s before it (a caller the log
+     doesn't trace; sechost logs before its RPC, so a call that never reached services.exe lapses);
+     the strings ProcessProtect, AGTDriver or AurogonGameTrust.
      The logs are scanned as one stream with one rule state (Amendment B): the prefix's one
      wineserver has processes writing to each log (services.exe, which client 1's session starts,
      answers client 2's calls in log 1), so the pending changes, the services each Wine pid opened,
      services.exe's and winedevice.exe's pids and the earliest client creation in any log are
      shared. Lines are scanned in the order of Wine's timestamps, which every Wine process takes
      from one clock: a line waits until each other log has shown a later one, or was read to its
-     end in a later poll, and holds back nothing of its own that is earlier. A log's lines keep their
-     order, a line without a stamp goes with the line before it, and at equal stamps services.exe's
-     svcctl line goes after the caller's, which it answers. A split LoadDriver message is completed
-     from its own log only.
+     end in a later poll, and holds back nothing earlier, whether queued or among the newest lines
+     its Tail keeps back as look-ahead (eight, released on a quiet poll), which count as shown. A
+     last line still partial after a quiet poll (its writer stopped mid-line) is the exception: it
+     holds nothing back and is no look-ahead, until it ends or the log is read to its end. A log's
+     lines keep their order, a line without a stamp goes with the line before it, and at equal
+     stamps services.exe's svcctl line goes after the caller's, which it answers. A split
+     LoadDriver message is completed from its own log only.
   S4 the prefix's system.reg (--prefix; re-read when it changes; Wine saves it periodically and at
      exit): a new service key of a driver type (kernel or file system) or with a driver image, or a
      baseline service whose type or image path changed, or a system.reg that is no longer a regular
      file.
   Fail safe (exit 4, the sandbox killed): client n was found 20 s ago, whether or not it still
   runs, log n has been read to its end, and log n still hasn't shown a client's creation, so the
-  LoadDriver sign would be blind for the lines only that client's log carries. Each log answers
-  for its own client: one log's creation never vouches for another's (Amendment B).
+  LoadDriver sign would be blind for the lines only that client's log carries; or, once the
+  sandbox has ended and every log is read, a client whose log never showed one; or a client beyond
+  the logs given. Each log answers for its own client: one log's creation never vouches for
+  another's (Amendment B). Before exit 4, every log is read to its end, as far as it went when
+  that read began (a writer can't draw it out), and scanned, and S1 and S4 are read again, and S2
+  while the sandbox runs: a sign found then wins, with exit 3. Either way watchdog-trigger.txt
+  records it: the signs, or the failure; the clients, by start, any beyond the logs named; and the
+  sandbox's processes as they were, frozen, before the kill.
   Notes only (no trigger): a builtin .sys outside the baseline set; a new service of another type;
   CreateService re-registering a baseline service with its baseline image (Proton's discord-bridge,
   at every start); ChangeServiceConfigW that keeps the type and image, or that changes them in a
@@ -127,12 +139,14 @@ R_ANSWER = re.compile(rb"trace:service:svcctl_")
 # The client's creation (+process), by the image actually created: NtCreateUserProcess's first
 # string, CreateProcessInternalW's application name, or else the first token of its command line,
 # quoted or not. A line that only names the client further on, such as session 2's shim starting
-# `explorer.exe /desktop=… <client>` (Ruling R17), creates something else.
+# `explorer.exe /desktop=… <client>` (Ruling R17), creates something else. A path may hold any of
+# debugstr_w's escapes, such as a backslash and four hex digits for a character outside ASCII (a
+# user's name); a quoted program ends at its escaped quote (#244).
 R_CLIENT_CREATE = re.compile(
     rb'NtCreateUserProcess L"(?:(?:[^"\\\n]|\\.)*\\\\)?gujianol\.exe"'
     rb'|CreateProcessInternalW app (?:L"(?:(?:[^"\\\n]|\\.)*\\\\)?gujianol\.exe"'
-    rb'|\(null\) cmdline L"(?:\\"(?:(?:[^"\\\n]|\\\\)*\\\\)?gujianol\.exe\\"'
-    rb'|(?:(?:[^"\\\s]|\\\\)*\\\\)?gujianol\.exe[\s"]))', re.I)
+    rb'|\(null\) cmdline L"(?:\\"(?:(?:[^"\\\n]|\\[^"\n])*\\\\)?gujianol\.exe\\"'
+    rb'|(?:(?:[^"\\\s]|\\[^"\s])*\\\\)?gujianol\.exe[\s"]))', re.I)
 # +service (r7 on, replacing +reg): sechost's "CreateServiceW <scm> L"name" ..." and services.exe's
 # "svcctl_CreateServiceW (L"name", ...)". The first quoted string on the line is the service name.
 R_CREATESERVICE = re.compile(rb'CreateService\w*[^"\n]*"([^"\n]*)"|CreateService\w*[^\n]*')
@@ -142,14 +156,18 @@ R_SVCCTL_IMAGE = re.compile(rb', 0x[0-9a-f]+, L"((?:[^"\\\n]|\\.)*)"\)\s*$')
 # +service, ChangeServiceConfig (Wine 11.0, issue #202): sechost's opens, which name the services a
 # process holds handles to (the manager's handle, then the name); its ChangeServiceConfigW, which has
 # the service's handle but not its name; and services.exe's svcctl_ChangeServiceConfigW, which logs
-# nothing but its name. ChangeServiceConfigA's line is followed by ChangeServiceConfigW's.
+# nothing but its name. ChangeServiceConfigA's line is followed by ChangeServiceConfigW's. With them,
+# in the same pass, +process's creation of a process (its pid, group 3): Wine may give it the pid of
+# one that has ended, whose opens aren't its own. Its image may be cut short, `L"..."...`.
 R_SVC_CALL = re.compile(
-    rb"trace:service:(OpenServiceW|CreateServiceW|ChangeServiceConfigW|svcctl_ChangeServiceConfigW) ([^\n]*)")
+    rb"trace:service:(OpenServiceW|CreateServiceW|ChangeServiceConfigW|svcctl_ChangeServiceConfigW) ([^\n]*)"
+    rb'|NtCreateUserProcess L"[^"\n]*"(?:\.\.\.)? pid ([0-9a-f]+) tid')
 R_OPEN_NAME = re.compile(rb'[0-9A-Fa-f]+ L"((?:[^"\\\n]|\\.)*)"')
 # ChangeServiceConfigW's "%p %ld %ld %ld %s ...": the handle; the new type, start type and error
-# control (-1, SERVICE_NO_CHANGE, keeps one); the new image ((null) keeps it; `"...` is one cut short).
+# control (-1, SERVICE_NO_CHANGE, keeps one); the new image ((null) keeps it; `"...` is one cut short,
+# which the space or end of line after the quote refuses).
 R_CHANGE = re.compile(rb'[0-9A-Fa-f]+ (-?\d+) -?\d+ -?\d+ '
-                      rb'(?:\(null\)|L"((?:[^"\\\n]|\\.)*)"(?!\.\.\.))(?: |$)')
+                      rb'(?:\(null\)|L"((?:[^"\\\n]|\\.)*)")(?: |$)')
 # The sandbox's tmpfs mounts (isolated-run.sh): walked whole, and the root's own entries.
 TMPFS_SUBS = ("/tmp", "/dev/shm", "/run", "/var", "/etc", HOST_HOME)
 TMPFS_SHALLOW = ("/",)
@@ -159,6 +177,10 @@ DRIVER_TYPES = {1, 2}  # SERVICE_KERNEL_DRIVER, SERVICE_FILE_SYSTEM_DRIVER
 USER_MODE_TYPES = {0x10, 0x20}  # SERVICE_WIN32_OWN_PROCESS, SERVICE_WIN32_SHARE_PROCESS
 SERVICE_INTERACTIVE_PROCESS = 0x100  # may be added to a user-mode type
 SERVICE_NO_CHANGE = 0xFFFFFFFF
+# Seconds, by Wine's clock, that services.exe has to answer a ChangeServiceConfigW line sechost
+# logged: the RPC is synchronous, so its answer comes within milliseconds, and a change still
+# unanswered after this never reached services.exe (#174).
+CHANGE_ANSWER_WITHIN = 5.0
 
 
 def now():
@@ -290,6 +312,12 @@ def parse_services(system_reg):
 def is_driver_service(info):
     image = info.get("image") or ""
     return info.get("type") in DRIVER_TYPES or image.endswith(".sys") or "\\drivers\\" in image
+
+
+def is_user_mode_type(stype):
+    """Whether a service type is a user-mode one: its own process or a shared one, with
+    SERVICE_INTERACTIVE_PROCESS or without. None (a key with no Type) is not."""
+    return stype is not None and stype & ~SERVICE_INTERACTIVE_PROCESS in USER_MODE_TYPES
 
 
 def compare_services(base, cur):
@@ -505,18 +533,37 @@ def alive(pid):
 
 # --- log rules ---------------------------------------------------------------------------------
 class LogRules:
-    def __init__(self, baseline_services, images=None, drivers=None):
+    def __init__(self, baseline_services, images=None, drivers=None, types=None):
         self.services = set(baseline_services)
         self.images = dict(images or {})  # baseline service -> its normalised image path
         self.drivers = set(drivers or ())  # the baseline services of a driver type (is_driver_service)
         # The baseline services known to be user-mode: those whose registry entry the baseline has
-        # (images) and that aren't drivers. A baseline without service_info (M0's) knows none.
-        self.user_mode = (self.services & set(self.images)) - self.drivers
-        self.opened = {}  # pid -> the services its OpenServiceW and CreateServiceW lines named
-        self.changes_pending = 0  # ChangeServiceConfigW lines that services.exe's line hasn't followed yet
+        # (types) with a user-mode type, and that aren't drivers by their image either. A key with
+        # no Type isn't one (#174), and a baseline without service_info (M0's) knows none.
+        self.user_mode = {n for n, t in (types or {}).items()
+                          if n in self.services and is_user_mode_type(t)} - self.drivers
+        self.opened = {}  # Wine pid -> the services its OpenServiceW and CreateServiceW lines named
+        # The stamps of the ChangeServiceConfigW lines that services.exe's line hasn't followed yet.
+        self.changes_pending = collections.deque()
         self.services_pids = set()
         self.winedevice_pids = set()
         self.client_ts = None  # Wine timestamp of the client's process creation, once logged
+
+    def answered(self, ts):
+        """Whether services.exe's svcctl_ChangeServiceConfigW line, stamped `ts`, answers a pending
+        ChangeServiceConfigW line, which it then takes: the oldest one services.exe may still be
+        answering. sechost logs a change before its RPC, so one that never reached services.exe (a
+        bad handle) stays pending: it lapses CHANGE_ANSWER_WITHIN seconds after its stamp, so it
+        can't answer for a later caller the log doesn't trace (#174). A line with no stamp never
+        lapses, so this needs +timestamp: run-client.sh's CHANNELS_WATCHDOG has it, which its
+        watch_channels adds to every watched run, run-bare.sh's too."""
+        pending = self.changes_pending
+        while pending and ts is not None and pending[0] is not None and ts - pending[0] > CHANGE_ANSWER_WITHIN:
+            pending.popleft()
+        if not pending:
+            return False
+        pending.popleft()
+        return True
 
     def change_verdict(self, names, args):
         """S3 for sechost's ChangeServiceConfigW line, whose text after the function's name is
@@ -528,7 +575,7 @@ class LogRules:
         stype, image = int(a.group(1)) & 0xFFFFFFFF, a.group(2)
         if stype == SERVICE_NO_CHANGE and image is None:
             return "ChangeServiceConfig that keeps the type and image", False
-        if stype != SERVICE_NO_CHANGE and stype & ~SERVICE_INTERACTIVE_PROCESS not in USER_MODE_TYPES:
+        if stype != SERVICE_NO_CHANGE and not is_user_mode_type(stype):
             return f"S3 ChangeServiceConfig sets service type {stype:#x}, not a user-mode one", True
         if image is not None and is_driver_service({"image": norm_image(image.decode("utf-8", "replace"))}):
             return "S3 ChangeServiceConfig sets a driver image", True
@@ -661,20 +708,23 @@ class LogRules:
             else:
                 notes.append((f"CreateService for baseline service {svc}", line_at(m.start())))
         for m in R_SVC_CALL.finditer(chunk):
+            if m.group(3) is not None:
+                # A new process: what a process that had its pid before opened isn't its own.
+                self.opened.pop(m.group(3).decode(), None)
+                continue
             call, args, pid = m.group(1), m.group(2), pid_at(m.start())
             if call in (b"OpenServiceW", b"CreateServiceW"):
                 n = R_OPEN_NAME.match(args)
                 name = n.group(1).decode("utf-8", "replace").lower() if n else "(an unreadable name)"
                 self.opened.setdefault(pid, set()).add(name)
             elif call == b"ChangeServiceConfigW":
-                self.changes_pending += 1
+                self.changes_pending.append(ts_at(m.start()))
                 rule, triggers = self.change_verdict(self.opened.get(pid, set()), args)
                 (trig if triggers else notes).append((rule, line_at(m.start())))
-            elif self.changes_pending:  # services.exe's line for the change sechost's line showed
-                self.changes_pending -= 1
-            else:
-                # A caller whose sechost logs nothing (another environment, or the RPC called
-                # directly): services.exe's line is all there is, and it can't say what changed.
+            elif not self.answered(ts_at(m.start())):
+                # services.exe's line, with no change from sechost's lines for it to answer: a caller
+                # whose sechost logs nothing (another environment, or the RPC called directly), for
+                # which services.exe's line is all there is, and it can't say what changed.
                 trig.append(("S3 services.exe changed a service's configuration, with no "
                              "ChangeServiceConfigW before it", line_at(m.start())))
         if self.services_pids:
@@ -710,10 +760,10 @@ class Tail:
         cur = os.fstat(self.fh.fileno())
         return (st.st_dev, st.st_ino) != (cur.st_dev, cur.st_ino) or st.st_size < self.off
 
-    def read(self, limit=16 << 20, final=False):
+    def read(self, limit=16 << 20):
         """Returns (chunk, look): complete lines to scan now, and the text held back after them,
-        which is look-ahead only (it is scanned on a later read). With final=True, or when nothing
-        new arrived (a quiet poll), the held-back complete lines are released too."""
+        which is look-ahead only (it is scanned on a later read). When nothing new arrived (a quiet
+        poll), the held-back complete lines are released too."""
         if self.fh is None:
             try:
                 self.fh = open_regular(self.path)
@@ -736,9 +786,6 @@ class Tail:
             self.fh, self.off, self.rest, self.at_eof = None, 0, b"", False
             return data, b""
         data = self.rest + new
-        if final:
-            self.rest = b""
-            return data, b""
         if not new:
             cut = data.rfind(b"\n")
             self.rest = data[cut + 1:]
@@ -753,6 +800,48 @@ class Tail:
             return b"", b""
         self.rest = data[cut + 1:]
         return data[:cut + 1], self.rest
+
+    def drain(self, limit=16 << 20):
+        """Yields the rest of the log as it stands when the drain begins, in pieces of whole lines,
+        the last line counted as whole even when it is partial: the file being read, up to its size
+        then, and if GE-Proton has since recreated the log, or it was truncated, the file at the path
+        from its start, up to its size when it is opened. What a writer adds after that isn't read,
+        so one that outruns the reader can't keep the drain going (#244)."""
+        for _ in range(2):  # the file being read, then the one that may have taken its place
+            if self.fh is None:
+                try:
+                    self.fh = open_regular(self.path)
+                except FileNotFoundError:
+                    break
+            end = os.fstat(self.fh.fileno()).st_size
+            while self.off < end:
+                self.fh.seek(self.off)
+                new = self.fh.read(min(limit, end - self.off))
+                if not new:
+                    break  # it shrank meanwhile: replaced() says so below
+                self.off += len(new)
+                data = self.rest + new
+                cut = data.rfind(b"\n") + 1
+                self.rest = data[cut:]
+                if cut:
+                    yield data[:cut]
+            if not self.replaced():
+                break
+            rest = self.take_rest()
+            if rest:
+                yield rest
+            self.fh.close()
+            self.fh, self.off = None, 0
+        rest = self.take_rest()
+        if rest:
+            yield rest
+        self.at_eof = True
+
+    def take_rest(self):
+        """What the Tail holds back, its last partial line, if any, counted as whole; the Tail then
+        holds nothing."""
+        rest, self.rest = self.rest, b""
+        return rest if not rest or rest.endswith(b"\n") else rest + b"\n"
 
 
 def stamp_of(line):
@@ -799,12 +888,14 @@ class Follow:
     def hold(self, look, stalled=False):
         """Notes what the Tail holds back: read, so it counts as shown, and not yet queued, so a line
         of another log stamped at or after it waits for it. A last line still partial after a poll
-        that found nothing new (`stalled`) waits for a writer that stopped mid-line, and no longer
-        holds the others back."""
-        self.held = look
+        that found nothing new (`stalled`) waits for a writer that stopped mid-line: it no longer
+        holds the others back, and it is no look-ahead either, since what would end it hasn't come
+        (a split LoadDriver's name read from it could be cut short)."""
         lines = look.split(b"\n")
         if stalled and lines[-1]:
             lines.pop()
+            look = look[:look.rfind(b"\n") + 1]
+        self.held = look
         stamps, prev = [], self.last
         for line in lines:
             stamp = stamp_of(line)
@@ -853,15 +944,13 @@ class LogStream:
     def read(self, final=False):
         """One poll: reads every log, then returns the lines to scan now as runs of one log's lines,
         in time order: [(log index, chunk, look)], where look is what follows the run in its own log
-        (look-ahead only). With final=True, everything is read and released."""
+        (look-ahead only). With final=True, every log is read to its end as it stands then
+        (Tail.drain), and everything is released."""
         self.polls += 1
         poll = self.polls
         for f in self.logs:
             if final:
-                while True:
-                    chunk, _ = f.tail.read(final=True)
-                    if not chunk:
-                        break
+                for chunk in f.tail.drain():
                     f.ingest(chunk, poll)
                 f.hold(b"")
                 f.eof_poll = poll
@@ -937,11 +1026,12 @@ def load_baseline(out):
 
 
 def baseline_rules(base):
-    """LogRules for a baseline: its service names, each one's image path (S3 CreateService), and
-    which of them are drivers (S3 LoadDriver)."""
+    """LogRules for a baseline: its service names, each one's image path (S3 CreateService), which
+    of them are drivers (S3 LoadDriver), and each one's type (S3 ChangeServiceConfigW)."""
     info = base.get("service_info", {})
     return LogRules(base["services"], {n: i["image"] for n, i in info.items()},
-                    {n for n, i in info.items() if is_driver_service(i)})
+                    {n for n, i in info.items() if is_driver_service(i)},
+                    {n: i.get("type") for n, i in info.items()})
 
 
 def cmd_scanlog(a):
@@ -1202,8 +1292,9 @@ def watch(a, log, stream):
             why = None if found else unanswered(final=not sandbox_alive)
             if why and sandbox_alive:
                 # Exit 4 ends the run: first every log is read to its end and scanned, as at the end
-                # of a run, and the registry read, so that a sign written so far still wins.
-                found = check_log(final=True) + check_reg()
+                # of a run, then the *.sys files and the processes are read again (S1, S2) and the
+                # registry read, so that a sign written so far, since this poll's scans too, still wins.
+                found = check_log(final=True) + check_sys() + check_procs() + check_reg()
                 if found:
                     log(f"sign found while ending the run for the fail safe ({why})")
             if found:

@@ -8,7 +8,13 @@
 #       $FENJI_CLIENT_PATH (a full copy is refused); a Wine prefix in compat/, created with Wine's
 #       own cmd.exe; and empty home/, steamclient/ and hosts-empty. With --clients 2, also client2/,
 #       a second reflink copy for a two-client run's second client; on an existing workspace,
-#       client2/ only.
+#       client2/ only. The prefix's mark (compat/fenji-primed) names the GE-Proton build that made
+#       it. A run refuses a prefix another build primed, or one no build marked: that build would
+#       upgrade it during the run, which the watchdog takes for a gate event (#174). Setup starts
+#       Wine only in an empty or missing compat/ (compat_held), as booting a prefix runs have used
+#       starts every service its registry holds, a driver service a stopped run left there among
+#       them, with no watchdog (#148). So after a GE-Proton bump, remove re/runs/compat and run
+#       setup: on an existing workspace it makes a fresh prefix, and keeps the client copies.
 #   scripts/spike/run-client.sh run NAME [--hosts FILE] [--ports "P1 P2"] [--timeout S]
 #       [--display N] [--no-gpu] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
 #       [--click T:X,Y]... [--key T:KEY[/MS]]... [--type T:TEXT]... [--stub-arg ARG]...
@@ -30,7 +36,9 @@
 #       --key and --type play a player's key press (an X keysym name such as Return, space, Tab,
 #       BackSpace or a letter) or typed printable ASCII, T seconds into the run (xkey.py, XTEST).
 #       --key T:KEY/MS holds the key down MS milliseconds (1 to 60000), as a player holds a movement
-#       key; the presses after it go when they are due, and the hold must end by the timeout.
+#       key; the presses after it go when they are due, and the hold must end by the timeout. The
+#       display has no window manager, so a press goes to the window under the pointer: before each
+#       one, xkey.py moves a pointer that is over no window into the client's window.
 #       --server runs target/release/fenji-server with a copy of CONFIG (a fenji.toml) in place of
 #       the stub, RUST_LOG=fenji_server=trace, its output in the evidence as server.log; the run
 #       waits for its login_bind and api_bind ports, which must be on 127.0.0.1. Its [store] path is
@@ -58,7 +66,9 @@
 #       (end_client): wineserver -k would end client 1 too. The
 #       wineserver stops once both clients have ended. Client 2's evidence: OUT/client2/ (its
 #       gujianol.log, Log_gujianol.htm and install-root files), OUT/wine-2.log,
-#       OUT/screen-2-<T>s.png and io/exit-code-2.
+#       OUT/screen-2-<T>s.png and io/exit-code-2. If client 1 has ended when client 2 is due,
+#       client 2 isn't started (io/2/not-started): a fresh wineserver would start Wine's drivers in
+#       a new winedevice.exe, which the watchdog's S2 takes for a gate event.
 #
 # Every run uses isolated-run.sh --no-root --x11 N [--x11 M] --cpu-topology --gpu (CLAUDE.md "Client
 # runs"; without --gpu with --no-gpu), the pinned GE-Proton's own `proton run` (umu's runtime
@@ -176,6 +186,49 @@ watch_channels() { echo "$1,$CHANNELS_WATCHDOG"; }
 
 need_display() { [ -S "/tmp/.X11-unix/X$1" ] || die "no nested display :$1 (see isolated-run.sh, \"Display\")"; }
 
+# The mark a prime leaves in the prefix's folder (here re/runs/compat; run-bare.sh's prime leaves one
+# in its prefix too), naming the GE-Proton build that primed it. A new build upgrades a prefix the
+# first time it starts anything there, re-creating its .sys links and re-registering Wine's
+# services, and inside a watched run the watchdog takes that for a gate event (S1, S3; #174).
+PRIMED_MARK=fenji-primed
+proton_build() { cat -- "$PROTON/version" 2>/dev/null || echo unknown; }
+# Whether this GE-Proton build primed the run workspace's prefix.
+prefix_marked() {
+  [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" = "$(proton_build)" ]
+}
+
+# compat_held: whether the workspace's compat/ is there and holds anything, a prefix runs may have
+# used: setup starts Wine only where it isn't (#148). It fails closed: one that can't be listed is
+# held, as the client can write compat/ and could take the folder's read bit away (#373's review).
+compat_held() {
+  local listed
+  [ -e "$WORK/compat" ] || [ -L "$WORK/compat" ] || return 1
+  listed=$(ls -A -- "$WORK/compat" 2> /dev/null) || return 0
+  [ -n "$listed" ]
+}
+
+# prime_prefix: makes a fresh prefix through Proton's own launcher (its steam.exe shim, which also
+# registers Proton's Discord bridge service), and leaves wineserver to exit cleanly so the registry
+# reaches disk: everything Proton sets up belongs to the watchdog's baseline. A prefix, a service or
+# an upgrade appearing during a client run would look like driver activity to the watchdog. Marks
+# the prefix only once Proton's run has exited 0. Uses cmd_setup's display and gpu.
+prime_prefix() {
+  local wgpu vkenv rc=0
+  renderer
+  # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
+  "$WRAP" --no-root --x11 "$display" --cpu-topology "${wgpu[@]}" --bind "$WORK/compat" --bind "$WORK/home" \
+    --bind "$WORK/steamclient" --ro-bind "$PROTON" -- \
+    env HOME="$WORK/home" STEAM_COMPAT_DATA_PATH="$WORK/compat" \
+    STEAM_COMPAT_CLIENT_INSTALL_PATH="$WORK/steamclient" SteamGameId=1418100 SteamAppId=1418100 \
+    PROTON_USE_XALIA=0 "${vkenv[@]}" \
+    timeout -k 10 300 bash -c 'python3 "$1/proton" run cmd.exe /c exit; rc=$?; WINEPREFIX="$2/pfx" "$1/files/bin/wineserver" -w; exit "$rc"' \
+    _ "$PROTON" "$WORK/compat" >> "$WORK/prefix-init.log" 2>&1 || rc=$?
+  [ -f "$WORK/compat/pfx/system.reg" ] || die "the Wine prefix wasn't created; see $WORK/prefix-init.log"
+  [ "$rc" = 0 ] ||
+    die "Proton's launcher failed (exit $rc), so the prefix isn't marked as this GE-Proton build's; see $WORK/prefix-init.log"
+  proton_build > "$WORK/compat/$PRIMED_MARK"
+}
+
 # copy_client DEST: a reflink copy of the pinned client at DEST; a full copy is refused.
 copy_client() {
   mkdir -p "$1"
@@ -205,28 +258,31 @@ cmd_setup() {
     echo "client 2's copy ready: $WORK/client2"
     return 0
   fi
-  [ ! -e "$WORK/client" ] || die "$WORK/client exists already; remove re/runs/ to start over"
+  # Setup starts Wine only in a compat/ that's empty or missing, as booting a prefix that runs have
+  # used starts every service its registry holds, a driver service a stopped run left there among
+  # them, with no watchdog (#148). One that's there is made again, fresh, once it's removed; the
+  # client copies stay.
+  if compat_held; then
+    if [ -e "$WORK/client" ] && prefix_marked; then
+      die "$WORK/client exists already, and this GE-Proton build primed its prefix; remove re/runs/ to start over"
+    fi
+    die "$WORK/compat holds a prefix that runs may have used, another GE-Proton build's or one primed before builds were recorded, and setup never starts Wine in one (#148): remove $WORK/compat, then run setup again; it makes a fresh prefix and keeps the client copies"
+  fi
+  if [ -e "$WORK/client" ]; then
+    [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
+    need_display "$display"
+    mkdir -p "$WORK/compat"
+    prime_prefix
+    echo "a fresh prefix, primed for this GE-Proton build: $WORK/compat"
+    return 0
+  fi
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
   need_display "$display"
   mkdir -p "$WORK/compat" "$WORK/home" "$WORK/steamclient" "$WORK/out" "$REPO/re/stub-logs"
   : > "$WORK/hosts-empty"
   copy_client "$WORK/client"
   if [ "$clients" = 2 ]; then copy_client "$WORK/client2"; fi
-  # The prefix is created now, through Proton's own launcher (its steam.exe shim, which also
-  # registers Proton's Discord bridge service), and wineserver is left to exit cleanly so the
-  # registry reaches disk: everything Proton sets up belongs to the watchdog's baseline. A prefix, or
-  # a service, appearing during a client run would look like driver activity to the watchdog.
-  local wgpu vkenv
-  renderer
-  # shellcheck disable=SC2016 # the bash -c script expands its own positional parameters
-  "$WRAP" --no-root --x11 "$display" --cpu-topology "${wgpu[@]}" --bind "$WORK/compat" --bind "$WORK/home" \
-    --bind "$WORK/steamclient" --ro-bind "$PROTON" -- \
-    env HOME="$WORK/home" STEAM_COMPAT_DATA_PATH="$WORK/compat" \
-    STEAM_COMPAT_CLIENT_INSTALL_PATH="$WORK/steamclient" SteamGameId=1418100 SteamAppId=1418100 \
-    PROTON_USE_XALIA=0 "${vkenv[@]}" \
-    timeout -k 10 300 bash -c 'python3 "$1/proton" run cmd.exe /c exit; WINEPREFIX="$2/pfx" "$1/files/bin/wineserver" -w' \
-    _ "$PROTON" "$WORK/compat" > "$WORK/prefix-init.log" 2>&1 || true
-  [ -f "$WORK/compat/pfx/system.reg" ] || die "the Wine prefix wasn't created; see $WORK/prefix-init.log"
+  prime_prefix
   echo "workspace ready: $WORK"
 }
 
@@ -566,6 +622,8 @@ cmd_run() {
   if [ "$clients" = 2 ]; then need_display "$display2"; fi
   [ -f "$hosts" ] || die "hosts file missing: $hosts"
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
+  prefix_marked ||
+    die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run, which the watchdog takes for a gate event; remove $WORK/compat, then run: $0 setup"
   if [ -n "$server_cfg" ]; then
     [ -x "$STUBBIN/fenji-server" ] || die "build the server first: cargo build --release -p fenji-server"
     if [ -n "$launch" ]; then
@@ -707,7 +765,13 @@ cmd_run() {
           [ -z "$pairs2" ] || redact_gj_ticket <<< "$pairs2" > "$IO/2/launch.txt"
         fi
         unset PW2
-        if [ "$LAUNCH2" != failed ]; then
+        if ! kill -0 "$c1" 2>/dev/null; then
+          # Client 1 has ended, and the wineserver may be gone with it: client 2 would boot a fresh
+          # one, which starts Wine drivers in a new winedevice.exe, and S2 takes that for a gate
+          # event (#244).
+          echo "client 1 had ended when client 2 was due; client 2 not started" >&2
+          : > "$IO/2/not-started"
+        elif [ "$LAUNCH2" != failed ]; then
           (
             if [ -n "$pairs2" ]; then while IFS= read -r kv; do export "${kv?}"; done <<< "$pairs2"; fi
             unset pairs2 kv
@@ -891,7 +955,11 @@ finish_run() {
   local wdrc=$1 wrc=$2 ran=$3
   collect_evidence || echo "run-client: collecting the evidence failed (exit $?); the verdict stands" >&2
   local two=""
-  if [ "${clients:-1}" = 2 ]; then two=", client 2's proton exit $(cat "$OUT/io/exit-code-2" 2>/dev/null || echo '?')"; fi
+  if [ "${clients:-1}" = 2 ] && [ -e "$OUT/io/2/not-started" ]; then
+    two=", client 2 not started (client 1 had ended when it was due)"
+  elif [ "${clients:-1}" = 2 ]; then
+    two=", client 2's proton exit $(cat "$OUT/io/exit-code-2" 2>/dev/null || echo '?')"
+  fi
   echo "run $run done: proton exit $(cat "$OUT/io/exit-code" 2>/dev/null || echo '?')$two, sandbox exit $wrc, watchdog exit $wdrc"
   verdict "$wdrc" "$wrc" "$ran" "$OUT"
 }

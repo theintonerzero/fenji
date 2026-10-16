@@ -139,6 +139,9 @@ The owner's rulings during M4:
 ## Findings M5 inherits
 
 - **The world:** `!tp` across scenes (#281), back to character select (#282), and the rest of #281's follow-ups. Each [world.md](../protocol/packets/world.md) section ends with its unknowns, such as health over another player's head (M5's combat).
+- **Known M4 limitations** in chat (#281):
+  - **Item and player links in chat are refused.** The client's input turns a link the player adds into `[link …]` markup ([chat.md](../protocol/packets/chat.md) 1.5), and the world refuses every line with markup, so such a line gets "The message cannot be sent" (chat.md §5). A typed line is refused only when it holds a backslash, or a `[` before anything but a digit or `]`.
+  - **A stray backslash in a server line with a `]` and no `[`.** `server_text` writes a `\` before each bracket, which the client's tag parser reads as the bracket itself, but the parser runs only on a line that holds a `[` (chat.md 2.5). So a lone `]` shows as `\]`. It's cosmetic, and only the server's own system lines can carry one: the answers to admins' and the console's commands, and the MOTD the host sets.
 - **Hosting:** the reviews' follow-ups and the acceptance session's checks are in #359. The Windows and macOS steps have been read, built and packed, not run.
 - **The launcher:** the deferred minors in #348; Windows and macOS Play wait on gate #337.
 - **Patching:** the first patch set (#336), starting with cutting every way the client can reach anything but Fenji.

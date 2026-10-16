@@ -20,7 +20,8 @@ pub const MAX_PLAYER_ID: ActorId = (1 << 48) - 1;
 /// Every player's speed rate in M4, as a percentage of a normal run (world spec §3.4).
 pub const SPEED_RATE: i64 = 100;
 
-/// A point: x, y and z (up) in the client's units (centimetres, Inferred), and a yaw in degrees.
+/// A point: x, y and z (up) in the client's units, centimetres (Observed: world.md 16.10), and a
+/// yaw in degrees.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pos {
     pub x: f64,
@@ -141,11 +142,14 @@ pub enum ChatRefusal {
 pub enum KickReason {
     /// The account entered again, on a newer connection.
     Replaced,
-    /// An admin's `!kick`, the console's `kick`, or a ban.
+    /// An admin's `!kick`, the console's `kick`, or a ban; or a join refused for a pid no player
+    /// can have, outside 1 to [`MAX_PLAYER_ID`].
     Kicked,
     /// The client stopped reading: its outbound channel filled.
     SlowReader,
-    /// The connection sent more in one tick than the world takes.
+    /// The connection sent more than the world takes: over its allowance, which holds
+    /// `MAX_STALL`'s worth of `MAX_INPUTS_PER_TICK`, up to `MAX_BURST`, and gets that many back
+    /// each tick.
     Flood,
     /// The server is stopping.
     Shutdown,
@@ -154,7 +158,12 @@ pub enum KickReason {
 /// What connection tasks tell the world.
 #[derive(Debug)]
 pub enum WorldIn {
-    /// A character enters. The world answers on `out`.
+    /// A character enters. The world answers on `out`, first with [`WorldOut::LoadScene`]: at
+    /// `player.at`, or where the character stood if it left a moment ago (`KEEP_LEFT`). An
+    /// account already in the world is replaced, its older connection let go with
+    /// [`KickReason::Replaced`]. A pid outside 1 to [`MAX_PLAYER_ID`] gets no actor, only
+    /// [`KickReason::Kicked`], and a join that reaches the world after its shutdown tick hears
+    /// [`KickReason::Shutdown`].
     Join {
         player: Player,
         out: mpsc::Sender<WorldOut>,
@@ -187,7 +196,10 @@ pub enum WorldIn {
     Ban { account: i64 },
     /// The connection has ended.
     Leave { conn: ConnId },
-    /// Save everyone and stop.
+    /// Save everyone and stop. The tick that takes it is the world's last: it takes nothing
+    /// after it, lets every player go with [`KickReason::Shutdown`] and saves where each stood.
+    /// What reaches the world after it is turned away, a join with [`KickReason::Shutdown`] too.
+    /// Every handle going counts as one.
     Shutdown,
     /// A bug: the tick that takes it panics with this message, as a tick with a bug would, for
     /// the tests of Ruling R9. Built for tests only, so no connection can send it.
@@ -246,7 +258,8 @@ pub enum WorldOut {
     Chat(ChatOut),
     /// The player's chat line was refused (270).
     ChatRefused(ChatRefusal),
-    /// The world has let go of the connection, which the connection task then closes.
+    /// The world has let go of the connection, or refused its join (a pid no player can have, or
+    /// a join after the shutdown), and the connection task then closes it.
     Kicked(KickReason),
 }
 

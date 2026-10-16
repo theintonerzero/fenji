@@ -26,8 +26,11 @@ pub struct Rules {
     pub move_tolerance: f64,
     /// How often everyone's place is saved, in milliseconds (`[world] save_every_secs`).
     pub save_every_ms: u64,
-    /// The most messages a connection may send in one tick period; one more and it is kicked.
-    /// A tick after a stall allows this for each period it missed ([`allowance`]).
+    /// The most messages a connection may send a tick, kept up: each tick gives this many back
+    /// to its allowance, which holds [`MAX_STALL`]'s worth, up to [`MAX_BURST`] ([`Inputs`]).
+    ///
+    /// [`MAX_STALL`]: super::MAX_STALL
+    /// [`MAX_BURST`]: super::MAX_BURST
     pub max_inputs_per_tick: usize,
 }
 
@@ -64,7 +67,8 @@ pub(super) enum Stage {
 }
 
 /// Its own actor has entered once, and it has had the MOTD if there was one: a later load, as a
-/// teleport to another scene would bring (#280), doesn't greet it again.
+/// teleport to another scene would bring (#280), doesn't greet it again. No load comes later yet,
+/// so no test reaches that branch until #280's teleport does.
 #[derive(Component)]
 struct Greeted;
 
@@ -72,17 +76,37 @@ struct Greeted;
 #[derive(Component, Clone, Copy)]
 pub(super) struct Doomed(pub Option<KickReason>);
 
+/// A connection's allowance of messages to the world, a token bucket (#281). It starts full,
+/// each tick gives `max_inputs_per_tick` back, and it holds [`MAX_STALL`]'s worth of them, up to
+/// [`MAX_BURST`] ([`input_cap`]). Each message spends one, and one with none left is a flood,
+/// which is kicked.
+///
+/// So a client is held to the limit over time, while what it sent during a stall, which arrives
+/// at once, passes within the cap: a stall of the player's network, which the world never sees,
+/// as one of the world itself (#222). A tick gives back the same however long it took, so a flood
+/// can't buy itself more by making ticks slow (Ruling R10).
+///
+/// [`MAX_STALL`]: super::MAX_STALL
+/// [`MAX_BURST`]: super::MAX_BURST
+#[derive(Component, Debug, Clone, Copy)]
+struct Inputs(usize);
+
+impl Inputs {
+    /// Spends one message's worth, if there is one left.
+    fn take(&mut self) -> bool {
+        match self.0.checked_sub(1) {
+            Some(left) => {
+                self.0 = left;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 /// The tick's time, in milliseconds of a monotonic clock.
 #[derive(Resource, Default)]
 pub(super) struct Now(pub u64);
-
-/// The gap the flood check allows for: the larger of this tick's and the last one's, each in
-/// milliseconds from the end of the tick before's work to the start of the tick. A gap is 0 for
-/// the first tick, and for one that starts late because the last one's work ran long (Ruling
-/// R10). The last one's counts too because the links read a stall's backlog from their sockets
-/// only after the resume, so much of it reaches the tick after the one that saw the gap.
-#[derive(Resource, Default)]
-struct Gap(u64);
 
 #[derive(Resource, Default)]
 struct Inbox(Vec<WorldIn>);
@@ -147,8 +171,6 @@ struct Left(HashMap<ActorId, (Location, u64)>);
 pub struct WorldCore {
     world: World,
     phases: Vec<(&'static str, Schedule)>,
-    /// The last tick's gap.
-    last_gap: u64,
     /// The phase running, while a tick runs: after a panic, the one it was in.
     running: Option<&'static str>,
 }
@@ -182,7 +204,6 @@ impl WorldCore {
         world.insert_resource(NextSave::default());
         world.insert_resource(rules);
         world.insert_resource(Now::default());
-        world.insert_resource(Gap::default());
         world.insert_resource(Inbox::default());
         world.insert_resource(Index::default());
         world.insert_resource(Pending::default());
@@ -195,7 +216,7 @@ impl WorldCore {
         world.insert_resource(Motd(motd));
         world.insert_resource(AdminChanges::default());
         let phases = vec![
-            ("inbound", phase(inbound)),
+            ("inbound", phase((refill, inbound).chain())),
             ("movement", phase(super::movement::system)),
             ("interest", phase(super::interest::system)),
             ("chat", phase(super::chat::system)),
@@ -206,22 +227,14 @@ impl WorldCore {
         Self {
             world,
             phases,
-            last_gap: 0,
             running: None,
         }
     }
 
-    /// Runs one tick at `now_ms`, `gap_ms` after the last one's work ended, with what arrived since
-    /// the last one in arrival order, and returns how long each phase took.
-    pub fn step(
-        &mut self,
-        now_ms: u64,
-        gap_ms: u64,
-        inputs: Vec<WorldIn>,
-    ) -> Vec<(&'static str, Duration)> {
-        let last_gap = std::mem::replace(&mut self.last_gap, gap_ms);
+    /// Runs one tick at `now_ms` with what arrived since the last one, in arrival order, and
+    /// returns how long each phase took.
+    pub fn step(&mut self, now_ms: u64, inputs: Vec<WorldIn>) -> Vec<(&'static str, Duration)> {
         self.world.resource_mut::<Now>().0 = now_ms;
-        self.world.resource_mut::<Gap>().0 = gap_ms.max(last_gap);
         self.world.resource_mut::<Inbox>().0 = inputs;
         let phases = self
             .phases
@@ -285,33 +298,36 @@ pub(super) fn name_key(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
-/// The most messages a connection may send in a tick whose [`Gap`] is `gap_ms`:
-/// `max_inputs_per_tick` for each tick period in the gap, at least one period's and at most
-/// [`MAX_STALL`]'s (#222).
-///
-/// It covers a stall between ticks that the world's monotonic clock sees: its thread or its
-/// whole process paused, descheduled or stopped, or a VM paused while that clock runs on. What
-/// every connection sent in the periods missed arrives over that tick and the next, and isn't a
-/// flood. A suspend of the host isn't seen, since `Instant` doesn't advance through it. A tick
-/// slowed by its own work leaves no gap, so it earns the next one nothing: a flood can't buy
-/// itself more allowance by making ticks slow (Ruling R10).
+/// The most a connection's [`Inputs`] holds: `max_inputs_per_tick` for each tick period in
+/// [`MAX_STALL`], up to [`MAX_BURST`] messages, and at least one period's.
 ///
 /// [`MAX_STALL`]: super::MAX_STALL
-fn allowance(rules: &Rules, gap_ms: u64) -> usize {
+/// [`MAX_BURST`]: super::MAX_BURST
+fn input_cap(rules: &Rules) -> usize {
     let period_ms = (1_000 / u64::from(rules.tick_hz.max(1))).max(1);
     let stall_ms = u64::try_from(super::MAX_STALL.as_millis()).unwrap_or(u64::MAX);
-    let periods = (gap_ms / period_ms).clamp(1, (stall_ms / period_ms).max(1));
-    let periods = usize::try_from(periods).unwrap_or(usize::MAX);
-    rules.max_inputs_per_tick.saturating_mul(periods)
+    let periods = usize::try_from((stall_ms / period_ms).max(1)).unwrap_or(usize::MAX);
+    let per_tick = rules.max_inputs_per_tick;
+    per_tick
+        .saturating_mul(periods)
+        .min(super::MAX_BURST)
+        .max(per_tick)
+}
+
+/// Gives each connection the tick's `max_inputs_per_tick` back, up to its [`input_cap`], before
+/// [`inbound`] spends it.
+fn refill(rules: Res<Rules>, mut allowances: Query<&mut Inputs>) {
+    let (per_tick, cap) = (rules.max_inputs_per_tick, input_cap(&rules));
+    for mut left in &mut allowances {
+        left.0 = left.0.saturating_add(per_tick).min(cap);
+    }
 }
 
 /// Applies the tick's inputs in arrival order. Moves, pulls, chat lines and the console's commands
-/// wait in [`Pending`] for their phases. A connection that sends more than its [`allowance`] is
-/// kicked.
+/// wait in [`Pending`] for their phases. Each message from a client spends one of its connection's
+/// [`Inputs`], and a connection that sends one with none left is kicked.
 fn inbound(world: &mut World) {
     let inputs = std::mem::take(&mut world.resource_mut::<Inbox>().0);
-    let max = allowance(world.resource::<Rules>(), world.resource::<Gap>().0);
-    let mut counts: HashMap<ConnId, usize> = HashMap::new();
     for input in inputs {
         match input {
             WorldIn::Join { player, out } => join(world, player, out),
@@ -351,22 +367,22 @@ fn inbound(world: &mut World) {
                 }
             }
             WorldIn::Loaded { conn } => {
-                if let Some(e) = counted(world, &mut counts, max, conn) {
+                if let Some(e) = counted(world, conn) {
                     loaded(world, e);
                 }
             }
             WorldIn::Pull { conn, pid } => {
-                if let Some(e) = counted(world, &mut counts, max, conn) {
+                if let Some(e) = counted(world, conn) {
                     world.resource_mut::<Pending>().pulls.push((e, pid));
                 }
             }
             WorldIn::Move { conn, step } => {
-                if let Some(e) = counted(world, &mut counts, max, conn) {
+                if let Some(e) = counted(world, conn) {
                     world.resource_mut::<Pending>().moves.push((e, step));
                 }
             }
             WorldIn::Chat { conn, line } => {
-                if let Some(e) = counted(world, &mut counts, max, conn) {
+                if let Some(e) = counted(world, conn) {
                     world.resource_mut::<Pending>().lines.push((e, line));
                 }
             }
@@ -387,21 +403,18 @@ pub(super) fn live(world: &World, conn: ConnId) -> Option<Entity> {
     world.get::<Doomed>(e).is_none().then_some(e)
 }
 
-/// [`live`], counting the message against the connection's limit for the tick.
-fn counted(
-    world: &mut World,
-    counts: &mut HashMap<ConnId, usize>,
-    max: usize,
-    conn: ConnId,
-) -> Option<Entity> {
+/// [`live`], spending one of the connection's [`Inputs`]: with none left, it floods, and is
+/// kicked.
+fn counted(world: &mut World, conn: ConnId) -> Option<Entity> {
     let e = live(world, conn)?;
-    let n = counts.entry(conn).or_insert(0);
-    *n += 1;
-    if *n > max {
-        doom(world, e, Some(KickReason::Flood));
-        return None;
+    if world
+        .get_mut::<Inputs>(e)
+        .is_some_and(|mut left| left.take())
+    {
+        return Some(e);
     }
-    Some(e)
+    doom(world, e, Some(KickReason::Flood));
+    None
 }
 
 /// A character enters. An account already in the game is replaced. A character that was in the
@@ -437,6 +450,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
         _ => player.at,
     };
     let name = name_key(&player.look.name);
+    let allowance = Inputs(input_cap(world.resource::<Rules>()));
     let e = world
         .spawn((
             Conn {
@@ -456,6 +470,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
             Sight::default(),
             Gait::new(now),
             Bucket::new(now),
+            allowance,
         ))
         .id();
     let mut index = world.resource_mut::<Index>();
@@ -696,6 +711,12 @@ pub(crate) mod test_util {
         }
     }
 
+    /// One message more than a connection's allowance holds under [`rules`] (800): a flood, all
+    /// in one tick.
+    pub fn flood() -> usize {
+        input_cap(&rules()) + 1
+    }
+
     pub fn at(x: f64, y: f64) -> Location {
         Location {
             scene: SCENE,
@@ -718,67 +739,8 @@ pub(crate) mod test_util {
         }
     }
 
-    /// What this thread logs at info and above while `f` runs, as the server's log shows it: see
-    /// [`logged_at`].
-    pub fn logged<T>(f: impl FnOnce() -> T) -> (T, String) {
-        logged_at(tracing::Level::INFO, f)
-    }
-
-    /// What this thread logs at `level` and above while `f` runs, as the server's log shows it. The
-    /// subscriber is the process's, set once: tracing caches whether a callsite is wanted for
-    /// every thread, so one thread's own subscriber can miss a callsite another thread saw first.
-    /// This one asks at every event, and takes the events of a thread that's catching them, at the
-    /// level it asked for; it writes nothing for any other thread.
-    pub fn logged_at<T>(level: tracing::Level, f: impl FnOnce() -> T) -> (T, String) {
-        use std::cell::{Cell, RefCell};
-        use std::io;
-        use std::sync::Once;
-
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::{Layer, filter};
-
-        thread_local! {
-            static CAUGHT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
-            /// The level this thread's events are caught at, while `f` runs.
-            static CATCHING: Cell<Option<tracing::Level>> = const { Cell::new(None) };
-        }
-        struct ThisThread;
-        impl io::Write for ThisThread {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                CAUGHT.with_borrow_mut(|caught| {
-                    if let Some(caught) = caught {
-                        caught.extend_from_slice(buf);
-                    }
-                });
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        static SET: Once = Once::new();
-        SET.call_once(|| {
-            // More verbose levels are greater: TRACE > DEBUG > INFO.
-            let catching = filter::dynamic_filter_fn(|meta, _| {
-                CATCHING.get().is_some_and(|level| *meta.level() <= level)
-            });
-            let lines = tracing_subscriber::fmt::layer()
-                .with_writer(|| ThisThread)
-                .with_ansi(false)
-                .with_filter(catching);
-            let subscriber = tracing_subscriber::registry().with(lines);
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("no other test sets the process's subscriber");
-        });
-        // A callsite first seen between the subscriber's registration and its setting is wanted.
-        tracing::callsite::rebuild_interest_cache();
-        CAUGHT.with_borrow_mut(|caught| *caught = Some(Vec::new()));
-        CATCHING.set(Some(level));
-        let out = f();
-        CATCHING.set(None);
-        let bytes = CAUGHT.with_borrow_mut(Option::take).unwrap_or_default();
-        (out, String::from_utf8(bytes).unwrap())
-    }
+    /// What a thread logs, as the server's log shows it, caught by the process's own subscriber.
+    pub use crate::console::log::caught::{logged, logged_at};
 
     /// A player for connection `conn`: account `conn`, pid `conn`, named `name`.
     pub fn player(conn: ConnId, name: &str, at: Location) -> Player {
@@ -855,21 +817,11 @@ pub(crate) mod test_util {
             self.queued.push(input);
         }
 
-        /// Runs a tick `ms` after the last one began, with what was queued. The last one took no
-        /// time, so all of `ms` was a gap between ticks.
+        /// Runs a tick `ms` after the last one began, with what was queued.
         pub fn tick(&mut self, ms: u64) {
-            self.run_tick(ms, ms);
-        }
-
-        /// Runs a tick as a last one whose work took `ms` ends: no gap between them.
-        pub fn tick_after_work(&mut self, ms: u64) {
-            self.run_tick(ms, 0);
-        }
-
-        fn run_tick(&mut self, ms: u64, gap: u64) {
             self.now += ms;
             let inputs = std::mem::take(&mut self.queued);
-            self.core.step(self.now, gap, inputs);
+            self.core.step(self.now, inputs);
         }
 
         /// What `conn` was sent since the last call.
@@ -1075,85 +1027,105 @@ mod tests {
         assert_eq!(h.core.players(), 0);
     }
 
+    /// `n` pulls from `conn` of a player who isn't there: inputs that send nothing back.
+    fn pulls(h: &mut Harness, conn: ConnId, n: usize) {
+        for _ in 0..n {
+            h.push(WorldIn::Pull { conn, pid: 99 });
+        }
+    }
+
     #[test]
     fn a_flood_is_kicked() {
+        // #281: each tick gives a connection back the limit, 8 here, and its allowance holds
+        // MAX_STALL's worth, 100 ticks' (800). Sixteen a tick, twice the limit, spend it 8 a tick
+        // faster than it comes back, and the hundredth such tick finds 8 for its 16.
         let mut h = Harness::new();
         h.enter(player(1, "Lin", at(0.0, 0.0)));
-        for _ in 0..9 {
-            h.push(WorldIn::Pull { conn: 1, pid: 99 });
+        for t in 1..100 {
+            pulls(&mut h, 1, 16);
+            h.tick(50);
+            assert_eq!(h.take(1), Vec::new(), "tick {t}");
         }
+        pulls(&mut h, 1, 16);
         h.tick(50);
         assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
         assert_eq!(h.core.players(), 0);
     }
 
     #[test]
-    fn a_stall_is_not_a_flood_but_a_flood_within_one_period_still_is() {
-        // #222: after a stall of the world's thread or its process, what each connection sent in
-        // the periods it missed arrives together. The harness allows 8 a period of 50 ms: ten
-        // periods' worth, 500 ms after the last tick, is normal input.
+    fn a_burst_after_the_players_network_stalls_is_no_flood() {
+        // #281: the player's network stalls, and what its client sent meanwhile arrives at once.
+        // The world ticked on time throughout and saw no stall, but the burst passes within the
+        // allowance: up to MAX_STALL's worth at the limit, 800 here.
         let mut h = Harness::new();
         h.enter(player(1, "Lin", at(0.0, 0.0)));
-        for _ in 0..80 {
-            h.push(WorldIn::Pull { conn: 1, pid: 99 });
+        for _ in 0..60 {
+            h.tick(50);
         }
-        h.tick(500);
+        pulls(&mut h, 1, 800);
+        h.tick(50);
         assert_eq!(h.take(1), Vec::new(), "not kicked");
         assert_eq!(h.core.players(), 1);
-        // Two ticks on time later, nine in one is a flood again.
+    }
+
+    #[test]
+    fn a_spent_allowance_comes_back_a_tick_at_a_time() {
+        // Once a burst has spent it, each tick gives back the limit and no more: 8 a tick pass,
+        // and 9 are a flood.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        pulls(&mut h, 1, 800);
         h.tick(50);
-        for _ in 0..9 {
-            h.push(WorldIn::Pull { conn: 1, pid: 99 });
+        assert_eq!(h.take(1), Vec::new(), "the whole allowance");
+        for t in 1..=3 {
+            pulls(&mut h, 1, 8);
+            h.tick(50);
+            assert_eq!(h.take(1), Vec::new(), "tick {t}: the limit");
         }
+        pulls(&mut h, 1, 9);
         h.tick(50);
         assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
     }
 
     #[test]
-    fn a_stalls_backlog_a_tick_late_is_no_flood() {
-        // The links read a stall's backlog from their sockets only after the resume, so much of
-        // it reaches the tick after the one that saw the gap: that tick keeps the gap's allowance.
+    fn a_slow_tick_gives_back_no_more_than_one_on_time() {
+        // Ruling R10: a tick slowed by its own work (many connections each sending near the limit,
+        // say) mustn't give back more than one on time, or a flood would buy itself more by making
+        // ticks slow. Each tick gives back the limit, however long since the last.
         let mut h = Harness::new();
         h.enter(player(1, "Lin", at(0.0, 0.0)));
+        pulls(&mut h, 1, 800);
+        h.tick(50);
+        assert_eq!(h.take(1), Vec::new(), "the whole allowance");
+        pulls(&mut h, 1, 9);
         h.tick(500);
-        for _ in 0..80 {
-            h.push(WorldIn::Pull { conn: 1, pid: 99 });
-        }
+        assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
+    }
+
+    #[test]
+    fn a_stall_of_the_world_is_no_flood_however_its_backlog_arrives() {
+        // #222: after a stall of the world's thread or its process, what each connection sent in
+        // the meantime arrives over that tick and the next, since the links read it from their
+        // sockets only after the resume.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        pulls(&mut h, 1, 40);
+        h.tick(500);
+        pulls(&mut h, 1, 40);
         h.tick(50);
         assert_eq!(h.take(1), Vec::new(), "not kicked");
-        // The next tick has only its own period's: nine is a flood.
-        for _ in 0..9 {
-            h.push(WorldIn::Pull { conn: 1, pid: 99 });
-        }
-        h.tick(50);
-        assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
-    }
-
-    #[test]
-    fn a_slow_tick_is_no_stall() {
-        // Ruling R10: only a gap between ticks is a stall. A tick slowed by its own work (many
-        // connections each sending near the limit, say) gives the next no more allowance, or a
-        // flood would buy itself more tick after tick. This tick starts as one that worked
-        // 500 ms ends: nine is a flood, as in any tick on time.
-        let mut h = Harness::new();
-        h.enter(player(1, "Lin", at(0.0, 0.0)));
-        for _ in 0..9 {
-            h.push(WorldIn::Pull { conn: 1, pid: 99 });
-        }
-        h.tick_after_work(500);
-        assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
+        assert_eq!(h.core.players(), 1);
     }
 
     #[test]
     fn a_long_stall_counts_as_a_few_seconds() {
-        // Ten minutes count as MAX_STALL's five seconds: 100 periods of 8.
+        // However long a stall, the allowance holds MAX_STALL's five seconds' worth: 100 ticks
+        // of 8.
         let mut h = Harness::new();
         h.enter(player(1, "Lin", at(0.0, 0.0)));
         h.enter(player(2, "Mai", at(50_000.0, 0.0)));
         for (conn, n) in [(1, 800), (2, 801)] {
-            for _ in 0..n {
-                h.push(WorldIn::Pull { conn, pid: 99 });
-            }
+            pulls(&mut h, conn, n);
         }
         h.tick(600_000);
         assert_eq!(h.take(1), Vec::new(), "within five seconds' worth");
@@ -1161,29 +1133,56 @@ mod tests {
     }
 
     #[test]
-    fn the_allowance_is_the_limit_for_each_period_since_the_last_tick() {
-        let at_hz = |tick_hz| Rules {
+    fn the_allowance_holds_the_limit_for_each_tick_period_in_max_stall_up_to_max_burst() {
+        use crate::world::{MAX_BURST, MAX_INPUTS_PER_TICK};
+        let at_hz = |tick_hz, max_inputs_per_tick| Rules {
             tick_hz,
-            max_inputs_per_tick: 10,
+            max_inputs_per_tick,
             ..rules()
         };
-        // 20 Hz: periods of 50 ms, at most 100 of them.
-        for (since, want) in [
-            (0, 10),
-            (49, 10),
-            (99, 10),
-            (100, 20),
-            (5_000, 1_000),
-            (600_000, 1_000),
-        ] {
-            assert_eq!(allowance(&at_hz(20), since), want, "{since} ms");
+        // 20 Hz: 100 periods of 50 ms; 1 Hz: 5 of a second.
+        assert_eq!(input_cap(&at_hz(20, 10)), 1_000);
+        assert_eq!(input_cap(&at_hz(1, 10)), 50);
+        // 60 Hz: 312 periods of 16 ms, 3,120, which the burst's bound holds to 2,000 (#281).
+        assert_eq!(MAX_BURST, 2_000);
+        assert_eq!(input_cap(&at_hz(60, 10)), MAX_BURST);
+        // The server's own, 128 a tick: five seconds' worth is 12,800 at 20 Hz and 39,936 at
+        // 60 Hz, which the bound holds, and 640 at 1 Hz, within it.
+        for (tick_hz, cap) in [(20, MAX_BURST), (60, MAX_BURST), (1, 640)] {
+            assert_eq!(
+                input_cap(&at_hz(tick_hz, MAX_INPUTS_PER_TICK)),
+                cap,
+                "{tick_hz} Hz"
+            );
         }
-        // 1 Hz: periods of a second; 60 Hz: periods of 16 ms, at most 312.
-        assert_eq!(allowance(&at_hz(1), 999), 10);
-        assert_eq!(allowance(&at_hz(1), 3_000), 30);
-        assert_eq!(allowance(&at_hz(1), 60_000), 50);
-        assert_eq!(allowance(&at_hz(60), 16), 10);
-        assert_eq!(allowance(&at_hz(60), 60_000), 3_120);
+        // Never less than one tick's worth.
+        assert_eq!(input_cap(&at_hz(20, 5_000)), 5_000);
+    }
+
+    #[test]
+    fn a_burst_is_held_to_max_burst_messages_at_every_tick_rate() {
+        // #281: a burst grew with the tick rate, to 39,936 messages at 60 Hz, so a handful of
+        // hostile clients bursting at once could overrun a tick. It is held to MAX_BURST.
+        use crate::world::{MAX_BURST, MAX_INPUTS_PER_TICK};
+        // At 1 Hz five seconds' worth, 640, is within the bound.
+        for (tick_hz, cap) in [(1, 640), (20, MAX_BURST), (60, MAX_BURST)] {
+            let mut h = Harness::with(Rules {
+                tick_hz,
+                max_inputs_per_tick: MAX_INPUTS_PER_TICK,
+                ..rules()
+            });
+            h.enter(player(1, "Lin", at(0.0, 0.0)));
+            h.enter(player(2, "Mai", at(50_000.0, 0.0)));
+            pulls(&mut h, 1, cap);
+            pulls(&mut h, 2, cap + 1);
+            h.tick(1_000 / u64::from(tick_hz));
+            assert_eq!(h.take(1), Vec::new(), "{tick_hz} Hz: the whole allowance");
+            assert_eq!(
+                h.take(2),
+                vec![WorldOut::Kicked(KickReason::Flood)],
+                "{tick_hz} Hz: one more"
+            );
+        }
     }
 
     #[test]
@@ -1216,6 +1215,48 @@ mod tests {
         });
         h.tick(50);
         assert_eq!(h.core.players(), 0);
+        assert_eq!(
+            h.saves(),
+            vec![Service::SavePlace {
+                pid: 1,
+                at: at(0.0, 0.0)
+            }],
+            "its place is saved as any leaver's"
+        );
+    }
+
+    #[test]
+    fn a_viewer_that_a_leaver_fills_leaves_in_the_same_tick() {
+        // Cleanup runs again until no one is doomed: taking a player out tells its viewers (9),
+        // and a viewer whose channel that fills is doomed in turn, and taken out in a second pass.
+        let mut h = Harness::new();
+        // LoadScene, SelfEnter and the Announce of Mai fill Lin's channel, which it never reads.
+        h.join_with(player(1, "Lin", at(0.0, 0.0)), 3);
+        h.push(WorldIn::Loaded { conn: 1 });
+        h.tick(50);
+        h.enter(player(2, "Mai", at(0.0, 0.0)));
+        assert_eq!(h.core.players(), 2);
+        // The console's kick dooms Mai in the admin phase, after interest: only cleanup tells Lin.
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        h.push(WorldIn::Console {
+            order: Command::Kick { name: "Mai".into() },
+            reply,
+        });
+        h.tick(50);
+        assert_eq!(h.core.players(), 0, "Lin leaves in the tick Mai does");
+        let mut saved: Vec<ActorId> = h
+            .saves()
+            .into_iter()
+            .map(|s| match s {
+                Service::SavePlace { pid, .. } => pid,
+                Service::CreateInvite { .. } => 0,
+            })
+            .collect();
+        saved.sort_unstable();
+        assert_eq!(saved, [1, 2], "both are saved");
+        assert_eq!(h.take(2), vec![WorldOut::Kicked(KickReason::Kicked)]);
+        h.take(1);
+        assert!(h.closed(1), "the world let go of Lin");
     }
 
     #[test]

@@ -255,9 +255,15 @@ const CUT: &str = "…";
 /// - an answer too long comes in parts, as many whole lines in each as fit, and every part but
 ///   the last says `more`; a line too long for a part alone is cut so;
 /// - the other messages go whole: the server keeps its name, its maintenance message and its
-///   commands short.
+///   commands short. A console refuses a line over the limit, so one of those too long, a hello
+///   above all, is a bug, which a debug build panics on (#359).
 pub fn encode_server(msg: ServerMsg) -> Vec<String> {
     let whole = encode(&msg);
+    debug_assert!(
+        whole.len() <= LINE_MAX || matches!(msg, ServerMsg::Log { .. } | ServerMsg::Answer { .. }),
+        "a message that goes whole is {} bytes, over the wire's {LINE_MAX}: {whole:.80}",
+        whole.len()
+    );
     if whole.len() <= LINE_MAX {
         return vec![whole];
     }
@@ -630,6 +636,24 @@ mod tests {
             encode(&whole),
             r#"{"type":"answer","id":3,"ok":true,"lines":[]}"#
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a message that goes whole is")]
+    fn a_hello_too_long_for_a_line_is_caught_in_a_debug_build() {
+        // The hosting plan's Task 11 (#359): a hello goes whole, as every message but a log line
+        // and an answer does, and a console refuses a line over the limit, so a server whose
+        // hello didn't fit would turn every console away. The config keeps it short
+        // (`tests/attach.rs`'s `the_longest_hello_and_status_a_config_allows_fit_one_line`); a
+        // debug build says so if it ever isn't.
+        let hello = ServerMsg::Hello {
+            version: "0.5.0".into(),
+            proto: PROTO,
+            server: "x".repeat(LINE_MAX),
+            commands: vec![],
+        };
+        encode_server(hello);
     }
 
     #[test]

@@ -13,6 +13,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("watchdog", HERE / "watchdog.py")
@@ -110,10 +111,16 @@ def changes(names):
     return f"S3 ChangeServiceConfig changes the type or image of {names}"
 
 
+def wine_rules():
+    """LogRules for a baseline of Wine's winebth and mountmgr, kernel drivers, and Proton's
+    discord-bridge, a service in its own process."""
+    return wd.LogRules(["winebth", "mountmgr", "discord-bridge"], {"discord-bridge": wd.norm_image(DISCORD)},
+                       drivers=["winebth", "mountmgr"], types={"winebth": 1, "mountmgr": 1, "discord-bridge": 0x10})
+
+
 class S3(unittest.TestCase):
     def rules(self):
-        return wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
-                           {"discord-bridge": wd.norm_image(DISCORD)}, drivers=["winebth", "mountmgr"])
+        return wine_rules()
 
     def scan(self, *lines):
         trig, notes = self.rules().scan(("\n".join(lines) + "\n").encode())
@@ -310,6 +317,41 @@ class S3(unittest.TestCase):
             found += [t[0] for t in rules.scan((line + "\n").encode())[0]]
         self.assertEqual(found, [changes("baseline driver service winebth")])
 
+    def test_two_changes_answered_twice_are_no_sign(self):  # #174: a count of changes, not a flag
+        trig, notes = self.scan(open_service("discord-bridge"), change_config(stype=16), change_config(stype=32),
+                                SVCCTL_CHANGE, SVCCTL_CHANGE)
+        self.assertEqual((trig, notes), ([], [USER_MODE_NOTE] * 2))
+
+    def test_an_interactive_user_mode_type_is_a_note(self):  # #174: SERVICE_INTERACTIVE_PROCESS may be added
+        trig, notes = self.scan(open_service("discord-bridge"), change_config(stype=0x110), SVCCTL_CHANGE)
+        self.assertEqual((trig, notes), ([], [USER_MODE_NOTE]))
+
+    def test_a_change_services_exe_never_answered_expires(self):  # #174, #281
+        # sechost logs a change before its RPC, so one that fails on a bad handle never reaches
+        # services.exe. Its count must not answer, seconds later, for services.exe's line from a
+        # caller the log doesn't trace.
+        late = SVCCTL_CHANGE.replace("2.000:", "9.000:", 1)
+        self.assertEqual(self.scan(open_service("discord-bridge"), change_config(stype=16), late)[0], [UNSEEN_CHANGE])
+        soon = SVCCTL_CHANGE.replace("2.000:", "3.000:", 1)
+        self.assertEqual(self.scan(open_service("discord-bridge"), change_config(stype=16), soon), ([], [USER_MODE_NOTE]))
+
+    def test_a_pid_used_again_starts_with_no_open_service(self):  # Task 18's review
+        # Process 0134 opened discord-bridge and ended, and Wine gave its pid to a new process: the
+        # new one's change can't stand for a service only the old one opened.
+        new_0134 = (r'2.000:0020:0024:trace:process:NtCreateUserProcess L"\\??\\C:\\windows\\system32\\x.exe" '
+                    "pid 0134 tid 0138 handles 0xf8/0xfc")
+        trig, _ = self.scan(open_service("discord-bridge"), new_0134, change_config(stype=16), SVCCTL_CHANGE)
+        self.assertEqual(trig, [changes("a service the log doesn't name")])
+        trig, notes = self.scan(new_0134, open_service("discord-bridge"), change_config(stype=16), SVCCTL_CHANGE)
+        self.assertEqual((trig, notes), ([], [USER_MODE_NOTE]))
+
+    def test_a_pid_used_again_by_an_image_cut_short_starts_with_no_open_service(self):  # #373's review
+        # Wine cuts a long image path short, `L"..."...`: the new process's pid still prunes.
+        cut = (r'2.000:0020:0024:trace:process:NtCreateUserProcess L"\\??\\C:\\' + "a" * 300 + r'"... '
+               "pid 0134 tid 0138 handles 0xf8/0xfc")
+        trig, _ = self.scan(open_service("discord-bridge"), cut, change_config(stype=16), SVCCTL_CHANGE)
+        self.assertEqual(trig, [changes("a service the log doesn't name")])
+
 
 SYSTEM_REG = r"""WINE REGISTRY Version 2
 [System\\ControlSet001\\Services\\discord-bridge] 1791759044
@@ -396,6 +438,18 @@ class S4Registry(unittest.TestCase):
         rules = wd.baseline_rules({"services": ["discord-bridge"]})  # M0's baselines (r5-r9, look-1, look-2)
         trig, _ = rules.scan(f"{open_service('discord-bridge')}\n{change_config(stype=16)}\n".encode())
         self.assertEqual([t[0] for t in trig], [changes("discord-bridge, not a user-mode baseline service")])
+
+    def test_a_baseline_service_is_user_mode_only_by_its_type(self):  # #174, #281
+        # With no Type, or of SERVICE_ADAPTER (0x4) or SERVICE_RECOGNIZER_DRIVER (0x8), a baseline
+        # service isn't a user-mode one, whatever its image: a change to it triggers. Own or shared
+        # process types are, SERVICE_INTERACTIVE_PROCESS (0x100) added or not.
+        lines = f"{open_service('discord-bridge')}\n{change_config(stype=16)}\n{SVCCTL_CHANGE}\n".encode()
+        for stype in (None, 0x4, 0x8, 0x10, 0x20, 0x110, 0x120):
+            info = {"discord-bridge": {"type": stype, "image": wd.norm_image(DISCORD)}}
+            trig, notes = wd.baseline_rules({"services": ["discord-bridge"], "service_info": info}).scan(lines)
+            want = ([], [USER_MODE_NOTE]) if stype in (0x10, 0x20, 0x110, 0x120) else (
+                [changes("discord-bridge, not a user-mode baseline service")], [])
+            self.assertEqual(([t[0] for t in trig], [n[0] for n in notes]), want, stype)
 
 
 class ClientRename(unittest.TestCase):  # issue #142
@@ -499,6 +553,12 @@ for at, binary, rename, rename_t, die_t in plan:
     if binary == "@log":  # [at, "@log", n, text, 0]: append text to client n's log
         with open(f"{d}/out/log-{rename}.log", "a") as fh:
             fh.write(rename_t)
+        continue
+    if binary == "@when":  # [at, "@when", path, name, die_t]: once path exists, start name
+        deadline = time.time() + 15
+        while not os.path.exists(rename) and time.time() < deadline:
+            time.sleep(0.005)
+        procs.append(subprocess.Popen([f"{d}/bin/{rename_t}", f"{d}/proc.py", "-", "0", str(t0 + die_t)]))
         continue
     procs.append(subprocess.Popen([f"{d}/bin/{binary}", f"{d}/proc.py", rename, str(t0 + rename_t), str(t0 + die_t)]))
 for q in procs:
@@ -733,6 +793,67 @@ class TailFollowsAReplacedLog(unittest.TestCase):  # issue #144
             signal.signal(signal.SIGALRM, old)
 
 
+class ReadToTheEnd(unittest.TestCase):  # #244
+    """The read to the end, before the run ends (exit 4 or the sandbox gone), reads what each log
+    held when it began: a writer that outruns the reader can't keep it going, with S1, S2 and S4
+    unchecked meanwhile."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = pathlib.Path(self._tmp.name) / "steam-1418100.log"
+        self.stream = wd.LogStream([str(self.path)])
+        self.addCleanup(self.stream.close)
+
+    def lines(self, final=False):
+        return [ln for _, chunk, _ in self.stream.read(final=final) for ln in chunk.decode().splitlines()]
+
+    def test_a_writer_faster_than_the_reader_cant_keep_the_read_to_the_end_going(self):
+        self.path.write_bytes(b"1.000:0020:0024:trace:a\n" * 3)
+        self.assertEqual(self.lines(), [])  # read, and held back as look-ahead
+        with open(self.path, "ab") as fh:
+            fh.write(b"1.500:0020:0024:trace:b\n" * 2)
+        tail = self.stream.logs[0].tail
+        real, writer, reads = tail.fh, open(self.path, "ab"), []
+        self.addCleanup(writer.close)
+
+        class Racing:
+            """The open log, with a writer that adds a line each time the reader reads."""
+
+            def read(self, n=-1):
+                reads.append(n)
+                if len(reads) > 100:
+                    raise AssertionError("the read to the end never ended")
+                data = real.read(n)
+                writer.write(b"2.000:0020:0024:trace:written since\n")
+                writer.flush()
+                return data
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        tail.fh = Racing()
+        self.assertEqual(self.lines(final=True), ["1.000:0020:0024:trace:a"] * 3 + ["1.500:0020:0024:trace:b"] * 2)
+
+    def test_the_read_to_the_end_takes_the_rest_of_a_log_recreated_since(self):
+        # GE-Proton recreated the log after the last poll: the old file's rest, its last partial line
+        # counted as whole, then the new file from its start.
+        self.path.write_bytes(b"1.000:0020:0024:trace:old\n" * 9 + b"1.001:0020:0024:trace:old, cut")
+        self.assertEqual(self.lines(), ["1.000:0020:0024:trace:old"])  # the rest held back
+        self.path.unlink()
+        self.path.write_bytes(b"3.000:0030:0034:trace:new 1\n3.001:0030:0034:trace:new 2")
+        self.assertEqual(self.lines(final=True), ["1.000:0020:0024:trace:old"] * 8 +
+                         ["1.001:0020:0024:trace:old, cut", "3.000:0030:0034:trace:new 1", "3.001:0030:0034:trace:new 2"])
+
+    def test_a_line_longer_than_a_read_is_one_line(self):
+        # The read to the end takes the log in pieces; a line across two of them stays one line.
+        self.path.write_bytes(b"1.000:0020:0024:trace:" + b"x" * 40 + b"\n1.001:0020:0024:trace:y\n")
+        tail = self.stream.logs[0].tail
+        whole = tail.drain
+        tail.drain = lambda limit=16: whole(limit=limit)
+        self.assertEqual(self.lines(final=True), ["1.000:0020:0024:trace:" + "x" * 40, "1.001:0020:0024:trace:y"])
+
+
 
 # Client 2's creation, in its own log: session 2's shim starting the second copy (Amendment B).
 LOG2_CLIENT = (r'3.000:0150:0154:trace:process:CreateProcessInternalW app (null) cmdline '
@@ -778,8 +899,7 @@ class TwoLogs(unittest.TestCase):
         self.paths = [d / "1.log", d / "2.log"]
         for p in self.paths:
             p.write_bytes(b"")
-        self.rules = wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
-                                 {"discord-bridge": wd.norm_image(DISCORD)}, drivers=["winebth", "mountmgr"])
+        self.rules = wine_rules()
         self.stream = wd.LogStream([str(p) for p in self.paths])
         self.addCleanup(self.stream.close)
         self.trig, self.notes = [], []
@@ -853,6 +973,20 @@ class TwoLogs(unittest.TestCase):
         self.poll(final=True)
         self.assertEqual(self.trig, [])
         self.assertEqual(self.notes, ["LoadDriver for baseline service winebth (message split across lines)"])
+
+    def test_a_stalled_cut_line_never_completes_a_split_loaddriver(self):  # #244
+        # Log 1's LoadDriver names no service, and the line that would is cut short: its writer
+        # stopped in the middle of it. A quiet poll releases the LoadDriver; the cut line, whose
+        # name may go on, is no look-ahead for it.
+        with open(self.paths[0], "ab") as fh:
+            fh.write((CLIENT + "\n2.000:0098:00a4:err:ntoskrnl:ZwLoadDriver flags 0x1, load_path 0000000000000000, "
+                      "name 0000000000A1F840, base 0000000000A1F838.\n"
+                      r'failed to create driver L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\winebth').encode())
+        self.poll(4)
+        self.assertEqual(self.trig, ["S3 LoadDriver for non-baseline service None"])
+        self.assertEqual(self.notes, [])
+        self.poll(final=True)  # the cut line is scanned in the end, as a line of its own
+        self.assertEqual(self.trig, ["S3 LoadDriver for non-baseline service None"])
 
     def test_lines_come_in_time_order_each_log_in_its_own(self):
         self.write(1, "1.000:0020:0024:trace:a one", "a line without a stamp", "3.000:0020:0024:trace:c three")
@@ -976,11 +1110,16 @@ class TwoClientsWholeLoop(WholeLoop):  # Amendment B: two clients, one log each
         self.assertIn("client 2 detected after a rename: pid", self.watchdog_log)
 
     def test_s2_keeps_the_earliest_client_as_its_reference(self):
-        rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 5.0], [1.0, "winedevice.exe", "-", 0, 4.0],
+        # A winedevice.exe started between the clients, and named only once client 2 is known (as
+        # Wine renames its processes), so S2 can't have tripped before client 2 (#244): it is still
+        # measured against client 1's start, not client 2's.
+        rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 5.0], [1.0, "wine64", "winedevice.exe", 3.6, 4.5],
                                [2.0, "wine64", "gujianol.exe", 3.0, 5.0]],
                               logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
         self.assertEqual(rc, 3)
         self.assertIn("S2", trig)
+        self.assertLess(self.watchdog_log.index("client 2 detected after a rename"),
+                        self.watchdog_log.index("GATE EVENT: S2"))
 
     def test_a_third_client_with_two_logs_is_exit_4(self):
         rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 3.0], [0.5, "gujianol.exe", "-", 0, 3.0],
@@ -992,18 +1131,67 @@ class TwoClientsWholeLoop(WholeLoop):  # Amendment B: two clients, one log each
         self.assertRegex(trig, r"client 3 pid \d+ .*no log of its own")
 
     def test_a_sign_in_the_poll_that_finds_a_client_beyond_the_logs_is_exit_3(self):  # review, Important 2
-        # One log, so a second gujianol.exe is a client beyond the logs. Once it has started, the
+        # One log, so a second gujianol.exe is a client beyond the logs. Just before it starts, the
         # log gets a LoadDriver after the client's creation, then a line still being written: the
         # log grows every 10 ms, so its Tail keeps the sign back, and only reading every log to
         # its end before exit 4 finds it. The sign wins over the fail safe, and the record names
-        # the client beyond the logs.
-        plan = [[0.0, "gujianol.exe", "-", 0, 4.0], [1.0, "gujianol.exe", "-", 0, 4.0],
-                [1.0, "@log", 1, CLIENT + "\n" + AGT_LOADDRIVER + "\n2.001:0020:0024:trace:still being written", 0]]
+        # the client beyond the logs. The sign comes first: a poll between client 2's start and a
+        # sign written after it would read an empty log (#244).
+        plan = [[0.0, "gujianol.exe", "-", 0, 4.0],
+                [1.0, "@log", 1, CLIENT + "\n" + AGT_LOADDRIVER + "\n2.001:0020:0024:trace:still being written", 0],
+                [1.0, "gujianol.exe", "-", 0, 4.0]]
         plan += [[1.0 + i / 100, "@log", 1, ".", 0] for i in range(1, 101)]
         rc, trig = self.watch(plan, logs=[""])
         self.assertEqual(rc, 3)
         self.assertIn("S3 LoadDriver for non-baseline service agt: " + AGT_LOADDRIVER, trig)
         self.assertRegex(trig, r"client 2 pid \d+ .*no log of its own")
+
+    THREE = [[0.0, "gujianol.exe", "-", 0, 4.0], [0.5, "gujianol.exe", "-", 0, 4.0], [1.0, "gujianol.exe", "-", 0, 4.0]]
+
+    def test_a_sys_file_written_in_the_poll_that_ends_the_run_for_the_fail_safe_is_exit_3(self):  # #244
+        # A third client with two logs ends the run with exit 4 once the poll's signs are read. A
+        # .sys file appears after that poll's S1 scan, as its process scan finds the third client:
+        # S1 is read again before exit 4, and the sign wins.
+        third, track, scan = [], wd.track_clients, wd.scan_sys
+
+        def tracking(seen, clients, info_of):
+            if len(clients) >= 3:
+                third.append(True)
+            return track(seen, clients, info_of)
+
+        def scanning(root, prune=()):
+            if third:
+                pathlib.Path(root, "agt.sys").write_bytes(b"MZ")
+            return scan(root, prune)
+
+        with mock.patch.object(wd, "track_clients", tracking), mock.patch.object(wd, "scan_sys", scanning):
+            rc, trig = self.watch(self.THREE, logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        self.assertEqual(rc, 3)
+        self.assertIn("S1 new .sys file", trig)
+        self.assertIn("sign found while ending the run for the fail safe", self.watchdog_log)
+
+    def test_a_winedevice_started_in_the_poll_that_ends_the_run_for_the_fail_safe_is_exit_3(self):  # #244
+        # As above, with a winedevice.exe that starts after that poll's process scan: S2 is read
+        # again before exit 4 too.
+        with tempfile.TemporaryDirectory() as tmp:
+            cue, started, track = pathlib.Path(tmp, "start the winedevice"), [], wd.track_clients
+
+            def tracking(seen, clients, info_of):
+                found = track(seen, clients, info_of)
+                if len(clients) >= 3 and not started:
+                    started.append(True)
+                    cue.touch()
+                    init, deadline = seen[next(iter(clients))]["ppid"], time.time() + 10
+                    while time.time() < deadline and not any(
+                            (wd.proc_info(c) or {}).get("comm") == "winedevice.exe" for c in wd.children(init)):
+                        time.sleep(0.01)
+                return found
+
+            with mock.patch.object(wd, "track_clients", tracking):
+                rc, trig = self.watch(self.THREE + [[1.0, "@when", str(cue), "winedevice.exe", 4.0]],
+                                      logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
+        self.assertEqual(rc, 3)
+        self.assertIn("S2 winedevice.exe started after the client", trig)
 
     def test_a_client_found_just_before_the_end_is_held_to_its_log(self):  # Ruling R17 (a)
         # Found well within the grace, the client was never held to its log while it ran: after the
@@ -1038,8 +1226,21 @@ class ClientCreation(unittest.TestCase):  # Ruling R17 (b): the image actually c
         for line in (EXPLORER_FOR_CLIENT_2, EXPLORER_FOR_CLIENT_2_NT,
                      r'1.0:0020:0024:trace:process:NtCreateUserProcess L"\\??\\Z:\\c\\notgujianol.exe" pid 1 tid 2',
                      r'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline '
-                     r'L"\"C:\\windows\\command\\start.exe\" \"Z:\\c\\gujianol.exe\""'):
+                     r'L"\"C:\\windows\\command\\start.exe\" \"Z:\\c\\gujianol.exe\""',
+                     r'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline '
+                     r'L"\"C:\\users\\Jos\00e9\\start.exe\" \"Z:\\c\\gujianol.exe\""'):
             self.assertFalse(self.created(line), line)
+
+    def test_a_path_with_any_debugstr_escape_counts(self):  # #244: a user name outside ASCII
+        # debugstr_w writes a character outside printable ASCII as a backslash and four hex digits;
+        # a quoted program still ends at its escaped quote.
+        jose = r"C:\\users\\Jos\00e9\\SoLO\\bin64\\gujianol.exe"
+        for line in (rf'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline L"\"{jose}\""',
+                     rf'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline L"\"{jose}\" --x"',
+                     rf'1.0:0020:0024:trace:process:CreateProcessInternalW app (null) cmdline L"{jose} --fs=data:_index:_index"',
+                     rf'1.0:0020:0024:trace:process:CreateProcessInternalW app L"{jose}" cmdline L"x"',
+                     rf'1.0:0020:0024:trace:process:NtCreateUserProcess L"\\??\\{jose}" pid 0134 tid 0138'):
+            self.assertTrue(self.created(line), line)
 
 
 class ClientCreationOverdue(unittest.TestCase):

@@ -74,6 +74,8 @@ pub struct App {
 
 struct Inner {
     cfg: AppConfig,
+    /// Steam's own folders, where its library list is (Amendment A, LA1).
+    steam_roots: Vec<PathBuf>,
     rt: tokio::runtime::Handle,
     state: Mutex<State>,
     tx: watch::Sender<Snapshot>,
@@ -102,6 +104,8 @@ struct State {
     notice: Option<Notice>,
     update: UpdateView,
     swept_at: Option<Instant>,
+    /// The copy Steam installed, once looked for (Amendment A, LA1).
+    steam: Option<crate::steam::SteamCopy>,
 }
 
 /// What this run knows of a server beyond its saved entry.
@@ -179,11 +183,15 @@ impl App {
             key_change: None,
             notice: problem.map(|text| Notice { text, error: true }),
             swept_at: None,
+            steam: None,
         };
         let (tx, _) = watch::channel(state.snapshot(&cfg));
+        let steam_roots =
+            crate::steam::roots(cfg.os, cfg.home.as_deref(), crate::steam::registry_path());
         let app = App {
             inner: Arc::new(Inner {
                 cfg,
+                steam_roots,
                 rt,
                 state: Mutex::new(state),
                 tx,
@@ -191,6 +199,7 @@ impl App {
         };
         app.inner.rt.spawn(servers::run(Arc::downgrade(&app.inner)));
         app.check_at_start();
+        app.find_steam();
         if let Some(mark) = left {
             app.follow_left_game(mark);
         }
@@ -419,7 +428,10 @@ impl State {
             let command = |list| crate::depot::manual_command(dd.as_deref(), folder, list);
             ManualView {
                 download: command(None),
-                repair: self.client.repair_list().map(|list| command(Some(list))),
+                // Never into a Steam library: Steam repairs what's there (LA2).
+                repair: (self.client.repair_list())
+                    .filter(|_| !self.client.in_steam)
+                    .map(|list| command(Some(list))),
                 get: dd.is_none().then(|| ToolLinkView {
                     version: tool.version.clone(),
                     url: tool.url.clone(),
@@ -459,6 +471,12 @@ impl State {
                 files: cfg.manifest.entries.len(),
                 check: self.client.check.clone(),
                 manual,
+                steam: self.steam.as_ref().map(|c| SteamCopyView {
+                    folder: c.folder.display().to_string(),
+                    build: c.build.clone(),
+                    pinned: c.build == cfg.pinned_build,
+                }),
+                in_steam: self.client.in_steam,
             },
             job: self.client.job.clone(),
             game: self.game.clone(),

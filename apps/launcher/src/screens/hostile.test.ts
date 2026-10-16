@@ -1,21 +1,21 @@
-// The launcher plan's Review Focus 2 on every screen, not Play alone (#348): what a server sends
-// (its name, host, MOTD, version and maintenance message, the players in its lobby, and the words a
-// notice carries) shows as text, and no element is made from it.
+// The launcher plan's Review Focus 2 over every screen, popover and dialog (the redesign's Task 7):
+// what a server sends (its name, host, notice, version and maintenance message, the players in its
+// lobby, and the words a notice carries) shows as text, and no element is made from it.
 import { expect, test } from "vitest";
 
-import type { ScreenFactory } from "../app";
+import type { Ctx, PopoverContent } from "../app";
+import { mount as mountApp } from "../app";
+import { accountPopover } from "../popovers/account";
+import { gamePopover } from "../popovers/game";
+import { settingsPopover } from "../popovers/settings";
 import type { Snapshot } from "../types";
-import { account } from "./account";
-import { clientReady } from "./client-ready";
-import { clientRepair } from "./client-repair";
-import { clientSetup } from "./client-setup";
-import { clientWorking } from "./client-working";
-import { play } from "./play";
+import { keyDialog } from "../ui/key-dialog";
+import { rail } from "../ui/rail";
+import { removeDialog } from "../ui/server-dialogs";
 import { redeem } from "./redeem";
-import { servers } from "./servers";
-import { settings } from "./settings";
 import { signIn } from "./sign-in";
-import { golden, mount } from "./test-kit";
+import { stage } from "./stage";
+import { golden, mount, mountPopover, recording } from "./test-kit";
 import { welcome } from "./welcome";
 
 const HOSTILE = '<img src=x onerror="alert(1)">';
@@ -41,38 +41,93 @@ function hostile(s: Snapshot): Snapshot {
     s.keyChange.name = HOSTILE;
   }
   s.notice = { text: HOSTILE, error: true };
+  // The player's own folders and commands: anything a folder can be named.
+  for (const v of s.servers) {
+    v.address = HOSTILE;
+  }
+  if (s.client.folder !== null) {
+    s.client.folder = `/${HOSTILE}`;
+  }
+  if (s.client.steam !== null) {
+    s.client.steam.folder = `/${HOSTILE}`;
+  }
+  if (s.client.manual !== null) {
+    s.client.manual.download = HOSTILE;
+    s.client.manual.repair = s.client.manual.repair === null ? null : HOSTILE;
+  }
   return s;
 }
 
-const SCREENS: [golden: string, screen: ScreenFactory][] = [
-  ["play-ready", play],
-  ["play-checking", play],
-  ["play-starting", play],
-  ["play-running", play],
-  ["play-maintenance", play],
-  ["play-offline", play],
-  ["play-key-changed", play],
-  ["play-unsupported", play],
-  ["play-ended", play],
-  ["play-signed-out", signIn],
-  ["sign-in", signIn],
-  ["redeem", redeem],
-  ["welcome", welcome],
-  ["servers", servers],
-  ["servers-key-change", servers],
-  ["account", account],
-  ["client-setup", clientSetup],
-  ["client-verified", clientReady],
-  ["client-repair", clientRepair],
-  ["client-fetching", clientWorking],
-  ["client-downloading", clientWorking],
-  ["settings", settings],
+function clean(): void {
+  expect(document.body.querySelector("img")).toBeNull();
+  expect(document.body.querySelector("[onerror]")).toBeNull();
+  expect(document.body.textContent).toContain(HOSTILE);
+}
+
+const STAGES = [
+  "play-ready",
+  "play-checking",
+  "play-starting",
+  "play-running",
+  "play-maintenance",
+  "play-offline",
+  "play-key-changed",
+  "play-unsupported",
+  "play-ended",
+  "client-setup",
+  "client-repair",
 ];
 
-test.each(SCREENS)("%s shows a hostile server's words as text and nothing more", (name, screen) => {
+test.each(STAGES)("the stage on %s shows a hostile server's words as text", (name) => {
+  mount(stage, hostile(golden(name)));
+  clean();
+});
+
+test.each([
+  ["welcome", welcome],
+  ["redeem", redeem],
+  ["sign-in", signIn],
+] as const)("%s shows a hostile server's words as text", (name, screen) => {
   mount(screen, hostile(golden(name)));
-  const page = document.body;
-  expect(page.querySelector("img")).toBeNull();
-  expect(page.querySelector("[onerror]")).toBeNull();
-  expect(page.textContent).toContain(HOSTILE);
+  // Welcome has no server to name: the notice carries the markup.
+  clean();
+});
+
+test.each([
+  ["game", gamePopover, "client-repair"],
+  ["game", gamePopover, "client-steam"],
+  ["game", gamePopover, "client-verified"],
+  ["account", accountPopover, "servers"],
+  ["settings", settingsPopover, "settings"],
+] as [string, (ctx: Ctx) => PopoverContent, string][])("the %s popover shows hostile words as text", (which, make, name) => {
+  const s = hostile(golden(name));
+  // The Game popover shows no server's words, but a folder's name is the player's own, and anything.
+  if (s.client.check.kind === "needsRepair") {
+    s.client.check.files[0]!.path = HOSTILE;
+  }
+  const { root } = mountPopover(make, s);
+  expect(root.querySelector("img")).toBeNull();
+  if (which !== "settings") {
+    expect(root.textContent).toContain(HOSTILE);
+  }
+});
+
+test("the rail, a changed key's dialog and Remove show a hostile name as text", () => {
+  const s = hostile(golden("servers-key-change"));
+  const { ctx } = recording();
+  const part = rail(ctx);
+  part.update(s, false);
+  const dialog = keyDialog(ctx, s);
+  const remove = removeDialog(ctx, s.servers[0]!, () => {});
+  document.body.replaceChildren(part.el, dialog, remove.el);
+  part.el.querySelector<HTMLButtonElement>("button[data-server]")!.focus();
+  clean();
+});
+
+test("the whole frame, top bar and toast included, on a hostile snapshot", async () => {
+  const s = hostile(golden("update-ready"));
+  const root = document.createElement("div");
+  document.body.replaceChildren(root);
+  await mountApp(root, { snapshot: async () => s, onSnapshot: async () => () => {}, send: async () => null });
+  clean();
 });

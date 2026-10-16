@@ -60,6 +60,7 @@ pub struct ServerConfig {
     /// http anywhere else). Unset, links start as [`Config::invite_base`] and `invite::bases` say.
     #[serde(default)]
     pub public_api: Option<String>,
+    /// How many accounts may be connected at once, 1 to [`MAX_PLAYERS`].
     #[serde(default = "twenty")]
     pub max_players: u32,
     /// Peers whose `X-Forwarded-For` names the client (M3 spec D12): proxies that add it, such as
@@ -86,6 +87,12 @@ pub struct ServerConfig {
 
 /// The longest `[server] host`, in characters.
 pub const HOST_MAX: usize = 32;
+
+/// The most `[server] max_players` may be (#281). With everyone in one place, each tick sends
+/// every player a move of each of the others, and a connection's queue (`link::OUTBOUND`, 256)
+/// must hold those and the tick's other messages, or a player who reads all it is sent is let go
+/// as a slow reader. Fenji is sized for 20 (design spec §6.7).
+pub const MAX_PLAYERS: u32 = 200;
 
 /// How the account API serves TLS itself (M4 hosting spec §3.10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -228,8 +235,8 @@ fn a_day() -> u64 {
 fn yes() -> bool {
     true
 }
-/// The start point of vocations 0–5 in the client's tables (M4 world spec §2.5; Inferred until
-/// the world's first run checks it).
+/// The start point of vocations 0–5 in the client's tables (M4 world spec §2.5), where Task 11's
+/// runs entered and walked (world.md §13).
 fn start_scene() -> i64 {
     5
 }
@@ -443,8 +450,8 @@ impl Config {
         if s.id == 0 || s.id > i32::MAX as u32 {
             bail!("[server] id: 1 to {}", i32::MAX);
         }
-        if s.max_players == 0 {
-            bail!("[server] max_players: at least 1");
+        if !(1..=MAX_PLAYERS).contains(&s.max_players) {
+            bail!("[server] max_players: 1 to {MAX_PLAYERS}");
         }
         if s.public_host.as_deref().is_some_and(|h| !reachable_host(h)) {
             bail!(
@@ -959,6 +966,24 @@ mod tests {
     }
 
     #[test]
+    fn max_players_is_at_most_what_a_crowd_can_be_sent_each_tick() {
+        // #281: with everyone in one view, each tick sends every player a move of each of the
+        // others, and a connection's queue holds 256: past about 250 players, ones reading as fast
+        // as they can were let go as slow readers. A config over the cap is refused, as every
+        // value out of its range is.
+        let parse = |n: u32| {
+            let text = format!("[server]\nname = \"F\"\nmax_players = {n}\n");
+            Config::parse(&text, Path::new("/"))
+        };
+        assert_eq!(parse(200).unwrap().server.max_players, 200);
+        assert_eq!(parse(1).unwrap().server.max_players, 1);
+        for n in [0, 201, 1_000] {
+            let e = format!("{:#}", parse(n).unwrap_err());
+            assert!(e.contains("[server] max_players: 1 to 200"), "{n}: {e}");
+        }
+    }
+
+    #[test]
     fn a_name_is_plain_text_as_the_host_and_the_motd_are() {
         // The hosting plan's final review, Minor 7: the name is the most visible host text (the
         // console's title bar, every launcher's list, the game's `gj_uinfo`), so the format
@@ -1008,6 +1033,9 @@ mod tests {
         assert_eq!((c.server.public_host, c.server.tls), (None, None));
         assert!(c.server.login_bind.ip().is_loopback() && c.server.api_bind.ip().is_loopback());
         assert_eq!((c.server.tick_hz, c.world.start_scene), (20, 5));
+        // The start of vocations 0 to 5 in the client's tables, which Task 11's runs walked from
+        // (world.md §13).
+        assert_eq!(c.world.start_position, [2366.0, -71735.0, 64854.0, 345.0]);
         assert_eq!(
             (c.world.move_tolerance, c.world.save_every_secs),
             (1.5, 300)
@@ -1062,6 +1090,87 @@ mod tests {
         ] {
             let e = format!("{:#}", parse(extra).unwrap_err());
             assert!(e.contains(place), "{extra}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_worlds_start_takes_the_edges_of_its_limits() {
+        // Each limit is inclusive: its ends are taken, and just past them is refused.
+        let parse = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/"))
+        };
+        let low =
+            parse("[world]\nstart_scene = 1\nstart_position = [-1e7, 1e7, -1e7, -360]\n").unwrap();
+        assert_eq!(low.world.start_scene, 1);
+        assert_eq!(
+            low.world.start_position,
+            [
+                -COORDINATE_LIMIT,
+                COORDINATE_LIMIT,
+                -COORDINATE_LIMIT,
+                -YAW_LIMIT
+            ]
+        );
+        let high = parse("[world]\nstart_scene = 2147483647\nstart_position = [0, 0, 1e7, 360]\n")
+            .unwrap();
+        assert_eq!(high.world.start_scene, i64::from(i32::MAX));
+        assert_eq!(
+            high.world.start_position,
+            [0.0, 0.0, COORDINATE_LIMIT, YAW_LIMIT]
+        );
+        for past in [
+            "[10000000.5, 0, 0, 0]",
+            "[0, -10000000.5, 0, 0]",
+            "[0, 0, 0, -360.5]",
+        ] {
+            let e = parse(&format!("[world]\nstart_position = {past}\n")).unwrap_err();
+            assert!(format!("{e:#}").contains("start_position"), "{past}: {e:#}");
+        }
+    }
+
+    #[test]
+    fn the_example_gives_each_range_the_parser_holds() {
+        // fenji.example.toml names each range beside its setting, and that is the range
+        // `validate` holds: both ends are taken, and just past either is refused.
+        let line = |key: &str| {
+            EXAMPLE
+                .lines()
+                .find(|l| l.starts_with(&format!("{key} = ")))
+                .unwrap_or_else(|| panic!("no {key} in the example"))
+        };
+        for (section, key, range, ends) in [
+            (
+                "server",
+                "max_players",
+                "1 to 200",
+                ["1", "200", "0", "201"],
+            ),
+            ("server", "tick_hz", "1 to 60", ["1", "60", "0", "61"]),
+            (
+                "world",
+                "move_tolerance",
+                "1.0 to 5.0",
+                ["1.0", "5.0", "0.99", "5.01"],
+            ),
+            (
+                "world",
+                "save_every_secs",
+                "30 to 3600",
+                ["30", "3600", "29", "3601"],
+            ),
+        ] {
+            assert!(line(key).contains(range), "{key}: {}", line(key));
+            for (value, taken) in ends.into_iter().zip([true, true, false, false]) {
+                let setting = match section {
+                    "server" => format!("{key} = {value}\n"),
+                    _ => format!("[{section}]\n{key} = {value}\n"),
+                };
+                let parsed = Config::parse(
+                    &format!("[server]\nname = \"F\"\n{setting}"),
+                    Path::new("/"),
+                );
+                assert_eq!(parsed.is_ok(), taken, "{key} = {value}: {parsed:?}");
+            }
         }
     }
 

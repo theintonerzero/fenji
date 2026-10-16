@@ -1,5 +1,13 @@
 # The launcher's boards
 
+## The redesign (0.5.2 on)
+
+The owner approved the launcher's redesign on 2026-10-16. It has one stage where PLAY kindles: the player's servers sit in a slim rail, and Game, Account and Settings open as popovers. [`redesign/screens.html`](redesign/screens.html) holds its 18 screens at 1200 × 720. Their words are the launcher's copy. The redesign's spec, [`2026-10-16-launcher-redesign-design.md`](../../superpowers/specs/2026-10-16-launcher-redesign-design.md), lists the rulings the build follows. [`DESIGN.md`](../../../DESIGN.md) describes the system as built.
+
+## The Ember Sword boards (0.5.0 and 0.5.1)
+
+These boards are the record of the launcher as it shipped in 0.5.0 and 0.5.1.
+
 The owner approved these boards on 2026-10-13: the "Ember Sword" direction, the seventh version of its design canvas. The two Servers boards were added on 2026-10-15 in the same language, under the owner's pre-approval of that day, for the server list the hosting spec's HA6 asks for. Each is a 1200 × 720 HTML file, one per state of the launcher, plus the host's console and the brand-token sheet. [`DESIGN.md`](../../../DESIGN.md) at the repository's root is the design system they share. The launcher's spec, [`2026-10-15-m4-launcher-design.md`](../../superpowers/specs/2026-10-15-m4-launcher-design.md), says what the launcher builds from them and which three gaps it fixes.
 
 Open a board in a browser to see it. The boards were drawn in a design canvas:

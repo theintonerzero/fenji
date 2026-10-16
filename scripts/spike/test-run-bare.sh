@@ -621,7 +621,7 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   says 1 "hasn't been through Proton's launcher" "a run refuses a prefix Proton's launcher never ran in" -- \
     with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
   cp -- "$TESTROOT/proton-nobridge/version" "$WORK/compat/fenji-primed"
-  says 1 "another GE-Proton build" "a run names a prefix primed by another GE-Proton build" -- \
+  says 1 "another GE-Proton build.*remove .*/compat, then run: " "a run names a prefix primed by another GE-Proton build, and says to remove it" -- \
     with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
   : > "$WORK/compat/fenji-primed"
   says 1 "before builds were recorded" "a run names a prefix primed before builds were recorded" -- \
@@ -731,7 +731,7 @@ printf '%s\n' "$@" > "$FAKE_LOG/launch"
 echo "$* | PROTON_LOG_DIR=${PROTON_LOG_DIR:-} DISPLAY=${DISPLAY:-}" >> "$FAKE_LOG/launches"
 echo "starting the client" >&2
 # FAKE_CLIENT: the copy's gujianol.exe (sleep) in its own session, outliving this launcher as Wine's
-# processes may. FAKE_WINESERVER: a wineserver of this session's own, as a second umu-run session
+# processes may. FAKE_WINESERVER=N: N wineservers of this session's own, as a second umu-run session
 # would start one (Amendment B's backstop).
 client=""
 prev=""
@@ -743,10 +743,10 @@ if [ -n "${FAKE_CLIENT:-}" ]; then
   setsid "$client/bin64/gujianol.exe" 60 < /dev/null > /dev/null 2>&1 &
   echo "$!" >> "$FAKE_LOG/fake-pids"
 fi
-if [ -n "${FAKE_WINESERVER:-}" ]; then
+for _ in $(seq "${FAKE_WINESERVER:-0}"); do
   "$FAKE_WS" 60 < /dev/null > /dev/null 2>&1 &
   echo "$!" >> "$FAKE_LOG/fake-pids"
-fi
+done
 if [ -n "${FAKE_PLANT:-}" ]; then ln -s -- "$FAKE_PLANT_TO" "$FAKE_PLANT"; fi
 if [ -n "${FAKE_FIFO:-}" ]; then
   mkfifo -- "$FAKE_FIFO"
@@ -860,17 +860,30 @@ print(*(x.getsockname()[1] for x in s))')
     bad "setup on a primed prefix: rc $rc: $out"
   fi
 
-  # Setup on a prefix that exists but was never primed: the prime alone.
-  mkdir -p "$F/work2/compat/drive_c/windows"
-  echo "WINE REGISTRY Version 2" > "$F/work2/compat/system.reg"
-  flow setup-unprimed "$F/work2" "${on_desktop[@]}" cmd_bare_setup --desktop
-  mapfile -t calls < <(umu_blocks setup-unprimed)
-  if [ "$rc" = 0 ] && [ "${#calls[@]}" = 1 ] && [[ ${calls[0]} == "--- umu-run $F/work2/compat/drive_c/windows/system32/cmd.exe /c exit "* ]] &&
-    [ -f "$F/work2/compat/fenji-primed" ]; then
-    ok "setup primes an existing prefix without createprefix"
-  else
-    bad "setup on an unprimed prefix: rc $rc, calls $(printf '[%s] ' "${calls[@]}"): $out"
-  fi
+  # Setup starts Wine only in a compat/ that's empty or missing: a prefix there that isn't ready
+  # for this GE-Proton build may be one runs have used, whose registry may hold a driver service a
+  # run left, which booting it would start, unwatched (#148; #373's re-review). One never primed,
+  # one another build primed, and a half-built one are all refused, and nothing starts in them.
+  # One setup can't list counts as held too: the client could take the folder's read bit away, and
+  # a ready prefix's files still read by name (#373's re-review). Root reads it anyway.
+  cases=(unprimed other partial)
+  if [ "$(id -u)" != 0 ]; then cases+=(unlistable); fi
+  for case in "${cases[@]}"; do
+    w=$F/work2-$case
+    mkdir -p "$w/compat/drive_c/windows"
+    if [ "$case" != partial ]; then echo "WINE REGISTRY Version 2" > "$w/compat/system.reg"; fi
+    case $case in other | unlistable) echo "1789000000 GE-Proton-other" > "$w/compat/fenji-primed" ;; esac
+    before=$(cat -- "$w/compat/fenji-primed" 2> /dev/null || echo none)
+    if [ "$case" = unlistable ]; then chmod 0300 "$w/compat"; fi
+    flow "setup-$case" "$w" "${on_desktop[@]}" cmd_bare_setup --desktop
+    if [ "$case" = unlistable ]; then chmod 0700 "$w/compat"; fi
+    if [ "$rc" = 1 ] && [[ $out == *"remove $w/compat, then run: "*" setup"* ]] && [ ! -e "$F/log/setup-$case/umu" ] &&
+      [ "$(cat -- "$w/compat/fenji-primed" 2> /dev/null || echo none)" = "$before" ]; then
+      ok "setup starts nothing in a prefix that isn't ready for this build ($case), and says to remove it"
+    else
+      bad "setup on a used prefix ($case): rc $rc: $out"
+    fi
+  done
 
   # A failing umu-run: exit 1, and no mark.
   flow setup-nobuild "$F/work3" "${on_desktop[@]}" with_env FAKE_UMU_FAIL=createprefix cmd_bare_setup --desktop
@@ -1003,7 +1016,9 @@ print(*(x.getsockname()[1] for x in s))')
   echo "a second long password" > "$F/password2"
   rm -f -- "$F/work/compat/fenji-gate-event"
   TWOARGS=(--clients 2 --rehearsed --username2 second --password-file2 "$F/password2" --display2 77 --second-after 2)
-  flow run-two "$F/work" with_env FAKE_LAUNCH_SECS=1 with_env FAKE_CLIENT=1 cmd_bare_run two1 "${RUNARGS[@]}" \
+  # Client 1 plays 4 s, so it still runs when client 2 starts at 2 s; client 2's timeout (3 s) ends its
+  # fenji-launch first, and its client outlives that.
+  flow run-two "$F/work" with_env FAKE_LAUNCH_SECS=4 with_env FAKE_CLIENT=1 cmd_bare_run two1 "${RUNARGS[@]}" \
     --display 78 "${TWOARGS[@]}" --timeout 25 --timeout2 3 --key 1:space --key 2:w/500 --key 2@3:Return
   BIO=$F/work/io/two1 BOUT=$F/work/out/two1 BRUN=$F/work/runs/two1
   if [ "$rc" = 0 ] && [[ $out == *"run two1 done:"* ]] && [ -f "$BRUN/client/bin64/gujianol.exe" ] &&
@@ -1044,6 +1059,18 @@ print(*(x.getsockname()[1] for x in s))')
   fi
   while read -r p; do kill "$p" 2> /dev/null; done < "$F/log/run-two/fake-pids"
 
+  # Client 1 ended before client 2 was due (#244): client 2 isn't started, since a fresh wineserver
+  # would boot Wine's drivers in a new winedevice.exe, which S2 takes for a gate event. Client 1 plays
+  # 1 s, and client 2 is due at 5 s: a slow runner has 4 s to see it end.
+  flow run-two-late "$F/work" with_env FAKE_LAUNCH_SECS=1 cmd_bare_run two2 "${RUNARGS[@]}" \
+    --display 78 "${TWOARGS[@]}" --second-after 5 --timeout 25
+  if [ "$rc" = 0 ] && [ "$(grep -c . "$F/log/run-two-late/launches")" = 1 ] && [ -f "$F/work/io/two2/2/not-started" ] &&
+    [ ! -e "$F/work/io/two2/2/.started" ] && [[ $out == *"client 2 not started (client 1 had ended when it was due)"* ]]; then
+    ok "client 2 isn't started once client 1 has ended"
+  else
+    bad "client 1 ended first: rc $rc, launches $(cat "$F/log/run-two-late/launches"): $out"
+  fi
+
   # The backstop: a second wineserver in the namespace once client 2 has started stops the run at
   # once (exit 1), and the prefix is marked, so setup and run refuse it until it is rebuilt.
   flow run-ws "$F/work" with_env FAKE_LAUNCH_SECS=20 with_env FAKE_WINESERVER=1 cmd_bare_run ws1 "${RUNARGS[@]}" \
@@ -1061,6 +1088,18 @@ print(*(x.getsockname()[1] for x in s))')
   else
     bad "after a second wineserver: rc $rc: $out"
   fi
+  rm -f -- "$F/work/compat/fenji-gate-event"
+  # The backstop counts only once client 2 has started (its .started gate, #244): here client 1's own
+  # session holds two wineservers from its start, and the run goes on until client 2 starts at 6 s.
+  flow run-ws-gate "$F/work" with_env FAKE_LAUNCH_SECS=30 with_env FAKE_WINESERVER=2 cmd_bare_run ws2 "${RUNARGS[@]}" \
+    --display 78 "${TWOARGS[@]}" --second-after 6 --timeout 40 --timeout2 40
+  if [ "$rc" = 1 ] && [ "$secs" -ge 6 ] && [ -e "$F/work/io/ws2/2/.started" ] &&
+    [[ $out == *"a second wineserver for the prefix"* ]]; then
+    ok "the backstop counts the wineservers only once client 2 has started"
+  else
+    bad "the backstop before client 2: rc $rc after $secs s, started $([ -e "$F/work/io/ws2/2/.started" ] && echo yes || echo no): $out"
+  fi
+  while read -r p; do kill "$p" 2> /dev/null; done < "$F/log/run-ws-gate/fake-pids"
   rm -f -- "$F/work/compat/fenji-gate-event"
 else
   echo "skip the end-to-end flows: they need Linux on x86_64"

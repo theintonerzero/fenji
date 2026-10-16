@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fenji launcher: the redesign boards</title>
+<style>body { margin: 0; padding: 32px; background: #f4f3f1; color: #1c1c22; font-family: Geist, system-ui, sans-serif; } .subtitle { color: #5c5850; } h2, h3 { margin: .2em 0; }</style>
+</head>
+<body>
+<!-- The launcher redesign's approved boards (the owner, 2026-10-16): 18 screens at 1200 x 720, shown at 80%. The fonts load from Google Fonts here only; the launcher ships its own. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Noto+Serif+SC:wght@700&display=swap" rel="stylesheet">
+<style>
+  .fj { --k95:#0c0c0f; --k90:#111115; --k85:#16161b; --k80:#1c1c22; --l1:rgba(255,255,255,.07); --l2:rgba(255,255,255,.12);
+        --ol:rgba(255,255,255,.16); --field:#706b63; --t:#f2efe9; --prose:#d8d2c8; --t2:#c9c2b7; --mu:#a8a196; --fa:#8c867c;
+        --e6:#c8431f; --e5:#e4572e; --e3:#ff7a45; --glow:#ffb070; --tint:#2a1712; --g3:#f2b365; --g1:#ffd9ad;
+        --ok:#7fd38f; --warn:#e8b04a; --bad:#f26d7d; --info:#9cc3e4;
+        font-family: Geist, system-ui, sans-serif; }
+  .fj-intro { max-width: 980px; margin: 0 0 8px; }
+  .fj-group { margin: 44px 0 10px; max-width: 980px; }
+  .fj-group h3 { margin: 0 0 4px; }
+  .fj-shot { margin: 0 0 30px; overflow-x: auto; }
+  .fj-shot figcaption { font-size: 14px; margin: 0 0 8px; }
+  .fj-shot figcaption b { font-weight: 600; }
+  .fj-win { zoom: .8; width: 1200px; height: 720px; display: flex; background: var(--k95); color: var(--t); border-radius: 12px; overflow: hidden;
+            position: relative; box-shadow: 0 0 0 1px var(--l2), 0 24px 60px -20px rgba(0,0,0,.6); }
+
+  /* The rail: Fenji's seal, then each server as an ink seal, its state a bar beneath it. */
+  .fj-rail { width: 72px; flex: none; background: var(--k90); box-shadow: inset -1px 0 0 var(--l1); display: flex; flex-direction: column;
+             align-items: center; padding-top: 16px; gap: 14px; position: relative; z-index: 1; }
+  .fj-brand { width: 36px; height: 36px; border-radius: 8px; background: var(--e6); display: grid; place-items: center;
+              font: 700 20px/1 "Noto Serif SC", serif; color: #fff; margin-bottom: 10px; }
+  .fj-seal { width: 44px; height: 44px; border-radius: 8px; background: var(--k80); display: grid; place-items: center;
+             font: 600 18px/1 Cinzel, serif; color: var(--t2); position: relative; margin-bottom: 4px; }
+  .fj-seal::after { content: ""; position: absolute; left: 14px; right: 14px; bottom: -8px; height: 3px; border-radius: 6px; background: var(--bar, transparent); }
+  .fj-seal.on { background: var(--tint); color: var(--t); box-shadow: inset 0 0 0 1px var(--e5); }
+  .fj-seal.ok { --bar: var(--ok); } .fj-seal.warn { --bar: var(--warn); } .fj-seal.off { --bar: var(--fa); }
+  .fj-seal.add { background: transparent; box-shadow: inset 0 0 0 1px var(--ol); color: var(--mu); font: 400 22px/1 Geist, sans-serif; }
+  .fj-tip { position: absolute; left: 66px; background: var(--k80); box-shadow: 0 0 0 1px var(--l2), 0 12px 30px rgba(0,0,0,.45);
+            border-radius: 8px; padding: 9px 12px; font-size: 13.5px; white-space: nowrap; color: var(--t); }
+  .fj-tip span { color: var(--mu); }
+
+  /* The stage: one server, its state and PLAY. The ground warms as the game gets ready. */
+  .fj-stage { flex: 1; position: relative; display: flex; flex-direction: column; }
+  .fj-stage.warm { background: radial-gradient(1000px 620px at 6% 104%, #2a1510, #140d0c 48%, rgba(12,12,15,0) 78%), var(--k95); }
+  .fj-stage.cool { background: radial-gradient(1000px 620px at 6% 104%, #17171c, #111114 48%, rgba(12,12,15,0) 78%), var(--k95); }
+  .fj-top { height: 56px; display: flex; align-items: center; padding: 0 16px 0 72px; gap: 14px; }
+  .fj-addr { font: 400 13px/1 "Geist Mono", monospace; color: var(--fa); }
+  .fj-sp { flex: 1; }
+  .fj-chip { height: 32px; border-radius: 999px; padding: 0 13px; display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px;
+             color: var(--t2); box-shadow: inset 0 0 0 1px var(--l2); }
+  .fj-chip.warn { color: var(--warn); box-shadow: inset 0 0 0 1px rgba(232,176,74,.4); }
+  .fj-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--ok)); flex: none; display: inline-block; }
+  .fj-me { width: 32px; height: 32px; border-radius: 50%; background: var(--tint); color: var(--g3); display: grid; place-items: center;
+           font-size: 12.5px; font-weight: 600; box-shadow: inset 0 0 0 1px rgba(242,179,101,.25); }
+  .fj-icon { width: 32px; height: 32px; display: grid; place-items: center; color: var(--mu); }
+  .fj-ctl { display: flex; gap: 4px; margin-left: 4px; padding-left: 12px; box-shadow: inset 1px 0 0 var(--l1); }
+  .fj-ctl .fj-icon { color: var(--fa); width: 28px; }
+
+  .fj-body { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 0 72px 56px; position: relative; }
+  .fj-name { font: 600 64px/1.02 Cinzel, serif; letter-spacing: .03em; margin: 0; }
+  .fj-state { font-size: 15.5px; color: var(--t2); margin-top: 14px; display: flex; align-items: center; gap: 9px; }
+  .fj-state i { font-style: normal; color: var(--mu); }
+  .fj-gold { color: var(--g3); }
+  .fj-notice { font-size: 15px; line-height: 1.55; color: var(--prose); max-width: 560px; margin-top: 18px; }
+  .fj-row { display: flex; align-items: center; gap: 18px; margin-top: 44px; }
+  .fj-meta { font-size: 13.5px; color: var(--mu); margin-top: 14px; font-variant-numeric: tabular-nums; }
+
+  /* PLAY kindles: ember fills it while files check or Proton prepares; ready, it's alight. */
+  .fj-play { width: 248px; height: 64px; border-radius: 8px; display: inline-grid; place-items: center; position: relative; overflow: hidden;
+             font: 600 17px/1 Geist, sans-serif; letter-spacing: .2em; text-transform: uppercase; color: #fff; flex: none; font-variant-numeric: tabular-nums; }
+  .fj-play > span { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 10px; text-shadow: 0 1px 2px rgba(0,0,0,.4); }
+  .fj-play.lit { background: linear-gradient(180deg, rgba(255,255,255,.1), rgba(255,255,255,0) 55%), var(--e6);
+                 box-shadow: inset 0 0 0 1px rgba(255,122,69,.5), 0 14px 40px -12px rgba(228,87,46,.7); }
+  .fj-play.kindle { background: var(--k80); color: var(--t); box-shadow: inset 0 0 0 1px var(--l2); }
+  .fj-play.kindle::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: var(--p);
+                            background: linear-gradient(90deg, rgba(200,67,31,.45), rgba(228,87,46,.85)); }
+  .fj-play.kindle::after { content: ""; position: absolute; top: 0; bottom: 0; left: calc(var(--p) - 2px); width: 2px; background: var(--g1);
+                           box-shadow: 0 0 10px 2px rgba(255,176,112,.55); }
+  .fj-play.closed { background: var(--k80); color: var(--fa); box-shadow: inset 0 0 0 1px var(--l1); }
+  .fj-play.running { background: rgba(42,23,18,.6); color: var(--t); box-shadow: inset 0 0 0 1px rgba(228,87,46,.55); }
+
+  .fj-btn { height: 44px; border-radius: 8px; padding: 0 18px; display: inline-grid; place-items: center; font-size: 14.5px; font-weight: 500;
+            color: var(--t); box-shadow: inset 0 0 0 1px var(--ol); white-space: nowrap; }
+  .fj-btn.ember { background: var(--e6); box-shadow: inset 0 0 0 1px rgba(255,122,69,.45); color: #fff; font-weight: 600; }
+  .fj-btn.sm { height: 36px; padding: 0 14px; font-size: 13.5px; }
+  .fj-link { font-size: 14.5px; color: var(--g3); }
+  .fj-quiet { font-size: 14.5px; color: var(--mu); }
+
+  .fj-friends { margin-top: 40px; display: flex; align-items: center; gap: 12px; font-size: 13.5px; color: var(--mu); }
+  .fj-faces { display: flex; }
+  .fj-face { width: 28px; height: 28px; border-radius: 50%; background: var(--k80); color: var(--g3); font-size: 12.5px; font-weight: 600;
+             display: grid; place-items: center; box-shadow: 0 0 0 2px var(--k95); margin-left: -6px; }
+  .fj-face:first-child { margin-left: 0; }
+
+  .fj-note { display: flex; gap: 10px; align-items: flex-start; font-size: 14.5px; line-height: 1.5; color: var(--prose); max-width: 520px; }
+  .fj-bang { width: 18px; height: 18px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--bad); color: var(--bad); font-size: 12px; font-weight: 700;
+             display: grid; place-items: center; flex: none; margin-top: 2px; }
+
+  /* Panels slide over the stage from the right; the rail stays. */
+  .fj-scrim { position: absolute; inset: 0; background: rgba(6,6,8,.42); z-index: 1; }
+  .fj-top { position: relative; z-index: 2; }
+  .fj-panel { position: absolute; top: 60px; right: 16px; width: 404px; z-index: 3; background: var(--k85); border-radius: 12px;
+              box-shadow: 0 0 0 1px var(--l2), 0 28px 70px rgba(0,0,0,.6); display: flex; flex-direction: column; }
+  .fj-ph { height: 60px; display: flex; align-items: center; padding: 0 12px 0 24px; box-shadow: inset 0 -1px 0 var(--l1); }
+  .fj-ph h4 { font: 600 20px/1 Cinzel, serif; margin: 0; flex: 1; letter-spacing: .03em; }
+  .fj-pb { padding: 0 24px 4px; display: flex; flex-direction: column; }
+  .fj-chip.open { background: var(--k80); box-shadow: inset 0 0 0 1px var(--ol); color: var(--t); }
+  .fj-me.open { box-shadow: 0 0 0 2px var(--e5); }
+  .fj-icon.open { color: var(--t); background: var(--k80); border-radius: 8px; }
+  .fj-sec { padding: 20px 0; box-shadow: inset 0 -1px 0 var(--l1); }
+  .fj-sec:last-child { box-shadow: none; }
+  .fj-label { font-size: 13.5px; font-weight: 600; color: var(--t2); margin: 0 0 10px; }
+  .fj-big { font-size: 16px; font-weight: 600; }
+  .fj-mono { font: 400 13px/1.5 "Geist Mono", monospace; color: var(--mu); }
+  .fj-line { font-size: 13.5px; color: var(--mu); margin-top: 6px; display: flex; gap: 8px; align-items: center; }
+  .fj-acts { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
+  .fj-field { height: 46px; border-radius: 8px; background: var(--k80); box-shadow: inset 0 0 0 1px var(--field); display: flex; align-items: center;
+              padding: 0 14px; font-size: 14.5px; color: var(--t); }
+  .fj-field.ph { color: var(--fa); }
+  .fj-field.mono { font: 400 13.5px/1 "Geist Mono", monospace; }
+  .fj-hint { font-size: 13.5px; color: var(--mu); margin-top: 8px; }
+  .fj-switch { width: 40px; height: 24px; border-radius: 999px; background: var(--g3); position: relative; flex: none; }
+  .fj-switch::after { content: ""; position: absolute; right: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--k95); }
+  .fj-check { width: 20px; height: 20px; border-radius: 6px; box-shadow: inset 0 0 0 1px var(--ol); background: var(--k80); display: grid; place-items: center;
+              color: var(--g3); font-size: 13px; flex: none; }
+  .fj-file { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; box-shadow: inset 0 -1px 0 var(--l1); font-size: 13.5px; }
+  .fj-file b { font-weight: 500; color: var(--warn); }
+  .fj-bar { height: 4px; border-radius: 6px; background: var(--k80); overflow: hidden; margin-top: 14px; }
+  .fj-bar i { display: block; height: 100%; background: var(--e5); width: var(--p); }
+
+  /* A first-run or account step: the stage holds the one task. */
+  .fj-task { margin: 0; max-width: 560px; }
+  .fj-task h2 { font: 600 45px/1.1 Cinzel, serif; letter-spacing: .03em; margin: 0; }
+  .fj-task .fj-lede { font-size: 15.5px; color: var(--prose); margin: 14px 0 28px; line-height: 1.5; }
+  .fj-pair { display: grid; gap: 16px; }
+
+  .fj-dialog { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: 500px; background: var(--k85); border-radius: 12px;
+               box-shadow: 0 0 0 1px var(--l2), 0 30px 80px rgba(0,0,0,.6); padding: 30px 32px 28px; }
+  .fj-dialog h4 { font: 600 26px/1.1 Cinzel, serif; margin: 0 0 10px; letter-spacing: .02em; }
+  .fj-toast { position: absolute; right: 24px; bottom: 24px; width: 360px; background: var(--k85); border-radius: 12px; padding: 16px 18px;
+              box-shadow: 0 0 0 1px var(--l2), 0 20px 50px rgba(0,0,0,.55); display: flex; gap: 14px; align-items: center; }
+  .fj-qr { width: 140px; height: 140px; border-radius: 8px; background: #f2efe9; padding: 9px; flex: none; }
+  .fj-svg { display: block; }
+</style>
+
+<div class="fj">
+<h2 class="fj-intro">Every screen, refined</h2>
+<p class="subtitle fj-intro">The short words stay. Now the stage is composed around its centre, the server's name owns it at 64 px, friends sit just under PLAY, and Game, Account and Settings open as compact popovers under their own control instead of full-height sheets. Drawn at 1200 × 720, shown at 80%.</p>
+
+<!-- ============================ PLAYING ============================ -->
+<div class="fj-group"><h3>1 · Playing</h3><p class="subtitle">The screen you'll see almost every time: your server, its state, PLAY, and who's on.</p></div>
+
+<figure class="fj-shot"><figcaption><b>Ready.</b> Online, your copy verified, PLAY alight. Your other servers wait in the rail; hovering a seal shows its state.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail">
+    <div class="fj-brand">焚</div>
+    <div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div>
+  </div>
+  <div class="fj-stage warm">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-name">Moonward</div>
+      <div class="fj-state"><span class="fj-dot"></span>Online <i>·</i> 3/20 players <i>·</i> 24 ms</div>
+      <div class="fj-notice"><span class="fj-gold">Wen:</span> The world's open. See you in Qianqiu.</div>
+      <div class="fj-row"><span class="fj-play lit"><span>Play</span></span></div>
+      <div class="fj-friends"><span class="fj-faces"><span class="fj-face">K</span><span class="fj-face">W</span><span class="fj-face">S</span></span>
+        <span><span class="fj-gold">Kai, Wen, Shu</span> playing</span></div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Verifying.</b> PLAY kindles as the check runs; you can stop it.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage cool">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot" style="--c:var(--mu)"></span>Verifying</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-name">Moonward</div>
+      <div class="fj-state"><span class="fj-dot"></span>Online <i>·</i> 3/20 players</div>
+      <div class="fj-row"><span class="fj-play kindle" style="--p:78%"><span>Verifying 78%</span></span><span class="fj-quiet">Stop</span></div>
+      <div class="fj-friends"><span class="fj-faces"><span class="fj-face">K</span><span class="fj-face">W</span><span class="fj-face">S</span></span>
+        <span><span class="fj-gold">Kai, Wen, Shu</span> playing</span></div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Starting.</b> The first start sets up Proton; PLAY kindles through it, and Cancel start is beside it.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage cool">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-name">Moonward</div>
+      <div class="fj-state"><span class="fj-dot"></span>Online <i>·</i> 3/20 players</div>
+      <div class="fj-row"><span class="fj-play kindle" style="--p:36%"><span>Starting</span></span><span class="fj-btn sm">Cancel</span></div>
+      <div class="fj-meta">Setting up Proton (first start only)</div>
+      <div class="fj-friends"><span class="fj-faces"><span class="fj-face">K</span><span class="fj-face">W</span><span class="fj-face">S</span></span>
+        <span><span class="fj-gold">Kai, Wen, Shu</span> playing</span></div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Running.</b> The game is on; you're in the list too. Closing the launcher leaves the game running.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage warm">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-name">Moonward</div>
+      <div class="fj-state"><span class="fj-dot"></span>Online <i>·</i> 4/20 players</div>
+      <div class="fj-row"><span class="fj-play running"><span><span class="fj-dot"></span>Running</span></span></div>
+      <div class="fj-meta">Since 21:04</div>
+      <div class="fj-friends"><span class="fj-faces"><span class="fj-face" style="background:var(--tint)">LY</span><span class="fj-face">K</span><span class="fj-face">W</span><span class="fj-face">S</span></span>
+        <span><span class="fj-gold">You, Kai, Wen, Shu</span> playing</span></div>
+    </div>
+  </div>
+</div></figure>
+
+<!-- ============================ CAN'T PLAY ============================ -->
+<div class="fj-group"><h3>2 · When you can't play yet</h3><p class="subtitle">PLAY stays dark and one line says why, with the one thing to do.</p></div>
+
+<figure class="fj-shot"><figcaption><b>Maintenance.</b> The host's message, when they expect to be back, and a way to check again.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on warn">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-name">Moonward</div>
+      <div class="fj-state"><span class="fj-dot" style="--c:var(--warn)"></span>Maintenance <i>·</i> back around 21:00</div>
+      <div class="fj-notice"><span class="fj-gold">Wen:</span> Updating to 0.5.2.</div>
+      <div class="fj-row"><span class="fj-play closed"><span>Play</span></span><span class="fj-btn sm">Refresh</span></div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Offline.</b> No answer from the server; when it was last seen; Try again.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on off">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-name">Moonward</div>
+      <div class="fj-state"><span class="fj-bang">!</span>Offline <i>·</i> last seen yesterday 23:10</div>
+      <div class="fj-row"><span class="fj-play closed"><span>Play</span></span><span class="fj-btn sm">Retry</span><span class="fj-link">What to try</span></div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Its key changed.</b> The server isn't the one you trusted; only a new link from the host fixes that.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on off">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-name">Moonward</div>
+      <div class="fj-state"><span class="fj-bang">!</span>Key changed</div>
+      <div class="fj-notice">This isn't the server you trusted. Ask <span class="fj-gold">Wen</span> for a new link.</div>
+      <div class="fj-row"><span class="fj-play closed"><span>Play</span></span><span class="fj-btn sm">Paste new link</span></div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>On Windows or macOS.</b> Everything works except starting the game, and it says so once.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-name">Moonward</div>
+      <div class="fj-state"><span class="fj-dot"></span>Online <i>·</i> 3/20 players</div>
+      <div class="fj-row"><span class="fj-play closed"><span>Play</span></span></div>
+      <div class="fj-meta">Playing on Windows isn't supported yet.</div>
+      <div class="fj-friends"><span class="fj-faces"><span class="fj-face">K</span><span class="fj-face">W</span><span class="fj-face">S</span></span>
+        <span><span class="fj-gold">Kai, Wen, Shu</span> playing</span></div>
+    </div>
+  </div>
+</div></figure>
+
+<!-- ============================ FIRST RUN ============================ -->
+<div class="fj-group"><h3>3 · Getting in</h3><p class="subtitle">Your first run, an invite, signing in, and adding another server.</p></div>
+
+<figure class="fj-shot"><figcaption><b>Welcome.</b> No servers yet: the stage asks for the one thing your host sent you.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage cool">
+    <div class="fj-top"><span class="fj-sp"></span><span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-task">
+        <h2>Welcome to Fenji</h2>
+        <p class="fj-lede">Paste the invite link your host sent you.</p>
+        <div class="fj-pair"><div class="fj-field mono ph">https://moonward.example.net/#invite=…</div></div>
+        <div class="fj-acts" style="margin-top:20px"><span class="fj-btn ember">Continue</span><span class="fj-link">I have an account</span></div>
+      </div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Create your account.</b> From the invite: the server and its host named, two fields, one button.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on">M</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage cool">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span><span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-task">
+        <h2>Join Moonward</h2>
+        <p class="fj-lede">Hosted by <span class="fj-gold">Wen</span>.</p>
+        <div class="fj-pair">
+          <div><div class="fj-label">Username</div><div class="fj-field">lin_yue</div></div>
+          <div><div class="fj-label">Password</div><div class="fj-field">••••••••••••••</div><div class="fj-hint">Not your Steam password.</div></div>
+        </div>
+        <div class="fj-acts" style="margin-top:24px"><span class="fj-btn ember">Create account</span><span class="fj-quiet">Cancel</span></div>
+      </div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Sign in.</b> When PLAY needs a session you don't have; it carries on to Play once you're in.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage cool">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-task">
+        <h2>Sign in to Moonward</h2>
+        <p class="fj-lede">Your Moonward account, not Steam.</p>
+        <div class="fj-pair">
+          <div><div class="fj-label">Username</div><div class="fj-field">lin_yue</div></div>
+          <div><div class="fj-label">Password</div><div class="fj-field">••••••••••••••</div></div>
+        </div>
+        <div class="fj-acts" style="margin-top:18px"><span class="fj-check">✓</span><span style="font-size:14.5px;color:var(--t2)">Remember this server</span></div>
+        <div class="fj-acts" style="margin-top:24px"><span class="fj-btn ember">Sign in</span><span class="fj-quiet">Cancel</span></div>
+      </div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Add a server.</b> From the rail's +: an address or an invite link, nothing else.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add" style="box-shadow: inset 0 0 0 1px var(--e5); color: var(--t)">+</div></div>
+  <div class="fj-stage warm">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span><span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body"><div class="fj-name">Moonward</div></div>
+    <div class="fj-scrim"></div>
+    <div class="fj-dialog">
+      <h4 style="margin-bottom:18px">Add a server</h4>
+      <div class="fj-label">Address or invite link</div>
+      <div class="fj-field mono ph">jadehall.example.org</div>
+      <div class="fj-acts" style="margin-top:24px;justify-content:flex-end"><span class="fj-btn">Cancel</span><span class="fj-btn ember">Add</span></div>
+    </div>
+  </div>
+</div></figure>
+
+<!-- ============================ YOUR GAME ============================ -->
+<div class="fj-group"><h3>4 · Your game</h3><p class="subtitle">The chip in the top bar opens this popover: your copy, ready, set up, downloading or needing repair.</p></div>
+
+<figure class="fj-shot"><figcaption><b>Ready.</b> Where your copy is, that it's verified, and when.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage warm">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip open"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body"><div class="fj-name">Moonward</div><div class="fj-row"><span class="fj-play lit"><span>Play</span></span></div></div>
+    <div class="fj-scrim"></div>
+    <div class="fj-panel">
+      <div class="fj-ph"><h4>Game</h4><span class="fj-icon">✕</span></div>
+      <div class="fj-pb">
+        <div class="fj-sec"><div class="fj-big">Swords of Legends Online</div><div class="fj-mono">~/Games/SoLO</div>
+          <div class="fj-line"><span class="fj-dot"></span>Verified</div>
+          <div class="fj-line" style="color:var(--fa)">Today at 09:10</div>
+          <div class="fj-acts"><span class="fj-btn sm">Verify integrity</span><span class="fj-link" style="font-size:13.5px">Change folder</span></div></div>
+      </div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Set up.</b> A copy Steam installed comes first; or your own folder; or a download from your Steam library.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage cool">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip open"><span class="fj-dot" style="--c:var(--mu)"></span>Set up the game</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body"><div class="fj-name">Moonward</div><div class="fj-row"><span class="fj-play closed"><span>Play</span></span></div></div>
+    <div class="fj-scrim"></div>
+    <div class="fj-panel">
+      <div class="fj-ph"><h4>Game</h4><span class="fj-icon">✕</span></div>
+      <div class="fj-pb">
+        <div class="fj-sec"><div class="fj-big">Steam library</div>
+          <div class="fj-mono">~/.local/share/Steam/…/Swords of Legends Online</div>
+          <div class="fj-acts"><span class="fj-btn ember sm">Use it</span></div></div>
+        <div class="fj-sec"><div class="fj-big">Another folder</div>
+          <div class="fj-acts"><span class="fj-btn sm">Choose folder</span></div></div>
+        <div class="fj-sec"><div class="fj-big">Download</div>
+          <div class="fj-line">With your Steam account</div>
+          <div class="fj-acts"><span class="fj-btn sm">Download</span></div></div>
+      </div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Downloading.</b> DepotDownloader runs hidden; scan its code with the Steam Mobile App, then the files come in. (Amendment A, after its rehearsal.)</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage cool">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip open"><span class="fj-dot" style="--c:var(--mu)"></span>Downloading 42%</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body"><div class="fj-name">Moonward</div><div class="fj-row"><span class="fj-play closed"><span>Play</span></span></div></div>
+    <div class="fj-scrim"></div>
+    <div class="fj-panel">
+      <div class="fj-ph"><h4>Game</h4><span class="fj-icon">✕</span></div>
+      <div class="fj-pb">
+        <div class="fj-sec" style="display:flex;gap:20px;align-items:center">
+          <div class="fj-qr"><svg class="fj-svg" viewBox="0 0 29 29" width="122" height="122" shape-rendering="crispEdges">
+            <defs><pattern id="qrp" width="7" height="7" patternUnits="userSpaceOnUse"><rect width="7" height="7" fill="#f2efe9"/><path fill="#0c0c0f" d="M0 0h1v1H0zM2 0h2v1H2zM5 1h1v2H5zM1 2h1v1H1zM3 2h1v2H3zM0 4h2v1H0zM4 4h1v1H4zM6 4h1v2H6zM2 5h1v2H2zM5 6h1v1H5zM0 6h1v1H0z"/></pattern></defs>
+            <rect width="29" height="29" fill="url(#qrp)"/>
+            <g fill="#f2efe9"><rect x="0" y="0" width="8" height="8"/><rect x="21" y="0" width="8" height="8"/><rect x="0" y="21" width="8" height="8"/></g>
+            <g fill="#0c0c0f"><path d="M0 0h7v7H0zM22 0h7v7h-7zM0 22h7v7H0z"/></g>
+            <g fill="#f2efe9"><path d="M1 1h5v5H1zM23 1h5v5h-5zM1 23h5v5H1z"/></g>
+            <g fill="#0c0c0f"><path d="M2 2h3v3H2zM24 2h3v3h-3zM2 24h3v3H2z"/></g></svg></div>
+          <div><div class="fj-big">Scan with the Steam app</div><div class="fj-line" style="display:block;line-height:1.5;hyphens:none">Fenji never sees your&nbsp;sign&#8209;in.</div>
+            <div class="fj-acts"><span class="fj-link" style="font-size:13.5px">No app? Use a password</span></div></div>
+        </div>
+        <div class="fj-sec"><div class="fj-line" style="justify-content:space-between;margin:0;color:var(--t2)"><span>Downloading</span><span style="font-variant-numeric:tabular-nums">42%</span></div>
+          <div class="fj-bar" style="--p:42%"><i></i></div>
+          <div class="fj-acts"><span class="fj-btn sm">Cancel</span></div></div>
+      </div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Needs repair.</b> Which files and why; Repair from Steam fetches just those.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage cool">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip open warn"><span class="fj-dot" style="--c:var(--warn)"></span>2 files need repair</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body"><div class="fj-name">Moonward</div><div class="fj-row"><span class="fj-play closed"><span>Play</span></span></div></div>
+    <div class="fj-scrim"></div>
+    <div class="fj-panel">
+      <div class="fj-ph"><h4>Game</h4><span class="fj-icon">✕</span></div>
+      <div class="fj-pb">
+        <div class="fj-sec"><div class="fj-big">2 files need repair</div>
+          <div style="margin-top:12px">
+            <div class="fj-file"><span class="fj-mono" style="color:var(--t2)">data/_index/sc_res.idx</span><b>Wrong size</b></div>
+            <div class="fj-file"><span class="fj-mono" style="color:var(--t2)">bin64/gujianol.exe</span><b>Changed</b></div>
+          </div>
+          <div class="fj-acts"><span class="fj-btn ember sm">Repair</span><span class="fj-link" style="font-size:13.5px">Change folder</span></div></div>
+      </div>
+    </div>
+  </div>
+</div></figure>
+
+<!-- ============================ YOU AND FENJI ============================ -->
+<div class="fj-group"><h3>5 · You, Settings and updates</h3><p class="subtitle">Your avatar and the gear open these popovers; an update waits quietly in a corner.</p></div>
+
+<figure class="fj-shot"><figcaption><b>Account.</b> Who you are on each server, signed in or not.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage warm">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me open">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body"><div class="fj-name">Moonward</div><div class="fj-row"><span class="fj-play lit"><span>Play</span></span></div></div>
+    <div class="fj-scrim"></div>
+    <div class="fj-panel">
+      <div class="fj-ph"><h4>Account</h4><span class="fj-icon">✕</span></div>
+      <div class="fj-pb">
+        <div class="fj-sec"><div class="fj-big">Moonward</div><div class="fj-line">Signed in as <span class="fj-gold">lin_yue</span></div>
+          <div class="fj-acts"><span class="fj-btn sm">Sign out</span></div></div>
+        <div class="fj-sec"><div class="fj-big">Jade Hall</div><div class="fj-line">Signed in as <span class="fj-gold">lin_yue</span></div></div>
+        <div class="fj-sec"><div class="fj-big">Ember Peak</div><div class="fj-line">Not signed in · <span class="fj-link" style="font-size:13.5px">Sign in</span></div></div>
+        <div class="fj-sec"><div class="fj-line" style="color:var(--fa);line-height:1.5;display:block">To delete an account, ask the host.</div></div>
+      </div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>Settings.</b> Updates, Proton, the download folder, and where the logs are.</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage warm">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon open"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body"><div class="fj-name">Moonward</div><div class="fj-row"><span class="fj-play lit"><span>Play</span></span></div></div>
+    <div class="fj-scrim"></div>
+    <div class="fj-panel">
+      <div class="fj-ph"><h4>Settings</h4><span class="fj-icon">✕</span></div>
+      <div class="fj-pb">
+        <div class="fj-sec"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="fj-big" style="font-size:15px">Auto-update</div>
+          <div class="fj-line">0.5.1 · up to date · <span class="fj-link" style="font-size:13.5px">Check now</span></div></div><span class="fj-switch"></span></div></div>
+        <div class="fj-sec"><div class="fj-label">umu-run</div><div class="fj-field mono ph">Automatic</div></div>
+        <div class="fj-sec"><div class="fj-label">Download folder</div><div class="fj-field mono">~/Games/SoLO</div></div>
+        <div class="fj-sec"><div class="fj-acts" style="margin:0;gap:20px"><span class="fj-link" style="font-size:13.5px">Logs</span><span class="fj-link" style="font-size:13.5px">Licences</span><span class="fj-link" style="font-size:13.5px">Source</span></div></div>
+      </div>
+    </div>
+  </div>
+</div></figure>
+
+<figure class="fj-shot"><figcaption><b>An update is ready.</b> It never takes the stage: a corner note, restart when you like (here while PLAY is alight, so it stays quiet).</figcaption>
+<div class="fj-win">
+  <div class="fj-rail"><div class="fj-brand">焚</div><div class="fj-seal on ok">M</div><div class="fj-seal ok">J</div><div class="fj-seal warn">E</div><div class="fj-seal add">+</div></div>
+  <div class="fj-stage warm">
+    <div class="fj-top"><span class="fj-addr">moonward.example.net</span><span class="fj-sp"></span>
+      <span class="fj-chip"><span class="fj-dot"></span>Game ready</span><span class="fj-me">LY</span>
+      <span class="fj-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M10.13 5.25L10.42 2.53L13.58 2.53L13.87 5.25A7.0 7.0 0 0 1 15.45 5.91L17.57 4.18L19.82 6.43L18.09 8.55A7.0 7.0 0 0 1 18.75 10.13L21.47 10.42L21.47 13.58L18.75 13.87A7.0 7.0 0 0 1 18.09 15.45L19.82 17.57L17.57 19.82L15.45 18.09A7.0 7.0 0 0 1 13.87 18.75L13.58 21.47L10.42 21.47L10.13 18.75A7.0 7.0 0 0 1 8.55 18.09L6.43 19.82L4.18 17.57L5.91 15.45A7.0 7.0 0 0 1 5.25 13.87L2.53 13.58L2.53 10.42L5.25 10.13A7.0 7.0 0 0 1 5.91 8.55L4.18 6.43L6.43 4.18L8.55 5.91A7.0 7.0 0 0 1 10.13 5.25Z"/></svg></span>
+      <span class="fj-ctl"><span class="fj-icon">—</span><span class="fj-icon">✕</span></span></div>
+    <div class="fj-body">
+      <div class="fj-name">Moonward</div>
+      <div class="fj-state"><span class="fj-dot"></span>Online <i>·</i> 3/20 players <i>·</i> 24 ms</div>
+      <div class="fj-row"><span class="fj-play lit"><span>Play</span></span></div>
+      <div class="fj-friends"><span class="fj-faces"><span class="fj-face">K</span><span class="fj-face">W</span><span class="fj-face">S</span></span>
+        <span><span class="fj-gold">Kai, Wen, Shu</span> playing</span></div>
+    </div>
+    <div class="fj-toast"><div style="flex:1"><div style="font-size:14.5px;font-weight:600">Update ready</div><div style="font-size:13.5px;color:var(--mu);margin-top:3px">0.5.2 · installs on restart</div></div><span class="fj-btn sm">Restart</span></div>
+  </div>
+</div></figure>
+
+</div>
+
+</body>
+</html>
