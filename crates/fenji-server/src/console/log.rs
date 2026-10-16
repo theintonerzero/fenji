@@ -3,7 +3,7 @@
 //! [`init`] is given:
 //! - [`Sink::Stderr`], as before the console, which systemd's journal keeps. A thread of its own
 //!   writes it, through a queue, and no line waits for it: a stderr that takes no more holds that
-//!   thread alone, and the lines it has no room for are skipped and counted (#359);
+//!   thread, never one that logs, and the lines it has no room for are skipped and counted (#359);
 //! - [`Sink::File`], a file a day, which a host attaches to a bug report;
 //! - [`Sink::Hub`], the [`LogHub`]: the last lines for a console that attaches, then each line as
 //!   it's logged.

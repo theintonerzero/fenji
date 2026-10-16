@@ -1,8 +1,9 @@
 //! The log's stderr, when stderr is one of its sinks (M4 hosting spec §3.4; #359): `--plain`'s and
 //! the admin commands'. A thread that logs only queues its line: one thread of the queue's own
 //! writes the lines out, so that a stderr that takes no more, a terminal over a frozen link or a
-//! pipe nobody reads, holds that thread alone. The others go on, a runtime's workers among them,
-//! one of which sees the signals and runs the console's `stop`: the server serves on, and stops.
+//! pipe nobody reads, holds that thread, never one that logs. Those go on, a runtime's workers
+//! among them, one of which sees the signals and runs the console's `stop`: the server serves on,
+//! and stops. What else writes to stderr itself, as a panic's message does, still waits for it.
 //! - A line the queue has no room for is dropped, and counted. When the writer next gets a line
 //!   through, it first says how many it skipped, at WARN.
 //! - As the process exits, [`Stderr::finish`] waits a while for the writer, then leaves it.
@@ -150,8 +151,8 @@ fn write_out(shared: &Shared, mut out: impl Write) {
     }
 }
 
-/// The line that says `lines` were skipped, at `at_ms`, as the log writes its own, at WARN: `2 lines
-/// of the log were skipped: stderr wasn't being read`, or `1 line of the log was skipped: …`.
+/// The line, at WARN as the log writes its own, that says `lines` were skipped, at `at_ms`:
+/// `2 lines of the log were skipped: stderr wasn't being read`, and `1 line … was skipped: …`.
 fn skipped(lines: u64, at_ms: i64) -> String {
     let (noun, verb) = if lines == 1 {
         ("line", "was")
