@@ -194,6 +194,7 @@ Hosts with a domain keep parent §8's path: Caddy in front of the account API, w
   - The copy is written under a hidden name, `.<name>.part`, checked with `PRAGMA integrity_check`, and only then renamed: a backup killed as it copies (its timer's service stopped, a reboot, Ctrl-C) never leaves a file that passes for a backup (the hosting plan's final review, Minor 4).
   - Prunes count backup names alone, and the next backup removes a killed one's leftovers. A backup holds `backups/.lock`, a file SQLite never opens, while it's made, so that it never takes another's copy for a leftover: one started meanwhile says so.
 - The reference deployment's systemd timer runs it nightly. The write-up shows Task Scheduler on Windows and cron or launchd on macOS.
+- `backup`, like every admin subcommand, never migrates a running server's database: while a server holds `server.lock`, the command opens the database as it is, and refuses one laid out for another version of Fenji than its own, saying to run the command through the server (`console --run`) or to stop it first. With no server running, it brings the database up to date as a start does (#359).
 - **Restoring:** stop the server, put the copy in place of `fenji.db` (removing `fenji.db-wal` and `fenji.db-shm`), and start it.
 
 ### 3.13 The write-up (H2, H12)

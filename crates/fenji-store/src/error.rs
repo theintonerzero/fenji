@@ -19,6 +19,43 @@ pub enum Error {
     TooMany,
     #[error("a place must be finite")]
     NotFinite,
+    /// The database's schema isn't this build's ([`crate::Store::open_as_is`]).
+    #[error("{0}")]
+    Schema(SchemaDiffers),
+}
+
+/// How a database's schema differs from this build's: the latest migration each has. Another
+/// version of Fenji has migrated it further, or this build would migrate it further.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaDiffers {
+    /// The latest migration the database has, none for a database without a schema.
+    pub database: Option<i64>,
+    /// The latest this build has.
+    pub build: i64,
+}
+
+impl SchemaDiffers {
+    /// Whether a newer build than this one has migrated the database.
+    pub fn newer(&self) -> bool {
+        self.database.is_some_and(|database| database > self.build)
+    }
+}
+
+impl std::fmt::Display for SchemaDiffers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.database {
+            Some(database) => write!(
+                f,
+                "the database's schema is at migration {database}, and this build's at {}",
+                self.build
+            ),
+            None => write!(
+                f,
+                "the database has no schema yet, and this build's is at migration {}",
+                self.build
+            ),
+        }
+    }
 }
 
 impl From<sqlx::migrate::MigrateError> for Error {

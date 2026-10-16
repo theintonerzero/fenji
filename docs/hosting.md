@@ -184,7 +184,7 @@ Signed-in players' launchers list the characters in the world, those still loadi
 
 ### Commands outside the console
 
-The server's program takes commands of its own too, for scripts and for times the server isn't running; `--help` lists them. They're safe while the server runs. Run them from the server's folder, as the user the server runs as:
+The server's program takes commands of its own too, for scripts and for times the server isn't running; `--help` lists them. They're safe while the server runs, and they never change its database's layout under it. If the running server is another version of Fenji, with a database laid out for that version, they refuse, and say how to run the command through the server instead (`console --run`, above), or to stop the server first. With no server running, they bring the database up to date, as starting the server does. Run them from the server's folder, as the user the server runs as:
 - on Linux and macOS, as `./fenji-server <command>`;
 - on Windows, in a Command Prompt, as `fenji-server.exe <command>`;
 - on the reference VPS (section 4), as `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`. Run as root, they refuse, and say whom to run them as: a file root made in the data folder would be root's, and the service couldn't use it. The one exception is `init`, which writes the settings into `/etc/fenji`, where only root may write, and touches no data (section 4).
