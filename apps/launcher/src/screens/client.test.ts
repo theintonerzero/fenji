@@ -39,12 +39,21 @@ test("setup: the manual command opens in a dialog, in mono, with Copy and Choose
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   press(root, "No Steam app? Run DepotDownloader yourself");
   const shown = document.querySelector<HTMLElement>('[role="dialog"]')!;
-  expect(shown.querySelector(".command-line code")!.textContent).toBe(s.client.manualCommand);
+  const manual = s.client.manual!;
+  expect(shown.querySelector(".command-line code")!.textContent).toBe(manual.download);
   press(shown, "Copy");
   await Promise.resolve();
-  expect(written).toEqual([s.client.manualCommand]);
+  expect(written).toEqual([manual.download]);
+  // Without Fenji's own DepotDownloader, the dialog says where to get it, the link on its own
+  // (#348's final review: a first line of the command said it, as a comment).
+  const get = manual.get!;
+  expect(shown.textContent).toContain(`Get DepotDownloader ${get.version} for Linux`);
+  press(shown, get.url);
   press(shown, "Choose folder");
-  expect(sent).toEqual([{ type: "pickFolder", purpose: "game" }]);
+  expect(sent).toEqual([
+    { type: "openUrl", url: get.url },
+    { type: "pickFolder", purpose: "game" },
+  ]);
   expect(document.querySelector('[role="dialog"]')).toBeNull();
 });
 
@@ -92,10 +101,11 @@ test("repair: the counts and each file's problem, Repair from Steam, and the Gam
   press(root, "Repair from Steam");
   press(root, "Choose another folder");
   press(root, "check again");
+  // A quick check, which hashes the files that needed repair in full (#348).
   expect(sent).toEqual([
     { type: "repair" },
     { type: "pickFolder", purpose: "game" },
-    { type: "check", level: "full" },
+    { type: "check", level: "quick" },
   ]);
 });
 
@@ -114,16 +124,24 @@ test("repair names each kind of problem", () => {
   expect(root.textContent).toContain("3 need repair");
 });
 
-test("repair has a way without a terminal: the command, then check every file (#348)", () => {
+test("repair has a way without a terminal: its own command, then a check of the files (#348)", () => {
   const s = golden("client-repair");
-  s.client.manualCommand = "./DepotDownloader -app 1418100 -dir '/home/player/Games/SoLO'";
   const { root, sent } = mount(clientRepair, s, undefined, "client");
   press(root, "No Steam app? Run DepotDownloader yourself");
   const shown = document.querySelector<HTMLElement>('[role="dialog"]')!;
-  expect(shown.querySelector(".command-line code")!.textContent).toBe(s.client.manualCommand);
-  press(shown, "Check every file");
-  expect(sent).toEqual([{ type: "check", level: "full" }]);
+  const repair = s.client.manual!.repair!;
+  expect(repair).toContain(" -validate");
+  expect(shown.querySelector(".command-line code")!.textContent).toBe(repair);
+  press(shown, "Check files");
+  expect(sent).toEqual([{ type: "check", level: "quick" }]);
   expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+
+test("repair offers no command for the player's terminal without its list of files", () => {
+  const s = golden("client-repair");
+  s.client.manual!.repair = null;
+  const { root } = mount(clientRepair, s, undefined, "client");
+  expect(root.textContent).not.toContain("No Steam app?");
 });
 
 test("repair off Linux has no Repair from Steam", () => {

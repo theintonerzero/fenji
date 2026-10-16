@@ -3,7 +3,7 @@
 import type { Ctx } from "../app";
 import { h, type Child } from "../dom";
 import { activeServer } from "../route";
-import type { Snapshot } from "../types";
+import type { Snapshot, ToolLinkView } from "../types";
 import { button } from "../ui/button";
 import { facts } from "../ui/card";
 import { cardSection } from "../ui/column";
@@ -102,10 +102,18 @@ function select(el: Element): void {
 
 /**
  * DepotDownloader's command for the player's own terminal (spec §3.6): their folder and the pinned
- * build filled in, their own Steam login left for them to type. Then they choose the folder it
- * downloaded to (setup), or check every file of the copy it repaired (Repair; #348).
+ * build filled in, their own Steam login left for them to type. Without Fenji's own DepotDownloader,
+ * `get` says where to get it, the link on a line of its own. Then they choose the folder it
+ * downloaded to (setup), or check the files it repaired (Repair), a quick check that hashes those
+ * in full (#348).
  */
-export function commandDialog(ctx: Ctx, command: string, then: "chooseFolder" | "checkAll", done: () => void): Dialog {
+export function commandDialog(
+  ctx: Ctx,
+  command: string,
+  get: ToolLinkView | null,
+  then: "chooseFolder" | "check",
+  done: () => void,
+): Dialog {
   const code = h("code", {}, command);
   const copy = button.secondary(
     "Copy",
@@ -134,8 +142,18 @@ export function commandDialog(ctx: Ctx, command: string, then: "chooseFolder" | 
     description:
       then === "chooseFolder"
         ? "Run this in your own terminal, typing your Steam login where it asks. Then choose the folder it downloaded to."
-        : "Run this in your own terminal, typing your Steam login where it asks: it downloads what's wrong into your game folder. Then check every file.",
-    body: [h("div", { class: "command-line" }, code, copy)],
+        : "Run this in your own terminal, typing your Steam login where it asks: it downloads the files that need repair again. Then check the files.",
+    body: [
+      get === null
+        ? null
+        : h(
+            "div",
+            { class: "command-get" },
+            h("p", {}, `Get DepotDownloader ${get.version} for Linux first, unzip it, and run the command in its folder:`),
+            h("p", {}, button.link(get.url, () => void ctx.send({ type: "openUrl", url: get.url }))),
+          ),
+      h("div", { class: "command-line" }, code, copy),
+    ],
     actions: [
       button.secondary("Close", close),
       then === "chooseFolder"
@@ -143,8 +161,8 @@ export function commandDialog(ctx: Ctx, command: string, then: "chooseFolder" | 
             void ctx.send({ type: "pickFolder", purpose: "game" });
             close();
           })
-        : button.primary("Check every file", () => {
-            void ctx.send({ type: "check", level: "full" });
+        : button.primary("Check files", () => {
+            void ctx.send({ type: "check", level: "quick" });
             close();
           }),
     ],

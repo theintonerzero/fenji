@@ -37,6 +37,9 @@ pub(super) struct Client {
     run: Option<DepotRun>,
     /// Whether the player cancelled the running download.
     cancelled: bool,
+    /// DepotDownloader's `-filelist` of the files the last check found wrong, once written, for
+    /// the repair's command in the player's own terminal (#348).
+    repair_list: Option<PathBuf>,
 }
 
 impl Default for Client {
@@ -47,6 +50,17 @@ impl Default for Client {
             stop: None,
             run: None,
             cancelled: false,
+            repair_list: None,
+        }
+    }
+}
+
+impl Client {
+    /// The repair's file list, while the copy needs repair.
+    pub(super) fn repair_list(&self) -> Option<&Path> {
+        match self.check {
+            CheckView::NeedsRepair { .. } => self.repair_list.as_deref(),
+            _ => None,
         }
     }
 }
@@ -312,6 +326,18 @@ impl App {
                         failing = failing.len(),
                         "checked the game's files"
                     );
+                    // The list for a repair in the player's own terminal (#348).
+                    st.client.repair_list = None;
+                    if !failing.is_empty() {
+                        let data = &self.inner.cfg.data_dir;
+                        let list = data.join("repair-files.txt");
+                        let written = std::fs::create_dir_all(data)
+                            .and_then(|()| crate::depot::write_file_list(&list, &failing));
+                        match written {
+                            Ok(()) => st.client.repair_list = Some(list),
+                            Err(e) => warn!(error = %e, "couldn't list the files to repair"),
+                        }
+                    }
                     st.client.check = if failing.is_empty() {
                         CheckView::Verified { level, at_ms }
                     } else {
@@ -1007,6 +1033,53 @@ exit {code}"#,
     }
 
     #[tokio::test]
+    async fn the_repairs_manual_command_names_a_file_list_fenji_wrote() {
+        // #348's final review: Repair's way without a terminal showed the download's command, with
+        // no -validate and no list of files, which can't repair a copy DepotDownloader made.
+        let t = Testbed::new(&[("bin64/a.dll", 10), ("data/c.pak", 100)]);
+        let app = t.app();
+        let manual = app.snapshot().client.manual.unwrap();
+        assert_eq!(manual.repair, None);
+        // Fenji hasn't fetched DepotDownloader: the dialog says where to get it.
+        assert_eq!(
+            manual.get.unwrap().url,
+            crate::tools::depot_downloader().url
+        );
+        app.intent(Intent::ChooseFolder {
+            path: t.good.display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Quick)).await;
+        std::fs::write(t.good.join("data/c.pak"), b"short").unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        let s = until(&app, |s| {
+            matches!(s.client.check, CheckView::NeedsRepair { .. })
+        })
+        .await;
+        let repair = s.client.manual.unwrap().repair.unwrap();
+        let list = t.root.join("data/repair-files.txt");
+        assert!(
+            repair.ends_with(&format!(" -filelist '{}' -validate", list.display())),
+            "{repair}"
+        );
+        assert_eq!(std::fs::read_to_string(&list).unwrap(), "data/c.pak\n");
+        // Once the copy checks out, there's nothing to repair.
+        std::fs::copy(t.pristine.join("data/c.pak"), t.good.join("data/c.pak")).unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        let s = until(&app, checked(LevelView::Quick)).await;
+        assert_eq!(s.client.manual.unwrap().repair, None);
+    }
+
+    #[tokio::test]
     async fn a_cancel_ends_the_work_it_waits_on_at_once() {
         // #348: Cancel didn't stop "Getting DepotDownloader…" until the fetch had ended.
         use std::sync::Arc;
@@ -1106,7 +1179,7 @@ exit {code}"#,
     async fn downloading_works_on_linux_only_and_one_job_runs_at_a_time() {
         let t = Testbed::new(&[("a.bin", 10)]);
         let app = t.app_on(Os::Windows);
-        assert_eq!(app.snapshot().client.manual_command, None);
+        assert_eq!(app.snapshot().client.manual, None);
         let err = app
             .intent(Intent::Download {
                 folder: "/x".into(),
@@ -1115,7 +1188,7 @@ exit {code}"#,
             .unwrap_err();
         assert_eq!(err.to_string(), words::DOWNLOAD_LINUX_ONLY);
         let app = t.app_with_fakes(FakeDd::Hangs);
-        let command = app.snapshot().client.manual_command.unwrap();
+        let command = app.snapshot().client.manual.unwrap().download;
         assert!(command.contains("Games/SoLO"), "{command}");
         app.intent(Intent::Download {
             folder: t.root.join("f").display().to_string(),

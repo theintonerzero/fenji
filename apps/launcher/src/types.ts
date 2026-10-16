@@ -8,6 +8,8 @@ export type * from "./gen/PlayersView";
 export type * from "./gen/PendingInvite";
 export type * from "./gen/KeyChangeView";
 export type * from "./gen/ClientView";
+export type * from "./gen/ManualView";
+export type * from "./gen/ToolLinkView";
 export type * from "./gen/CheckView";
 export type * from "./gen/FileProblem";
 export type * from "./gen/Problem";

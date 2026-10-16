@@ -100,35 +100,32 @@ fn quoted(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
-/// The command a player without the Steam app runs in their own terminal, their own login left
-/// for them to type; a repair's paths follow it, one a line. It runs `dd`, the DepotDownloader
-/// Fenji fetched, by its path; without one, its first line says where to get the pinned release,
-/// and the command runs it from its folder (#348). A shell reads the first line as a comment.
-pub fn manual_command(dd: Option<&Path>, folder: &Path, files: Option<&[String]>) -> String {
-    let (lead, program) = match dd {
-        Some(dd) => (String::new(), quoted(dd)),
-        None => (
-            format!(
-                "# Get DepotDownloader {} for Linux, unpack it, and run this in its folder: {}\n",
-                crate::tools::depot_downloader().version,
-                crate::tools::depot_downloader().url
-            ),
-            "./DepotDownloader".to_string(),
-        ),
+/// The command a player without the Steam app runs in their own terminal, on one line, their own
+/// login left for them to type. It runs `dd`, the DepotDownloader Fenji fetched, by its path;
+/// without one, the player gets the pinned release (the dialog says where) and runs it from its
+/// folder, made executable first (#348). A repair names `list`, the failing files as Fenji listed
+/// them ([`write_file_list`]), with `-validate`, as the terminal's script does (plan LP6).
+pub fn manual_command(dd: Option<&Path>, folder: &Path, list: Option<&Path>) -> String {
+    let program = match dd {
+        Some(dd) => quoted(dd),
+        None => "chmod +x ./DepotDownloader && ./DepotDownloader".to_string(),
     };
     let mut command = format!(
-        "{lead}{program} {} -username <your Steam login> -dir {}",
+        "{program} {} -username <your Steam login> -dir {}",
         PINNED_ARGS.join(" "),
         quoted(folder)
     );
-    if let Some(files) = files {
-        command.push_str(" -filelist <a file listing the paths below> -validate");
-        for f in files {
-            command.push('\n');
-            command.push_str(f);
-        }
+    if let Some(list) = list {
+        command.push_str(&format!(" -filelist {} -validate", quoted(list)));
     }
     command
+}
+
+/// DepotDownloader's `-filelist`: one path a line, as the manifest names them.
+pub fn write_file_list(path: &Path, files: &[String]) -> std::io::Result<()> {
+    let mut text = files.join("\n");
+    text.push('\n');
+    std::fs::write(path, text)
 }
 
 /// One of DepotDownloader's progress lines, `{0,6:#00.00}% {path}`: the percentage and the path.
@@ -196,9 +193,7 @@ impl DepotRun {
             .arg(&job.folder);
         if let Some(files) = &job.files {
             let list = run_dir.join("files.txt");
-            let mut text = files.join("\n");
-            text.push('\n');
-            std::fs::write(&list, text)?;
+            write_file_list(&list, files)?;
             cmd.arg(list);
         }
         cmd.env_clear()
@@ -674,7 +669,8 @@ mod tests {
     #[test]
     fn the_manual_command_names_a_depot_downloader_the_player_has() {
         // #348: it named a DepotDownloader the player had never got. Fenji's own copy, if it
-        // fetched one, is used by its path; otherwise the first line says where to get it.
+        // fetched one, is used by its path; otherwise the player gets one (the dialog says where)
+        // and runs it from its folder, made executable first. Either way it's one line.
         let dd = Path::new("/home/p/.local/share/fenji-launcher/tools/DepotDownloader");
         let c = manual_command(Some(dd), Path::new("/home/p/Games/SoLO"), None);
         assert!(
@@ -684,11 +680,37 @@ mod tests {
             "{c}"
         );
         let c = manual_command(None, Path::new("/home/p/Games/SoLO"), None);
-        let (first, rest) = c.split_once('\n').unwrap();
         assert!(
-            first.starts_with("# ") && first.contains(&crate::tools::depot_downloader().url),
-            "{first}"
+            c.starts_with("chmod +x ./DepotDownloader && ./DepotDownloader -app 1418100"),
+            "{c}"
         );
-        assert!(rest.starts_with("./DepotDownloader -app 1418100"), "{rest}");
+        assert!(!c.contains('\n') && !c.contains('#'), "{c}");
+    }
+
+    #[test]
+    fn a_repairs_manual_command_validates_the_files_fenji_listed() {
+        // #348's final review: without -validate, DepotDownloader trusts what it saved about a copy
+        // it made, and fetches nothing (plan LP6).
+        let c = manual_command(
+            None,
+            Path::new("/home/p/Games/SoLO"),
+            Some(Path::new(
+                "/home/p/.local/share/fenji-launcher/repair-files.txt",
+            )),
+        );
+        assert!(
+            c.ends_with(
+                " -filelist '/home/p/.local/share/fenji-launcher/repair-files.txt' -validate"
+            ),
+            "{c}"
+        );
+        assert!(!c.contains('\n'), "{c}");
+        let dir = tempfile::tempdir().unwrap();
+        let list = dir.path().join("list");
+        write_file_list(&list, &["bin64/a.dll".into(), "data/c.pak".into()]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&list).unwrap(),
+            "bin64/a.dll\ndata/c.pak\n"
+        );
     }
 }

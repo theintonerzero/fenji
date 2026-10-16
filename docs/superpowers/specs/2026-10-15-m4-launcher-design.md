@@ -129,7 +129,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
   - The launcher opens the system's terminal: `xdg-terminal-exec`, then `$TERMINAL`, then a short list of common terminals.
   - The terminal runs a small script Fenji ships, which starts DepotDownloader with `-qr`. The player scans the code with the Steam app, as on Steam's own sign-in page.
   - No Steam login or password is typed into Fenji or into any script of Fenji's (ground rule 7, L3). DepotDownloader 3.4.0 takes a login only on its command line, so the QR code is the one sign-in that keeps the login out of Fenji's code.
-- **Without the Steam app,** or when no terminal can be found, the screen shows the exact command to run in the player's own terminal: their folder and the pinned build filled in, their own login left for them to type. Then they choose the folder.
+- **Without the Steam app,** or when no terminal can be found, the screen shows the exact command to run in the player's own terminal, on one line: their folder and the pinned build filled in, their own login left for them to type. Then they choose the folder. The command runs the DepotDownloader Fenji fetched, if it has one. Otherwise the dialog says where to get the pinned release, and the command makes it executable and runs it from its folder. Repair has a command of its own: the failing files, which Fenji lists in a file of its own, with `-validate`, then a check of the files (#348).
 - **The pinned build only:** app 1418100, depot 1418101, manifest 5002037851744157048, with `-os windows -osarch 64`, into the chosen folder. A repair adds `-filelist` with the failing files.
 - **Progress:**
   - the script shows everything DepotDownloader prints in the terminal;
@@ -234,7 +234,7 @@ Every error is a sentence in DESIGN.md's voice: what happened, and what to try.
 | umu-run failing | "The game couldn't start: umu-run ended with \<code\>. The log folder has the details." |
 | umu-run ending with 0 within 15 s (#332) | "The game couldn't start: umu-run ended at once. The log folder has the details." |
 | DepotDownloader failing | "The download stopped: DepotDownloader ended with \<code\>. Try again." |
-| No terminal | "Fenji couldn't open a terminal for DepotDownloader. Run this in yours:", then the command |
+| No terminal | "Fenji couldn't open a terminal for DepotDownloader. Open one yourself, and run the command under "No Steam app? Run DepotDownloader yourself" on the Client tab." (#348) |
 
 Without a host's name, "Wen" becomes "your host".
 

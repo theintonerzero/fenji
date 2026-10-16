@@ -106,9 +106,9 @@ export function clientSetup(root: HTMLElement, ctx: Ctx): Screen {
           : h("p", { class: "choice-text choice-why" }, "Downloading with Steam works on Linux only for now."),
       ),
     ]);
-    const command = s.client.manualCommand;
-    renew(manual, command ?? "", () =>
-      command === null
+    const commands = s.client.manual;
+    renew(manual, JSON.stringify(commands), () =>
+      commands === null
         ? []
         : [
             h(
@@ -116,7 +116,7 @@ export function clientSetup(root: HTMLElement, ctx: Ctx): Screen {
               { class: "manual" },
               button.link("No Steam app? Run DepotDownloader yourself", () => {
                 open?.close();
-                open = commandDialog(ctx, command, "chooseFolder", () => {
+                open = commandDialog(ctx, commands.download, commands.get, "chooseFolder", () => {
                   open = null;
                 });
                 document.body.append(open.el);

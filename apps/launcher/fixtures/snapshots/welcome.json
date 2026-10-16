@@ -20,7 +20,7 @@
     "check": {
       "kind": "none"
     },
-    "manualCommand": null
+    "manual": null
   },
   "job": null,
   "game": {

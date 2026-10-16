@@ -407,13 +407,24 @@ impl State {
                 .unwrap_or_default()
         });
         let folder = self.settings.client.as_ref();
-        // For a player without a terminal Fenji can open (spec §3.12), wherever a download works.
-        let manual_command = platform.can_download.then(|| {
-            // Fenji's own DepotDownloader, if it fetched one; the command says where to get it if
-            // not (#348).
-            let tools = cfg.data_dir.join("tools");
-            let dd = crate::tools::installed(&crate::tools::depot_downloader(), &tools);
-            crate::depot::manual_command(dd.as_deref(), folder.unwrap_or(&default_folder), None)
+        // For a player without a terminal Fenji can open (spec §3.12), wherever a download works:
+        // the DepotDownloader Fenji would run, or else where to get one (#348).
+        let manual = platform.can_download.then(|| {
+            let tool = crate::tools::depot_downloader();
+            let dd = cfg
+                .depot_downloader
+                .clone()
+                .or_else(|| crate::tools::installed(&tool, &cfg.data_dir.join("tools")));
+            let folder = folder.unwrap_or(&default_folder);
+            let command = |list| crate::depot::manual_command(dd.as_deref(), folder, list);
+            ManualView {
+                download: command(None),
+                repair: self.client.repair_list().map(|list| command(Some(list))),
+                get: dd.is_none().then(|| ToolLinkView {
+                    version: tool.version.clone(),
+                    url: tool.url.clone(),
+                }),
+            }
         });
         Snapshot {
             launcher_version: cfg.version.clone(),
@@ -447,7 +458,7 @@ impl State {
                 build: cfg.pinned_build.clone(),
                 files: cfg.manifest.entries.len(),
                 check: self.client.check.clone(),
-                manual_command,
+                manual,
             },
             job: self.client.job.clone(),
             game: self.game.clone(),
