@@ -212,12 +212,12 @@ test("signed out, the column asks for a sign-in to see who's playing", () => {
 test("a notice shows above the buttons, and its close button dismisses it", () => {
   const { root, sent } = mount(play, golden("play-ended"));
   const notice = root.querySelector(".notice-card")!;
-  expect(notice.textContent).toContain("The game couldn't start: umu-run ended with 3. The log folder has the details.");
+  expect(notice.textContent).toContain("The game couldn't start (code 3). See the logs.");
   expect(notice.compareDocumentPosition(root.querySelector("button.play")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   press(root, "Open the log folder");
   (notice.querySelector('[aria-label="Dismiss"]') as HTMLButtonElement).click();
   expect(sent).toEqual([
     { type: "openLogFolder" },
-    { type: "dismissNotice", text: "The game couldn't start: umu-run ended with 3. The log folder has the details." },
+    { type: "dismissNotice", text: "The game couldn't start (code 3). See the logs." },
   ]);
 });

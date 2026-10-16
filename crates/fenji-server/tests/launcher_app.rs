@@ -696,7 +696,7 @@ async fn one_game_at_a_time_and_play_refuses_in_words() {
     let w = PlayBed::on(Os::Windows).await;
     assert_eq!(
         w.app.intent(Intent::Play).await.unwrap_err().to_string(),
-        "Fenji can't start the client on this system yet"
+        "Playing on this system isn't supported yet"
     );
     let m = PlayBed::new().await;
     m.signed_in().await;
@@ -762,7 +762,7 @@ async fn the_folder_and_downloads_wait_while_the_game_starts_or_runs() {
     ] {
         assert_eq!(
             t.app.intent(intent).await.unwrap_err().to_string(),
-            "Not while the game is starting or running. Try again once it has ended."
+            "Not while the game is running."
         );
     }
     assert_eq!(
@@ -802,7 +802,7 @@ async fn a_start_stuck_making_the_prefix_can_be_cancelled() {
     t.app.intent(Intent::CancelStart).await.unwrap();
     let s = until(&t.app, |s| matches!(s.game, GameView::Idle)).await;
     let notice = s.notice.unwrap();
-    assert_eq!(notice.text, "The start was cancelled.");
+    assert_eq!(notice.text, "Start cancelled.");
     assert!(!notice.error);
     // Everything umu-run started ends, though Proton has a session of its own and ignores SIGTERM
     // (#348's final review).
@@ -838,7 +838,7 @@ async fn a_client_that_fails_its_check_never_starts() {
     std::fs::write(t.client.join("bin64/a.dll"), b"tampered").unwrap();
     assert_eq!(
         t.app.intent(Intent::Play).await.unwrap_err().to_string(),
-        "Some game files need repair. The Client tab shows which."
+        "Some game files need repair. Open Game."
     );
     assert!(!t.record.exists(), "the client was started");
     t.s.shutdown().await.unwrap();
@@ -852,7 +852,7 @@ async fn a_client_that_dies_at_once_says_it_couldnt_start() {
     let s = until(&t.app, |s| matches!(s.game, GameView::Ended { .. })).await;
     assert_eq!(
         s.notice.unwrap().text,
-        "The game couldn't start: umu-run ended with 7. The log folder has the details."
+        "The game couldn't start (code 7). See the logs."
     );
     t.s.shutdown().await.unwrap();
 }

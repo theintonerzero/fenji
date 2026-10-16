@@ -59,11 +59,11 @@ pub enum Added {
 /// Why the Add dialog's text wasn't taken, in the launcher's words.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AddError {
-    #[error("Paste an address or the link your host sent.")]
+    #[error("Paste an invite link or an address.")]
     Empty,
-    #[error("That isn't a server address or an invite link. Paste the link your host sent.")]
+    #[error("That isn't an invite link or an address.")]
     Unreadable,
-    #[error("Plain http:// works only for a server on this computer.")]
+    #[error("Plain http:// works only on this computer.")]
     Insecure,
 }
 

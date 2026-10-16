@@ -43,8 +43,8 @@ function fill(root: HTMLElement): void {
 }
 
 test("a taken name shows under Username, and the rest under the form", async () => {
-  const taken = "“lin_yue” is already taken on Moonward. Try another name.";
-  const spent = "That invite has been used or has expired. Ask Wen for a new one.";
+  const taken = "“lin_yue” is taken on Moonward. Try another.";
+  const spent = "That invite is used or expired. Ask Wen for a new one.";
   let answer = taken;
   const { root, sent } = mount(redeem, golden("redeem"), (i) => (i.type === "redeem" ? answer : null));
   fill(root);

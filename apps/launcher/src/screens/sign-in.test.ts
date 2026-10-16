@@ -32,7 +32,7 @@ test("needSignIn shows Cancel, which cancels", () => {
 });
 
 test("a refusal shows under the form", async () => {
-  const words = "That username and password don't match an account on Moonward.";
+  const words = "Wrong username or password for Moonward.";
   const { root, sent } = mount(signIn, golden("sign-in"), (i) => (i.type === "signIn" ? words : null));
   fill(root);
   await settle();

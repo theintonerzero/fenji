@@ -1270,7 +1270,7 @@ exit {code}"#,
         let s = until(&app, |s| s.notice.is_some()).await;
         assert_eq!(
             s.notice.unwrap().text,
-            "The download stopped: DepotDownloader ended with 5. Try again."
+            "The download stopped (code 5). Try again."
         );
         let app = t.app_with_fakes(FakeDd::Hangs);
         app.intent(Intent::Download {

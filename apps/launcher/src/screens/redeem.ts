@@ -28,7 +28,7 @@ import { signIn } from "./sign-in";
 
 /** The server's own refusals that concern the username (app/words.rs: username_taken, bad_username). */
 function aboutUsername(refusal: string): boolean {
-  return refusal.includes(" is already taken on ") || refusal === USERNAME_RULE;
+  return refusal.includes(" is taken on ") || refusal === USERNAME_RULE;
 }
 
 /** Passwords count characters, as the server does, not UTF-16 units. */
