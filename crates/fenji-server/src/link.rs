@@ -168,6 +168,10 @@ pub(crate) async fn play(
                             tracing::info!(%peer, account = %account.username, why, "left the world");
                             return Ok(());
                         }
+                        Step::Quit => {
+                            tracing::info!(%peer, account = %account.username, why = "the client is quitting (392)", "left the world");
+                            return gate::close_with(sock, peer, gate, server, gate::CLIENT_EXIT).await;
+                        }
                     };
                     if let Some(bytes) = reply
                         && !gate::send_or_replaced(sock, &bytes, deadline, replaced).await?
@@ -320,6 +324,10 @@ enum Step {
     Script(Vec<u8>),
     /// End the session, for this reason (logged).
     End(&'static str),
+    /// The client is quitting (392): end the session, closing with the client's own reason,
+    /// `client-exit`, on which it quits. Without it, the client took the close for a lost
+    /// connection: its login screen, then an error (world.md 10.1; #382).
+    Quit,
 }
 
 /// The step for one message from a client in the world: the client's half of the slices' mappings
@@ -401,7 +409,7 @@ fn on_message(gate: &Gate, conn: ConnId, ty: u8, body: &[u8]) -> Step {
             Ok(Up::Script {
                 id: Value::Int(lobby::CLIENT_EXIT),
                 ..
-            }) => Step::End("the client is quitting (392)"),
+            }) => Step::Quit,
             // A line of chat, which an admin's command rides on (chat.md §1). The world checks the
             // text and routes it; the link refuses at once, as it answers a time sync, only what
             // the world can't take: a channel M4 doesn't carry, a "line" that isn't text, and a

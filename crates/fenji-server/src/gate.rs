@@ -38,6 +38,10 @@ pub const DUPLICATE_LOGIN: &str = "error duplicate-login";
 /// The client's key for a server that is stopping: its text says the server is unavailable for now
 /// (lobby.md 9.3; world.md 10.3).
 pub const SERVER_STOPPING: &str = "error server-not-running";
+/// The client's own reason for a client that is quitting (392): on it, the client's net-status timer
+/// quits the game, where a close without it, or with any other, shows the login error (world.md
+/// 10.1; #382).
+pub const CLIENT_EXIT: &str = "client-exit";
 /// The client's key for an admin's kick: its text says the player is offline and may log in again,
 /// accusing them of nothing, unlike `error kick-by-gm` (world.md 10.2–10.3).
 pub const KICKED: &str = "error kick-by-user";
@@ -578,7 +582,7 @@ async fn lobby_loop(
                         },
                         Step::Leave => {
                             tracing::info!(%peer, account = %account.username, "left (the client is quitting)");
-                            return Ok(());
+                            return close_with(sock, peer, gate, server, CLIENT_EXIT).await;
                         }
                         Step::AccountGone => {
                             tracing::info!(%peer, account = %account.username, "the account was deleted: closing");
@@ -672,7 +676,8 @@ enum Step {
     Replies(Vec<Vec<u8>>),
     /// Enter the world as this pid (10, `SELECT_ACTOR`), if it is the account's.
     Enter(i64),
-    /// The client is quitting (392, `CLIENT_EXIT`): close the connection.
+    /// The client is quitting (392, `CLIENT_EXIT`): close the connection with its own reason,
+    /// `client-exit`, so that it quits (#382).
     Leave,
     /// The account was deleted since the login (`fenji-server account delete`): close with the
     /// client's own auth-failed reason.
