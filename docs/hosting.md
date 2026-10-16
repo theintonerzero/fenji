@@ -213,7 +213,7 @@ On Linux, for example, an invite for a week:
 - `name`: your server's name, which the game and launchers show (at most 32 characters, and no colons);
 - `host`: your name, which launchers show as "hosted by";
 - `motd`: the message of the day, unless the console sets one;
-- `max_players`: how many players can be online at once (20 unless you change it);
+- `max_players`: how many players can be online at once: 20 unless you change it, and at most 200, since a crowd of more would be sent more of each other's moves at once than a player's connection holds. Fenji is built and measured for 20;
 - `admins`: accounts that are admins whatever the console's `op` and `deop` say.
 
 The server keeps a file open for each connection. The start scripts raise the limit on open files to 4,096, as far as the system allows (macOS gives a program 256 by default), and the reference deployment's service sets it (section 4). If you start `fenji-server` some other way, raise it too, in the same shell first:

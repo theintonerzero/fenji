@@ -43,6 +43,10 @@ use crate::world::{
 pub(crate) const OUTBOUND: usize = 256;
 // No later slice may shrink it: it is the slack for a client that pauses its reads for a moment.
 const _: () = assert!(OUTBOUND >= 256);
+// With everyone in one view, a tick relays a move of each of the others to every player, so
+// `[server] max_players` stays below the queue, with a fifth of it left for the tick's other
+// messages: its announces and lines, a leave, a correction (#281).
+const _: () = assert!(crate::config::MAX_PLAYERS as usize * 5 <= OUTBOUND * 4);
 
 // The codec refuses a text over the client's own 2,048 bytes before it reaches the world, which
 // checks the same limit again (#280): one limit, on both sides.

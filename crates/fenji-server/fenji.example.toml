@@ -14,7 +14,9 @@ api_bind = "127.0.0.1:7801"     # the account API, where launchers sign players 
 # public_api = "https://play.example.net"   # where players reach the account API, which invite
 #                                            # links name: Caddy (TLS) in front of api_bind, say,
 #                                            # as docs/hosting.md sets it up
-max_players = 20
+max_players = 20                # how many can be online at once, 1 to 200: a crowd of more would
+#                               # be sent more of each other's moves at once than a connection
+#                               # holds. Fenji is sized for 20
 trusted_proxies = []            # proxies that add X-Forwarded-For: ["127.0.0.1"] for Caddy here
 #                               # (docs/hosting.md); never a tunnel, or anything else that passes
 #                               # TLS through

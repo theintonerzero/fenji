@@ -60,6 +60,7 @@ pub struct ServerConfig {
     /// http anywhere else). Unset, links start as [`Config::invite_base`] and `invite::bases` say.
     #[serde(default)]
     pub public_api: Option<String>,
+    /// How many accounts may be connected at once, 1 to [`MAX_PLAYERS`].
     #[serde(default = "twenty")]
     pub max_players: u32,
     /// Peers whose `X-Forwarded-For` names the client (M3 spec D12): proxies that add it, such as
@@ -86,6 +87,12 @@ pub struct ServerConfig {
 
 /// The longest `[server] host`, in characters.
 pub const HOST_MAX: usize = 32;
+
+/// The most `[server] max_players` may be (#281). With everyone in one place, each tick sends
+/// every player a move of each of the others, and a connection's queue (`link::OUTBOUND`, 256)
+/// must hold those and the tick's other messages, or a player who reads all it is sent is let go
+/// as a slow reader. Fenji is sized for 20 (design spec §6.7).
+pub const MAX_PLAYERS: u32 = 200;
 
 /// How the account API serves TLS itself (M4 hosting spec §3.10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -443,8 +450,8 @@ impl Config {
         if s.id == 0 || s.id > i32::MAX as u32 {
             bail!("[server] id: 1 to {}", i32::MAX);
         }
-        if s.max_players == 0 {
-            bail!("[server] max_players: at least 1");
+        if !(1..=MAX_PLAYERS).contains(&s.max_players) {
+            bail!("[server] max_players: 1 to {MAX_PLAYERS}");
         }
         if s.public_host.as_deref().is_some_and(|h| !reachable_host(h)) {
             bail!(
@@ -956,6 +963,24 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("public_host"), "{e}");
+    }
+
+    #[test]
+    fn max_players_is_at_most_what_a_crowd_can_be_sent_each_tick() {
+        // #281: with everyone in one view, each tick sends every player a move of each of the
+        // others, and a connection's queue holds 256: past about 250 players, ones reading as fast
+        // as they can were let go as slow readers. A config over the cap is refused, as every
+        // value out of its range is.
+        let parse = |n: u32| {
+            let text = format!("[server]\nname = \"F\"\nmax_players = {n}\n");
+            Config::parse(&text, Path::new("/"))
+        };
+        assert_eq!(parse(200).unwrap().server.max_players, 200);
+        assert_eq!(parse(1).unwrap().server.max_players, 1);
+        for n in [0, 201, 1_000] {
+            let e = format!("{:#}", parse(n).unwrap_err());
+            assert!(e.contains("[server] max_players: 1 to 200"), "{n}: {e}");
+        }
     }
 
     #[test]
