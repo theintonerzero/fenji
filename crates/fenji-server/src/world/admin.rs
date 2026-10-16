@@ -43,17 +43,17 @@ enum Done {
 /// Runs the tick's commands, in order.
 pub(super) fn system(world: &mut World) {
     for (caller, order) in std::mem::take(&mut world.resource_mut::<Pending>().orders) {
-        // Commands are plain text (`commands::parse`), so they log as they are.
+        // Commands are plain text (`commands::parse`), so they log as they are, as typed.
         let me = match &caller {
             Caller::Admin(admin) if world.get::<Doomed>(*admin).is_some() => continue,
             Caller::Admin(admin) => {
                 let account = world.get::<Account>(*admin).map_or(0, |a| a.id);
                 let character = name_of(world, *admin);
-                tracing::info!(account, character, command = ?order, "an admin's command");
+                tracing::info!(account, character, command = %order, "an admin's command");
                 Some(*admin)
             }
             Caller::Console(_) => {
-                tracing::info!(by = "console", command = ?order, "an admin's command");
+                tracing::info!(by = "console", command = %order, "an admin's command");
                 None
             }
         };
@@ -523,9 +523,11 @@ mod tests {
         });
         let runs: Vec<&str> = log.lines().filter(|l| l.contains("account=1")).collect();
         assert_eq!(runs.len(), 2, "one line for each command run: {log}");
-        assert!(runs[0].contains(r#"Kick { name: "Mai" }"#), "{log}");
+        // As the admin typed them, not in Rust's debug form (the hosting plan's final review B,
+        // Minor 3).
+        assert!(runs[0].contains("command=kick Mai"), "{log}");
         assert!(
-            runs[1].contains(r#"Announce { text: "Restart at 20:00" }"#),
+            runs[1].contains("command=announce Restart at 20:00"),
             "{log}"
         );
     }
@@ -853,7 +855,7 @@ mod tests {
             .collect();
         assert_eq!(runs.len(), 1, "{log}");
         assert!(runs[0].contains("by=\"console\""), "{log}");
-        assert!(runs[0].contains(r#"Kick { name: "Mai" }"#), "{log}");
+        assert!(runs[0].contains("command=kick Mai"), "{log}");
     }
 
     // --- Ops and bans from the console (M4 hosting spec §8, HA5).

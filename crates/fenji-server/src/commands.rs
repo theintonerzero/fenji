@@ -150,6 +150,21 @@ const CONSOLE: [(&str, &str, &str); 20] = [
     ("bans", "bans", "list the bans"),
 ];
 
+/// The command as an admin types it, without the chat's `!`: what the log says was run (the hosting
+/// plan's final review B, Minor 3). [`parse`] reads it back as the same command.
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Command::Tp { who: Some(who), to } => write!(f, "tp {who} {to}"),
+            Command::Tp { who: None, to } => write!(f, "tp {to}"),
+            Command::Kick { name } => write!(f, "kick {name}"),
+            Command::Announce { text } => write!(f, "announce {text}"),
+            Command::Invite { label: Some(label) } => write!(f, "invite {label}"),
+            Command::Invite { label: None } => f.write_str("invite"),
+        }
+    }
+}
+
 impl fmt::Display for CommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -444,6 +459,24 @@ mod tests {
                 label: Some("for Bob".into())
             })
         );
+    }
+
+    #[test]
+    fn a_command_shows_as_it_was_typed() {
+        // The log's record of what admins and the console ran (the hosting plan's final review B,
+        // Minor 3): read back, each is the command it was.
+        for (typed, shown) in [
+            ("tp Mai", "tp Mai"),
+            ("TP  Lin   Mai ", "tp Lin Mai"),
+            ("kick Nobody", "kick Nobody"),
+            ("announce  Restart at 20:00 ", "announce Restart at 20:00"),
+            ("invite", "invite"),
+            ("invite for Bob", "invite for Bob"),
+        ] {
+            let command = parse(typed).unwrap();
+            assert_eq!(command.to_string(), shown, "{typed:?}");
+            assert_eq!(parse(shown), Ok(command), "{typed:?}");
+        }
     }
 
     #[test]

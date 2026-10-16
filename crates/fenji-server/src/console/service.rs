@@ -320,7 +320,7 @@ impl ConsoleService {
     /// for (carry-forward 10), and warned about: the world logs the commands it runs, so these
     /// alone would leave no trace.
     async fn ask_world(&self, order: Command) -> Answer {
-        let command = format!("{order:?}");
+        let command = order.to_string();
         let (reply, answer) = oneshot::channel();
         let why = if self.world.send(WorldIn::Console { order, reply }) {
             match tokio::time::timeout(self.world_wait, answer).await {
