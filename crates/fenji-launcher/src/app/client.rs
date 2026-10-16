@@ -104,6 +104,24 @@ fn not_playing(st: &State) -> Result<(), IntentError> {
     Ok(())
 }
 
+/// `work`, or `None` as soon as `cancelled` says so, looked at every `every`: a fetch dropped
+/// midway leaves only its `.part` file, which the next fetch writes over (`tools::ensure`).
+async fn or_cancelled<T>(
+    work: impl std::future::Future<Output = T>,
+    cancelled: impl Fn() -> bool,
+    every: Duration,
+) -> Option<T> {
+    let watch = async {
+        while !cancelled() {
+            tokio::time::sleep(every).await;
+        }
+    };
+    tokio::select! {
+        done = work => Some(done),
+        () = watch => None,
+    }
+}
+
 fn waiting_for_steam(repair: bool) -> JobView {
     JobView::Downloading {
         repair,
@@ -372,11 +390,14 @@ impl App {
 
     async fn downloading(&self, terminal: Terminal, folder: PathBuf, files: Option<Vec<String>>) {
         let repair = files.is_some();
-        let dd = match self.depot_downloader().await {
-            Ok(dd) => dd,
-            Err(text) => return self.download_ended(text, true),
+        // Fetching DepotDownloader ends at once on Cancel, not when the fetch does (#348).
+        let cancelled = || self.inner.lock().client.cancelled;
+        let dd = match or_cancelled(self.depot_downloader(), cancelled, POLL_EVERY).await {
+            Some(Ok(dd)) => dd,
+            Some(Err(text)) => return self.download_ended(text, true),
+            None => return self.download_ended(words::DOWNLOAD_CANCELLED.into(), false),
         };
-        if self.inner.lock().client.cancelled {
+        if cancelled() {
             return self.download_ended(words::DOWNLOAD_CANCELLED.into(), false);
         }
         let job = depot::Job {
@@ -867,6 +888,32 @@ exit {code}"#,
             }
             other => panic!("after the repair: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_cancel_ends_the_work_it_waits_on_at_once() {
+        // #348: Cancel didn't stop "Getting DepotDownloader…" until the fetch had ended.
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        use super::or_cancelled;
+        let flag = Arc::new(AtomicBool::new(false));
+        let set = {
+            let flag = flag.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                flag.store(true, Ordering::SeqCst);
+            })
+        };
+        let started = std::time::Instant::now();
+        let every = Duration::from_millis(10);
+        let cancelled = || flag.load(Ordering::SeqCst);
+        let got = or_cancelled(std::future::pending::<u8>(), cancelled, every).await;
+        assert_eq!(got, None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        set.await.unwrap();
+        // Work that ends first is what comes back.
+        assert_eq!(or_cancelled(async { 7 }, || false, every).await, Some(7));
     }
 
     #[tokio::test]
