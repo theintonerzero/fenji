@@ -1365,6 +1365,22 @@ mod tests {
         assert!(!log.contains("hasn't let go"), "{log}");
     }
 
+    #[test]
+    fn a_world_that_let_go_without_a_kick_is_never_blamed_for_a_write_held_past_let_go() {
+        // #378: what the link drains after `let_go` may end in a closed channel rather than a
+        // Kicked, which the world leaves out when it doesn't fit, as at a shutdown that finds a
+        // slow reader's channel full. That world has let go too: nothing warns, and the client
+        // hears the shutdown's reason.
+        let (events, log) = held_past_let_go(drop);
+        assert_eq!(
+            events.last(),
+            Some(&ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            ))
+        );
+        assert!(!log.contains("WARN"), "{log}");
+    }
+
     #[tokio::test]
     async fn the_world_letting_go_closes_the_connection() {
         // The world drops a full channel without a Kicked (carry-forward 3).
