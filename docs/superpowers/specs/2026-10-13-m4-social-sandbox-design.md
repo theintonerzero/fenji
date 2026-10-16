@@ -52,6 +52,8 @@ Done when:
 - A protocol bot built on `fenji-proto` (sign in, enter, move, chat) runs in CI (parent §9), and 20 bots measure the tick against the parent spec's targets (§6.7).
 - Two real clients on the owner's machine meet in the zone. Each runner gives its client a loopback-only network of its own, so both clients run in one runner's namespace, against its one server ([world spec](2026-10-13-m4-world-design.md) §4.3).
 
+**Status (2026-10-16):** done, except `!tp` to another scene, which is refused until a run checks it (#281). See [`m4-summary.md`](../../re/m4-summary.md).
+
 **Out of M4:**
 - emotes, teams, friends lists, mounts, NPCs and quests;
 - everything M5 owns: monsters, combat, items and inventory, and the `/give`, `/spawn`, `/rate` and `/level` commands.
@@ -79,6 +81,8 @@ Done when:
   - a first run without a config writes one, and start scripts ship in the release archives.
 - Maintenance mode (§4.2) reaches players.
 
+**Status (2026-10-16):** done. The write-up was followed literally in a fresh Debian 13 container with systemd, and a real VPS is the acceptance session's (§5). The console was run on Linux; on Windows and macOS it was built, packed and read, not run (#359). See [`m4-summary.md`](../../re/m4-summary.md).
+
 **Decisions for its spec:**
 - How hosts without a domain get TLS for the account API.
 - Whether play over the internet uses an open game port or a VPN, and what the write-up tells hosts. The game connection authenticates nobody and hides nothing ([`transport.md`](../../protocol/transport.md) 3.9).
@@ -95,6 +99,8 @@ Done when #146's brief is built in the design the owner approved on 2026-10-13. 
 - Play on Linux.
 - Show the server's states, online, maintenance and offline, from §4.1.
 - Update itself from signed releases.
+
+**Status (2026-10-16):** done. Download and repair were tested against stand-ins for DepotDownloader; a real Steam download needs the owner's sign-in, so it goes with the acceptance session (#359). See [`m4-summary.md`](../../re/m4-summary.md).
 
 **Decisions for its spec:**
 - the signing key and the update channel, which are the owner's to choose;

@@ -32,6 +32,7 @@ Playing on a friend's server needs only the desktop launcher: the root [README](
 | [`re/m2-tables.md`](re/m2-tables.md) | M2: the client's table format, and where items, skills, monsters, the XP curve and maps live. |
 | [`re/m2-summary.md`](re/m2-summary.md) | M2 summary: the transport answered, deviations, Done-when status. |
 | [`re/m3-summary.md`](re/m3-summary.md) | M3 summary: the ticket and the players' path answered, deviations, Done-when status, the bare-metal runs. |
+| [`re/m4-summary.md`](re/m4-summary.md) | M4 summary: the world, hosting and the desktop launcher, the open questions answered, Done-when status, gates and rulings, and what M5 inherits. |
 | [`re/m4-launcher-e2e.md`](re/m4-launcher-e2e.md) | M4: the desktop launcher's end-to-end run on bare metal, from an invite link to the lobby, and what its rehearsals found. |
 | [`protocol/README.md`](protocol/README.md) | Our protocol findings (transport, opcode ledger, payloads) and their format. |
 | [`protocol/login.md`](protocol/login.md) | M1: how the client finds its server, and the first connection to our stub. |
