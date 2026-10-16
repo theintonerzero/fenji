@@ -267,14 +267,14 @@ They use `sudo` and `curl`, which a minimal system may lack. Signed in as root, 
 apt update && apt install -y sudo curl ca-certificates
 ```
 
-Some steps use `VERSION`, which the first one sets in your shell. In a new SSH session, set it again before a step that uses it.
+Some steps use `VERSION` and `TARGET`, which the first one sets in your shell, and the archive's folder, which it unpacks in your current folder. In a new SSH session, go back to that folder, and set both again before a step that uses them.
 
 ### Install the server
 
 Set `VERSION` to the latest release's number, without its `v`, and download that release's archive for your server's processor, with its checksums:
 
 ```sh
-VERSION=0.5.0
+VERSION=0.5.1
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
@@ -320,13 +320,10 @@ In nano, Ctrl-O then Enter saves the file, and Ctrl-X leaves.
 
 ### The services
 
-Install the server's service, and the backup service with its nightly timer. They're in the repository's `deploy/systemd` at the release's tag. Then start them:
+Install the server's service, and the backup service with its nightly timer, from the archive's `systemd` folder. Then start them:
 
 ```sh
-sudo curl -fL --output-dir /etc/systemd/system \
-  -O https://raw.githubusercontent.com/theintonerzero/fenji/v$VERSION/deploy/systemd/fenji.service \
-  -O https://raw.githubusercontent.com/theintonerzero/fenji/v$VERSION/deploy/systemd/fenji-backup.service \
-  -O https://raw.githubusercontent.com/theintonerzero/fenji/v$VERSION/deploy/systemd/fenji-backup.timer
+sudo install -m 644 -t /etc/systemd/system fenji-server-$VERSION-$TARGET/systemd/*
 sudo systemctl daemon-reload
 sudo systemctl enable --now fenji fenji-backup.timer
 systemctl is-active fenji
@@ -394,11 +391,12 @@ With a domain name, Caddy can serve the account API on the usual HTTPS port, wit
    sudo ufw allow 443/tcp
    ```
 
-3. Install Fenji's `Caddyfile` for the version you run, put your name in place of `play.example.net` in it, and reload Caddy:
+3. Install Fenji's `Caddyfile` from the archive's `caddy` folder, put your name in place of `play.example.net` in it, and reload Caddy. In the folder you unpacked the archive in:
 
    ```sh
-   VERSION=0.5.0
-   sudo curl -fL -o /etc/caddy/Caddyfile https://raw.githubusercontent.com/theintonerzero/fenji/v$VERSION/deploy/caddy/Caddyfile
+   VERSION=0.5.1
+   TARGET=$(uname -m)-unknown-linux-musl
+   sudo install -m 644 fenji-server-$VERSION-$TARGET/caddy/Caddyfile /etc/caddy/Caddyfile
    sudo nano /etc/caddy/Caddyfile
    sudo systemctl reload caddy
    ```
@@ -456,7 +454,7 @@ sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run "mainten
 Download the new version, as in section 4, with its number:
 
 ```sh
-VERSION=0.5.1
+VERSION=0.5.2
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
@@ -464,13 +462,17 @@ sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 ```
 
-Stop the server, put the new program in place, and start it:
+Stop the server, put the new program and its services in place, and start it:
 
 ```sh
 sudo systemctl stop fenji
 sudo install -m 755 fenji-server-$VERSION-$TARGET/fenji-server /usr/local/bin/fenji-server
+sudo install -m 644 -t /etc/systemd/system fenji-server-$VERSION-$TARGET/systemd/*
+sudo systemctl daemon-reload
 sudo systemctl start fenji
 ```
+
+The new version's services replace the ones installed. A change of your own to a service belongs in a drop-in file, as the container fix in section 7 makes, which an update leaves alone.
 
 `systemctl stop` stops the server as the console's `stop` does, letting every player go and saving where each one stood, and returns once it has stopped, within 30 seconds.
 

@@ -153,12 +153,17 @@ L=fenji-server-$v-x86_64-unknown-linux-musl
 pack "$v" x86_64-unknown-linux-musl
 packs "a Linux target packs"
 same "it prints the archive's path" "$out" "$T/out/$L.tar.gz"
-same "the Linux tarball holds one folder: the server, start-server.sh and the texts" \
+# A Linux archive also carries deploy/systemd's units and deploy/caddy's Caddyfile, so a VPS needs no
+# second download (#359).
+DEPLOY=(systemd/ systemd/fenji.service systemd/fenji-backup.service systemd/fenji-backup.timer caddy/ caddy/Caddyfile)
+same "the Linux tarball holds one folder: the server, start-server.sh, the texts and the VPS's units" \
   "$(tar -tzf "$T/out/$L.tar.gz")" \
-  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)"
-same "the folder, the server and start-server.sh are 0755, the texts 0644" "$(modes "$T/out/$L.tar.gz")" "$(printf '%s\n' \
+  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt "${DEPLOY[@]}")"
+same "the folders, the server and start-server.sh are 0755, the texts and units 0644" "$(modes "$T/out/$L.tar.gz")" "$(printf '%s\n' \
   "drwxr-xr-x $L/" "-rwxr-xr-x $L/fenji-server" "-rwxr-xr-x $L/start-server.sh" "-rw-r--r-- $L/fenji.example.toml" \
-  "-rw-r--r-- $L/README.txt" "-rw-r--r-- $L/LICENSE" "-rw-r--r-- $L/SOURCE.txt" "-rw-r--r-- $L/THIRD-PARTY-NOTICES.txt")"
+  "-rw-r--r-- $L/README.txt" "-rw-r--r-- $L/LICENSE" "-rw-r--r-- $L/SOURCE.txt" "-rw-r--r-- $L/THIRD-PARTY-NOTICES.txt" \
+  "drwxr-xr-x $L/systemd/" "-rw-r--r-- $L/systemd/fenji.service" "-rw-r--r-- $L/systemd/fenji-backup.service" \
+  "-rw-r--r-- $L/systemd/fenji-backup.timer" "drwxr-xr-x $L/caddy/" "-rw-r--r-- $L/caddy/Caddyfile")"
 case "$(tar --version 2>/dev/null)" in
   *"GNU tar"*)
     same "every entry is root's, by number" "$(tar --numeric-owner -tvzf "$T/out/$L.tar.gz" | awk '{ print $2 }' | sort -u)" 0/0 ;;
@@ -175,6 +180,10 @@ holds "the server is the binary given" cmp -s "$X/fenji-server" "$T/in/with spac
 holds "start-server.sh is deploy/start's" cmp -s "$X/start-server.sh" "$REPO/deploy/start/start-server.sh"
 holds "fenji.example.toml is the server's" cmp -s "$X/fenji.example.toml" "$REPO/crates/fenji-server/fenji.example.toml"
 holds "LICENSE is the repository's" cmp -s "$X/LICENSE" "$REPO/LICENSE"
+for unit in fenji.service fenji-backup.service fenji-backup.timer; do
+  holds "systemd/$unit is deploy/systemd's" cmp -s "$X/systemd/$unit" "$REPO/deploy/systemd/$unit"
+done
+holds "caddy/Caddyfile is deploy/caddy's" cmp -s "$X/caddy/Caddyfile" "$REPO/deploy/caddy/Caddyfile"
 holds "SOURCE.txt names the version's source code" grep -qxF "$src" "$X/SOURCE.txt"
 holds "README.txt links the version's hosting guide" grep -qF "$guide" "$X/README.txt"
 holds "README.txt keeps no placeholder" lacks "$X/README.txt" @VERSION@
@@ -295,7 +304,7 @@ pack "$v" x86_64-unknown-linux-musl
 packs "a Linux target that links fenji-oodle packs"
 same "its tarball adds fenji-oodle's COPYING and NOTICE" "$(tar -tzf "$T/out/$L.tar.gz")" \
   "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt \
-    fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)"
+    "${DEPLOY[@]}" fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)"
 same "fenji-oodle's folder is 0755 and its texts 0644" "$(modes "$T/out/$L.tar.gz" | grep fenji-oodle)" "$(printf '%s\n' \
   "drwxr-xr-x $L/fenji-oodle/" "-rw-r--r-- $L/fenji-oodle/COPYING" "-rw-r--r-- $L/fenji-oodle/NOTICE")"
 mkdir "$T/gpl"
@@ -312,7 +321,7 @@ export FAKE_OODLE=prefix
 pack "$v" x86_64-unknown-linux-musl
 packs "a build with a crate named like fenji-oodle packs"
 same "a crate whose name only starts with fenji-oodle brings no GPL texts" "$(tar -tzf "$T/out/$L.tar.gz")" \
-  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)"
+  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt "${DEPLOY[@]}")"
 unset FAKE_OODLE
 
 # The archive is staged in a folder beside it, so that its last move is a rename on one file
