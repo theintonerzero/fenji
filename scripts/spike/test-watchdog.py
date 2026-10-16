@@ -1103,11 +1103,16 @@ class TwoClientsWholeLoop(WholeLoop):  # Amendment B: two clients, one log each
         self.assertIn("client 2 detected after a rename: pid", self.watchdog_log)
 
     def test_s2_keeps_the_earliest_client_as_its_reference(self):
-        rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 5.0], [1.0, "winedevice.exe", "-", 0, 4.0],
+        # A winedevice.exe started between the clients, and named only once client 2 is known (as
+        # Wine renames its processes), so S2 can't have tripped before client 2 (#244): it is still
+        # measured against client 1's start, not client 2's.
+        rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 5.0], [1.0, "wine64", "winedevice.exe", 3.6, 4.5],
                                [2.0, "wine64", "gujianol.exe", 3.0, 5.0]],
                               logs=[CLIENT + "\n", LOG2_CLIENT + "\n"])
         self.assertEqual(rc, 3)
         self.assertIn("S2", trig)
+        self.assertLess(self.watchdog_log.index("client 2 detected after a rename"),
+                        self.watchdog_log.index("GATE EVENT: S2"))
 
     def test_a_third_client_with_two_logs_is_exit_4(self):
         rc, trig = self.watch([[0.0, "gujianol.exe", "-", 0, 3.0], [0.5, "gujianol.exe", "-", 0, 3.0],
@@ -1119,13 +1124,15 @@ class TwoClientsWholeLoop(WholeLoop):  # Amendment B: two clients, one log each
         self.assertRegex(trig, r"client 3 pid \d+ .*no log of its own")
 
     def test_a_sign_in_the_poll_that_finds_a_client_beyond_the_logs_is_exit_3(self):  # review, Important 2
-        # One log, so a second gujianol.exe is a client beyond the logs. Once it has started, the
+        # One log, so a second gujianol.exe is a client beyond the logs. Just before it starts, the
         # log gets a LoadDriver after the client's creation, then a line still being written: the
         # log grows every 10 ms, so its Tail keeps the sign back, and only reading every log to
         # its end before exit 4 finds it. The sign wins over the fail safe, and the record names
-        # the client beyond the logs.
-        plan = [[0.0, "gujianol.exe", "-", 0, 4.0], [1.0, "gujianol.exe", "-", 0, 4.0],
-                [1.0, "@log", 1, CLIENT + "\n" + AGT_LOADDRIVER + "\n2.001:0020:0024:trace:still being written", 0]]
+        # the client beyond the logs. The sign comes first: a poll between client 2's start and a
+        # sign written after it would read an empty log (#244).
+        plan = [[0.0, "gujianol.exe", "-", 0, 4.0],
+                [1.0, "@log", 1, CLIENT + "\n" + AGT_LOADDRIVER + "\n2.001:0020:0024:trace:still being written", 0],
+                [1.0, "gujianol.exe", "-", 0, 4.0]]
         plan += [[1.0 + i / 100, "@log", 1, ".", 0] for i in range(1, 101)]
         rc, trig = self.watch(plan, logs=[""])
         self.assertEqual(rc, 3)
