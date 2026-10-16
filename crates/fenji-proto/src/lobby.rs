@@ -162,7 +162,8 @@ const DIACRITICS: &str = "äëïöüÿÄËÏÖÜŸàèìòùÀÈÌÒÙáéíóú
 
 /// The Western server's characters (the English text of `ERR_ROLE_NAME_ALLCHINESE`): the letters
 /// A–Z in either case, the letters in [`DIACRITICS`], full stops (not first or last), hyphens and
-/// underscores.
+/// underscores. Never `$`: a name is a `locale_str`, whose setter on every client that sees the
+/// player unpickles the rest of a value that starts with `$locale$` (world.md 4.10; #281).
 fn name_chars_ok(name: &str) -> bool {
     let ok =
         |c: char| c.is_ascii_alphabetic() || DIACRITICS.contains(c) || matches!(c, '.' | '-' | '_');
