@@ -33,7 +33,9 @@
 #       --key and --type play a player's key press (an X keysym name such as Return, space, Tab,
 #       BackSpace or a letter) or typed printable ASCII, T seconds into the run (xkey.py, XTEST).
 #       --key T:KEY/MS holds the key down MS milliseconds (1 to 60000), as a player holds a movement
-#       key; the presses after it go when they are due, and the hold must end by the timeout.
+#       key; the presses after it go when they are due, and the hold must end by the timeout. The
+#       display has no window manager, so a press goes to the window under the pointer: before each
+#       one, xkey.py moves a pointer that is over no window into the client's window.
 #       --server runs target/release/fenji-server with a copy of CONFIG (a fenji.toml) in place of
 #       the stub, RUST_LOG=fenji_server=trace, its output in the evidence as server.log; the run
 #       waits for its login_bind and api_bind ports, which must be on 127.0.0.1. Its [store] path is

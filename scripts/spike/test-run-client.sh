@@ -353,6 +353,31 @@ if [ "$rc" = 2 ]; then ok "xkey.py holds keys, not typing"; else bad "xkey.py ho
 python3 -I "$XK" --display :9999 --key=w --hold=60000 > /dev/null 2>&1
 rc=$?
 if [ "$rc" = 1 ]; then ok "xkey.py takes a hold of a minute"; else bad "xkey.py takes a hold of a minute: exit $rc"; fi
+# Before each key press, xkey.py moves a pointer that is over no window the shortest way into the
+# display's largest window (#244): with no window manager a press goes to the window under the
+# pointer, and a client in the world leaves the pointer on the bottom row, outside its window.
+if python3 -I - "$XK" << 'EOF'
+import ctypes, importlib.util, sys
+spec = importlib.util.spec_from_file_location("xkey", sys.argv[1])
+x = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(x)
+win, t = (3, 22, 1276, 697), x.pointer_target  # client 1's window on :99 in run m4-s3
+assert t((426, 719), False, [win]) == (426, 718), "from the bottom row, one row up"
+assert t((0, 0), False, [win]) == (3, 22), "from a corner, the nearest point inside"
+assert t((640, 360), True, [win]) is None, "a pointer over a window stays"
+assert t((426, 719), False, []) is None, "no window to go into"
+assert t((1279, 719), False, [(0, 0, 100, 50), win, (10, 10, 20, 20)]) == (1278, 718), "the largest window"
+assert t((0, 0), False, [(0, 10, 10, 10), (50, 50, 10, 10)]) == (50, 50), "the topmost of two equals"
+# XWindowAttributes as X11/Xlib.h lays it out on LP64: the fields read, and its size.
+if ctypes.sizeof(ctypes.c_long) == 8:
+    a = x.XWindowAttributes
+    assert (a.x.offset, a.border_width.offset, a.c_class.offset, a.map_state.offset, ctypes.sizeof(a)) == (0, 16, 40, 92, 136)
+EOF
+then
+  ok "xkey.py moves a pointer over no window the shortest way into the largest window"
+else
+  bad "xkey.py's pointer move"
+fi
 
 # The password reaches the sandbox as one line through a pipe, and nothing without --launch.
 if [ "$(launch_password=$M3/password password_line)" = "secret-for-tests" ] && [ -z "$(launch_password='' password_line)" ]; then
