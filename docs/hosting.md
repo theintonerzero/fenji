@@ -622,7 +622,7 @@ xattr -dr com.apple.quarantine ~/fenji-server
 
 **A command says "can't read fenji.toml: there's none in this folder (…)".** It was run outside the server's folder, without `--config`. Run it in the server's folder, or give `--config` with the server's `fenji.toml`.
 
-**`fenji-server console` says "no server is running with this data folder (…)".** The server isn't running, or the console uses other settings: give it the same `--config` as the server, or run it in the server's folder.
+**`fenji-server console` says "no server is running with this data folder (…)".** The server isn't running, or the console uses other settings: give it the same `--config` as the server, or run it in the server's folder. If the server is running, it couldn't make its console socket, and its log said why as it started: "`fenji-server console` can't attach to this server: …".
 
 **It says "… its console socket is another user's; attach as the user the server runs as".** Attach as that user: on the reference VPS, `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console`.
 

@@ -704,5 +704,11 @@ async fn with_no_server_running_attaching_says_so() {
             e.contains("no server is running with this data folder ("),
             "{e}"
         );
+        // A server that runs without its socket, which it couldn't make, said why in its log
+        // (#359, the hosting plan's Task 11).
+        assert!(
+            e.ends_with("; if one is, its log says why consoles can't attach to it"),
+            "{e}"
+        );
     }
 }

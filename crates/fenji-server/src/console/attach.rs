@@ -440,7 +440,8 @@ mod unix {
         matches!(commands::parse_console(line), Ok(ConsoleCommand::Stop))
     }
 
-    /// Why no console could attach at `socket`.
+    /// Why no console could attach at `socket`. Where no server answers, one may run without its
+    /// socket, which it couldn't make: it said why in its log as it started (#359).
     fn unreachable(socket: &Path, e: io::Error) -> anyhow::Error {
         if let Some(why) = socket::too_long(socket) {
             return anyhow!("can't attach to the server: {why}");
@@ -448,7 +449,8 @@ mod unix {
         let data = lock::shown(socket.parent().unwrap_or(Path::new(".")));
         match e.kind() {
             io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => anyhow!(
-                "no server is running with this data folder ({})",
+                "no server is running with this data folder ({}); if one is, its log says why \
+                 consoles can't attach to it",
                 data.display()
             ),
             io::ErrorKind::PermissionDenied => anyhow!(
