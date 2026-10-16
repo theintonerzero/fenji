@@ -639,8 +639,9 @@ mod tests {
         assert!(matches!(told(&mut link).await, WorldOut::LoadScene { .. }));
         assert!(matches!(told(&mut link).await, WorldOut::SelfEnter { .. }));
         // While a tick is held, the whole allowance, a line to show it was spent without a kick,
-        // and a tick whose work takes a second: the next tick takes them in that order.
-        stall(&world, MS * 300).await;
+        // and a tick whose work takes a second: the next tick takes them all, in that order. The
+        // hold is a second too, ample for a busy machine to send them all within it.
+        stall(&world, MS * 1_000).await;
         for _ in 0..200 {
             world.handle().send(WorldIn::Pull { conn: 1, pid: 99 });
         }
