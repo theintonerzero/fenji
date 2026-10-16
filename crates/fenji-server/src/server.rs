@@ -406,9 +406,11 @@ pub async fn start(
 /// - [`Front::Full`]: the full-screen console holds the terminal while the server runs on a task
 ///   of its own; Ctrl-C there is `stop`. However the console ends, a panic included, it gives the
 ///   terminal back first (Review Focus 2). One that ends while the server runs leaves it running,
-///   and says so, until a signal stops it. Then `run` waits for the server's end. Once the server
-///   has stopped, it waits [`CONSOLE_GRACE`] at most for a console that hasn't ended: one whose
-///   terminal has gone may never end.
+///   and says so, until a signal stops it. A terminal that hangs up ends the console, and its
+///   SIGHUP stops the server, unless SIGHUP came ignored: the log then says the server runs on
+///   without a console (#359). Then `run` waits for the server's end. Once the server has stopped,
+///   it waits [`CONSOLE_GRACE`] at most for a console that hasn't ended: one whose terminal has
+///   stopped reading may never end.
 /// - [`Front::Plain`]: commands from stdin and answers on stdout, the log being on stderr. The end
 ///   of stdin leaves the server running.
 pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()> {
@@ -479,11 +481,19 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
                 std::future::pending(),
             );
             let ended = held_until_stopped(tui, console.stopped(), CONSOLE_GRACE).await;
-            // The terminal is the host's again, whatever ended the console, unless the console was
-            // left to its thread, its terminal gone.
-            let serving = !served.is_finished() && !*console.stopping().borrow();
-            if let Some(note) = closed_note(&ended, serving, &logs) {
-                say(&note);
+            if matches!(ended, Ok(Ending::HungUp)) {
+                // No terminal to tell: the log says it, unless the hang-up's SIGHUP is stopping
+                // the server.
+                if runs_on(console.stopping(), HANGUP_WAIT).await {
+                    tracing::warn!("{TERMINAL_GONE}");
+                }
+            } else {
+                // The terminal is the host's again, whatever ended the console, unless the
+                // console was left to its thread, its terminal stalled.
+                let serving = !served.is_finished() && !*console.stopping().borrow();
+                if let Some(note) = closed_note(&ended, serving, &logs) {
+                    say(&note);
+                }
             }
             joined(served).await
         }
@@ -537,10 +547,27 @@ pub(crate) async fn held(
 
 /// How long `run` waits for its full-screen console once the server has stopped. The console ends
 /// on the server's goodbye at once, unless it's caught in a write to a terminal that has stopped
-/// reading, as over a stalled SSH link, or in a read of its terminal that never returns: crossterm
-/// reads a terminal that has hung up over and over, a core spinning (the fix pass's re-review,
-/// NB1).
+/// reading, as over a stalled SSH link (the fix pass's re-review, NB1).
 const CONSOLE_GRACE: Duration = Duration::from_secs(2);
+
+/// How long `run` gives the server to begin stopping once its full-screen console's terminal has
+/// gone: the hang-up's SIGHUP stops it, unless SIGHUP came ignored.
+const HANGUP_WAIT: Duration = Duration::from_millis(500);
+
+/// What `run` logs once its full-screen console's terminal has gone while the server runs on, SIGHUP
+/// having come ignored (`trap '' HUP`, or `nohup`): the server has no console now, and this says how
+/// a host reaches it, and stops it (#359).
+const TERMINAL_GONE: &str = "the console's terminal has gone (its window closed, or its SSH \
+     connection was lost), and SIGHUP didn't stop the server, so it runs on without a console: \
+     `fenji-server console` attaches to it, and `fenji-server console --run stop`, SIGINT or \
+     SIGTERM stops it";
+
+/// Whether the server runs on `wait` after its console's terminal has gone, `stopping` being the
+/// console service's ([`ConsoleService::stopping`]): not when it begins stopping meanwhile.
+async fn runs_on(mut stopping: watch::Receiver<bool>, wait: Duration) -> bool {
+    let stops = tokio::time::timeout(wait, stopping.wait_for(|stopping| *stopping)).await;
+    !matches!(stops, Ok(Ok(_)))
+}
 
 /// Why `run` stops waiting for the full-screen console: the server has stopped, and the console
 /// didn't end within [`CONSOLE_GRACE`].
@@ -575,6 +602,7 @@ fn still_serving(ended: &std::io::Result<Ending>) -> Option<String> {
         Ok(Ending::ServerStopped(_)) => None,
         Ok(Ending::InputClosed) => Some("its keys ended".into()),
         Ok(Ending::Lost | Ending::Detached) => Some("it lost the server".into()),
+        Ok(Ending::HungUp) => Some("its terminal has gone".into()),
         Err(e) => Some(e.to_string()),
     }
 }
@@ -862,6 +890,21 @@ mod tests {
         });
         // As `main` does: the console left behind keeps its thread, which isn't waited for.
         rt.shutdown_background();
+    }
+
+    #[tokio::test]
+    async fn a_server_whose_console_hung_up_runs_on_unless_it_begins_stopping() {
+        // #359: the hang-up's SIGHUP stops the server unless it came ignored, so `run` logs that
+        // the server runs on without a console only once it hasn't begun stopping.
+        let (stop, stopping) = watch::channel(false);
+        assert!(runs_on(stopping.clone(), Duration::from_millis(50)).await);
+        let stops = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stop.send_replace(true);
+            stop
+        });
+        assert!(!runs_on(stopping, Duration::from_secs(10)).await);
+        let _stop = stops.await.unwrap();
     }
 
     #[test]

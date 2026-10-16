@@ -186,11 +186,9 @@ impl Drop for InTerminal {
     }
 }
 
-/// `fenji-server` full-screen in a window of 80 × 24: a pseudo-terminal that is its controlling
-/// terminal, as a terminal window or an SSH session gives it, which the test can close as a window
-/// closes. The kernel then hangs the terminal up and sends the program SIGHUP. Nothing answers what
-/// the program might ask the terminal. Linux, for util-linux's `setsid --ctty`. Killed if the test
-/// ends first.
+/// `fenji-server` full-screen in a window of 80 × 24: a pseudo-terminal, which the test can close as
+/// a window closes. Nothing answers what the program might ask the terminal. Linux, for
+/// util-linux's `setsid --ctty`. Killed if the test ends first.
 #[cfg(target_os = "linux")]
 struct Window {
     child: Child,
@@ -201,14 +199,34 @@ struct Window {
     out: Arc<Mutex<Vec<u8>>>,
 }
 
+/// How a [`Window`]'s program holds its terminal.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// As its controlling terminal, as a terminal window or an SSH session gives it: closing the
+    /// window hangs the terminal up, and the kernel sends the program SIGHUP.
+    Controlling,
+    /// The same, but with SIGHUP ignored from the start, as `trap '' HUP` leaves it: the hang-up's
+    /// SIGHUP does nothing.
+    ControllingHangupIgnored,
+    /// As a terminal it was given, not its controlling one: closing the window ends its reads and
+    /// fails its writes, and no signal comes.
+    Given,
+}
+
 /// What a terminal is asked where its cursor is with.
 #[cfg(target_os = "linux")]
 const CURSOR_ASKED: &[u8] = b"\x1b[6n";
 
 #[cfg(target_os = "linux")]
 impl Window {
-    /// `fenji-server --config <config> <args>` in the window.
+    /// `fenji-server --config <config> <args>` in the window, its controlling terminal.
     fn open(config: &Path, args: &[&str]) -> Window {
+        Window::holding(config, args, Held::Controlling)
+    }
+
+    /// `fenji-server --config <config> <args>` in the window, holding its terminal as `held` says.
+    fn holding(config: &Path, args: &[&str], held: Held) -> Window {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
@@ -233,10 +251,23 @@ impl Window {
             ws_ypixel: 0,
         };
         rustix::termios::tcsetwinsize(&terminal, size).unwrap();
-        // A session of its own whose controlling terminal is its stdin: this terminal.
-        let child = Command::new("setsid")
-            .arg("--ctty")
-            .arg(env!("CARGO_BIN_EXE_fenji-server"))
+        let server = env!("CARGO_BIN_EXE_fenji-server");
+        let mut program = match held {
+            // A session of its own whose controlling terminal is its stdin: this terminal.
+            Held::Controlling => {
+                let mut setsid = Command::new("setsid");
+                setsid.arg("--ctty").arg(server);
+                setsid
+            }
+            // The shell ignores SIGHUP, and what it runs keeps it ignored.
+            Held::ControllingHangupIgnored => {
+                let mut sh = Command::new("sh");
+                sh.args(["-c", "trap '' HUP; exec setsid --ctty \"$@\"", "sh", server]);
+                sh
+            }
+            Held::Given => Command::new(server),
+        };
+        let child = program
             .arg("--config")
             .arg(config)
             .args(args)
@@ -277,6 +308,12 @@ impl Window {
 
     fn shown(&self) -> String {
         String::from_utf8_lossy(&self.out.lock().unwrap()).into_owned()
+    }
+
+    /// Types `keys` in the window, as the terminal sends them.
+    fn type_keys(&self, keys: &[u8]) {
+        let mut master = self.master.as_ref().expect("the window is open");
+        master.write_all(keys).unwrap();
     }
 
     /// Waits, 60 s at most, until the program has drawn `text`.
@@ -546,6 +583,28 @@ fn window_config(dir: &Path) -> PathBuf {
     config
 }
 
+/// The log of a full-screen server whose data folder is `dir`: its files in `logs`.
+#[cfg(target_os = "linux")]
+fn logs_of(dir: &Path) -> String {
+    std::fs::read_dir(dir.join("logs"))
+        .unwrap()
+        .map(|f| std::fs::read_to_string(f.unwrap().path()).unwrap())
+        .collect()
+}
+
+/// The CPU time process `pid` has used, in clock ticks (100 a second here): its utime and stime in
+/// /proc.
+#[cfg(target_os = "linux")]
+fn cpu_ticks(pid: u32) -> u64 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    // After the program's name, in parentheses that may hold anything: the state, then the rest,
+    // utime being the 12th field from it and stime the 13th.
+    let fields: Vec<&str> = stat[stat.rfind(')').unwrap() + 2..]
+        .split_whitespace()
+        .collect();
+    fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+}
+
 /// Closes `window` on a server whose data folder is `dir`: the server stops on the hang-up, its
 /// store closed and its log saying why, and its process ends with success, within 15 s.
 #[cfg(target_os = "linux")]
@@ -562,11 +621,96 @@ fn closed_cleanly(mut window: Window, dir: &Path) {
     assert!(took < Duration::from_secs(15), "it took {took:?}");
     assert!(!wal.exists() && !dir.join("fenji.db-shm").exists());
     // Its log, in the data folder's logs as the full-screen console has it, says why it stopped.
-    let logs: String = std::fs::read_dir(dir.join("logs"))
-        .unwrap()
-        .map(|f| std::fs::read_to_string(f.unwrap().path()).unwrap())
-        .collect();
+    let logs = logs_of(dir);
     assert!(logs.contains("shutting down signal=SIGHUP"), "{logs}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_full_screen_console_runs_what_is_typed_and_ctrl_c_stops_the_server() {
+    // #359: on Linux and macOS the console reads its keys itself, rather than through crossterm's
+    // event source. A command typed and Enter, a cursor key on the way, then Ctrl-C.
+    let dir = tempfile::tempdir().unwrap();
+    let mut window = Window::open(&window_config(dir.path()), &["run"]);
+    window.drawn("online");
+    window.type_keys(b"onlie\x1b[Dn\x1b[F\r");
+    window.drawn("nobody is online");
+    window.type_keys(b"\x03");
+    let status = exit_of(&mut window.child, || logs_of(dir.path()));
+    assert!(status.success(), "{status}");
+    let logs = logs_of(dir.path());
+    assert!(
+        logs.contains("shutting down, as the console asked"),
+        "{logs}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_whose_terminal_hangs_up_with_sighup_ignored_runs_on_without_spinning() {
+    // #359: with SIGHUP ignored on purpose (`trap '' HUP`), closing the window doesn't stop the
+    // server, and crossterm 0.29 read the hung-up terminal over and over without end: a core spun
+    // for as long as the server served. The console ends on the hang-up now, and the server runs
+    // on without it, says so in its log, and stops cleanly on Ctrl-C's SIGINT as before.
+    let dir = tempfile::tempdir().unwrap();
+    let config = window_config(dir.path());
+    let mut window = Window::holding(&config, &["run"], Held::ControllingHangupIgnored);
+    window.drawn("online");
+    window.close();
+    let pid = window.child.id();
+    // Settled: the console has ended, and anything that would spin is spinning.
+    std::thread::sleep(Duration::from_secs(1));
+    let before = cpu_ticks(pid);
+    std::thread::sleep(Duration::from_secs(2));
+    let used = cpu_ticks(pid) - before;
+    let running = window.child.try_wait().unwrap().is_none();
+    assert!(running, "it stopped:\n{}", logs_of(dir.path()));
+    // A core spinning uses 200 ticks in 2 s; a server at rest, a few.
+    assert!(used < 50, "{used} ticks in 2 s:\n{}", logs_of(dir.path()));
+    let logs = logs_of(dir.path());
+    assert!(logs.contains("the console's terminal has gone"), "{logs}");
+    // It serves, and answers a console.
+    let online = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        .arg("--config")
+        .arg(&config)
+        .args(["console", "--run", "online"])
+        .output()
+        .unwrap();
+    assert!(online.status.success(), "{online:?}");
+    kill_process(Pid::from_child(&window.child), Signal::INT).unwrap();
+    let status = exit_of(&mut window.child, || logs_of(dir.path()));
+    assert!(status.success(), "{status}");
+    let logs = logs_of(dir.path());
+    assert!(logs.contains("shutting down signal=SIGINT"), "{logs}");
+    assert!(!dir.path().join("fenji.db-wal").exists(), "{logs}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_attached_full_screen_console_whose_terminal_hangs_up_exits_0() {
+    // #359: a hang-up failed the console's writes, and with no SIGHUP to say the host had left, as
+    // a terminal that isn't the console's controlling one sends none, it exited 1, as a console
+    // that failed. A terminal that has gone is the host leaving, however it went: 0.
+    let dir = tempfile::tempdir().unwrap();
+    let server = Plain::start(dir.path());
+    server.running();
+    for held in [
+        Held::Given,
+        Held::Controlling,
+        Held::ControllingHangupIgnored,
+    ] {
+        let mut console = Window::holding(&server.config, &["console"], held);
+        console.drawn("attached");
+        console.close();
+        let status = exit_of(&mut console.child, || format!("{held:?}: still running"));
+        assert_eq!(status.code(), Some(0), "{held:?}: {status}");
+    }
+    // The server runs on, and answers a console. One it hasn't seen go yet holds its place a
+    // moment more (tests/attach.rs's `a_console_that_goes_gives_its_place_back_at_once`).
+    until(
+        || server.console(&["--run", "online"], "").status.success(),
+        || "no console is answered".into(),
+    );
 }
 
 #[cfg(target_os = "linux")]

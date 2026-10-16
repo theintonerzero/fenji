@@ -8,11 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{Event, EventStream, KeyEvent};
+use crossterm::event::KeyEvent;
+#[cfg(not(unix))]
+use crossterm::event::{Event, EventStream};
 use crossterm::execute;
 use crossterm::terminal::{
     Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+#[cfg(not(unix))]
 use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -45,10 +48,12 @@ thread_local! {
 /// How long a panic on another thread waits for a frame being drawn.
 const FRAME_WAIT: Duration = Duration::from_secs(1);
 
-/// The full-screen console, until the host leaves it or the server goes. It draws on every
-/// message and key, and every second for the uptime. Ctrl-C sends `stop` in-process, and leaves
-/// when attached. Once `leave` is done, the console leaves as an attached one's Ctrl-C does, with
-/// [`Ending::Detached`] and the terminal given back: an attached console's signals.
+/// The full-screen console, until the host leaves it, the server goes or the terminal does. It
+/// draws on every message and key, and every second for the uptime. Ctrl-C sends `stop`
+/// in-process, and leaves when attached. Once `leave` is done, the console leaves as an attached
+/// one's Ctrl-C does, with [`Ending::Detached`] and the terminal given back: an attached console's
+/// signals. A terminal that hangs up ends it with [`Ending::HungUp`], whether a read of its keys or
+/// a frame's write finds it gone (#359).
 pub async fn run_tui(
     session: Session,
     mode: Mode,
@@ -67,7 +72,7 @@ pub async fn run_tui(
     // waits up to 2 s for an answer that some never give (#359).
     let _screen = Screen::take()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut keys = EventStream::new();
+    let mut input = Input::open()?;
     let mut second = tokio::time::interval(Duration::from_secs(1));
     second.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_id = 0;
@@ -79,28 +84,162 @@ pub async fn run_tui(
                 "a panic ended the console; its message is above",
             ));
         };
-        terminal.draw(|frame| view.draw(frame, &palette, now_ms()))?;
+        let drawn = terminal.draw(|frame| view.draw(frame, &palette, now_ms()));
         drop(drawing);
+        if let Err(e) = drawn {
+            return if hung_up(&e) || input.goes_within(GONE_WAIT).await {
+                Ok(Ending::HungUp)
+            } else {
+                Err(e)
+            };
+        }
         tokio::select! {
             msg = from_server.recv() => {
                 if let Some(ending) = take_messages(&mut view, msg, &mut from_server) {
                     return Ok(ending);
                 }
             }
-            event = keys.next() => match event {
-                None => return Ok(Ending::InputClosed),
-                Some(Err(e)) => return Err(e),
-                Some(Ok(Event::Key(key))) => {
-                    if let Some(ending) = act(&mut view, key, mode, &to_server, &mut last_id) {
-                        return Ok(ending);
+            said = input.next() => match said? {
+                Said::Keys(keys) => {
+                    for key in keys {
+                        if let Some(ending) = act(&mut view, key, mode, &to_server, &mut last_id) {
+                            return Ok(ending);
+                        }
                     }
                 }
-                // A resize and the rest: drawn again.
-                Some(Ok(_)) => {}
+                Said::Redraw => {}
+                #[cfg(unix)]
+                Said::Gone => return Ok(Ending::HungUp),
+                Said::Ended => return Ok(Ending::InputClosed),
             },
             _ = second.tick() => {}
             () = &mut leave => return Ok(Ending::Detached),
         }
+    }
+}
+
+/// How long a frame that failed waits for the terminal's keys to say it has gone. A frame drawn as
+/// the terminal hangs up may fail before the keys say so, and not always with a write's error: for
+/// the window's size, crossterm runs `tput` once the terminal no longer answers.
+const GONE_WAIT: Duration = Duration::from_millis(200);
+
+/// What the terminal says to the console.
+enum Said {
+    /// Keys, in the order they were pressed.
+    Keys(Vec<KeyEvent>),
+    /// Nothing for the view, but a reason to draw again: a new size, say.
+    Redraw,
+    /// The terminal has gone: it hung up.
+    #[cfg(unix)]
+    Gone,
+    /// Its keys have ended for another reason.
+    Ended,
+}
+
+/// The terminal's keys and changes of size. On Linux and macOS the console reads them itself
+/// ([`crate::keys`]), since crossterm's reading spins on a terminal that has hung up (#359), and
+/// SIGWINCH says the window's size has changed.
+#[cfg(unix)]
+struct Input {
+    reads: mpsc::Receiver<crate::keys::Read>,
+    parser: crate::keys::Parser,
+    resized: Option<tokio::signal::unix::Signal>,
+}
+
+#[cfg(unix)]
+impl Input {
+    fn open() -> io::Result<Input> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Input {
+            reads: crate::keys::read(rustix::stdio::stdin())?,
+            parser: crate::keys::Parser::default(),
+            // Without it, a new size shows at the next second's frame.
+            resized: signal(SignalKind::window_change()).ok(),
+        })
+    }
+
+    /// What the terminal says next. Cancel-safe: cancelled, it has taken nothing.
+    async fn next(&mut self) -> io::Result<Said> {
+        let Input {
+            reads,
+            parser,
+            resized,
+        } = self;
+        let resized = async {
+            match resized {
+                Some(resized) => resized.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+        Ok(tokio::select! {
+            read = reads.recv() => match read {
+                Some(crate::keys::Read::Bytes(bytes)) => Said::Keys(parser.keys(&bytes)),
+                Some(crate::keys::Read::Gone) => Said::Gone,
+                // Its thread has gone without a word.
+                None => Said::Ended,
+            },
+            Some(()) = resized => Said::Redraw,
+        })
+    }
+
+    /// Whether the terminal says, within `wait`, that it has gone. Keys that come meanwhile are let
+    /// go: the console is ending.
+    async fn goes_within(&mut self, wait: Duration) -> bool {
+        let gone = async {
+            loop {
+                match self.reads.recv().await {
+                    Some(crate::keys::Read::Gone) => return true,
+                    Some(crate::keys::Read::Bytes(_)) => {}
+                    None => return false,
+                }
+            }
+        };
+        tokio::time::timeout(wait, gone).await.unwrap_or(false)
+    }
+}
+
+/// The terminal's keys and changes of size, as crossterm's event stream gives them: Windows' console
+/// has no hang-up of the kind it spins on.
+#[cfg(not(unix))]
+struct Input(EventStream);
+
+#[cfg(not(unix))]
+impl Input {
+    fn open() -> io::Result<Input> {
+        Ok(Input(EventStream::new()))
+    }
+
+    /// What the terminal says next. Cancel-safe: cancelled, it has taken nothing.
+    async fn next(&mut self) -> io::Result<Said> {
+        Ok(match self.0.next().await {
+            None => Said::Ended,
+            Some(Err(e)) => return Err(e),
+            Some(Ok(Event::Key(key))) => Said::Keys(vec![key]),
+            // A resize and the rest: drawn again.
+            Some(Ok(_)) => Said::Redraw,
+        })
+    }
+
+    /// Never: a console here has no hang-up to wait for.
+    async fn goes_within(&mut self, _wait: Duration) -> bool {
+        false
+    }
+}
+
+/// Whether `e`, from writing to the terminal, says it has hung up: on Linux and macOS, a write to a
+/// terminal that has fails with EIO, or ENXIO.
+fn hung_up(e: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        use rustix::io::Errno;
+        [Errno::IO, Errno::NXIO]
+            .iter()
+            .any(|gone| e.raw_os_error() == Some(gone.raw_os_error()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = e;
+        false
     }
 }
 

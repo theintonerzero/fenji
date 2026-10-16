@@ -191,7 +191,8 @@ mod unix {
     }
 
     /// What the host is told as an attached console ends, and whether it ended as it should. A
-    /// full-screen console that failed suggests plain lines, as `run`'s own does.
+    /// full-screen console that failed suggests plain lines, as `run`'s own does. A terminal that
+    /// hangs up is the host leaving, with no terminal left to tell (#359).
     fn ending(ended: &io::Result<Ending>, front: Front) -> (Option<String>, bool) {
         match ended {
             Ok(Ending::Detached) => (Some("Left the console. The server runs on.".into()), true),
@@ -199,7 +200,7 @@ mod unix {
                 Some(format!("The server closed the console: {reason}.")),
                 true,
             ),
-            Ok(Ending::InputClosed) => (None, true),
+            Ok(Ending::InputClosed | Ending::HungUp) => (None, true),
             Ok(Ending::Lost) => (
                 Some("The console lost the server: it closed without a goodbye.".into()),
                 false,
@@ -504,6 +505,8 @@ mod unix {
                     Some("The server closed the console: the server is stopping.")
                 );
                 assert_eq!(ending(&Ok(Ending::InputClosed), front), (None, true));
+                // #359: a terminal that hangs up is the host leaving, with none left to tell.
+                assert_eq!(ending(&Ok(Ending::HungUp), front), (None, true));
                 assert!(!ending(&Ok(Ending::Lost), front).1);
                 let panicked = Err(io::Error::other("a panic ended the console"));
                 assert!(!ending(&panicked, front).1);
