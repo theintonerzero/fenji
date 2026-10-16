@@ -38,9 +38,11 @@ On Windows the console runs in its own window only. A host who runs the server a
 ### 3.2 What the console shows
 
 From the approved design, laid out in terminal rows:
-- **Title bar** (one row): `fenji-server — <server name>`, in text-2 on ink-900.
+- **Title bar** (one row): `fenji-server — <server name>`, in text-2 on ink-900. At its right, faint: how to stop the server or leave the console, then `times in UTC`, or `UTC` where the name leaves less room. The log's times are UTC (the plan's ruling HP6), said once, here (the hosting plan's final review B).
 - **Status strip** (one row, ink-850): the state word in its colour (`online` in ok, `maintenance` in warn, `stopping` in danger), the server's name in gold, then facts separated by a faint ` · `: the version, the uptime, `3 of 20 online`, the maintenance message while it's on, and the gate's and the API's ports.
 - **The log** fills the middle, anchored to the bottom, in three columns: the time (`HH:MM:SS`, faint), the level (INFO muted, WARN warn, ERROR danger) and the message. A WARN or ERROR line's message is in the text colour. Fields that name people (characters and accounts) are gold. PgUp and PgDn scroll back through the last 5,000 lines.
+  - A row's later lines start under its message. In an answer to the host's own command, a word too long for a line, such as `invite`'s or `link`'s links, goes on at the left edge instead, so that a link copied from the screen holds only line breaks. A log line's never does, so that no line of one can pass for another log line (the hosting plan's final review B).
+  - The wheel doesn't scroll: while the console holds the terminal it turns off the terminal's alternate scroll (DECRST 1007), which would turn the wheel into ↑ and ↓ and recall commands, and turns it on again as it gives the terminal back (DECSET 1007), the panic hook's way included.
 - **The command palette** opens above the prompt while the first word is typed, or on Tab: a square ink-850 list of the matching commands with a short description, the selected row on ink-800. ↑ ↓ choose, Tab completes, Enter runs and Esc closes it.
 - **The prompt row** (one row, a hairline row above it): a gold `> `, the line being typed with a block cursor, and a faint hint at the right, `Tab completes · ↑ ↓ choose · Enter runs`, dropped when the terminal is narrow. With the palette closed, ↑ and ↓ walk this session's last 100 commands.
 

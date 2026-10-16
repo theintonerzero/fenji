@@ -37,7 +37,7 @@ Players need only the desktop launcher and the link you send them: the [README](
 3. **Start it** with the start script in that folder:
    - **Windows:** double-click `start-server.bat`. The first time, SmartScreen says "Windows protected your PC", because the server isn't signed by Microsoft: choose More info, then Run anyway. When Windows asks whether to let `fenji-server.exe` through its firewall, allow it on private networks.
    - **macOS:** double-click `start-server.command`, which opens in Terminal. The first time, macOS says Apple can't check it, because the server isn't signed by Apple: close the message, open System Settings, Privacy & Security, and choose Open Anyway beside its name. macOS may then ask the same about `fenji-server` itself, and you allow it the same way. If macOS asks whether `fenji-server` may accept incoming network connections, allow it.
-   - **Linux:** in a terminal, in that folder, run:
+   - **Linux:** open a terminal in that folder (in your file manager, right-click the folder and choose Open in Terminal), and run:
 
      ```sh
      ./start-server.sh
@@ -51,8 +51,10 @@ The first start writes the server's settings, `fenji.toml`, and its `data` folde
 09:41:07 INFO  Fenji is running gate=0.0.0.0:7800 api=0.0.0.0:7801
 09:41:07 INFO  server link (enp3s0): https://192.0.2.10:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw (type link for the others)
 09:41:07 INFO  Friends on this network can join now: type `invite` for a link.
-09:41:07 INFO  To let in friends over the internet, open ports 7800 and 7801 on your router, or use a VPN: see docs/hosting.md.
+09:41:07 INFO  To let in friends over the internet, open ports 7800 and 7801 on your router, or use a VPN: see https://github.com/theintonerzero/fenji/blob/v0.5.0/docs/hosting.md.
 ```
+
+The times are in UTC, as the console's title bar says, so they may differ from your clock.
 
 The server is ready for your network as it starts: it listens on all of your computer's network connections, on ports 7800 (the game) and 7801 (the account API, where launchers sign players in), and the account API speaks TLS with the server's own key.
 
@@ -66,10 +68,12 @@ server link (enp3s0): https://192.0.2.10:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7u
 link (this computer): https://127.0.0.1:7801/#invite=K4QW-7TPM-2XHN-9CRB&pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
 server link (this computer): https://127.0.0.1:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
 code: K4QW-7TPM-2XHN-9CRB
-friends over the internet: open ports 7800 and 7801 on your router, or use a VPN: see docs/hosting.md
+friends over the internet: open ports 7800 and 7801 on your router, or use a VPN: see https://github.com/theintonerzero/fenji/blob/v0.5.0/docs/hosting.md
 ```
 
 There's an invite link for each of your computer's addresses, labelled with its network connection, and one for this computer alone. Send your friend the invite link for the network they share with you, by any channel you trust: it makes one account, once. They paste it into the desktop launcher, which makes their account and keeps your server in its list. A link is for the launcher, not a web browser: a browser warns about the server's own certificate, and finds no page there. Beside each invite link is your server's own link, its `server link`, without the invite: that one is for players who already have an account (below).
+
+**Copying a link.** Select it with the mouse, from its first letter to its last, then copy it: Ctrl-Shift-C on Linux, Cmd-C on macOS, or Ctrl-C on Windows. In a Linux terminal, Ctrl-C stops the server instead, cleanly, so use Ctrl-Shift-C there. A link is longer than many windows are wide, so it may show on two rows or more: the console starts its later rows at the window's left edge, so that the copy holds only line breaks, which the launchers leave out. For each link on one row, make the window wider until it fits, or run `./fenji-server invite create` in another terminal, in the server's folder (below), which prints each link whole, as `--plain` does.
 
 - `invite Mai` labels the invite, so that `invites` shows whom it was for.
 - An invite made at the console stays valid until it's used or revoked. The `invite create` command makes one that runs out (below).
@@ -81,17 +85,18 @@ There's an invite link for each of your computer's addresses, labelled with its 
 ```
 server link (enp3s0): https://192.0.2.10:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
 server link (this computer): https://127.0.0.1:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
-friends over the internet: open ports 7800 and 7801 on your router, or use a VPN: see docs/hosting.md
+friends over the internet: open ports 7800 and 7801 on your router, or use a VPN: see https://github.com/theintonerzero/fenji/blob/v0.5.0/docs/hosting.md
 ```
 
-The player adds that link as a server, and signs in. The console also shows one as the server starts. A server behind Caddy, with a domain name (section 4), has no pin: its link is its address alone, such as `https://play.example.net`, and `link` shows that.
+The player adds that link as a server, and signs in. The console also shows one in its log as the server starts; copy links from `link` or `invite`, though, as a log line's later rows stay under its text, and a copy of one would hold their spaces. A server behind Caddy, with a domain name (section 4), has no pin: its link is its address alone, such as `https://play.example.net`, and `link` shows that.
 
 ### The console
 
 The console works like a Minecraft server's. The log scrolls above, the command line is at the bottom, and a status line at the top shows the server's state, its name, its version, how long it has run, how many players are online of how many it takes, and its ports.
 
 - Type a command and press Enter. While you type its first word, or when you press Tab, a list shows the commands that match: ↑ and ↓ choose, Tab completes, Enter runs and Esc closes it. With the list closed, ↑ and ↓ go back through the commands you typed.
-- PgUp and PgDn scroll back through the last 5,000 lines of the log.
+- PgUp and PgDn scroll back through the last 5,000 lines of the log. The mouse wheel doesn't: the console turns off the terminal's habit of turning it into ↑ and ↓, which would bring back your earlier commands instead.
+- The log's times are in UTC, as the title bar says (`times in UTC`).
 - `stop`, or Ctrl-C, stops the server cleanly: it lets every player go, saves where each one stood, and says `Fenji has stopped` with where its log is. Closing the window, or losing the SSH connection the server runs in, stops it cleanly too, though there's no window left to say so. On Windows, Windows ends the server a few seconds after its window closes, and the server saves where everyone stood first.
 - The window needs to be at least 60 columns by 15 rows. A smaller one shows a note asking for a bigger window, and the server keeps running.
 - The colours are exact in a terminal with 24-bit colour, and close elsewhere. With `NO_COLOR` set there are none. Any monospaced font works; Geist Mono, under the SIL Open Font License, suits the console's design.
@@ -597,6 +602,10 @@ With its old key, the server keeps its pin. If the new VPS has another address, 
 xattr -dr com.apple.quarantine ~/fenji-server
 ```
 
+**Windows says Smart App Control blocked the server, with no Run anyway.** Smart App Control, on from the start on some new Windows 11 PCs, blocks programs that aren't signed, and the server isn't. The only way past it is to turn it off, in Windows Security, App & browser control, Smart App Control settings. On many PCs Windows can't turn it on again without a reset of Windows, so weigh that first, or host on another computer: a Linux or macOS one, or a VPS (section 4).
+
+**A player's launcher says "That isn't a server address or an invite link. Paste the link your host sent."** in the desktop launcher, or "that isn't an invite code or link" from `fenji-launch`. What they pasted isn't the whole link: part of it was left out as it was copied, from the console or by a chat app. Copy it again from its first letter to its last (section 2's "Copying a link"), or make it with `./fenji-server invite create`, which prints each link on one line, and send that.
+
 **"a server is already using this data folder (…)".** Another `fenji-server` is running with the same data folder: in another window, in `tmux`, or as the reference deployment's service. Use that one (on Linux and macOS, `fenji-server console` attaches to it), or stop it first. The system lets go of a server's lock however it ends, so this never means a stale lock.
 
 **"the data folder … is fenji's, and this runs as root: run fenji-server as fenji (sudo -u fenji fenji-server …)…".** The server, or one of its commands, was started as another user than the one whose data folder it is, often with `sudo` alone. Run it as the user it names: on the reference VPS, `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`. A file another user made in the data folder would be theirs, and the server couldn't use it.
@@ -608,6 +617,8 @@ xattr -dr com.apple.quarantine ~/fenji-server
 **A player's launcher says the server uses its own key:** "Moonward uses its own key. Open the link Wen sent you." in the desktop launcher, or "this server uses its own key: open the link your host sent" from `fenji-launch`. The player added your address without its pin: send them your server's link (section 2).
 
 **"… holds the server's key but other users can open it (mode 755): run `chmod 700 …`".** The server refuses a key folder that other users can open. Run the command it gives. On a FAT or exFAT drive, folders can't be made private: move the server's folder to your computer's own disk.
+
+**A command says "can't read fenji.toml: there's none in this folder (…)".** It was run outside the server's folder, without `--config`. Run it in the server's folder, or give `--config` with the server's `fenji.toml`.
 
 **`fenji-server console` says "no server is running with this data folder (…)".** The server isn't running, or the console uses other settings: give it the same `--config` as the server, or run it in the server's folder.
 
