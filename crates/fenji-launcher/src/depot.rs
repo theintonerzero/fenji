@@ -5,6 +5,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::appimage;
@@ -152,6 +153,8 @@ pub enum RunState {
     },
     /// The window closed before DepotDownloader ended, or the terminal never ran the script.
     Lost,
+    /// The terminal failed before it ran the script: it opened nothing (#348).
+    NotOpened,
 }
 
 /// A run of DepotDownloader in a terminal, followed through files in `run_dir`.
@@ -161,6 +164,10 @@ pub struct DepotRun {
     /// How long the terminal has to start the script before the run is [`RunState::Lost`].
     pub start_limit: Duration,
     started: Instant,
+    /// The terminal's own process, once it has ended: whether it succeeded. One that fails before
+    /// the script starts opened nothing; one that succeeds may have handed the script to a server
+    /// of its own, as `gnome-terminal` does, so only the start limit can tell.
+    terminal: Arc<Mutex<Option<bool>>>,
 }
 
 impl DepotRun {
@@ -200,14 +207,19 @@ impl DepotRun {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let mut child = cmd.spawn()?;
-        // Reaped off this thread, so a terminal that lingers never leaves a zombie.
+        // Reaped off this thread, so a terminal that lingers never leaves a zombie; its end is
+        // kept for state().
+        let terminal = Arc::new(Mutex::new(None));
+        let ended = terminal.clone();
         std::thread::spawn(move || {
-            let _ = child.wait();
+            let ok = child.wait().is_ok_and(|status| status.success());
+            *ended.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ok);
         });
         Ok(DepotRun {
             run_dir: run_dir.to_path_buf(),
             start_limit: Duration::from_secs(30),
             started: Instant::now(),
+            terminal,
         })
     }
 
@@ -230,6 +242,13 @@ impl DepotRun {
             return ended;
         }
         let Some(pgid) = self.pgid() else {
+            let terminal = *self
+                .terminal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if terminal == Some(false) {
+                return RunState::NotOpened;
+            }
             return if self.started.elapsed() > self.start_limit {
                 RunState::Lost
             } else {
@@ -371,6 +390,28 @@ mod tests {
         );
         let progress = std::fs::read_to_string(run.run_dir.join("progress")).unwrap();
         assert!(progress.contains("100.00% b.bin") && !progress.contains("QR here"));
+    }
+
+    /// #348: a terminal opener that opens nothing (an `xdg-terminal-exec` with no terminal set up)
+    /// fails at once, and the run says so then, not after waiting out its start limit.
+    #[test]
+    fn a_terminal_that_opens_nothing_is_known_at_once() {
+        let _spawn = spawning();
+        let dir = tempfile::tempdir().unwrap();
+        let term = Terminal {
+            program: script(dir.path(), "term", "exit 1"),
+            before: vec![],
+        };
+        let job = Job {
+            dd: script(dir.path(), "dd", "exit 0"),
+            folder: dir.path().join("game"),
+            files: None,
+        };
+        let run = DepotRun::start(&term, &job, &dir.path().join("run"), []).unwrap();
+        drop(_spawn);
+        let started = std::time::Instant::now();
+        assert_eq!(wait_for(&run, |s| *s != RunState::Waiting), RunState::NotOpened);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     /// #329: the terminal, and DepotDownloader in it, start outside the AppImage.

@@ -451,6 +451,7 @@ impl App {
                 _ if cancelled => (words::DOWNLOAD_CANCELLED.to_string(), false),
                 RunState::Ended { code } => (words::download_stopped(code), true),
                 RunState::Lost => (words::WINDOW_CLOSED.to_string(), true),
+                RunState::NotOpened => (words::NO_TERMINAL.to_string(), true),
             };
             return self.download_ended(text, error);
         }
@@ -960,6 +961,30 @@ exit {code}"#,
         t.kill_fake_terminal_session().await;
         let s = until(&app, |s| s.job.is_none()).await;
         assert_eq!(s.notice.unwrap().text, words::WINDOW_CLOSED);
+    }
+
+    /// #348: a terminal that fails before it runs the script is told at once, not after the
+    /// 30 s start limit (`until` gives up after 10 s).
+    #[tokio::test]
+    async fn a_terminal_that_opens_nothing_says_so_at_once() {
+        let t = Testbed::new(&[("a.bin", 10)]);
+        let mut cfg = t.config(Os::Linux);
+        {
+            let _spawn = spawning();
+            cfg.depot_downloader = Some(script(&t.root, "dd", "exit 0"));
+            cfg.terminal = Some(Terminal {
+                program: script(&t.root, "term", "exit 1"),
+                before: vec![],
+            });
+        }
+        let app = App::start(cfg, tokio::runtime::Handle::current());
+        app.intent(Intent::Download {
+            folder: t.root.join("d").display().to_string(),
+        })
+        .await
+        .unwrap();
+        let s = until(&app, |s| s.job.is_none() && s.notice.is_some()).await;
+        assert_eq!(s.notice.unwrap().text, words::NO_TERMINAL);
     }
 
     #[tokio::test]
