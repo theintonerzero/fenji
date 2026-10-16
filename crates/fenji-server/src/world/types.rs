@@ -145,7 +145,8 @@ pub enum KickReason {
     Kicked,
     /// The client stopped reading: its outbound channel filled.
     SlowReader,
-    /// The connection sent more in one tick than the world takes.
+    /// The connection sent more than the world takes: over its allowance, which holds
+    /// `MAX_STALL`'s worth of `MAX_INPUTS_PER_TICK` and gets that many back each tick.
     Flood,
     /// The server is stopping.
     Shutdown,

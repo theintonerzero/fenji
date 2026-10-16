@@ -427,8 +427,6 @@ fn run(
 ) -> Result<(), String> {
     let start = Instant::now();
     let mut next = start;
-    // When the last tick's work ended.
-    let mut ended = None;
     loop {
         let mut inputs = Vec::new();
         let mut stopping = false;
@@ -446,14 +444,12 @@ fn run(
         let sent = Sent::of(&inputs);
         let began = Instant::now();
         let now_ms = millis(began.duration_since(start));
-        let gap_ms = gap(ended, began);
-        let phases = match catch_unwind(AssertUnwindSafe(|| core.step(now_ms, gap_ms, inputs))) {
+        let phases = match catch_unwind(AssertUnwindSafe(|| core.step(now_ms, inputs))) {
             Ok(phases) => phases,
             Err(panic) => return Err(abandon(core, &mut rx, &sent, panic)),
         };
         drop(sent);
         let work = began.elapsed();
-        ended = Some(began + work);
         stats
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -471,14 +467,6 @@ fn run(
             next = now;
         }
     }
-}
-
-/// Milliseconds from the end of the last tick's work, `ended`, to a tick that began at `began`:
-/// what the flood check takes as a stall. It is 0 for the first tick, and for one that starts as
-/// the last one ends because that one's work ran long: a tick slowed by its own inputs must earn
-/// the next no more allowance, or a flood would buy itself more tick after tick (Ruling R10).
-fn gap(ended: Option<Instant>, began: Instant) -> u64 {
-    ended.map_or(0, |ended| millis(began.saturating_duration_since(ended)))
 }
 
 fn millis(d: Duration) -> u64 {
@@ -596,6 +584,7 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::super::ecs::test_util::*;
+    use super::super::types::ChatOut;
     use super::*;
 
     const MS: Duration = Duration::from_millis(1);
@@ -624,11 +613,21 @@ mod tests {
             .expect("the channel is open")
     }
 
+    /// Holds the world's next tick for `work`, and returns once it has begun.
+    async fn stall(world: &RunningWorld, work: Duration) {
+        let (begun, working) = oneshot::channel();
+        world.handle().send(WorldIn::Stall { work, begun });
+        tokio::time::timeout(Duration::from_secs(5), working)
+            .await
+            .expect("the tick begins")
+            .unwrap();
+    }
+
     #[tokio::test]
-    async fn a_tick_slowed_by_its_own_work_earns_the_next_no_allowance() {
-        // Ruling R10, through the world's own loop: the gap that scales the flood check runs from
-        // the end of a tick's work, so a slow tick leaves none. At 5 Hz a period is 200 ms, with
-        // 8 inputs.
+    async fn a_tick_slowed_by_its_own_work_gives_back_no_more_than_one_on_time() {
+        // Ruling R10, through the world's own loop: each tick gives a connection back the limit,
+        // 8 here, however long it took, so a slow tick buys a flood nothing. At 5 Hz the allowance
+        // holds 25 ticks' worth, 200.
         let world = world(Rules {
             tick_hz: 5,
             ..rules()
@@ -639,32 +638,25 @@ mod tests {
         world.handle().send(WorldIn::Loaded { conn: 1 });
         assert!(matches!(told(&mut link).await, WorldOut::LoadScene { .. }));
         assert!(matches!(told(&mut link).await, WorldOut::SelfEnter { .. }));
-        // A tick whose work takes a second: five periods, which as a gap would allow 40.
-        let (begun, working) = oneshot::channel();
-        let work = MS * 1_000;
-        world.handle().send(WorldIn::Stall { work, begun });
-        tokio::time::timeout(Duration::from_secs(5), working)
-            .await
-            .expect("the slow tick begins")
-            .unwrap();
-        // Just over a period's worth, sent during that work: the tick after it takes them.
+        // While a tick is held, the whole allowance, a line to show it was spent without a kick,
+        // and a tick whose work takes a second: the next tick takes them in that order.
+        stall(&world, MS * 300).await;
+        for _ in 0..200 {
+            world.handle().send(WorldIn::Pull { conn: 1, pid: 99 });
+        }
+        let text = String::from("spent");
+        world.handle().send(WorldIn::Tell { conn: 1, text });
+        stall(&world, MS * 1_000).await;
+        let spent = WorldOut::Chat(ChatOut::System {
+            text: "spent".into(),
+        });
+        assert_eq!(told(&mut link).await, spent);
+        // Just over a tick's worth, sent during that work: the tick after it takes them.
         for _ in 0..9 {
             world.handle().send(WorldIn::Pull { conn: 1, pid: 99 });
         }
         assert_eq!(told(&mut link).await, WorldOut::Kicked(KickReason::Flood));
         world.stop().await.unwrap();
-    }
-
-    #[test]
-    fn the_gap_runs_from_the_end_of_the_last_ticks_work() {
-        // Ruling R10: the flood check forgives a stall between ticks, never a tick's own work.
-        let t = Instant::now();
-        assert_eq!(gap(None, t), 0, "the first tick");
-        // A tick that worked 500 ms, then the next as soon as it ended: no gap, though the next
-        // began 500 ms after the last one did.
-        assert_eq!(gap(Some(t + MS * 500), t + MS * 500), 0);
-        // A tick that worked 2 ms, then a pause: the gap is the pause.
-        assert_eq!(gap(Some(t + MS * 2), t + MS * 2_002), 2_000);
     }
 
     #[test]
@@ -777,7 +769,7 @@ mod tests {
                 out: kai,
             },
         ];
-        core.step(0, 0, earlier);
+        core.step(0, earlier);
         let (lin, _lin) = mpsc::channel(8);
         let lin_joins = player(1, "Lin", at(0.0, 0.0));
         tx.send(WorldIn::Join {

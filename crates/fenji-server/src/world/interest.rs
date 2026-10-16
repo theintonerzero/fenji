@@ -243,7 +243,7 @@ mod tests {
             match how {
                 "closed" => h.push(WorldIn::Leave { conn: 2 }),
                 "kicked while loading others" => {
-                    for _ in 0..9 {
+                    for _ in 0..flood() {
                         h.push(WorldIn::Pull { conn: 2, pid: 1 });
                     }
                 }
