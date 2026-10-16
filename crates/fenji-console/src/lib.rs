@@ -12,6 +12,8 @@
 pub mod text;
 pub mod wire;
 
+#[cfg(all(feature = "tui", unix))]
+mod keys;
 #[cfg(feature = "tui")]
 mod plain;
 #[cfg(feature = "tui")]
@@ -26,7 +28,7 @@ pub use plain::run_plain;
 #[cfg(feature = "tui")]
 pub use theme::Colours;
 #[cfg(feature = "tui")]
-pub use tui::run_tui;
+pub use tui::{PanicLog, restore_mode, run_tui};
 #[cfg(feature = "tui")]
 pub use view::Mode;
 pub use wire::Hello;
@@ -78,4 +80,7 @@ pub enum Ending {
     Lost,
     /// The console's input ended: stdin for plain lines, the terminal's keys for full-screen.
     InputClosed,
+    /// The full-screen console's terminal has gone: it hung up, as when its window closes or its
+    /// SSH connection is lost, ending its reads and failing its writes.
+    HungUp,
 }

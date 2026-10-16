@@ -249,13 +249,29 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
 /// What `redeem` prints when the server refuses: the error, which carries the host's words for
 /// maintenance and a ban. Maintenance refuses an invite before spending it (M4 hosting spec §3.9),
-/// so the player also hears that it still works.
+/// so the player also hears that it still works. The server's codes for a refused redeem are said
+/// in words, as the desktop launcher says them (#359); one this version doesn't know stays as sent.
 fn refused_redeem(e: ApiError) -> anyhow::Error {
-    match e {
+    let words = match &e {
         ApiError::Maintenance { .. } => {
-            anyhow::anyhow!("{e}; the invite wasn't used, so try it again once the server is back")
+            return anyhow::anyhow!(
+                "{e}; the invite wasn't used, so try it again once the server is back"
+            );
         }
-        e => e.into(),
+        ApiError::Server { code, .. } => match code.as_str() {
+            "invalid_invite" => {
+                Some("that invite has been used or has expired: ask your host for a new one")
+            }
+            "username_taken" => Some("that username is already taken on this server: try another"),
+            "bad_username" => Some("usernames are 3 to 16 letters, digits, _ or -"),
+            "bad_password" => Some("passwords are 10 to 128 characters"),
+            _ => None,
+        },
+        _ => None,
+    };
+    match words {
+        Some(words) => anyhow::anyhow!(words),
+        None => e.into(),
     }
 }
 
@@ -282,5 +298,39 @@ mod tests {
         );
         let other = refused_redeem(ApiError::Insecure).to_string();
         assert_eq!(other, ApiError::Insecure.to_string());
+    }
+
+    #[test]
+    fn a_refused_redeem_says_why_in_words() {
+        // #359: a spent link printed "the server answered invalid_invite (HTTP 400)".
+        let refused = |code: &str| {
+            refused_redeem(ApiError::Server {
+                status: 400,
+                code: code.into(),
+                retry_after_secs: None,
+            })
+            .to_string()
+        };
+        assert_eq!(
+            refused("invalid_invite"),
+            "that invite has been used or has expired: ask your host for a new one"
+        );
+        assert_eq!(
+            refused("username_taken"),
+            "that username is already taken on this server: try another"
+        );
+        assert_eq!(
+            refused("bad_username"),
+            "usernames are 3 to 16 letters, digits, _ or -"
+        );
+        assert_eq!(
+            refused("bad_password"),
+            "passwords are 10 to 128 characters"
+        );
+        // A code this version doesn't know keeps the server's own.
+        assert_eq!(
+            refused("something_new"),
+            "the server answered something_new (HTTP 400)"
+        );
     }
 }

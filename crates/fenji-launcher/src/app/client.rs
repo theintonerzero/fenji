@@ -37,6 +37,9 @@ pub(super) struct Client {
     run: Option<DepotRun>,
     /// Whether the player cancelled the running download.
     cancelled: bool,
+    /// DepotDownloader's `-filelist` of the files the last check found wrong, once written, for
+    /// the repair's command in the player's own terminal (#348).
+    repair_list: Option<PathBuf>,
 }
 
 impl Default for Client {
@@ -47,6 +50,17 @@ impl Default for Client {
             stop: None,
             run: None,
             cancelled: false,
+            repair_list: None,
+        }
+    }
+}
+
+impl Client {
+    /// The repair's file list, while the copy needs repair.
+    pub(super) fn repair_list(&self) -> Option<&Path> {
+        match self.check {
+            CheckView::NeedsRepair { .. } => self.repair_list.as_deref(),
+            _ => None,
         }
     }
 }
@@ -56,6 +70,9 @@ pub(super) struct CheckJob {
     folder: PathBuf,
     manifest: Manifest,
     level: LevelView,
+    /// Files hashed in full before every file has `level`'s check: those the last check found
+    /// wrong, when this one is quick (spec §3.5; #348).
+    deep: Vec<String>,
     stop: Arc<AtomicBool>,
 }
 
@@ -95,6 +112,33 @@ fn free(st: &State) -> Result<(), IntentError> {
     }
 }
 
+/// The game's folder stays as it is while the game starts or runs: Play reads it again after the
+/// prefix and the ticket, and the game runs from it (#348). A check, which only reads, may run.
+fn not_playing(st: &State) -> Result<(), IntentError> {
+    if super::play::playing(st) {
+        return Err(refused(words::WHILE_PLAYING));
+    }
+    Ok(())
+}
+
+/// `work`, or `None` as soon as `cancelled` says so, looked at every `every`: a fetch dropped
+/// midway leaves only its `.part` file, which the next fetch writes over (`tools::ensure`).
+pub(super) async fn or_cancelled<T>(
+    work: impl std::future::Future<Output = T>,
+    cancelled: impl Fn() -> bool,
+    every: Duration,
+) -> Option<T> {
+    let watch = async {
+        while !cancelled() {
+            tokio::time::sleep(every).await;
+        }
+    };
+    tokio::select! {
+        done = work => Some(done),
+        () = watch => None,
+    }
+}
+
 fn waiting_for_steam(repair: bool) -> JobView {
     JobView::Downloading {
         repair,
@@ -111,17 +155,18 @@ impl App {
             return Err(refused(words::NO_FOLDER));
         }
         let job = self.change(|st| {
+            not_playing(st)?;
             free(st)?;
             st.settings.client = Some(PathBuf::from(&path));
             self.save(st);
-            self.begin_check(st, LevelView::Quick, None)
+            self.begin_check(st, LevelView::Quick)
         })?;
         self.run_check(job);
         Ok(())
     }
 
     pub(super) fn check(&self, level: LevelView) -> Result<(), IntentError> {
-        let job = self.change(|st| self.begin_check(st, level, None))?;
+        let job = self.change(|st| self.begin_check(st, level))?;
         self.run_check(job);
         Ok(())
     }
@@ -130,7 +175,7 @@ impl App {
     pub(super) fn check_at_start(&self) {
         let job = self.change(|st| {
             st.settings.client.as_ref()?;
-            self.begin_check(st, LevelView::Quick, None).ok()
+            self.begin_check(st, LevelView::Quick).ok()
         });
         if let Some(job) = job {
             self.run_check(job);
@@ -145,44 +190,45 @@ impl App {
         });
     }
 
-    /// Marks a check of the saved folder as the running job: of `only` those paths, or of every
-    /// file.
-    fn begin_check(
-        &self,
-        st: &mut State,
-        level: LevelView,
-        only: Option<&[String]>,
-    ) -> Result<CheckJob, IntentError> {
+    /// Marks a check of the saved folder as the running job: every file at `level`. A quick check
+    /// of a copy whose last check found files wrong hashes those in full first, so a file still
+    /// wrong with the right size can't pass it: after a repair (spec §3.5), by Fenji or by hand,
+    /// and before Play (#348).
+    fn begin_check(&self, st: &mut State, level: LevelView) -> Result<CheckJob, IntentError> {
         free(st)?;
+        let deep = match (level, &st.client.check) {
+            (LevelView::Quick, CheckView::NeedsRepair { files, .. }) => {
+                files.iter().map(|f| f.path.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
         let folder = st
             .settings
             .client
             .clone()
             .ok_or_else(|| refused(words::NO_FOLDER))?;
-        let all = &self.inner.cfg.manifest;
-        let manifest = match only {
-            None => all.clone(),
-            Some(paths) => Manifest {
-                entries: all
-                    .entries
-                    .iter()
-                    .filter(|e| paths.contains(&e.path))
-                    .cloned()
-                    .collect(),
-            },
-        };
+        let manifest = self.inner.cfg.manifest.clone();
         let stop = Arc::new(AtomicBool::new(false));
         st.client.stop = Some(stop.clone());
         st.client.job = Some(JobView::Checking {
-            level,
+            level: if deep.is_empty() {
+                level
+            } else {
+                LevelView::Full
+            },
             files_done: 0,
-            files_total: manifest.entries.len(),
+            files_total: if deep.is_empty() {
+                manifest.entries.len()
+            } else {
+                deep.len()
+            },
             percent: 0.0,
         });
         Ok(CheckJob {
             folder,
             manifest,
             level,
+            deep,
             stop,
         })
     }
@@ -201,27 +247,46 @@ impl App {
         &self,
         level: LevelView,
     ) -> Result<Option<CheckView>, IntentError> {
-        let job = self.change(|st| self.begin_check(st, level, None))?;
+        let job = self.change(|st| self.begin_check(st, level))?;
         Ok(self.run_check_here(job).await)
     }
 
-    /// Runs the check on a blocking thread, publishing its progress, then its result.
+    /// Runs the check on a blocking thread, publishing its progress, then its result: the files
+    /// in `deep` hashed in full, then every file at the job's level, as one report.
     async fn run_check_here(&self, job: CheckJob) -> Option<CheckView> {
         let CheckJob {
             folder,
             manifest,
             level,
+            deep,
             stop,
         } = job;
         let (reporter, looked) = (self.clone(), folder.clone());
         let report = tokio::task::spawn_blocking(move || {
             let throttle = Throttle::new();
-            let progress = |p: Progress| {
-                if throttle.due() {
-                    reporter.checking(level, p);
+            let progress = |level: LevelView| {
+                let (reporter, throttle) = (&reporter, &throttle);
+                move |p: Progress| {
+                    if throttle.due() {
+                        reporter.checking(level, p);
+                    }
                 }
             };
-            verify::verify_with(&looked, &manifest, level.into(), &progress, &stop)
+            let mut report = verify::Report::default();
+            if !deep.is_empty() {
+                let repaired = Manifest {
+                    entries: (manifest.entries.iter())
+                        .filter(|e| deep.contains(&e.path))
+                        .cloned()
+                        .collect(),
+                };
+                let full = progress(LevelView::Full);
+                report = verify::verify_with(&looked, &repaired, Level::Full, &full, &stop)?;
+            }
+            let all =
+                verify::verify_with(&looked, &manifest, level.into(), &progress(level), &stop)?;
+            report.merge(all);
+            Ok(report)
         })
         .await;
         let report = report.map_err(anyhow::Error::from).and_then(|r| r);
@@ -242,8 +307,7 @@ impl App {
     }
 
     /// A check's end, and what it found (`None` when it was stopped or failed). Every file the
-    /// manifest lists counts toward `fine`, so a repair's check of just its files still reads as
-    /// the whole copy.
+    /// manifest lists had the check, so every one counts toward `fine`.
     fn checked(
         &self,
         level: LevelView,
@@ -262,6 +326,18 @@ impl App {
                         failing = failing.len(),
                         "checked the game's files"
                     );
+                    // The list for a repair in the player's own terminal (#348).
+                    st.client.repair_list = None;
+                    if !failing.is_empty() {
+                        let data = &self.inner.cfg.data_dir;
+                        let list = data.join("repair-files.txt");
+                        let written = std::fs::create_dir_all(data)
+                            .and_then(|()| crate::depot::write_file_list(&list, &failing));
+                        match written {
+                            Ok(()) => st.client.repair_list = Some(list),
+                            Err(e) => warn!(error = %e, "couldn't list the files to repair"),
+                        }
+                    }
                     st.client.check = if failing.is_empty() {
                         CheckView::Verified { level, at_ms }
                     } else {
@@ -334,9 +410,11 @@ impl App {
         if cfg.os != Os::Linux {
             return Err(refused(words::DOWNLOAD_LINUX_ONLY));
         }
+        not_playing(&self.inner.lock())?;
         let terminal = self.terminal().ok_or_else(|| refused(words::NO_TERMINAL))?;
         let repair = files.is_some();
         self.change(|st| {
+            not_playing(st)?;
             free(st)?;
             st.client.cancelled = false;
             st.client.job = Some(match cfg.depot_downloader {
@@ -376,11 +454,14 @@ impl App {
 
     async fn downloading(&self, terminal: Terminal, folder: PathBuf, files: Option<Vec<String>>) {
         let repair = files.is_some();
-        let dd = match self.depot_downloader().await {
-            Ok(dd) => dd,
-            Err(text) => return self.download_ended(text, true),
+        // Fetching DepotDownloader ends at once on Cancel, not when the fetch does (#348).
+        let cancelled = || self.inner.lock().client.cancelled;
+        let dd = match or_cancelled(self.depot_downloader(), cancelled, POLL_EVERY).await {
+            Some(Ok(dd)) => dd,
+            Some(Err(text)) => return self.download_ended(text, true),
+            None => return self.download_ended(words::DOWNLOAD_CANCELLED.into(), false),
         };
-        if self.inner.lock().client.cancelled {
+        if cancelled() {
             return self.download_ended(words::DOWNLOAD_CANCELLED.into(), false);
         }
         let job = depot::Job {
@@ -434,6 +515,7 @@ impl App {
                 _ if cancelled => (words::DOWNLOAD_CANCELLED.to_string(), false),
                 RunState::Ended { code } => (words::download_stopped(code), true),
                 RunState::Lost => (words::WINDOW_CLOSED.to_string(), true),
+                RunState::NotOpened => (words::NO_TERMINAL.to_string(), true),
             };
             return self.download_ended(text, error);
         }
@@ -479,9 +561,22 @@ impl App {
             .map_err(|e| words::tool_failed(name, &e.to_string()))
     }
 
-    /// A fresh run folder: `<data dir>/depot/<unix ms>`.
+    /// A fresh run folder: `<data dir>/depot/<unix ms>`. The runs before it go first (#348): one
+    /// job runs at a time, so none of them is in use, and the last stays until the next run, for
+    /// what it says if it failed.
     fn run_dir(&self) -> PathBuf {
         let base = self.inner.cfg.data_dir.join("depot");
+        if let Ok(old) = std::fs::read_dir(&base) {
+            for entry in old.flatten() {
+                let run = entry.file_name();
+                if run
+                    .to_str()
+                    .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+                {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
         let mut ms = now_ms();
         loop {
             let dir = base.join(ms.to_string());
@@ -493,7 +588,7 @@ impl App {
     }
 
     /// DepotDownloader finished: a download's folder becomes the client folder, and every file of
-    /// it is checked; a repair checks the files it fetched.
+    /// it is checked, after a repair too.
     fn downloaded(&self, folder: PathBuf, files: Option<Vec<String>>) {
         info!("DepotDownloader finished");
         let job = self.change(|st| {
@@ -502,7 +597,15 @@ impl App {
                 st.settings.client = Some(folder);
                 self.save(st);
             }
-            self.begin_check(st, LevelView::Full, files.as_deref())
+            // After a download, every file in full. After a repair, a quick check, which hashes
+            // the repaired files in full first (spec §3.5), and which the record names: a full
+            // check would hash the whole copy, 100 GiB for the pinned build (#348).
+            let level = if files.is_none() {
+                LevelView::Full
+            } else {
+                LevelView::Quick
+            };
+            self.begin_check(st, level)
         });
         match job {
             Ok(job) => self.run_check(job),
@@ -817,8 +920,209 @@ exit {code}"#,
         })
         .await;
         app.intent(Intent::Repair).await.unwrap();
-        until(&app, checked(LevelView::Full)).await;
+        // The repaired file in full, then every file's quick check (spec §3.5).
+        until(&app, checked(LevelView::Quick)).await;
         assert_eq!(t.fake_dd_filelist(), vec!["bin64/b.dll"]);
+    }
+
+    #[tokio::test]
+    async fn a_repair_checks_its_files_fully_then_every_file_quickly() {
+        // #348: the check after a repair said every file had been checked when it had hashed only
+        // the repaired ones; then it hashed the whole copy, 100 GiB for the pinned build, where
+        // spec §3.5 asks for the repaired files to be checked fully again. Now they are, every file
+        // has the quick check, and the record says quick.
+        let t = Testbed::new(&[("bin64/a.dll", 10), ("data/c.pak", 100)]);
+        let app = t.app_with_fakes(FakeDd::WritesFiles { code: 0 });
+        app.intent(Intent::ChooseFolder {
+            path: t.good.display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Quick)).await;
+        std::fs::write(t.good.join("data/c.pak"), b"short").unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        until(&app, |s| {
+            matches!(s.client.check, CheckView::NeedsRepair { .. })
+        })
+        .await;
+        // What comes back has the right size and the wrong bytes, outside bin64: only a full
+        // check of the repaired file can tell.
+        let mut bytes = std::fs::read(t.pristine.join("data/c.pak")).unwrap();
+        bytes[0] ^= 0xff;
+        std::fs::write(t.pristine.join("data/c.pak"), &bytes).unwrap();
+        app.intent(Intent::Repair).await.unwrap();
+        let s = until(&app, |s| s.job.is_none()).await;
+        let CheckView::NeedsRepair { files, .. } = &s.client.check else {
+            panic!("after the first repair: {:?}", s.client.check)
+        };
+        assert_eq!(
+            files
+                .iter()
+                .map(|f| (f.path.as_str(), f.problem))
+                .collect::<Vec<_>>(),
+            [("data/c.pak", Problem::WrongHash)]
+        );
+        bytes[0] ^= 0xff;
+        std::fs::write(t.pristine.join("data/c.pak"), &bytes).unwrap();
+        app.intent(Intent::Repair).await.unwrap();
+        let s = until(&app, |s| s.job.is_none()).await;
+        assert!(
+            matches!(
+                s.client.check,
+                CheckView::Verified {
+                    level: LevelView::Quick,
+                    ..
+                }
+            ),
+            "after the second repair: {:?}",
+            s.client.check
+        );
+    }
+
+    #[tokio::test]
+    async fn a_quick_check_hashes_the_files_found_wrong_in_full() {
+        // #348's final review: after a repair by hand (DepotDownloader in the player's own
+        // terminal, or files copied from a Gameforge install), a quick check saw only sizes outside
+        // bin64, so a file still wrong with the right size passed, and Play could start with it.
+        let t = Testbed::new(&[("bin64/a.dll", 10), ("data/c.pak", 100)]);
+        let app = t.app();
+        app.intent(Intent::ChooseFolder {
+            path: t.good.display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Quick)).await;
+        let mut bytes = std::fs::read(t.good.join("data/c.pak")).unwrap();
+        bytes[0] ^= 0xff;
+        std::fs::write(t.good.join("data/c.pak"), &bytes).unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Full,
+        })
+        .await
+        .unwrap();
+        until(&app, |s| {
+            matches!(s.client.check, CheckView::NeedsRepair { .. })
+        })
+        .await;
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        let s = until(&app, |s| s.job.is_none()).await;
+        let CheckView::NeedsRepair { files, .. } = &s.client.check else {
+            panic!(
+                "the quick check passed a file it knew was wrong: {:?}",
+                s.client.check
+            )
+        };
+        assert_eq!(files[0].path, "data/c.pak");
+        // Fixed by hand, it passes the next quick check.
+        bytes[0] ^= 0xff;
+        std::fs::write(t.good.join("data/c.pak"), &bytes).unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Quick)).await;
+    }
+
+    #[tokio::test]
+    async fn the_repairs_manual_command_names_a_file_list_fenji_wrote() {
+        // #348's final review: Repair's way without a terminal showed the download's command, with
+        // no -validate and no list of files, which can't repair a copy DepotDownloader made.
+        let t = Testbed::new(&[("bin64/a.dll", 10), ("data/c.pak", 100)]);
+        let app = t.app();
+        let manual = app.snapshot().client.manual.unwrap();
+        assert_eq!(manual.repair, None);
+        // Fenji hasn't fetched DepotDownloader: the dialog says where to get it.
+        assert_eq!(
+            manual.get.unwrap().url,
+            crate::tools::depot_downloader().url
+        );
+        app.intent(Intent::ChooseFolder {
+            path: t.good.display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Quick)).await;
+        std::fs::write(t.good.join("data/c.pak"), b"short").unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        let s = until(&app, |s| {
+            matches!(s.client.check, CheckView::NeedsRepair { .. })
+        })
+        .await;
+        let repair = s.client.manual.unwrap().repair.unwrap();
+        let list = t.root.join("data/repair-files.txt");
+        assert!(
+            repair.ends_with(&format!(" -filelist '{}' -validate", list.display())),
+            "{repair}"
+        );
+        assert_eq!(std::fs::read_to_string(&list).unwrap(), "data/c.pak\n");
+        // Once the copy checks out, there's nothing to repair.
+        std::fs::copy(t.pristine.join("data/c.pak"), t.good.join("data/c.pak")).unwrap();
+        app.intent(Intent::Check {
+            level: LevelView::Quick,
+        })
+        .await
+        .unwrap();
+        let s = until(&app, checked(LevelView::Quick)).await;
+        assert_eq!(s.client.manual.unwrap().repair, None);
+    }
+
+    #[tokio::test]
+    async fn a_cancel_ends_the_work_it_waits_on_at_once() {
+        // #348: Cancel didn't stop "Getting DepotDownloader…" until the fetch had ended.
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        use super::or_cancelled;
+        let flag = Arc::new(AtomicBool::new(false));
+        let set = {
+            let flag = flag.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                flag.store(true, Ordering::SeqCst);
+            })
+        };
+        let started = std::time::Instant::now();
+        let every = Duration::from_millis(10);
+        let cancelled = || flag.load(Ordering::SeqCst);
+        let got = or_cancelled(std::future::pending::<u8>(), cancelled, every).await;
+        assert_eq!(got, None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        set.await.unwrap();
+        // Work that ends first is what comes back.
+        assert_eq!(or_cancelled(async { 7 }, || false, every).await, Some(7));
+    }
+
+    #[tokio::test]
+    async fn only_the_last_depot_run_keeps_its_folder() {
+        // #348: each DepotDownloader run left its folder in <data dir>/depot for good. The last
+        // one stays, for what it says if it failed; a new run clears those before it.
+        let t = Testbed::new(&[("a.bin", 10)]);
+        let app = t.app_with_fakes(FakeDd::WritesFiles { code: 0 });
+        for folder in ["d1", "d2", "d3"] {
+            app.intent(Intent::Download {
+                folder: t.root.join(folder).display().to_string(),
+            })
+            .await
+            .unwrap();
+            until(&app, |s| s.job.is_none()).await;
+        }
+        let runs = std::fs::read_dir(t.root.join("data/depot"))
+            .unwrap()
+            .count();
+        assert_eq!(runs, 1);
     }
 
     #[tokio::test]
@@ -847,11 +1151,35 @@ exit {code}"#,
         assert_eq!(s.notice.unwrap().text, words::WINDOW_CLOSED);
     }
 
+    /// #348: a terminal that fails before it runs the script is told at once, not after the
+    /// 30 s start limit (`until` gives up after 10 s).
+    #[tokio::test]
+    async fn a_terminal_that_opens_nothing_says_so_at_once() {
+        let t = Testbed::new(&[("a.bin", 10)]);
+        let mut cfg = t.config(Os::Linux);
+        {
+            let _spawn = spawning();
+            cfg.depot_downloader = Some(script(&t.root, "dd", "exit 0"));
+            cfg.terminal = Some(Terminal {
+                program: script(&t.root, "term", "exit 1"),
+                before: vec![],
+            });
+        }
+        let app = App::start(cfg, tokio::runtime::Handle::current());
+        app.intent(Intent::Download {
+            folder: t.root.join("d").display().to_string(),
+        })
+        .await
+        .unwrap();
+        let s = until(&app, |s| s.job.is_none() && s.notice.is_some()).await;
+        assert_eq!(s.notice.unwrap().text, words::NO_TERMINAL);
+    }
+
     #[tokio::test]
     async fn downloading_works_on_linux_only_and_one_job_runs_at_a_time() {
         let t = Testbed::new(&[("a.bin", 10)]);
         let app = t.app_on(Os::Windows);
-        assert_eq!(app.snapshot().client.manual_command, None);
+        assert_eq!(app.snapshot().client.manual, None);
         let err = app
             .intent(Intent::Download {
                 folder: "/x".into(),
@@ -860,7 +1188,7 @@ exit {code}"#,
             .unwrap_err();
         assert_eq!(err.to_string(), words::DOWNLOAD_LINUX_ONLY);
         let app = t.app_with_fakes(FakeDd::Hangs);
-        let command = app.snapshot().client.manual_command.unwrap();
+        let command = app.snapshot().client.manual.unwrap().download;
         assert!(command.contains("Games/SoLO"), "{command}");
         app.intent(Intent::Download {
             folder: t.root.join("f").display().to_string(),

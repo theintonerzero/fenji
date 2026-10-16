@@ -176,7 +176,16 @@ impl Updates {
             Err(e) => Err(e),
         };
         let update = match checked {
-            Ok(Some(update)) => update,
+            Ok(Some(update)) if newer(&update.current_version, &update.version) => update,
+            Ok(Some(update)) => {
+                tracing::warn!(
+                    offered = %update.version,
+                    current = %update.current_version,
+                    "the release offers no newer launcher: not installed"
+                );
+                self.lock().state.current();
+                return self.publish(model);
+            }
             Ok(None) => {
                 tracing::info!("the launcher is up to date");
                 self.lock().state.current();
@@ -270,9 +279,34 @@ impl Updates {
     }
 }
 
+/// Whether `offered` is a newer launcher than `current`, both SemVer. An older one, or the same,
+/// is never installed, whatever a release offers: a signed older version can't roll a player back
+/// to its flaws (#348). The updater compares versions too; this holds whatever its settings.
+fn newer(current: &str, offered: &str) -> bool {
+    match (
+        semver::Version::parse(current),
+        semver::Version::parse(offered),
+    ) {
+        (Ok(current), Ok(offered)) => offered > current,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_newer_launcher_is_ever_installed() {
+        // #348: a release that offers an older launcher, or the same one, isn't installed, so
+        // a signed older version can't roll a player back to its flaws.
+        assert!(newer("0.5.0", "0.5.1"));
+        assert!(newer("0.5.0", "0.6.0-rc.1"));
+        for offered in ["0.5.0", "0.4.1", "0.4.9", "", "not a version", "v0.5.1"] {
+            assert!(!newer("0.5.0", offered), "{offered:?}");
+        }
+        assert!(!newer("not a version", "0.5.1"));
+    }
 
     #[test]
     fn the_dialog_shows_once_per_ready_version() {

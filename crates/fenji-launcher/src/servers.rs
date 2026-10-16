@@ -91,8 +91,8 @@ pub fn parse_added(text: &str) -> Result<Added, AddError> {
 }
 
 fn address(text: &str) -> Result<Added, AddError> {
-    // `unwrapped` took every space out of a link or URL, so one left here is in typed text, and a
-    // host name never holds one: refused here, before the scheme in front makes it a URL.
+    // `unwrapped` leaves a space only where it was typed within a line, and an address never holds
+    // one: refused here, before the scheme in front makes it a URL.
     if text.contains(char::is_whitespace) {
         return Err(AddError::Unreadable);
     }
@@ -170,7 +170,8 @@ mod tests {
     #[test]
     fn a_link_pasted_from_a_wrapped_line_still_reads() {
         // The host console wraps a long link (#357), and a one-line field drops the line break but
-        // keeps the indent: whitespace inside a link is never part of it.
+        // keeps the indent: whitespace in a link's fragment is never part of it, and the view's
+        // link fields join a wrap elsewhere as it's pasted (#359).
         let (head, tail) = PIN.split_at(20);
         match parse_added(&format!(
             "https://203.0.113.5:7801/#invite=ABCD-EFGH-JKMN-PQRS&pin={head}   {tail}"
@@ -200,6 +201,16 @@ mod tests {
             parse_added("play example.net"),
             Err(AddError::Unreadable)
         ));
+        // Nor in a link's host, within one line (#359): only a line break is a wrap there.
+        for typed in [
+            "https://play example.net",
+            "https://play example.net/#invite=ABCD-EFGH-JKMN-PQRS",
+        ] {
+            assert!(
+                matches!(parse_added(typed), Err(AddError::Unreadable)),
+                "{typed}"
+            );
+        }
     }
 
     #[test]

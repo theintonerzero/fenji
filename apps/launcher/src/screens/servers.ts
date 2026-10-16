@@ -5,21 +5,40 @@
 // confirmation. A row's name is its button, so the list works from the keyboard too.
 import type { Ctx, Screen } from "../app";
 import { h } from "../dom";
-import { activeServer } from "../route";
+import { activeServer, playVariant } from "../route";
 import type { ServerView, Snapshot } from "../types";
 import { button } from "../ui/button";
 import { facts } from "../ui/card";
 import { dialog, type Dialog } from "../ui/dialog";
-import { field } from "../ui/field";
+import { field, joinWrapsOnPaste } from "../ui/field";
 import { icons } from "../ui/icons";
 import { people } from "../ui/people";
 import { statusMark } from "../ui/status";
 import { serverLine, versionLine } from "../words";
 import { contextColumn, noticeSlot, refused, renew, type NoticeSlot } from "./parts";
 
-/** Whether the row's PLAY can start the game there now. */
-function playable(v: ServerView, s: Snapshot): boolean {
-  return v.status.kind === "online" && s.platform.canPlay && s.game.kind !== "starting" && s.game.kind !== "running";
+/**
+ * Where focus is in the rows, if it is: a server's name or its PLAY. The function it returns
+ * focuses the same control in rows drawn again, or the row's name if its PLAY has gone.
+ */
+function focusIn(list: HTMLElement): (() => void) | null {
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLElement) || !list.contains(focused)) {
+    return null;
+  }
+  const id = focused.closest("[data-server]")?.getAttribute("data-server");
+  if (id === null || id === undefined) {
+    return null;
+  }
+  const control = focused.classList.contains("btn-play") ? ".btn-play" : ".server-name";
+  return () => {
+    if (document.activeElement !== focused) {
+      const again =
+        list.querySelector<HTMLElement>(`[data-server="${id}"] ${control}`) ??
+        list.querySelector<HTMLElement>(`[data-server="${id}"] .server-name`);
+      again?.focus();
+    }
+  };
 }
 
 function row(v: ServerView, s: Snapshot, ctx: Ctx, now: number): HTMLElement {
@@ -29,7 +48,8 @@ function row(v: ServerView, s: Snapshot, ctx: Ctx, now: number): HTMLElement {
   const address = v.pinned
     ? h("span", { class: "server-address" }, h("span", { class: "num" }, v.address), " · ", icons.lock(12), "own key")
     : h("span", { class: "server-address" }, v.address);
-  const play = selected && playable(v, s)
+  // The selected row's PLAY is Play's own: a verified copy, no check running, an online server (#348).
+  const play = selected && playVariant(s) === "ready"
     ? h(
         "button",
         {
@@ -72,8 +92,10 @@ function row(v: ServerView, s: Snapshot, ctx: Ctx, now: number): HTMLElement {
 /** Add server (the AddServer board): an address or an invite link, its refusal under the field. Play
  * opens it too, for a server whose link must be added again. */
 export function addDialog(ctx: Ctx, slot: NoticeSlot, done: () => void): Dialog {
-  let refusedHere = false;
+  // The refusal shown under the field, which waited as the notice too.
+  let refusedHere: string | null = null;
   const input = h("input", { type: "text", class: "mono", autocomplete: "off", spellcheck: "false" });
+  joinWrapsOnPaste(input);
   const box = field("Address or invite link", input);
   const add = button.primary("Add server");
   add.type = "submit";
@@ -82,8 +104,8 @@ export function addDialog(ctx: Ctx, slot: NoticeSlot, done: () => void): Dialog 
     shown.close();
     done();
     // A refusal waited as the notice as well as under the field: it goes with the dialog.
-    if (refusedHere) {
-      void ctx.send({ type: "dismissNotice" });
+    if (refusedHere !== null) {
+      void ctx.send({ type: "dismissNotice", text: refusedHere });
     }
   };
   const submit = async (): Promise<void> => {
@@ -99,11 +121,11 @@ export function addDialog(ctx: Ctx, slot: NoticeSlot, done: () => void): Dialog 
     add.disabled = false;
     if (refusal === null) {
       slot.hold(false);
-      refusedHere = false;
+      refusedHere = null;
       close();
       return;
     }
-    refusedHere = true;
+    refusedHere = refusal;
     slot.inline(refusal);
     box.setError(refusal);
     slot.hold(false);
@@ -193,11 +215,15 @@ export function servers(root: HTMLElement, ctx: Ctx): Screen {
   return {
     update(s) {
       const now = Date.now();
+      // A probe draws the rows again every 15–30 s: the control that had focus keeps it (#348).
+      const focused = focusIn(list);
       renew(
         list,
-        JSON.stringify([s.servers, s.active, s.lobby, s.platform.canPlay, s.game.kind, Math.floor(now / 60000)]),
+        // The row's PLAY reads playVariant, so what it reads is in the key (#348).
+        JSON.stringify([s.servers, s.active, s.lobby, playVariant(s), Math.floor(now / 60000)]),
         () => s.servers.map((v) => row(v, s, ctx, now)),
       );
+      focused?.();
       slot.update(s);
       const v = activeServer(s);
       side.show(

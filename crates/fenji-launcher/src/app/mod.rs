@@ -87,16 +87,16 @@ impl Inner {
 
 struct State {
     settings: Settings,
-    /// Servers added in this run.
-    added: HashSet<u32>,
-    /// Of those, the ones signed in to without "Remember this server": in the list until the
-    /// launcher closes, and never in settings.json (spec §3.4).
+    /// The servers signed in to without "Remember this server": in the list until the launcher
+    /// closes, and never in settings.json, whenever they were added (spec §3.4; #348).
     transient: HashSet<u32>,
     live: HashMap<u32, Live>,
     tab: Tab,
     need_sign_in: bool,
     client: client::Client,
     game: GameView,
+    /// Cancel start came while the game was starting (#348): the start sees it and ends.
+    start_cancelled: bool,
     pending_invite: Option<(u32, InviteCode)>,
     key_change: Option<KeyChange>,
     notice: Option<Notice>,
@@ -150,6 +150,8 @@ impl App {
     /// `rt`.
     pub fn start(cfg: AppConfig, rt: tokio::runtime::Handle) -> App {
         let (settings, problem) = Settings::load_or_reset(&cfg.config_dir);
+        // A game an earlier launcher started may still run (#348).
+        let left = play::GameMark::left_running(&cfg.data_dir);
         let state = State {
             update: UpdateView {
                 current: cfg.version.clone(),
@@ -162,13 +164,17 @@ impl App {
                 up_to_date: false,
             },
             settings,
-            added: HashSet::new(),
             transient: HashSet::new(),
             live: HashMap::new(),
             tab: Tab::Play,
             need_sign_in: false,
             client: client::Client::default(),
-            game: GameView::Idle,
+            game: left
+                .as_ref()
+                .map_or(GameView::Idle, |mark| GameView::Running {
+                    since_ms: mark.since_ms,
+                }),
+            start_cancelled: false,
             pending_invite: None,
             key_change: None,
             notice: problem.map(|text| Notice { text, error: true }),
@@ -185,6 +191,9 @@ impl App {
         };
         app.inner.rt.spawn(servers::run(Arc::downgrade(&app.inner)));
         app.check_at_start();
+        if let Some(mark) = left {
+            app.follow_left_game(mark);
+        }
         app
     }
 
@@ -264,8 +273,17 @@ impl App {
                 self.select_server(id);
                 self.play().await
             }
-            Intent::DismissNotice => {
-                self.change(|st| st.notice = None);
+            Intent::CancelStart => {
+                self.cancel_start();
+                Ok(())
+            }
+            Intent::DismissNotice { text } => {
+                // Only the notice the view showed: a newer one came for a reason (#348).
+                self.change(|st| {
+                    if st.notice.as_ref().is_some_and(|n| n.text == text) {
+                        st.notice = None;
+                    }
+                });
                 Ok(())
             }
             Intent::SetAutoUpdate { on } => {
@@ -389,10 +407,25 @@ impl State {
                 .unwrap_or_default()
         });
         let folder = self.settings.client.as_ref();
-        // For a player without a terminal Fenji can open (spec §3.12), wherever a download works.
-        let manual_command = platform
-            .can_download
-            .then(|| crate::depot::manual_command(folder.unwrap_or(&default_folder), None));
+        // For a player without a terminal Fenji can open (spec §3.12), wherever a download works:
+        // the DepotDownloader Fenji would run, or else where to get one (#348).
+        let manual = platform.can_download.then(|| {
+            let tool = crate::tools::depot_downloader();
+            let dd = cfg
+                .depot_downloader
+                .clone()
+                .or_else(|| crate::tools::installed(&tool, &cfg.data_dir.join("tools")));
+            let folder = folder.unwrap_or(&default_folder);
+            let command = |list| crate::depot::manual_command(dd.as_deref(), folder, list);
+            ManualView {
+                download: command(None),
+                repair: self.client.repair_list().map(|list| command(Some(list))),
+                get: dd.is_none().then(|| ToolLinkView {
+                    version: tool.version.clone(),
+                    url: tool.url.clone(),
+                }),
+            }
+        });
         Snapshot {
             launcher_version: cfg.version.clone(),
             platform,
@@ -425,7 +458,7 @@ impl State {
                 build: cfg.pinned_build.clone(),
                 files: cfg.manifest.entries.len(),
                 check: self.client.check.clone(),
-                manual_command,
+                manual,
             },
             job: self.client.job.clone(),
             game: self.game.clone(),
@@ -636,6 +669,28 @@ mod tests {
             password: Secret("a long password".into()),
             remember: true,
         }
+    }
+
+    #[tokio::test]
+    async fn dismissing_a_notice_leaves_a_newer_one_standing() {
+        // #348: the view dismisses the notice it showed; one that came meanwhile stays.
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        app.note("The first.".into(), true);
+        app.note("The second.".into(), false);
+        app.intent(Intent::DismissNotice {
+            text: "The first.".into(),
+        })
+        .await
+        .unwrap();
+        let notice = app.snapshot().notice.map(|n| n.text);
+        assert_eq!(notice.as_deref(), Some("The second."));
+        app.intent(Intent::DismissNotice {
+            text: "The second.".into(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.snapshot().notice, None);
     }
 
     #[tokio::test]

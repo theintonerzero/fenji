@@ -2,14 +2,16 @@
 //! (M4 hosting spec §3.6); `console`, which attaches to a running server (§3.5); and the admin's
 //! subcommands for invites, accounts and backups (§3.12).
 //! Admin commands open the same database as a running server; SQLite's WAL and busy timeout let
-//! both write. The host console's `invite`, `invites`, `accounts` and `revoke` share their code
-//! here (§3.3).
+//! both write. Beside a running server they never migrate it, and refuse a database laid out for
+//! another version than theirs (#359). The host console's `invite`, `invites`, `accounts` and
+//! `revoke` share their code here (§3.3).
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use anyhow::bail;
 use clap::{Parser, Subcommand};
-use fenji_store::Store;
+use fenji_store::{SchemaDiffers, Store};
 
 use crate::clock::{Clock, Utc};
 use crate::config::{Config, Tls};
@@ -272,15 +274,17 @@ fn write_rows(out: &mut dyn Write, rows: &[Vec<String>]) -> std::io::Result<()> 
 }
 
 /// Runs one admin command against the configured database, writing plain lines to `out`. A data
-/// folder that isn't this user's is refused first ([`crate::folder::check`]).
+/// folder that isn't this user's is refused first ([`crate::folder::check`]). Beside a running
+/// server, the database is never migrated ([`admin_store`]).
 pub async fn admin(
     cfg: &Config,
     cmd: &Command,
     out: &mut dyn Write,
     clock: &dyn Clock,
 ) -> anyhow::Result<()> {
-    crate::folder::check(&crate::config::data_folder(&cfg.store.path))?;
-    let store = crate::server::open_store(cfg).await?;
+    let data = crate::config::data_folder(&cfg.store.path);
+    crate::folder::check(&data)?;
+    let store = admin_store(cfg, &data, cmd).await?;
     let now = clock.now_ms();
     match cmd {
         Command::Run => anyhow::bail!("`run` isn't an admin command"),
@@ -339,6 +343,88 @@ pub async fn admin(
     }
     store.close().await;
     Ok(())
+}
+
+/// The store for admin command `cmd`, its data folder being `data` (#359). While a server runs
+/// there, holding the folder's lock, it's opened as it is and never migrated: a newer
+/// fenji-server's migrations would change the database under an older server. A database of
+/// another version than this build's is refused then, saying what to do instead. With no server
+/// running, it's opened as `run` opens it ([`crate::server::open_store`]), its schema brought up to
+/// date, with the lock held meanwhile: a server starting then is refused, rather than migrating the
+/// database beside the command.
+async fn admin_store(cfg: &Config, data: &Path, cmd: &Command) -> anyhow::Result<Store> {
+    if let Some(_held) = crate::lock::try_take(data)? {
+        return crate::server::open_store(cfg).await;
+    }
+    match Store::open_as_is(&cfg.store.path).await {
+        Ok(store) => Ok(store),
+        Err(fenji_store::Error::Schema(differs)) => bail!(another_version(data, &differs, cmd)),
+        Err(e) => {
+            Err(anyhow::Error::new(e).context(format!("opening {}", cfg.store.path.display())))
+        }
+    }
+}
+
+/// Why admin command `cmd` won't open the database of the server running on `data`, laid out for
+/// another version of Fenji (`differs`), and what to do instead (#359).
+fn another_version(data: &Path, differs: &SchemaDiffers, cmd: &Command) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let (whose, otherwise) = if differs.newer() {
+        (
+            format!("a newer version's than this fenji-server (v{version}) knows"),
+            "use the fenji-server of the server's version",
+        )
+    } else {
+        (
+            format!(
+                "an older version's than this fenji-server's (v{version}), which won't update it \
+                 under the server"
+            ),
+            "stop the server first",
+        )
+    };
+    let instead = match console_form(cmd) {
+        Some(line) if cfg!(unix) => format!(
+            "run the command through the server instead, `fenji-server console --run \"{line}\"`, \
+             or {otherwise}"
+        ),
+        Some(line) => {
+            format!("type `{line}` in the server's window instead, or {otherwise}")
+        }
+        None => otherwise.to_owned(),
+    };
+    format!(
+        "a server is running on this data folder ({}), and its database is {whose}: {instead}",
+        crate::lock::shown(data).display()
+    )
+}
+
+/// The console's command that does what admin command `cmd` does, if there's one.
+fn console_form(cmd: &Command) -> Option<String> {
+    let line = match cmd {
+        Command::Invite {
+            cmd:
+                InviteCmd::Create {
+                    label,
+                    expires: None,
+                },
+        } => match label {
+            Some(_) => "invite <label>".to_owned(),
+            None => "invite".to_owned(),
+        },
+        Command::Invite {
+            cmd: InviteCmd::List,
+        } => "invites".to_owned(),
+        Command::Invite {
+            cmd: InviteCmd::Revoke { id },
+        } => format!("revoke {id}"),
+        Command::Account {
+            cmd: AccountCmd::List,
+        } => "accounts".to_owned(),
+        Command::Backup { keep } if *keep == crate::backup::DEFAULT_KEEP => "backup".to_owned(),
+        _ => return None,
+    };
+    Some(line)
 }
 
 #[cfg(test)]
@@ -429,6 +515,56 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_running_servers_database_of_another_version_says_what_to_do() {
+        // #359: what a command refused beside a running server says, for an older database and a
+        // newer one, with and without a console command of its own.
+        use std::path::Path;
+
+        use fenji_store::SchemaDiffers;
+
+        use super::{InviteCmd, another_version};
+        let data = Path::new("/srv/fenji/data");
+        let older = SchemaDiffers {
+            database: Some(3),
+            build: 4,
+        };
+        let newer = SchemaDiffers {
+            database: Some(9),
+            build: 4,
+        };
+        let revoke = Command::Invite {
+            cmd: InviteCmd::Revoke { id: 7 },
+        };
+        let text = another_version(data, &older, &revoke);
+        assert!(
+            text.starts_with("a server is running on this data folder (/srv/fenji/data)")
+                && text.contains("its database is an older version's")
+                && text.ends_with("or stop the server first"),
+            "{text}"
+        );
+        let through = if cfg!(unix) {
+            "`fenji-server console --run \"revoke 7\"`"
+        } else {
+            "type `revoke 7` in the server's window"
+        };
+        assert!(text.contains(through), "{text}");
+        // A newer one: stopping the server wouldn't help this fenji-server, which doesn't know it.
+        let text = another_version(data, &newer, &revoke);
+        assert!(
+            text.contains("its database is a newer version's")
+                && text.ends_with("or use the fenji-server of the server's version"),
+            "{text}"
+        );
+        // `backup --keep 3` keeps another number than the console's `backup`: no console form.
+        let backup = Command::Backup { keep: 3 };
+        let text = another_version(data, &newer, &backup);
+        assert!(
+            text.ends_with(": use the fenji-server of the server's version"),
+            "{text}"
+        );
     }
 
     #[test]

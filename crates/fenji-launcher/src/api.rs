@@ -477,10 +477,11 @@ impl ServerInfo {
         Ok(())
     }
 
-    /// The facts with the host's words ready to show: the MOTD, the maintenance message and the
-    /// host's name with their hidden characters as escapes, and a source only if it's a web
-    /// address.
+    /// The facts with the host's words ready to show: the server's name, the MOTD, the maintenance
+    /// message and the host's name with their hidden characters as escapes (#348 for the name),
+    /// and a source only if it's a web address.
     fn shown(mut self) -> Self {
+        self.name = escape_hidden(&self.name);
         self.motd = escape_hidden(&self.motd);
         if let Some(m) = &mut self.maintenance {
             m.message = escape_hidden(&m.message);
@@ -680,6 +681,13 @@ mod tests {
             (info.source.as_deref(), info.motd.as_str()),
             (Some("https://example.net/fenji"), "Welcome")
         );
+    }
+
+    #[test]
+    fn a_servers_name_is_shown_with_its_hidden_characters_as_escapes() {
+        // #348: a server's name, on every screen, can't reorder itself or hide what it says.
+        let info = info_with(json!({"name": "Moon\u{202e}draw\u{200b}"})).shown();
+        assert_eq!(info.name, "Moon\\u{202e}draw\\u{200b}");
     }
 
     #[test]

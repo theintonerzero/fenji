@@ -8,7 +8,7 @@ import { bladeFor, groundFor } from "../route";
 import { blade } from "../ui/blade";
 import { button } from "../ui/button";
 import { cardSection } from "../ui/column";
-import { field } from "../ui/field";
+import { field, joinWrapsOnPaste } from "../ui/field";
 import { icons } from "../ui/icons";
 import { versionLine } from "../words";
 import { contextColumn, iconLine, noticeSlot, refused, textSection, type NoticeSlot } from "./parts";
@@ -39,6 +39,7 @@ export function inviteForm(
 ): InviteForm {
   let mode: InviteMode = "invite";
   const input = h("input", { type: "text", autocomplete: "off", spellcheck: "false" });
+  joinWrapsOnPaste(input);
   const box = field(LABEL.invite, input);
   const go = button.primary("Continue");
   go.type = "submit";

@@ -1,9 +1,9 @@
 import { expect, test } from "vitest";
 
 import type { Ctx } from "../app";
-import type { Intent } from "../types";
+import type { Intent, Snapshot } from "../types";
 import { servers } from "./servers";
-import { embers, golden, mount, press, settle } from "./test-kit";
+import { embers, golden, mount, paste, press, settle } from "./test-kit";
 
 test("three servers, one ember Play on the selected row, and every state in words", () => {
   const { root, sent } = mount(servers, golden("servers"), undefined, "servers");
@@ -45,7 +45,21 @@ test("the Add dialog sends what was typed and shows a refusal under the field", 
   press(dialog as HTMLElement, "Cancel");
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   // The refusal waited as the notice too: closing the dialog dismisses it.
-  expect(sent.at(-1)).toEqual({ type: "dismissNotice" });
+  expect(sent.at(-1)).toEqual({
+    type: "dismissNotice",
+    text: "That isn't a server address or an invite link. Paste the link your host sent.",
+  });
+});
+
+test("the Add dialog joins a link pasted from a wrapped line", async () => {
+  // #359: the model refuses a space inside a host, and a one-line field keeps a wrap's indent.
+  const { root, sent } = mount(servers, golden("servers"), undefined, "servers");
+  press(root, "Add server");
+  const dialog = document.querySelector('[role="dialog"]')!;
+  paste(dialog.querySelector("input") as HTMLInputElement, "https://jadehall.example.\n  org:8443");
+  (dialog.querySelector("form") as HTMLFormElement).requestSubmit();
+  await settle();
+  expect(sent).toEqual([{ type: "addServer", text: "https://jadehall.example.org:8443" }]);
 });
 
 test("a server the model took closes the Add dialog", async () => {
@@ -64,6 +78,49 @@ test("Play on the selected row plays there, and Refresh probes", () => {
   (root.querySelector("[data-server] .ember") as HTMLButtonElement).click();
   press(root, "Refresh");
   expect(sent).toEqual([{ type: "playOn", id: 1 }, { type: "refresh" }]);
+});
+
+test("the row's PLAY waits for a verified copy and no check running, as Play's does (#348)", () => {
+  for (const change of [
+    (s: Snapshot) => (s.client.check = { kind: "none" }),
+    (s: Snapshot) => (s.job = { kind: "checking", level: "full", filesDone: 3, filesTotal: 210, percent: 1 }),
+  ]) {
+    const s = golden("servers");
+    change(s);
+    const { root } = mount(servers, s, undefined, "servers");
+    expect(root.querySelector("[data-server] .btn-play")).toBeNull();
+  }
+});
+
+test("the row's PLAY follows a check that starts or ends on a mounted screen (#348)", () => {
+  const { root, screen } = mount(servers, golden("servers"), undefined, "servers");
+  const play = () => root.querySelector("[data-server] .btn-play");
+  expect(play()).not.toBeNull();
+  const checking = golden("servers");
+  checking.job = { kind: "checking", level: "full", filesDone: 3, filesTotal: 210, percent: 1 };
+  screen.update(checking);
+  expect(play()).toBeNull();
+  const unverified = golden("servers");
+  unverified.client.check = { kind: "none" };
+  screen.update(unverified);
+  expect(play()).toBeNull();
+  screen.update(golden("servers"));
+  expect(play()).not.toBeNull();
+});
+
+test("a probe redraws the rows, and the control that had focus keeps it (#348)", () => {
+  const s = golden("servers");
+  const { root, screen } = mount(servers, s, undefined, "servers");
+  const name = root.querySelector<HTMLElement>('[data-server="2"] .server-name')!;
+  name.focus();
+  // The next probe brings a new ping: the rows are drawn again.
+  const next = golden("servers");
+  const second = next.servers[1]!;
+  second.pingMs = (second.pingMs ?? 0) + 7;
+  screen.update(next);
+  const now = document.activeElement as HTMLElement;
+  expect(now).not.toBe(name);
+  expect(now.matches('[data-server="2"] .server-name')).toBe(true);
 });
 
 test("the column has the selected server's facts, its source, and Remove with a confirmation", () => {

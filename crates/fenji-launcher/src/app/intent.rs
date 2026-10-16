@@ -79,7 +79,12 @@ pub enum Intent {
     PlayOn {
         id: u32,
     },
-    DismissNotice,
+    /// Stops a start before the game runs: umu-run making the prefix, or the ticket (#348).
+    CancelStart,
+    /// Dismisses the notice the view showed, by its words, and never a newer one (#348).
+    DismissNotice {
+        text: String,
+    },
     SetAutoUpdate {
         on: bool,
     },
@@ -149,7 +154,8 @@ pub fn name(i: &Intent) -> &'static str {
         Intent::Repair => "repair",
         Intent::Play => "play",
         Intent::PlayOn { .. } => "playOn",
-        Intent::DismissNotice => "dismissNotice",
+        Intent::CancelStart => "cancelStart",
+        Intent::DismissNotice { .. } => "dismissNotice",
         Intent::SetAutoUpdate { .. } => "setAutoUpdate",
         Intent::SetUmuRun { .. } => "setUmuRun",
         Intent::PickFolder { .. } => "pickFolder",
@@ -187,6 +193,7 @@ pub const ALL: &[&str] = &[
     "repair",
     "play",
     "playOn",
+    "cancelStart",
     "dismissNotice",
     "setAutoUpdate",
     "setUmuRun",

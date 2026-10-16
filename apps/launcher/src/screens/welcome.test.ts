@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { embers, golden, mount, press, settle } from "./test-kit";
+import { embers, golden, mount, paste, press, settle } from "./test-kit";
 import { welcome } from "./welcome";
 
 const NEED_LINK = "Paste the whole link your host sent: a code alone doesn't say which server it's for.";
@@ -20,7 +20,16 @@ test("the invite goes to the model, and a refusal shows under the field", async 
   const input = root.querySelector("input")!;
   expect(input.getAttribute("aria-invalid")).toBe("true");
   expect(root.querySelector(`#${input.getAttribute("aria-describedby")}`)!.textContent).toBe(NEED_LINK);
-  expect(sent.at(-1)).toEqual({ type: "dismissNotice" });
+  expect(sent.at(-1)).toEqual({ type: "dismissNotice", text: NEED_LINK });
+});
+
+test("a link pasted from a wrapped line goes to the model as one", async () => {
+  // #359: the model refuses a space inside a host, and a one-line field keeps a wrap's indent.
+  const { root, sent } = mount(welcome, golden("welcome"));
+  paste(root.querySelector("input")!, "https://moonward.example.\n   net/#invite=K7QM-3XRD-VN2P-HT8B");
+  (root.querySelector("form") as HTMLFormElement).requestSubmit();
+  await settle();
+  expect(sent[0]).toEqual({ type: "addServer", text: "https://moonward.example.net/#invite=K7QM-3XRD-VN2P-HT8B" });
 });
 
 test("I already have an account asks for the address, then goes to Sign in", async () => {

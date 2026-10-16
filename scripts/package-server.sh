@@ -13,6 +13,8 @@
 #     which says where the version's source code is (the AGPL's offer);
 #   - THIRD-PARTY-NOTICES.txt: the licences of the crates the target's build links, by cargo about,
 #     and musl's notice for a musl target, with no placeholder where a copyright line belongs;
+#   - for Linux, deploy/systemd's units in systemd/ and deploy/caddy's Caddyfile in caddy/, which the
+#     hosting guide's VPS setup installs, so a VPS needs no second download (#359);
 #   - fenji-oodle/COPYING and fenji-oodle/NOTICE when the target's build links fenji-oodle, which is
 #     GPL-3.0-or-later (Oodle Ruling O16), as `cargo tree` says.
 # The folders and the two programs are 0755 and the rest 0644, and a tarball's entries are root's.
@@ -128,6 +130,20 @@ EOF
 chmod 0755 "$dir" "$dir/$exe" "$dir/$start"
 chmod 0644 "$dir/fenji.example.toml" "$dir/README.txt" "$dir/LICENSE" "$dir/SOURCE.txt" "$dir/THIRD-PARTY-NOTICES.txt"
 files=("$exe" "$start" fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)
+case $target in
+  *-linux-*)
+    mkdir -- "$dir/systemd" "$dir/caddy"
+    chmod 0755 "$dir/systemd" "$dir/caddy"
+    files+=(systemd)
+    for unit in fenji.service fenji-backup.service fenji-backup.timer; do
+      cp -- "$root/deploy/systemd/$unit" "$dir/systemd/"
+      chmod 0644 "$dir/systemd/$unit"
+      files+=("systemd/$unit")
+    done
+    cp -- "$root/deploy/caddy/Caddyfile" "$dir/caddy/"
+    chmod 0644 "$dir/caddy/Caddyfile"
+    files+=(caddy caddy/Caddyfile) ;;
+esac
 if [ "$gpl" = yes ]; then
   mkdir -- "$dir/fenji-oodle"
   cp -- "$root/crates/fenji-oodle/COPYING" "$root/crates/fenji-oodle/NOTICE" "$dir/fenji-oodle/"

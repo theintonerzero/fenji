@@ -1533,6 +1533,20 @@
   user-select: all;
 }
 
+/* Where to get DepotDownloader, above its command: the release's address, on a line of its own,
+   breaks wherever it must (#348). */
+.command-get {
+  display: grid;
+  gap: var(--space-8);
+  margin-bottom: var(--space-12);
+  color: var(--text-2);
+}
+
+.command-get .btn-link {
+  overflow-wrap: anywhere;
+  text-align: start;
+}
+
 /* Downloading: the Steam sign-in stays in DepotDownloader. */
 .steam-card {
   display: flex;

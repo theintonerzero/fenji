@@ -7,6 +7,7 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
+use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -20,8 +21,11 @@ mod tokens;
 pub use access::Ban;
 pub use accounts::{Account, AccountSummary};
 pub use characters::{CREATE_LEVEL, Character, NewCharacter, Place};
-pub use error::{Error, Result};
+pub use error::{Error, Result, SchemaDiffers};
 pub use invites::InviteRow;
+
+/// This build's migrations: the schema it expects.
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The database, shared by every task of the server (cloning shares the pool).
 #[derive(Clone)]
@@ -37,20 +41,31 @@ impl Store {
     /// it then cuts back to nothing (`journal_size_limit`), or when the last connection closes.
     pub async fn open(path: &Path) -> Result<Self> {
         owner_only(path)?;
-        let opts = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            .foreign_keys(true)
-            .pragma("secure_delete", "ON")
-            .pragma("journal_size_limit", "0")
-            .busy_timeout(Duration::from_secs(5));
-        let pool = SqlitePoolOptions::new()
-            .max_connections(4)
-            .connect_with(opts)
-            .await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        let pool = pool(path, true).await?;
+        MIGRATOR.run(&pool).await?;
+        Ok(Self { pool })
+    }
+
+    /// Opens `path` as it is, never bringing its schema up to date: for a command that runs beside
+    /// a server, which may be another version of Fenji, whose database a newer build's migrations
+    /// would change under it (#359). The database must be there with this build's schema, exactly
+    /// its migrations applied, or it's refused with [`Error::Schema`].
+    pub async fn open_as_is(path: &Path) -> Result<Self> {
+        let pool = pool(path, false).await?;
+        if let Err(e) = this_builds(&pool).await {
+            pool.close().await;
+            return Err(e);
+        }
+        Ok(Self { pool })
+    }
+
+    /// Opens `path` as [`Store::open`] does, but brings its schema only as far as migration
+    /// `version`: for tests of a database an older build left.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn open_at(path: &Path, version: i64) -> Result<Self> {
+        owner_only(path)?;
+        let pool = pool(path, true).await?;
+        MIGRATOR.run_to(version, &pool).await?;
         Ok(Self { pool })
     }
 
@@ -173,6 +188,61 @@ impl Store {
     }
 }
 
+/// Whether the database `pool` opens has this build's schema: exactly its migrations, each applied
+/// in full and unchanged since. [`Error::Schema`] says how far each has gone otherwise.
+async fn this_builds(pool: &SqlitePool) -> Result<()> {
+    let build: Vec<(i64, &[u8])> = MIGRATOR
+        .iter()
+        .filter(|m| !m.migration_type.is_down_migration())
+        .map(|m| (m.version, &*m.checksum))
+        .collect();
+    let tracked: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' \
+         AND name = '_sqlx_migrations')",
+    )
+    .fetch_one(pool)
+    .await?;
+    let applied: Vec<(i64, Vec<u8>, bool)> = if tracked {
+        sqlx::query_as("SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(pool)
+            .await?
+    } else {
+        Vec::new()
+    };
+    let same = applied.len() == build.len()
+        && applied
+            .iter()
+            .zip(&build)
+            .all(|((version, sum, done), (want, want_sum))| {
+                *done && version == want && sum.as_slice() == *want_sum
+            });
+    if same {
+        return Ok(());
+    }
+    Err(Error::Schema(SchemaDiffers {
+        database: applied.iter().map(|(version, ..)| *version).max(),
+        build: build.iter().map(|(version, _)| *version).max().unwrap_or(0),
+    }))
+}
+
+/// The pool for the database at `path`, in WAL mode with foreign keys on, made if it's missing and
+/// `create` says to.
+async fn pool(path: &Path, create: bool) -> Result<SqlitePool> {
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(create)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .foreign_keys(true)
+        .pragma("secure_delete", "ON")
+        .pragma("journal_size_limit", "0")
+        .busy_timeout(Duration::from_secs(5));
+    Ok(SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect_with(opts)
+        .await?)
+}
+
 /// Creates `path` owner-only (0600) if it is missing, and takes group and other access away from it
 /// and from its `-wal` and `-shm` files if they have any (a database from v0.4.0 was 0644). SQLite
 /// gives the files it creates later the main file's mode.
@@ -266,12 +336,71 @@ mod tests {
             .filter_map(|name| name.strip_suffix(".sql")?.split('_').next()?.parse().ok())
             .collect();
         on_disk.sort_unstable();
-        let mut embedded: Vec<i64> = sqlx::migrate!("./migrations")
-            .iter()
-            .map(|m| m.version)
-            .collect();
+        let mut embedded: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
         embedded.sort_unstable();
         assert_eq!(embedded, on_disk);
+    }
+
+    /// The latest migration this build has.
+    fn latest() -> i64 {
+        MIGRATOR.iter().map(|m| m.version).max().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_database_opened_as_it_is_is_never_migrated_and_must_be_this_builds() {
+        // #359: an admin command beside a running server, which may be another version, opens its
+        // database as it is: one migration behind, it's refused, and left so.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.db");
+        Store::open_at(&path, latest() - 1)
+            .await
+            .unwrap()
+            .close()
+            .await;
+        for _ in 0..2 {
+            let e = Store::open_as_is(&path).await.err().expect("refused");
+            let behind = SchemaDiffers {
+                database: Some(latest() - 1),
+                build: latest(),
+            };
+            assert!(matches!(&e, Error::Schema(d) if *d == behind), "{e}");
+        }
+        // Brought up to date, as a start does, it opens as it is.
+        Store::open(&path).await.unwrap().close().await;
+        let store = Store::open_as_is(&path).await.unwrap();
+        assert!(store.list_invites().await.unwrap().is_empty());
+        // One a newer build has migrated further is refused too.
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, \
+             execution_time) VALUES (?, 'a newer build''s', 1, x'00', 0)",
+        )
+        .bind(latest() + 1)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        store.close().await;
+        let e = Store::open_as_is(&path).await.err().expect("refused");
+        let ahead = SchemaDiffers {
+            database: Some(latest() + 1),
+            build: latest(),
+        };
+        assert!(matches!(&e, Error::Schema(d) if *d == ahead), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_database_opened_as_it_is_must_be_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fenji.db");
+        assert!(Store::open_as_is(&path).await.is_err());
+        assert!(!path.exists(), "made");
+        // An empty one has no schema at all.
+        std::fs::write(&path, b"").unwrap();
+        let e = Store::open_as_is(&path).await.err().expect("refused");
+        let none = SchemaDiffers {
+            database: None,
+            build: latest(),
+        };
+        assert!(matches!(&e, Error::Schema(d) if *d == none), "{e}");
     }
 
     #[tokio::test]

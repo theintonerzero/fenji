@@ -31,3 +31,27 @@ test("the dialog a snapshot asks for comes over the screen: a link's other key b
   expect(root.querySelector("button.play")).not.toBeNull();
   expect(sent).toEqual([{ type: "viewTab", tab: "play" }]);
 });
+
+test("a change while the view fetches its first snapshot isn't lost: it listens first (#348)", async () => {
+  const root = document.createElement("div");
+  document.body.replaceChildren(root);
+  let push: (s: Snapshot) => void = () => {};
+  let fetches = 0;
+  await mount(root, {
+    snapshot: async () => {
+      fetches += 1;
+      if (fetches === 1) {
+        // Maintenance begins while the view asks: the model publishes it, then the answer comes.
+        push(golden("play-maintenance"));
+        return golden("play-ready");
+      }
+      return golden("play-maintenance");
+    },
+    onSnapshot: async (cb) => {
+      push = cb;
+      return () => {};
+    },
+    send: async () => null,
+  });
+  expect(root.textContent).toContain("The lobby is closed while Moonward is in maintenance.");
+});

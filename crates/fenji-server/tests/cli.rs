@@ -497,8 +497,12 @@ fn invite_create_right_after_init_makes_the_data_folder() {
     assert_eq!(names(dir.path()), ["data", "fenji.toml"], "nothing else");
     let data = dir.path().join("data");
     let db = names(&data);
+    // With the lock the command held as it made the database, as a server's start leaves it
+    // (#359).
     assert!(
-        db.iter().all(|n| n.starts_with("fenji.db")) && db.contains(&"fenji.db".into()),
+        db.iter()
+            .all(|n| n.starts_with("fenji.db") || n == "server.lock")
+            && db.contains(&"fenji.db".into()),
         "the database alone: {db:?}"
     );
     #[cfg(unix)]
@@ -817,6 +821,123 @@ async fn cli_writes_while_a_server_holds_the_database() {
     assert!(text.contains("\ncode: "), "{text}");
     holder.await.unwrap().unwrap();
     assert_eq!(held.list_invites().await.unwrap().len(), 1);
+}
+
+/// This build's latest migration, as the store reports it of an empty database in `dir`.
+async fn latest_migration(dir: &Path) -> i64 {
+    let empty = dir.join("empty.db");
+    std::fs::write(&empty, b"").unwrap();
+    match fenji_store::Store::open_as_is(&empty).await {
+        Err(fenji_store::Error::Schema(differs)) => differs.build,
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("an empty database had a schema"),
+    }
+}
+
+/// The latest migration of the database at `path`, opened as it is: none when it's this build's.
+async fn behind_at(path: &Path) -> Option<i64> {
+    match fenji_store::Store::open_as_is(path).await {
+        Ok(store) => {
+            store.close().await;
+            None
+        }
+        Err(fenji_store::Error::Schema(differs)) => differs.database,
+        Err(e) => panic!("{e}"),
+    }
+}
+
+#[tokio::test]
+async fn an_admin_command_never_migrates_a_running_servers_database() {
+    // #359: a newer fenji-server's admin command applied its migrations to the database of an
+    // older server that was running. While a server holds the data folder, a command opens the
+    // database as it is: one migration behind, it's refused, saying what to do, and left so.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path());
+    let latest = latest_migration(dir.path()).await;
+    let store = fenji_store::Store::open_at(&cfg.store.path, latest - 1).await;
+    store.unwrap().close().await;
+    let _running = fenji_server::lock::take(dir.path()).unwrap();
+    let list = Command::Invite {
+        cmd: InviteCmd::List,
+    };
+    let clock = TestClock::at(1_800_000_000_000);
+    let e = admin(&cfg, &list, &mut Vec::new(), &clock)
+        .await
+        .unwrap_err();
+    let e = format!("{e:#}");
+    assert!(
+        e.starts_with("a server is running on this data folder (")
+            && e.contains("its database is an older version's than this fenji-server's")
+            && e.ends_with("or stop the server first"),
+        "{e}"
+    );
+    #[cfg(unix)]
+    assert!(
+        e.contains("`fenji-server console --run \"invites\"`"),
+        "{e}"
+    );
+    assert_eq!(
+        behind_at(&cfg.store.path).await,
+        Some(latest - 1),
+        "migrated"
+    );
+    // A command the console has no form of can only wait for the server to stop.
+    let delete = Command::Account {
+        cmd: AccountCmd::Delete {
+            username: "Mai".into(),
+        },
+    };
+    let e = admin(&cfg, &delete, &mut Vec::new(), &clock)
+        .await
+        .unwrap_err();
+    let e = format!("{e:#}");
+    assert!(e.ends_with(": stop the server first"), "{e}");
+    assert_eq!(
+        behind_at(&cfg.store.path).await,
+        Some(latest - 1),
+        "migrated"
+    );
+}
+
+#[tokio::test]
+async fn an_admin_command_uses_a_running_servers_database_of_its_own_version() {
+    // #359: the same version's database needs no migration, so a command works beside a running
+    // server, as it always has.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path());
+    fenji_store::Store::open(&cfg.store.path)
+        .await
+        .unwrap()
+        .close()
+        .await;
+    let _running = fenji_server::lock::take(dir.path()).unwrap();
+    let text = run(
+        &cfg,
+        Command::Invite {
+            cmd: InviteCmd::List,
+        },
+    )
+    .await;
+    assert_eq!(text, "id\tlabel\tcreated\tstatus\n");
+}
+
+#[tokio::test]
+async fn with_no_server_running_an_admin_command_brings_the_database_up_to_date() {
+    // #359: as a start does.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path());
+    let latest = latest_migration(dir.path()).await;
+    let store = fenji_store::Store::open_at(&cfg.store.path, latest - 1).await;
+    store.unwrap().close().await;
+    let text = run(
+        &cfg,
+        Command::Invite {
+            cmd: InviteCmd::List,
+        },
+    )
+    .await;
+    assert_eq!(text, "id\tlabel\tcreated\tstatus\n");
+    assert_eq!(behind_at(&cfg.store.path).await, None, "not migrated");
 }
 
 #[tokio::test]
