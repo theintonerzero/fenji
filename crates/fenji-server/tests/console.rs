@@ -824,6 +824,38 @@ fn a_plain_server_whose_log_goes_unread_stops_on_the_consoles_stop() {
 }
 
 #[test]
+fn a_plain_server_that_fails_with_its_log_unread_still_exits() {
+    // #359 (Task 7's re-review, new Minor): Rust's `main` printed the error `run` ended with to
+    // stderr, waiting on it, and on std's lock of it, which the log's writer may hold through a
+    // write nobody reads: the process never exited. The error goes through the log's queue now,
+    // after its last lines, and the process exits after its grace.
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("fenji.toml");
+    std::fs::write(&config, CONFIG).unwrap();
+    // Its data folder is another's: `run` ends at once, with an error.
+    let _held = fenji_server::lock::take(dir.path(), Some(&config)).unwrap();
+    let (_unread, stderr) = full_pipe();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        .arg("--config")
+        .arg(&config)
+        .args(["run", "--plain"])
+        .env("RUST_LOG", "info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
+    let began = Instant::now();
+    let status = exit_of(&mut child, || "still running after its error".into());
+    assert_eq!(status.code(), Some(1), "{status}");
+    assert!(
+        began.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        began.elapsed()
+    );
+}
+
+#[test]
 fn console_run_gives_a_script_the_answer_and_an_exit_code_that_follows_it() {
     // M4 hosting plan, Task 11's carry-forwards 2 and 6.
     let dir = tempfile::tempdir().unwrap();
@@ -1209,8 +1241,9 @@ fn a_second_server_on_a_data_folder_in_use_refuses_before_it_opens_its_database_
     let mut second = Plain::with(&other, &[("FENJI_LOGIN_BIND", &gate)]);
     assert!(!second.wait().success());
     let said = second.said();
+    // As Rust's `main` would print it, through the log's stderr now (#359).
     assert!(
-        said.contains("another fenji-server holds this data folder ("),
+        said.contains("Error: another fenji-server holds this data folder ("),
         "{said}"
     );
     // To attach, with the config it was given (#359, Task 2's review, Minor 2).

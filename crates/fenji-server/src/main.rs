@@ -9,18 +9,28 @@ use fenji_server::config;
 use fenji_server::console;
 use fenji_server::console::log::Sink;
 
-fn main() -> anyhow::Result<ExitCode> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+fn main() -> ExitCode {
+    let ran = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?;
-    let ran = runtime.block_on(fenji_server());
-    // Without waiting for what's left: plain lines may leave a read of stdin that nothing can
-    // cancel (`tokio::io::stdin`), and the server has stopped by now.
-    runtime.shutdown_background();
+        .build()
+        .map_err(anyhow::Error::from)
+        .and_then(|runtime| {
+            let ran = runtime.block_on(fenji_server());
+            // Without waiting for what's left: plain lines may leave a read of stdin that nothing
+            // can cancel (`tokio::io::stdin`), and the server has stopped by now.
+            runtime.shutdown_background();
+            ran
+        });
+    let code = ran.unwrap_or_else(|e| {
+        // Not as Rust's `main` would print it, through std's stderr, which the log's writer may
+        // hold in a write nobody reads (#359).
+        console::log::failed(&e);
+        ExitCode::FAILURE
+    });
     // The log's last lines on stderr, which a thread of its own writes: a while for them, and no
     // longer, as a stderr nobody reads would hold the exit for ever (#359).
     console::log::finish(fenji_server::server::CONSOLE_GRACE);
-    ran
+    code
 }
 
 async fn fenji_server() -> anyhow::Result<ExitCode> {

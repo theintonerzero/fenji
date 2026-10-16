@@ -80,6 +80,13 @@ impl Stderr {
         }
     }
 
+    /// Queues `text`, whatever room is left, without waiting: the last the process writes, the
+    /// error it exits with.
+    pub(crate) fn last(&self, text: String) {
+        self.shared.lock().queue.push_back(text);
+        self.shared.changed.notify_all();
+    }
+
     /// As the process exits: waits `grace` at most for the writer to write what's queued, and to
     /// say what it skipped.
     pub(crate) fn finish(&self, grace: Duration) {
@@ -314,6 +321,27 @@ mod tests {
              b\nc\nf\ng\n\
              HH:MM:SS WARN  1 line of the log was skipped: stderr wasn't being read\n\
              h\ni\n"
+        );
+    }
+
+    #[test]
+    fn the_error_the_process_exits_with_is_queued_whatever_room_is_left() {
+        // #359 (Task 7's re-review): the process's last line, after those queued.
+        let out = Stalled::default();
+        let stderr = Stderr::to(1, out.clone()).unwrap();
+        stderr.send("a\n".into());
+        out.until(|out| out.asked);
+        stderr.send("b\n".into());
+        sent(&stderr, &["c\n"]);
+        stderr.last("Error: the world failed\n".into());
+        out.open();
+        stderr.finish(Duration::from_secs(10));
+        assert_eq!(
+            untimed(&out.written()),
+            "a\n\
+             HH:MM:SS WARN  1 line of the log was skipped: stderr wasn't being read\n\
+             b\n\
+             Error: the world failed\n"
         );
     }
 

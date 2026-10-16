@@ -74,6 +74,24 @@ pub fn init(sinks: &[Sink]) -> anyhow::Result<LogHub> {
 /// The process's log's stderr, when it's one of its sinks ([`init`]).
 static STDERR: OnceLock<Stderr> = OnceLock::new();
 
+/// Says why the process failed, as Rust's `main` would: `Error: `, then the error and its causes,
+/// each line cleaned. On the log's stderr when that's one of its sinks, after the lines queued
+/// there, and without waiting: its writer may hold std's stderr through a write nobody reads, which
+/// would hold the exit for ever (#359). [`finish`] then gives it a while. On the process's stderr
+/// otherwise.
+pub fn failed(error: &anyhow::Error) {
+    let text = format!("Error: {error:?}")
+        .split('\n')
+        .map(|line| clean(line).into_owned() + "\n")
+        .collect::<String>();
+    match STDERR.get() {
+        Some(stderr) => stderr.last(text),
+        None => {
+            let _ = std::io::stderr().write_all(text.as_bytes());
+        }
+    }
+}
+
 /// As the process exits: waits `grace` at most for the log's stderr to take what's queued, and
 /// what was skipped to be said, then leaves it. Nothing waits on it after that (#359).
 pub fn finish(grace: Duration) {
