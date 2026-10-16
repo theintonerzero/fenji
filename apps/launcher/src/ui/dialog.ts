@@ -45,7 +45,8 @@ export function trapFocus(box: HTMLElement, onEscape: () => void): void {
       event.preventDefault();
       return;
     }
-    if (event.shiftKey && document.activeElement === first) {
+    // The box itself (a popover's panel, focused as it opens) is the first stop for Shift+Tab.
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === box)) {
       event.preventDefault();
       last.focus();
     } else if (!event.shiftKey && document.activeElement === last) {

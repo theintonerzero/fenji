@@ -113,6 +113,7 @@ export function rail(ctx: Ctx): Rail {
       const at = items.indexOf(document.activeElement as HTMLButtonElement);
       if (event.key === "Escape" || event.key === "Tab") {
         event.preventDefault();
+        event.stopPropagation();
         closeMenu(true);
       } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();

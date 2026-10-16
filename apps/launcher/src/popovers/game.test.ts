@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 import { embers, golden, mountPopover, press, settle, shows } from "../screens/test-kit";
 import { gamePopover } from "./game";
@@ -120,4 +120,19 @@ test("needs repair in a Steam library: Steam repairs it, then Verify", () => {
   expect(shows(root, "Run it yourself")).toBe(false);
   press(root, "Verify");
   expect(sent).toEqual([{ type: "check", level: "quick" }]);
+});
+
+test("a probe a minute later leaves a focused Verify integrity where it is (R7)", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(2026, 9, 16, 21, 4, 50));
+  try {
+    const { root, content } = mountPopover(gamePopover, golden("client-verified"));
+    const verify = [...root.querySelectorAll("button")].find((b) => b.textContent === "Verify integrity")!;
+    verify.focus();
+    vi.setSystemTime(new Date(2026, 9, 16, 21, 6, 10));
+    content.update(golden("client-verified"));
+    expect(document.activeElement).toBe(verify);
+  } finally {
+    vi.useRealTimers();
+  }
 });

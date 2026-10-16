@@ -163,21 +163,36 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
   let keyShown: { key: string; el: HTMLElement & { close(): void } } | null = null;
   let toastKey = "";
 
+  /** Escape closes the open popover wherever focus is: dialogs above it, and its own panel, stop
+   * their Escape before it gets here, so only the topmost layer closes (R7). */
+  const escapePopover = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && open !== null && shownDialog === null && keyShown === null) {
+      event.preventDefault();
+      setPopover(null);
+    }
+  };
+
+  function closePopover(): void {
+    if (open !== null) {
+      const was = open;
+      open = null;
+      document.removeEventListener("keydown", escapePopover);
+      was.shown.close();
+    }
+  }
+
   function setPopover(which: PopoverName | null): void {
     if ((open?.name ?? null) === which) {
       return;
     }
-    if (open !== null) {
-      const was = open;
-      open = null;
-      was.shown.close();
-    }
+    closePopover();
     if (which !== null && OPENS_ON[which].has(route(snapshot, view))) {
       const content = POPOVERS[which](ctx);
       content.update(snapshot);
       const shown = popover(content.title, content.body, top.control(which), () => setPopover(null));
       open = { name: which, content, shown };
       layer.append(shown.el);
+      document.addEventListener("keydown", escapePopover);
     }
     if (mounted) {
       render();
@@ -224,9 +239,7 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
     current.screen.update(snapshot);
     // A popover whose control the screen no longer shows goes with it.
     if (open !== null && !OPENS_ON[open.name].has(name)) {
-      const was = open;
-      open = null;
-      was.shown.close();
+      closePopover();
     }
     open?.content.update(snapshot);
     top.update(snapshot, name, open?.name ?? null);
@@ -237,8 +250,8 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
       keyShown = null;
     }
     if (key !== "" && keyShown === null) {
-      setPopover(null);
       keyShown = { key, el: keyDialog(ctx, snapshot) };
+      closePopover();
       layer.append(keyShown.el);
     }
     const toast = snapshot.update.showDialog ? `${snapshot.update.available}` : "";

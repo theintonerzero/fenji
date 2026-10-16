@@ -44,3 +44,14 @@ test("off Linux there's no umu-run and no download folder", () => {
   expect(root.querySelector("#settings-umu-run")).toBeNull();
   expect(root.querySelector("#settings-download-folder")).toBeNull();
 });
+
+test("Check now keeps focus while the check runs (R7)", () => {
+  const { root, content } = mountPopover(settingsPopover, golden("settings"));
+  const link = [...root.querySelectorAll("button")].find((b) => b.textContent === "Check now")!;
+  link.focus();
+  const checking = golden("settings");
+  checking.update.checking = true;
+  content.update(checking);
+  expect(document.activeElement).toBe(link);
+  expect(root.querySelector("#settings-version")!.textContent).toBe("0.5.0 · checking… · Check now");
+});

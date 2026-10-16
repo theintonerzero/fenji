@@ -249,7 +249,10 @@ export function gamePopover(ctx: Ctx): PopoverContent {
         renew(content, "working", () => [working]);
         return;
       }
-      const key = JSON.stringify([view, s.client, s.platform.canDownload, s.platform.home, view === "ready" ? Math.floor(Date.now() / 60000) : 0]);
+      // The Ready view's words change with the day, not the minute: a probe never redraws it under focus.
+      const check = s.client.check;
+      const verifiedWhen = check.kind === "verified" ? when(check.atMs, Date.now()) : "";
+      const key = JSON.stringify([view, s.client, s.platform.canDownload, s.platform.home, verifiedWhen]);
       renew(content, key, () => build(view as Exclude<View, "working">, s));
     },
   };

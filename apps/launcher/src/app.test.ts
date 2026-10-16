@@ -210,3 +210,28 @@ test.each([true, false])("Welcome's address goes on to sign in there, whichever 
   }
   expect(title(root)).toBe("Sign in to Moonward");
 });
+
+test("Shift+Tab from an opened popover stays in it, and Escape closes it wherever focus fell (R7)", async () => {
+  const { root } = await mounted(golden("play-ready"));
+  control(root, "Settings").click();
+  await settle();
+  const panel = root.querySelector<HTMLElement>(".popover")!;
+  expect(document.activeElement).toBe(panel);
+  panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }));
+  expect(panel.contains(document.activeElement)).toBe(true);
+  expect(document.activeElement).not.toBe(panel);
+  // Focus fell out of it, as when a control inside is redrawn: Escape still closes it.
+  (document.activeElement as HTMLElement).blur();
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(root.querySelector(".popover")).toBeNull();
+});
+
+test("a changed key arriving while a popover is open closes it and asks once", async () => {
+  const { root, push } = await mounted(golden("servers"));
+  control(root, "Game").click();
+  push(golden("servers-key-change"));
+  expect(root.querySelector(".popover")).toBeNull();
+  expect(root.querySelectorAll('.dialog[role="dialog"]')).toHaveLength(1);
+  push(golden("servers"));
+  expect(root.querySelectorAll('.dialog[role="dialog"]')).toHaveLength(0);
+});

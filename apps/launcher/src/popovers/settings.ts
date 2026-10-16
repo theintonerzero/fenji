@@ -3,6 +3,7 @@
 // saved as it's made.
 import type { Ctx, PopoverContent } from "../app";
 import { h } from "../dom";
+import type { Intent } from "../types";
 import { button } from "../ui/button";
 import { renew, shown } from "../screens/parts";
 import { versionLine } from "../words";
@@ -20,7 +21,11 @@ export function settingsPopover(ctx: Ctx): PopoverContent {
     "aria-describedby": "settings-version",
     onchange: () => void ctx.send({ type: "setAutoUpdate", on: auto.checked }),
   });
-  const version = h("p", { class: "line", id: "settings-version" });
+  // One link whose words and intent change in place, so it keeps focus while a check runs (R7).
+  const versionWords = h("span", {});
+  let versionIntent: Intent = { type: "checkUpdate" };
+  const versionAction = button.link("Check now", () => void ctx.send(versionIntent));
+  const version = h("p", { class: "line", id: "settings-version" }, versionWords, " · ", versionAction);
   const umu = h("input", {
     id: "settings-umu-run",
     class: "input mono",
@@ -73,15 +78,14 @@ export function settingsPopover(ctx: Ctx): PopoverContent {
       if (auto.checked !== s.settings.autoUpdate) {
         auto.checked = s.settings.autoUpdate;
       }
-      const { update } = s;
-      renew(version, JSON.stringify(update), () => [
-        versionLine(s),
-        " · ",
-        // A ready update stays installable here, after Later too.
-        update.ready
-          ? button.link("Restart", () => void ctx.send({ type: "installUpdate" }))
-          : button.link("Check now", () => void ctx.send({ type: "checkUpdate" })),
-      ]);
+      versionWords.textContent = versionLine(s);
+      // A ready update stays installable here, after Later too.
+      const ready = s.update.ready;
+      versionIntent = ready ? { type: "installUpdate" } : { type: "checkUpdate" };
+      const words = ready ? "Restart" : "Check now";
+      if (versionAction.textContent !== words) {
+        versionAction.textContent = words;
+      }
       // Linux only: umu-run starts the game there, and only there can Fenji download it.
       renew(linux, String(s.platform.os === "linux"), () =>
         s.platform.os === "linux"
