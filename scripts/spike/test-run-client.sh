@@ -747,7 +747,9 @@ fi
 t2=$(field two 2 t)
 ended=$(sed -n 2p "$OUT2/io/2/ended-by-pid" 2> /dev/null)
 ended_at=$(sed -n 1p "$OUT2/io/2/ended-by-pid" 2> /dev/null)
-if [ "$ended" = "$p2" ] && python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[2]) >= float(sys.argv[1]) + 3 + 10 - 1 else 1)' "$t2" "$ended_at" &&
+# ended_at is `date +%s`, floored to the second, and the runner's 3 + 10 s run from timeout's start,
+# a moment before the fake client logs t2: 2 s of slack, still 8 s past an end at the timeout (#354).
+if [ "$ended" = "$p2" ] && python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[2]) >= float(sys.argv[1]) + 3 + 10 - 2 else 1)' "$t2" "$ended_at" &&
   [ "$(python3 -I -c 'import json, sys; print(json.loads(sys.stdin.readline())["alive"])' < "$F/log/two/wineserver")" = "[$p1]" ]; then
   ok "client 2, outliving its proton run, is ended by its own pid 10 s after --timeout2, while client 1 runs on"
 else
