@@ -36,7 +36,8 @@ pub(crate) const QUEUE: usize = 1024;
 /// The log files kept, one a day.
 const FILES_KEPT: usize = 14;
 /// The fields whose values name someone, a character or an account: consoles show them in gold
-/// (spec §3.2). The server's own fields name an account as `account`.
+/// (spec §3.2). The server's own fields name an account as `account`, and give its id, which isn't
+/// a name, as `account_id`.
 const NAMES: [&str; 5] = ["character", "player", "username", "name", "account"];
 
 /// Where the full-screen console's log files go: `logs` in the data folder, the directory of
@@ -410,6 +411,155 @@ mod tests {
             }
         });
         assert_eq!(sub.next().await, Some(LogItem::Skipped(76)));
+    }
+
+    /// A line of `text` alone, for the hub.
+    fn line(text: &str) -> LogLine {
+        LogLine {
+            at_ms: 0,
+            level: Level::Info,
+            parts: vec![Part {
+                text: text.into(),
+                name: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn with_publishers_on_many_threads_each_subscriber_gets_every_line_once() {
+        // The hosting plan's Task 7 (#359): the backlog and the channel share one lock, so that a
+        // subscriber gets each line once, in its backlog or from the channel, whichever thread
+        // logged it and whenever it subscribed. 400 lines in all, within a subscriber's queue
+        // (`QUEUE`): none can fall behind and lose lines here.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        const PUBLISHERS: usize = 4;
+        const EACH: usize = 100;
+        const SUBSCRIBERS: usize = 8;
+        const SUBSCRIPTIONS: usize = 25;
+        let hub = LogHub::new(PUBLISHERS * EACH);
+        let start = Arc::new(std::sync::Barrier::new(PUBLISHERS + SUBSCRIBERS));
+        let published = Arc::new(AtomicBool::new(false));
+        let publishers: Vec<_> = (0..PUBLISHERS)
+            .map(|p| {
+                let (hub, start) = (hub.clone(), Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    for n in 0..EACH {
+                        hub.publish(line(&format!("{p}:{n}")));
+                        std::thread::sleep(Duration::from_micros(20));
+                    }
+                })
+            })
+            .collect();
+        // Subscribing again and again while the lines come.
+        let subscribers: Vec<_> = (0..SUBSCRIBERS)
+            .map(|_| {
+                let (hub, start) = (hub.clone(), Arc::clone(&start));
+                let published = Arc::clone(&published);
+                std::thread::spawn(move || {
+                    start.wait();
+                    let mut subscriptions = Vec::new();
+                    while subscriptions.len() < SUBSCRIPTIONS && !published.load(Ordering::SeqCst) {
+                        subscriptions.push(hub.subscribe());
+                        std::thread::sleep(Duration::from_micros(100));
+                    }
+                    subscriptions
+                })
+            })
+            .collect();
+        for publisher in publishers {
+            publisher.join().unwrap();
+        }
+        published.store(true, Ordering::SeqCst);
+        let all: Vec<String> = hub.subscribe().backlog.iter().map(text_of).collect();
+        assert_eq!(all.len(), PUBLISHERS * EACH);
+        let mut checked = 0;
+        for subscriber in subscribers {
+            for mut sub in subscriber.join().unwrap() {
+                let kept = sub.backlog.len();
+                let mut seen: Vec<String> = sub.backlog.iter().map(text_of).collect();
+                while let Some(item) = sub.try_next() {
+                    match item {
+                        LogItem::Line(line) => seen.push(text_of(&line)),
+                        LogItem::Skipped(lost) => panic!("{lost} lines lost"),
+                    }
+                }
+                assert_eq!(
+                    seen, all,
+                    "{kept} lines from its backlog, then the channel's"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= SUBSCRIBERS, "{checked} subscriptions");
+    }
+
+    #[test]
+    fn an_account_is_a_name_which_the_console_shows_in_gold_and_its_id_is_not() {
+        // The hosting plan's Task 7 (#359): the console draws a name part in gold, and these
+        // fields' values are names; an account's id is a number.
+        let hub = LogHub::new(10);
+        let subscriber = tracing_subscriber::registry().with(hub.layer());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(account = "mai", account_id = 7, "signed in");
+            tracing::info!(
+                character = "Mai",
+                player = "Lin",
+                username = "wen",
+                name = "Ren",
+                "named"
+            );
+        });
+        let backlog = hub.subscribe().backlog;
+        let parts = |line: &LogLine| -> Vec<(String, bool)> {
+            line.parts
+                .iter()
+                .map(|p| (p.text.clone(), p.name))
+                .collect()
+        };
+        let part = |text: &str, name| (text.to_owned(), name);
+        assert_eq!(
+            parts(&backlog[0]),
+            [
+                part("signed in account=", false),
+                part("mai", true),
+                part(" account_id=7", false)
+            ]
+        );
+        assert_eq!(
+            parts(&backlog[1]),
+            [
+                part("named character=", false),
+                part("Mai", true),
+                part(" player=", false),
+                part("Lin", true),
+                part(" username=", false),
+                part("wen", true),
+                part(" name=", false),
+                part("Ren", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn where_a_log_crates_record_came_from_is_left_out() {
+        // The hosting plan's Task 7 (#359): tracing-log gives a `log` crate's record, as rustls
+        // logs, fields for where it came from. The line is the record's message and its own
+        // fields; a field whose name merely starts with "log" stays.
+        let hub = LogHub::new(10);
+        let subscriber = tracing_subscriber::registry().with(hub.layer());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                log.target = "rustls::conn",
+                log.module_path = "rustls::conn",
+                log.file = "src/conn.rs",
+                log.line = 42,
+                logins = 3,
+                "a TLS alert"
+            );
+        });
+        assert_eq!(text_of(&hub.subscribe().backlog[0]), "a TLS alert logins=3");
     }
 
     #[test]
