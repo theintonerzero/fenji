@@ -19,8 +19,8 @@ pub const BAD_CODE: &str = "That isn't an invite code.";
 pub const DOWNLOAD_LINUX_ONLY: &str = "Downloading works on Linux only for now.";
 /// A check, download or repair while another runs.
 pub const BUSY: &str = "Something's already running. Wait, or stop it.";
-/// No terminal to open DepotDownloader in: the player runs the command from the Client tab's
-/// dialog, on its first screen and on Repair, in a terminal of their own (#348).
+/// No terminal to open DepotDownloader in: the player runs the command from the Game popover's
+/// Run it yourself, while setting up or on Repair, in a terminal of their own (#348).
 pub const NO_TERMINAL: &str = "Fenji couldn't open a terminal. Open Game, then Run it yourself.";
 pub const CHECK_STOPPED: &str = "Verification stopped.";
 pub const DOWNLOAD_CANCELLED: &str = "Download cancelled.";
