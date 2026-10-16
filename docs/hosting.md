@@ -626,8 +626,6 @@ xattr -dr com.apple.quarantine ~/fenji-server
 
 **It says "can't attach to the server: the path of its console socket, …, is too long for a socket here".** The server said as much in its log when it started, and runs without a socket. Move the data folder to a shorter path, or start the server from its own folder, as the start scripts do (section 2).
 
-**An attached console closes at once, saying "The cursor position could not be read within a normal duration".** The full-screen console asks the terminal where its cursor is, and this terminal didn't answer. Attach with `--plain`, or from a terminal program or tmux.
-
 **The service won't start, and `systemctl status fenji` shows `status=217/USER` or `status=226/NAMESPACE`.** `sudo journalctl -u fenji` says why, such as "Failed to keep CAP_SYS_ADMIN: Operation not permitted". Your VPS is most likely a container itself (LXC, OpenVZ and the like), whose systemd lacks a privilege that part of the service's sandbox needs: the settings that filter the server's system calls. Turn those off, for both services, and start the server again:
 
 ```sh

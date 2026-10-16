@@ -11,7 +11,7 @@ use crossterm::cursor::{Hide, Show};
 use crossterm::event::{Event, EventStream, KeyEvent};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt;
 use ratatui::Terminal;
@@ -62,9 +62,11 @@ pub async fn run_tui(
     } = session;
     let mut view = View::new(hello.server, hello.commands, mode);
     let palette = Palette::of(colours);
+    // The screen comes cleared ([`enter_to`]), and the terminal's buffers start empty, so the first
+    // frame draws it all. Never `Terminal::clear`: it asks the terminal where its cursor is, and
+    // waits up to 2 s for an answer that some never give (#359).
     let _screen = Screen::take()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    terminal.clear()?;
     let mut keys = EventStream::new();
     let mut second = tokio::time::interval(Duration::from_secs(1));
     second.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -218,10 +220,16 @@ impl Screen {
     }
 }
 
-/// Takes `terminal`'s screen: the alternate screen, with the cursor hidden and the wheel's ↑ and ↓
-/// turned off ([`AlternateScroll`]).
+/// Takes `terminal`'s screen: the alternate screen, cleared, with the cursor hidden and the wheel's
+/// ↑ and ↓ turned off ([`AlternateScroll`]). Nothing here asks the terminal anything.
 fn enter_to(terminal: &mut impl io::Write) -> io::Result<()> {
-    execute!(terminal, EnterAlternateScreen, Hide, AlternateScroll(false))
+    execute!(
+        terminal,
+        EnterAlternateScreen,
+        Clear(ClearType::All),
+        Hide,
+        AlternateScroll(false)
+    )
 }
 
 /// The terminal's alternate-scroll mode (xterm's 1007, which VTE, macOS's Terminal, iTerm2 and
@@ -454,6 +462,18 @@ mod tests {
         let given = String::from_utf8(given).unwrap();
         let (screen, wheel) = (given.find("\u{1b}[?1049l"), given.find("\u{1b}[?1007h"));
         assert!(screen.is_some() && wheel > screen, "{given:?}");
+    }
+
+    #[test]
+    fn the_screen_is_taken_cleared_and_the_terminal_is_asked_nothing() {
+        // #359: ratatui's Terminal::clear asked where the cursor was, and waited up to 2 s for an
+        // answer some terminals never give. The screen is cleared as it's taken instead.
+        let mut entered = Vec::new();
+        enter_to(&mut entered).unwrap();
+        let entered = String::from_utf8(entered).unwrap();
+        let (screen, cleared) = (entered.find("\u{1b}[?1049h"), entered.find("\u{1b}[2J"));
+        assert!(screen.is_some() && cleared > screen, "{entered:?}");
+        assert!(!entered.contains("\u{1b}[6n"), "{entered:?}");
     }
 
     /// The hook the tests had, back in place of `before`'s replacement.

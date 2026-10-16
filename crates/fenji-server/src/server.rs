@@ -536,10 +536,9 @@ pub(crate) async fn held(
 }
 
 /// How long `run` waits for its full-screen console once the server has stopped. The console ends
-/// on the server's goodbye at once, unless it's caught in a read of its terminal that never
-/// returns. Closing the window while the console waits for the terminal's answer to where its
-/// cursor is (ratatui's `Terminal::clear`, as it starts) hangs the terminal up, and crossterm then
-/// reads it over and over, a core spinning, on the console's thread (the fix pass's re-review,
+/// on the server's goodbye at once, unless it's caught in a write to a terminal that has stopped
+/// reading, as over a stalled SSH link, or in a read of its terminal that never returns: crossterm
+/// reads a terminal that has hung up over and over, a core spinning (the fix pass's re-review,
 /// NB1).
 const CONSOLE_GRACE: Duration = Duration::from_secs(2);
 
