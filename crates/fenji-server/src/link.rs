@@ -71,9 +71,21 @@ fn filter_machine(i: usize) -> bool {
     i == 17
 }
 
-/// Plays `character` in the world on the gate's connection, until the client leaves, the world
-/// lets go of it, or the online registry tells it to close: a newer login replaces it, or the
-/// account is banned. The lobby has checked that the account isn't banned (`gate::entry`).
+/// How a session in the world ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// The connection is closed, or about to be.
+    Closed,
+    /// Back to character select: the connection is the lobby's again (#282), with what came after
+    /// type 4 in the same read for the lobby to handle. Sends are off then, but a time sync or a
+    /// gateway message, a 392 among them, may follow (world.md 1.3; #388's review).
+    Lobby(Vec<Event>),
+}
+
+/// Plays `character` in the world on the gate's connection, until the client leaves or goes back
+/// to character select, the world lets go of it, or the online registry tells it to close: a newer
+/// login replaces it, or the account is banned. The lobby has checked that the account isn't
+/// banned (`gate::entry`).
 #[allow(clippy::too_many_arguments)] // the connection's state, as the lobby loop holds it
 pub(crate) async fn play(
     sock: &mut TcpStream,
@@ -84,7 +96,7 @@ pub(crate) async fn play(
     conn: ConnId,
     character: Character,
     replaced: &mut oneshot::Receiver<Closing>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Ended> {
     let deadline = gate.limits.write_deadline;
     let pid = character.pid;
     let name = character.name.clone();
@@ -103,7 +115,7 @@ pub(crate) async fn play(
         tracing::warn!(%peer, account = %account.username, "the world has stopped: entry refused");
         let bytes = gate::script_out(server, &lobby::error_code(code::SERVER_NOT_RESP))?;
         gate::send(sock, &bytes, deadline).await?;
-        return Ok(());
+        return Ok(Ended::Closed);
     }
     // The world holds the player from here: it hears of the end however this ends, a panic
     // included, since it notices a closed channel only at its next send to it.
@@ -138,15 +150,16 @@ pub(crate) async fn play(
                     Ok(n) => n?,
                     Err(_) => {
                         tracing::info!(%peer, account = %account.username, "idle in the world: closing");
-                        return Ok(());
+                        return Ok(Ended::Closed);
                     }
                 };
                 if n == 0 {
                     tracing::info!(%peer, account = %account.username, "left the world");
-                    return Ok(());
+                    return Ok(Ended::Closed);
                 }
                 idle_at = Instant::now() + gate.limits.idle;
-                for event in server.receive(&buf[..n])? {
+                let mut events = server.receive(&buf[..n])?.into_iter();
+                while let Some(event) = events.next() {
                     let m = match event {
                         Event::Message(m) => m,
                         // The client's ping display reads only what a server time sync sets: its
@@ -154,7 +167,7 @@ pub(crate) async fn play(
                         Event::TimeSync(ms) => {
                             if !gate::send_or_replaced(sock, &server.time_sync(ms), deadline, replaced).await? {
                                 tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a reply was blocked: closing");
-                                return Ok(());
+                                return Ok(Ended::Closed);
                             }
                             continue;
                         }
@@ -166,24 +179,36 @@ pub(crate) async fn play(
                         Step::Script(body) => Some(gate::script_out(server, &body)?),
                         Step::End(why) => {
                             tracing::info!(%peer, account = %account.username, why, "left the world");
-                            return Ok(());
+                            return Ok(Ended::Closed);
+                        }
+                        Step::Lobby => {
+                            // 330 takes the client back to its select screen on this connection,
+                            // and the world lets the character go as the link returns (#282).
+                            let bytes = gate::script_out(server, &world::actor_logout())?;
+                            if !gate::send_or_replaced(sock, &bytes, deadline, replaced).await? {
+                                tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a reply was blocked: closing");
+                                return Ok(Ended::Closed);
+                            }
+                            gate.online.in_lobby(account.id, conn);
+                            tracing::info!(%peer, account = %account.username, "back to character select (type 4)");
+                            return Ok(Ended::Lobby(events.collect()));
                         }
                         Step::Quit => {
                             tracing::info!(%peer, account = %account.username, why = "the client is quitting (392)", "left the world");
-                            return gate::close_with(sock, peer, gate, server, gate::CLIENT_EXIT).await;
+                            return gate::close_with(sock, peer, gate, server, gate::CLIENT_EXIT).await.map(|()| Ended::Closed);
                         }
                     };
                     if let Some(bytes) = reply
                         && !gate::send_or_replaced(sock, &bytes, deadline, replaced).await?
                     {
                         tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a reply was blocked: closing");
-                        return Ok(());
+                        return Ok(Ended::Closed);
                     }
                 }
             }
             out = rx.recv() => match out {
                 Some(WorldOut::Kicked(reason)) => {
-                    return kicked(sock, peer, gate, server, account, reason).await;
+                    return kicked(sock, peer, gate, server, account, reason).await.map(|()| Ended::Closed);
                 }
                 Some(msg) => {
                     // Where the console's `online` says the character plays: the scene it enters,
@@ -196,7 +221,7 @@ pub(crate) async fn play(
                     let Some(bytes) = encode(server, pid, now, msg)? else { continue };
                     if !gate::send_or_replaced(sock, &bytes, deadline, replaced).await? {
                         tracing::info!(%peer, account = %account.username, "replaced by a newer login, or banned, while a write was blocked: closing");
-                        return Ok(());
+                        return Ok(Ended::Closed);
                     }
                 }
                 None => {
@@ -207,14 +232,14 @@ pub(crate) async fn play(
                     // (Ruling R9), which takes nothing more before it lets go of its channels.
                     tracing::info!(%peer, account = %account.username, "the world let go: closing");
                     if *gate.stopping.borrow() || gate.world.is_closed() {
-                        return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
+                        return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await.map(|()| Ended::Closed);
                     }
-                    return Ok(());
+                    return Ok(Ended::Closed);
                 }
             },
             // A newer login, or a ban: the world's own `Ban` may come too, and finds it gone.
             Ok(closing) = &mut *replaced => {
-                return gate::close_told(sock, peer, gate, server, account, closing).await;
+                return gate::close_told(sock, peer, gate, server, account, closing).await.map(|()| Ended::Closed);
             }
             () = &mut unreleased => {
                 // The select! is unbiased: after a write held past `let_go`, the world's Kicked
@@ -224,23 +249,23 @@ pub(crate) async fn play(
                 loop {
                     match rx.try_recv() {
                         Ok(WorldOut::Kicked(reason)) => {
-                            return kicked(sock, peer, gate, server, account, reason).await;
+                            return kicked(sock, peer, gate, server, account, reason).await.map(|()| Ended::Closed);
                         }
                         Ok(_) => {}
                         Err(TryRecvError::Disconnected) => {
                             tracing::info!(%peer, account = %account.username, "the world let go: closing");
-                            return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
+                            return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await.map(|()| Ended::Closed);
                         }
                         Err(TryRecvError::Empty) => break,
                     }
                 }
                 tracing::warn!(%peer, account = %account.username, "the server is stopping, and the world hasn't let go: closing");
-                return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
+                return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await.map(|()| Ended::Closed);
             }
             checked = &mut checks.0, if checking => match checked {
                 Ok(()) => {
                     tracing::info!(%peer, account = %account.username, "the account was deleted: closing");
-                    return gate::close_with(sock, peer, gate, server, gate::AUTH_FAILED).await;
+                    return gate::close_with(sock, peer, gate, server, gate::AUTH_FAILED).await.map(|()| Ended::Closed);
                 }
                 Err(e) => {
                     checking = false;
@@ -330,6 +355,9 @@ enum Step {
     Script(Vec<u8>),
     /// End the session, for this reason (logged).
     End(&'static str),
+    /// Back to character select (type 4): answer 330, and give the connection back to the lobby
+    /// (world.md 1.5; #282).
+    Lobby,
     /// The client is quitting (392): end the session, closing with the client's own reason,
     /// `client-exit`, on which it quits. Without it, the client took the close for a lost
     /// connection: its login screen, then an error (world.md 10.1; #382).
@@ -366,8 +394,8 @@ fn on_message(gate: &Gate, conn: ConnId, ty: u8, body: &[u8]) -> Step {
             }
             Err(_) => Step::End("a type-3 body that doesn't fit its layout"),
         },
-        // "Back to character select" waits for 330, which slice 1 doesn't send (world.md 1.5).
-        Cts::ClientLeave => Step::End("back to character select (type 4)"),
+        // "Back to character select" sends type 4 with sends off, and waits for 330 (world.md 1.5).
+        Cts::ClientLeave => Step::Lobby,
         // A pull of an announced player, or the sync filter's value for an actor (world.md
         // 14.3, 14.12). Only a pull goes to the world, which answers it only for a pid it
         // announced and hasn't sent (14.13); M4 has no combat or threat for the filter's values.

@@ -300,17 +300,13 @@ async fn a_short_client_enter_closes() {
 async fn exit_and_leave_end_the_session() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
-    // 392 as 0xFF (`send_gateway`, as `RequestQuitGame` sends it in the world), as 0, and type 4
-    // (world.md 1.3, 1.5): each ends the session, and the world lets the player go. 392 closes with
-    // `client-exit`, which makes the client quit (world.md 10.1): closed without a reason, it took
-    // the player to its login screen and an error (#382). Type 4 waits for 330 (#282).
+    // 392 as 0xFF (`send_gateway`, as `RequestQuitGame` sends it in the world) and as 0 (world.md
+    // 1.3): each ends the session, and the world lets the player go. 392 closes with `client-exit`,
+    // which makes the client quit (world.md 10.1): closed without a reason, it took the player to
+    // its login screen and an error (#382). Type 4 goes back to the lobby (#282; its own test).
     let exit = fenji_proto::packet::script_body(lobby::CLIENT_EXIT, &[]).unwrap();
-    let ways = [
-        ("aaa", "Lin", 0xFF, exit.clone(), Some(CLIENT_EXIT)),
-        ("bbb", "Mai", 0, exit, Some(CLIENT_EXIT)),
-        ("ccc", "Kai", Cts::ClientLeave.to_u8(), Vec::new(), None),
-    ];
-    for (name, character, ty, body, reason) in ways {
+    let ways = [("aaa", "Lin", 0xFF, exit.clone()), ("bbb", "Mai", 0, exit)];
+    for (name, character, ty, body) in ways {
         let (mut bot, pid) = in_lobby(&s, name, character).await;
         select(&mut bot, pid).await;
         enter(&mut bot, pid).await;
@@ -327,15 +323,84 @@ async fn exit_and_leave_end_the_session() {
         // The idle timeout is 60 s and the bot's reads give up after 5 s, so an end within 2 s
         // is the server closing.
         let end = tokio::time::timeout(Duration::from_secs(2), bot.next()).await;
-        match reason {
-            Some(reason) => assert!(
-                matches!(&end, Ok(Some(fenji_proto::client::ClientEvent::Closed(r))) if r == reason.as_bytes()),
-                "{name}: {end:?}"
-            ),
-            None => assert!(matches!(end, Ok(None)), "{name}: {end:?}"),
-        }
+        assert!(
+            matches!(&end, Ok(Some(fenji_proto::client::ClientEvent::Closed(r))) if r == CLIENT_EXIT.as_bytes()),
+            "{name}: {end:?}"
+        );
         saved_at(store, name, pid, START_PLACE).await;
     }
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_second_select_sent_with_the_first_is_never_handled_after_the_world() {
+    // #388's review: messages that came in the same read as the 10 waited, while the client was in
+    // the world, and the lobby handled them once it came back. A second 10 then entered the world
+    // again, unasked, under a client on its select screen. They came while the client waited for
+    // 772: the lobby drops them.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    let ten = fenji_proto::packet::script_body(lobby::SELECT_ACTOR, &[Value::Int(pid)]).unwrap();
+    assert!(bot.send_many(0xFF, &ten, 2, Duration::from_secs(5)).await);
+    let m = bot.recv_message().await;
+    let mut v = pickle::decode(&m.body).unwrap();
+    assert_eq!(v.remove(0), Value::Int(world::LOAD_SCENE));
+    enter(&mut bot, pid).await;
+    bot.send_native(Cts::ClientLeave.to_u8(), &[]).await;
+    assert_eq!(bot.recv().await, (world::ACTOR_LOGOUT, Vec::new()));
+    bot.quiet(1_000).await;
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn quitting_in_the_same_read_as_back_to_select_still_quits() {
+    // #388's review: the link returned to the lobby in the middle of a read, dropping what came
+    // after type 4 in it. Sends are off then, but a time sync or a gateway message may follow
+    // (world.md 1.3), and a 392 there was lost: the client waited for a close that never came.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    select(&mut bot, pid).await;
+    enter(&mut bot, pid).await;
+    let exit = fenji_proto::packet::script_body(lobby::CLIENT_EXIT, &[]).unwrap();
+    bot.send_together(&[(Cts::ClientLeave.to_u8(), Vec::new()), (0xFF, exit)])
+        .await;
+    assert_eq!(bot.recv().await, (world::ACTOR_LOGOUT, Vec::new()));
+    assert_eq!(bot.expect_closed().await, CLIENT_EXIT.as_bytes());
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn back_to_character_select_returns_to_the_lobby_on_the_same_connection() {
+    // #282: type 4 (`SCENE.RequestLogout`, sent with sends off) waits for 330
+    // (`PROTOS2C_ACTOR_LOGOUT`), whose handler turns sends back on and takes the client to its
+    // select screen on the same connection (world.md 1.5). The link closed instead, so the player
+    // saw the maintenance text and had to start the game again.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut bot, pid) = in_lobby(&s, "tester", "Lin").await;
+    select(&mut bot, pid).await;
+    enter(&mut bot, pid).await;
+    let accounts = s.accounts();
+    let store = accounts.store();
+    let older = Place {
+        x: 1.0,
+        ..START_PLACE
+    };
+    assert!(store.save_place(pid, &older).await.unwrap());
+    bot.send_native(Cts::ClientLeave.to_u8(), &[]).await;
+    assert_eq!(bot.recv().await, (world::ACTOR_LOGOUT, Vec::new()));
+    // The world lets the character go and saves where it stood, and the console's `online` lists
+    // the account in the lobby.
+    saved_at(store, "tester", pid, START_PLACE).await;
+    let online = s.console().run_line("online").await;
+    let row: Vec<&str> = online.lines[1].split_whitespace().collect();
+    assert_eq!(&row[..3], ["tester", "lobby", "-"], "{online:?}");
+    // The connection is the lobby's again: the character is chosen once more, and the world takes
+    // it back in, where it stood.
+    assert_eq!(select(&mut bot, pid).await, load_scene(pid, 7, START));
+    enter(&mut bot, pid).await;
     s.shutdown().await.unwrap();
 }
 
@@ -745,8 +810,11 @@ async fn the_place_after_moving_is_where_the_next_session_starts() {
         bot.send_native(Cts::MoveDir.to_u8(), &body).await;
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
+    // Back to character select (#282): 330, with the connection kept for the lobby, which this
+    // test then leaves.
     bot.send_native(Cts::ClientLeave.to_u8(), &[]).await;
-    assert!(bot.next_is_end().await);
+    assert_eq!(bot.recv().await, (world::ACTOR_LOGOUT, Vec::new()));
+    drop(bot);
     let moved = Place {
         scene: 7,
         x: 150.0,
