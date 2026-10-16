@@ -281,6 +281,14 @@ impl LogLayer {
             hub: sinks.contains(&Sink::Hub).then(|| hub.clone()),
         })
     }
+
+    /// The stderr it writes to, if that's one of its sinks.
+    fn stderr(&self) -> Option<&Stderr> {
+        self.writers.iter().find_map(|writer| match writer {
+            Writer::Stderr(stderr) => Some(stderr),
+            Writer::File(_) => None,
+        })
+    }
 }
 
 impl<S: Subscriber> Layer<S> for LogLayer {
@@ -294,16 +302,6 @@ impl<S: Subscriber> Layer<S> for LogLayer {
         if let Some(hub) = &self.hub {
             hub.publish(line);
         }
-    }
-}
-
-impl LogLayer {
-    /// The stderr it writes to, if that's one of its sinks.
-    fn stderr(&self) -> Option<&Stderr> {
-        self.writers.iter().find_map(|writer| match writer {
-            Writer::Stderr(stderr) => Some(stderr),
-            Writer::File(_) => None,
-        })
     }
 }
 

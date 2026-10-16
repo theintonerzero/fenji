@@ -14,7 +14,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// The lines that may wait for stderr.
-pub(crate) const QUEUE: usize = 1024;
+const QUEUE: usize = 1024;
 
 /// The log's stderr: a queue, and the thread that writes it out. Clones share both.
 #[derive(Debug, Clone)]
