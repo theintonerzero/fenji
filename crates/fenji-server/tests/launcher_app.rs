@@ -363,6 +363,7 @@ struct PlayBed {
     s: RunningServer,
     _c: TestClock,
     app: App,
+    cfg: AppConfig,
     code: InviteCode,
     client: PathBuf,
     record: PathBuf,
@@ -411,7 +412,7 @@ impl PlayBed {
             ("FENJI_TEST_SLEEP".into(), sleep.to_string().into()),
             ("FENJI_TEST_EXIT".into(), exit.to_string().into()),
         ]);
-        let app = App::start(cfg, tokio::runtime::Handle::current());
+        let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
         app.intent(Intent::ChooseFolder {
             path: client.display().to_string(),
         })
@@ -432,10 +433,16 @@ impl PlayBed {
             s,
             _c: c,
             app,
+            cfg,
             code,
             client,
             record,
         }
+    }
+
+    /// The launcher opened again on the same folders, as a player does after closing it.
+    fn reopened(&self) -> App {
+        App::start(self.cfg.clone(), tokio::runtime::Handle::current())
     }
 
     /// The invite link added and redeemed, as a new player does.
@@ -584,6 +591,32 @@ async fn one_game_at_a_time_and_play_refuses_in_words() {
     for bed in [t, w, m] {
         bed.s.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn a_game_a_closed_launcher_left_running_holds_play_in_the_next() {
+    // #348: one game at a time across a restart. Closing the launcher leaves the game running
+    // (spec L12), and the next launcher saw no game: a second Play started a second client on the
+    // same prefix, over the first's game.log.
+    let t = PlayBed::with_sleep(4).await;
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    let GameView::Running { since_ms } =
+        until(&t.app, |s| matches!(s.game, GameView::Running { .. }))
+            .await
+            .game
+    else {
+        unreachable!()
+    };
+    let next = t.reopened();
+    assert_eq!(next.snapshot().game, GameView::Running { since_ms });
+    assert_eq!(
+        next.intent(Intent::Play).await.unwrap_err().to_string(),
+        "The game is already running."
+    );
+    // Once the game ends, the next launcher plays again.
+    until(&next, |s| matches!(s.game, GameView::Idle)).await;
+    t.s.shutdown().await.unwrap();
 }
 
 #[tokio::test]

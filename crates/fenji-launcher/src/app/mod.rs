@@ -150,6 +150,8 @@ impl App {
     /// `rt`.
     pub fn start(cfg: AppConfig, rt: tokio::runtime::Handle) -> App {
         let (settings, problem) = Settings::load_or_reset(&cfg.config_dir);
+        // A game an earlier launcher started may still run (#348).
+        let left = play::GameMark::left_running(&cfg.data_dir);
         let state = State {
             update: UpdateView {
                 current: cfg.version.clone(),
@@ -168,7 +170,11 @@ impl App {
             tab: Tab::Play,
             need_sign_in: false,
             client: client::Client::default(),
-            game: GameView::Idle,
+            game: left
+                .as_ref()
+                .map_or(GameView::Idle, |mark| GameView::Running {
+                    since_ms: mark.since_ms,
+                }),
             pending_invite: None,
             key_change: None,
             notice: problem.map(|text| Notice { text, error: true }),
@@ -185,6 +191,9 @@ impl App {
         };
         app.inner.rt.spawn(servers::run(Arc::downgrade(&app.inner)));
         app.check_at_start();
+        if let Some(mark) = left {
+            app.follow_left_game(mark);
+        }
         app
     }
 

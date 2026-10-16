@@ -177,7 +177,15 @@ impl App {
         drop(cmd);
         let mut child = spawned.map_err(|e| words::couldnt_launch(&e.to_string()))?;
         let started = Instant::now();
-        self.change(|st| st.game = GameView::Running { since_ms: now_ms() });
+        let since_ms = now_ms();
+        // Kept for the next launcher while the game runs, should this one close (#348).
+        let mark = child.id().and_then(|pid| GameMark::of(pid, since_ms));
+        if let Some(mark) = &mark
+            && let Err(e) = mark.write(&cfg.data_dir)
+        {
+            warn!(error = %e, "couldn't note the running game for the next launcher");
+        }
+        self.change(|st| st.game = GameView::Running { since_ms });
         info!(server = id, "the game is running");
         let code = match child.wait().await {
             Ok(status) => i32::from(start::exit_byte(status)),
@@ -187,6 +195,9 @@ impl App {
             }
         };
         info!(code, "the game ended");
+        if mark.is_some() {
+            GameMark::forget(&cfg.data_dir);
+        }
         let notice = end_notice(code, started.elapsed());
         self.change(|st| {
             st.game = GameView::Ended { code };
@@ -290,6 +301,108 @@ impl State {
     }
 }
 
+impl App {
+    /// Follows a game an earlier launcher started and left running (#348) until it ends, then lets
+    /// Play go again. Its end code can't be had, as it isn't this launcher's child.
+    pub(super) fn follow_left_game(&self, mark: GameMark) {
+        let app = self.clone();
+        self.inner.rt.spawn(async move {
+            while mark.alive() {
+                tokio::time::sleep(LEFT_GAME_POLL).await;
+            }
+            GameMark::forget(&app.inner.cfg.data_dir);
+            info!("the game an earlier launcher started has ended");
+            app.change(|st| {
+                if st.game
+                    == (GameView::Running {
+                        since_ms: mark.since_ms,
+                    })
+                {
+                    st.game = GameView::Idle;
+                }
+            });
+        });
+    }
+}
+
+/// How often a launcher looks whether a game an earlier one left running has ended.
+const LEFT_GAME_POLL: Duration = Duration::from_secs(1);
+
+/// The game a launcher started, kept in `<data dir>/game.pid` while it runs, so that the next
+/// launcher knows (spec L12: one game at a time, across a restart too; #348). It names umu-run's
+/// process, which lasts as long as the game: its pid, its start time in clock ticks since boot,
+/// which tells it from a later process given the same pid, and when the game started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GameMark {
+    pid: u32,
+    start: u64,
+    pub(super) since_ms: i64,
+}
+
+impl GameMark {
+    const FILE: &'static str = "game.pid";
+
+    /// The mark for process `pid`, if it's there to be marked.
+    fn of(pid: u32, since_ms: i64) -> Option<GameMark> {
+        Some(GameMark {
+            pid,
+            start: process_start(pid)?,
+            since_ms,
+        })
+    }
+
+    /// The mark an earlier launcher left whose game still runs, if any. A mark whose game has
+    /// ended, or that doesn't read, is removed.
+    pub(super) fn left_running(data_dir: &Path) -> Option<GameMark> {
+        let text = std::fs::read_to_string(data_dir.join(Self::FILE)).ok()?;
+        let mark = Self::parse(&text).filter(GameMark::alive);
+        if mark.is_none() {
+            Self::forget(data_dir);
+        }
+        mark
+    }
+
+    fn parse(text: &str) -> Option<GameMark> {
+        let mut words = text.split_whitespace();
+        let mark = GameMark {
+            pid: words.next()?.parse().ok()?,
+            start: words.next()?.parse().ok()?,
+            since_ms: words.next()?.parse().ok()?,
+        };
+        words.next().is_none().then_some(mark)
+    }
+
+    /// Whether the marked process is still the same one, alive.
+    fn alive(&self) -> bool {
+        process_start(self.pid) == Some(self.start)
+    }
+
+    /// Writes the mark whole, through a temporary name, so that a reader never sees half of one.
+    fn write(&self, data_dir: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(data_dir)?;
+        let part = data_dir.join(format!("{}.part", Self::FILE));
+        std::fs::write(
+            &part,
+            format!("{} {} {}\n", self.pid, self.start, self.since_ms),
+        )?;
+        std::fs::rename(part, data_dir.join(Self::FILE))
+    }
+
+    fn forget(data_dir: &Path) {
+        let _ = std::fs::remove_file(data_dir.join(Self::FILE));
+    }
+}
+
+/// When process `pid` started, in clock ticks since boot (`/proc/<pid>/stat`'s 22nd field); none
+/// if there's no such process, or no `/proc` (Play is Linux-only, spec L2).
+fn process_start(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command's name comes in parentheses and may hold spaces or parentheses: the fields
+    // after it start at the last ')', with the state, the third field.
+    let after = stat.get(stat.rfind(')')? + 2..)?;
+    after.split(' ').nth(22 - 3)?.parse().ok()
+}
+
 /// Whether a game is starting or running (spec L12: one at a time).
 fn playing(st: &State) -> bool {
     matches!(
@@ -340,6 +453,47 @@ mod tests {
         let soon = Duration::from_millis(190);
         assert_eq!(end_notice(0, soon).as_deref(), Some(words::ENDED_AT_ONCE));
         assert_eq!(end_notice(3, soon), Some(words::couldnt_start(3)));
+    }
+
+    #[test]
+    fn a_mark_reads_three_numbers_and_nothing_else() {
+        let mark = GameMark::parse("4242 987654 1792128679626\n").unwrap();
+        assert_eq!(
+            (mark.pid, mark.start, mark.since_ms),
+            (4242, 987654, 1792128679626)
+        );
+        for bad in [
+            "",
+            "4242 987654",
+            "4242 987654 1 2",
+            "x 987654 1",
+            "4242 -1 1",
+        ] {
+            assert_eq!(GameMark::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_mark_whose_game_has_ended_is_forgotten_and_a_live_one_is_kept() {
+        // #348: a pid the system gave to another process since doesn't hold Play.
+        let dir = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        let start = process_start(me).expect("this process has a start time");
+        let stale = GameMark {
+            pid: me,
+            start: start + 1,
+            since_ms: 1,
+        };
+        stale.write(dir.path()).unwrap();
+        assert_eq!(GameMark::left_running(dir.path()), None);
+        assert!(
+            !dir.path().join(GameMark::FILE).exists(),
+            "a stale mark stays"
+        );
+        let live = GameMark::of(me, 2).unwrap();
+        live.write(dir.path()).unwrap();
+        assert_eq!(GameMark::left_running(dir.path()), Some(live));
+        assert_eq!(process_start(u32::MAX), None);
     }
 
     #[test]
