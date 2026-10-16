@@ -65,6 +65,12 @@ const FRAME_WAIT: Duration = Duration::from_secs(1);
 /// A panic on the thread that runs it ends it, the terminal given back first for the panic's
 /// message (Review Focus 2). One on another thread goes to `panics`, and the console runs on;
 /// without `panics`, or if it turns the panic away, that one ends the console too.
+///
+/// It must be polled on one thread from its first poll to its end, as `fenji-server` runs it, with
+/// `block_on` on a thread of its own: it marks that thread as the console's, which the panic hook
+/// asks, and gives the mark back as it ends. On a runtime that moves tasks between threads, its own
+/// panics on another thread would be logged rather than end it, and the wrong thread would keep the
+/// mark. Each poll checks, in a debug build (#359).
 pub async fn run_tui(
     session: Session,
     mode: Mode,
@@ -92,6 +98,10 @@ pub async fn run_tui(
     let mut last_id = 0;
     let mut leave = std::pin::pin!(leave);
     loop {
+        debug_assert!(
+            ConsoleHere::here(),
+            "run_tui was polled on a thread other than the one it began on"
+        );
         let Some(drawing) = Drawing::begin() else {
             // The panic hook gave the terminal back: drawing now would scribble on the shell.
             return Err(io::Error::other(
@@ -586,7 +596,8 @@ struct PanicHook {
 /// plan's final review B, Minor 6).
 pub type PanicLog = fn(&str) -> bool;
 
-/// This thread marked as the console's ([`CONSOLE_HERE`]) until dropped.
+/// This thread marked as the console's ([`CONSOLE_HERE`]) until dropped, which must be on the same
+/// thread: [`run_tui`] runs on one.
 struct ConsoleHere {
     was: bool,
 }
@@ -596,6 +607,12 @@ impl ConsoleHere {
         ConsoleHere {
             was: CONSOLE_HERE.replace(true),
         }
+    }
+
+    /// Whether this thread is marked as the console's: [`run_tui`]'s, as long as it's polled on
+    /// the thread it began on.
+    fn here() -> bool {
+        CONSOLE_HERE.with(Cell::get)
     }
 }
 
@@ -924,6 +941,21 @@ mod tests {
             "{logged}"
         );
         assert_eq!(seen[1], "the previous hook");
+    }
+
+    #[test]
+    fn the_console_is_on_the_thread_it_began_on_and_no_other() {
+        // Task 2's review, Minor 4 (#359): `run_tui` marks the thread it begins on as the
+        // console's, for the panic hook, so it must be polled there to its end; each poll checks.
+        let here = ConsoleHere::mark();
+        assert!(ConsoleHere::here());
+        let elsewhere = std::thread::spawn(ConsoleHere::here).join().unwrap();
+        assert!(!elsewhere, "another thread isn't the console's");
+        drop(here);
+        assert!(
+            !ConsoleHere::here(),
+            "nor this one, once the console has ended"
+        );
     }
 
     #[test]
