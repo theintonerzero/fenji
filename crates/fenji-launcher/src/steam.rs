@@ -3,7 +3,7 @@
 //! library holding `steamapps/appmanifest_1418100.acf` holds the game, under the manifest's
 //! `installdir`, at its `buildid`. They are read on this computer only. Fenji never writes into a
 //! Steam library: Steam looks after what's there.
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::settings::Os;
 
@@ -49,12 +49,18 @@ pub fn roots(os: Os, home: Option<&Path>, registry: Option<PathBuf>) -> Vec<Path
 pub fn find(roots: &[PathBuf]) -> Option<SteamCopy> {
     libraries(roots).into_iter().find_map(|library| {
         let apps = library.join("steamapps");
-        let text = std::fs::read_to_string(apps.join(format!("appmanifest_{APP}.acf"))).ok()?;
+        let text = read_small(&apps.join(format!("appmanifest_{APP}.acf")))?;
         let top = parse(&text)?;
         let state = object(&top, "AppState")?;
         let installdir = string(state, "installdir")?;
-        // A name, never a path: the manifest is a file anyone could have written.
-        if installdir.is_empty() || installdir.contains(['/', '\\']) || installdir == ".." {
+        // A name, never a path: the manifest is a file anyone could have written. One plain
+        // component: not ".", "..", a root or a drive (`C:` would replace the base on Windows).
+        let mut parts = Path::new(installdir).components();
+        let plain = matches!(
+            (parts.next(), parts.next()),
+            (Some(Component::Normal(_)), None)
+        );
+        if !plain || installdir.contains(['/', '\\']) {
             return None;
         }
         let folder = apps.join("common").join(installdir);
@@ -93,7 +99,10 @@ pub fn registry_path() -> Option<PathBuf> {
     {
         use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW: no console flashes up from the launcher's window.
-        let out = std::process::Command::new("reg")
+        // reg.exe by its full path: a bare "reg" is looked for in the launcher's own folder first.
+        let windows = std::env::var_os("SystemRoot")
+            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+        let out = std::process::Command::new(windows.join(r"System32\reg.exe"))
             .args(["query", r"HKCU\Software\Valve\Steam", "/v", "SteamPath"])
             .creation_flags(0x0800_0000)
             .output()
@@ -117,12 +126,26 @@ fn steam_path(answer: &str) -> Option<PathBuf> {
     })
 }
 
+/// Steam's own files are a few kilobytes. One larger than this is read as unreadable, never into
+/// memory whole: these are files on the player's disk that anything could have written.
+const MAX_FILE: u64 = 1 << 20;
+
+fn read_small(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_FILE + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= MAX_FILE).then_some(text)
+}
+
 /// The libraries `roots`' `libraryfolders.vdf` list, each root's own first, each once.
 fn libraries(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = Vec::new();
     for root in roots {
-        let listed = std::fs::read_to_string(root.join("steamapps/libraryfolders.vdf"))
-            .ok()
+        let listed = read_small(&root.join("steamapps/libraryfolders.vdf"))
             .and_then(|text| parse(&text))
             .and_then(|top| object(&top, "libraryfolders").map(listed))
             .unwrap_or_default();
@@ -335,7 +358,7 @@ mod tests {
         steam(&root, &[&root], Some((&root, "10015727")));
         // Where "../../elsewhere" would land, from steamapps/common.
         std::fs::create_dir_all(root.join("elsewhere")).unwrap();
-        for installdir in ["../../elsewhere", "..", "/etc", "a\\\\b", ""] {
+        for installdir in ["../../elsewhere", "..", ".", "/etc", "a\\\\b", ""] {
             std::fs::write(
                 root.join("steamapps/appmanifest_1418100.acf"),
                 format!("\"AppState\" {{ \"installdir\" \"{installdir}\" \"buildid\" \"1\" }}"),
@@ -343,6 +366,19 @@ mod tests {
             .unwrap();
             assert_eq!(find(std::slice::from_ref(&root)), None, "{installdir:?}");
         }
+    }
+
+    #[test]
+    fn a_file_too_large_for_steam_to_have_written_is_unreadable() {
+        // Steam's own files are a few kilobytes: a huge one is read as nothing, never whole.
+        let dir = tempfile::tempdir().unwrap();
+        let (root, games) = (dir.path().join("Steam"), dir.path().join("Games"));
+        steam(&root, &[&root, &games], Some((&games, "10015727")));
+        let vdf = root.join("steamapps/libraryfolders.vdf");
+        let mut text = std::fs::read_to_string(&vdf).unwrap();
+        text.push_str(&" ".repeat(2 << 20));
+        std::fs::write(&vdf, text).unwrap();
+        assert_eq!(find(std::slice::from_ref(&root)), None);
     }
 
     #[test]
