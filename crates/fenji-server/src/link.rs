@@ -197,8 +197,12 @@ pub(crate) async fn play(
                 }
                 None => {
                     // A full channel, which the world drops without a word (its SlowReader kick
-                    // didn't fit either), or the world has stopped.
+                    // didn't fit either), or the world has stopped. Once the server is stopping,
+                    // the client hears why, as when the link drains the channel after `let_go`.
                     tracing::info!(%peer, account = %account.username, "the world let go: closing");
+                    if *gate.stopping.borrow() {
+                        return gate::close_with(sock, peer, gate, server, gate::SERVER_STOPPING).await;
+                    }
                     return Ok(());
                 }
             },
@@ -1394,6 +1398,51 @@ mod tests {
         assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
         drop(ours);
         assert_eq!(rest(&mut theirs, &mut client).await, []);
+    }
+
+    #[tokio::test]
+    async fn the_world_letting_go_of_a_stopping_server_closes_with_the_reason() {
+        // #378: the world drops a channel without a Kicked when the Kicked doesn't fit, as at a
+        // shutdown that finds a slow reader's channel full, or when it has stopped. Once the server
+        // is stopping, the client hears the shutdown's reason (world.md 10.3), as after `let_go`,
+        // which is far off here: the close comes from the channel's end.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gate, mut inbox) = gate(dir.path()).await;
+        gate.limits.let_go = Duration::from_secs(60);
+        let (mut ours, peer, mut server, mut theirs, mut client) = session().await;
+        let (_newer, mut replaced) = oneshot::channel();
+        let tester = account("tester");
+        let played = play(
+            &mut ours,
+            peer,
+            &gate,
+            &mut server,
+            &tester,
+            1,
+            lin(None),
+            &mut replaced,
+        );
+        let world = async {
+            let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                panic!("a join first")
+            };
+            gate.stopping.send_replace(true);
+            drop(out);
+        };
+        let (ended, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(played, world)
+        })
+        .await
+        .expect("within 5 s, long before `let_go`");
+        ended.unwrap();
+        assert!(matches!(told(&mut inbox).await, WorldIn::Leave { conn: 1 }));
+        drop(ours);
+        assert_eq!(
+            rest(&mut theirs, &mut client).await,
+            [ClientEvent::Closed(
+                gate::SERVER_STOPPING.as_bytes().to_vec()
+            )]
+        );
     }
 
     #[tokio::test]
