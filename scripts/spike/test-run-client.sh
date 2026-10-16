@@ -824,11 +824,14 @@ if [ "$(sort <<< "$got")" = "$(sort <<< "$want")" ] && [ "$first_two" = "$want_f
 else
   bad "inputs: $got"
 fi
-# Client 1 holds w for 3 s from 1 s; client 2's Return at 3 s goes when it is due, not after the hold.
+# Client 1 holds w for 3 s from 1 s; client 2's Return at 3 s goes when it is due, not after the hold,
+# which would put it 3 s or more after the hold's start. The schedulers count whole seconds, so a
+# Return due 2 s after the hold goes 1 to 2 s after it: 1 s when a second's boundary falls between
+# the hold and the Return's own check (#244).
 hold_at=$(awk '/ press --display :99 --key=w --hold=3000$/ { print $1 }' "$F/log/two/inputs")
 return_at=$(awk '/ press --display :98 --key=Return$/ { print $1 }' "$F/log/two/inputs")
 if [ -n "$hold_at" ] && [ -n "$return_at" ] &&
-  python3 -I -c 'import sys; sys.exit(0 if 1.5 < float(sys.argv[2]) - float(sys.argv[1]) < 2.6 else 1)' "$hold_at" "$return_at"; then
+  python3 -I -c 'import sys; sys.exit(0 if 0.5 < float(sys.argv[2]) - float(sys.argv[1]) < 2.6 else 1)' "$hold_at" "$return_at"; then
   ok "a held key holds up no press after it"
 else
   bad "a held key and the press after it: hold at '$hold_at', Return at '$return_at'"
