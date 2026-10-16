@@ -649,7 +649,8 @@ pub(crate) async fn close_told<S: AsyncRead + AsyncWrite + Unpin>(
 /// Closes a connection that a newer login replaced, or that the world let go of with a reason. A
 /// replaced one no longer holds an online place, so it says why and lingers only within a waiting
 /// place, and for `time` at most: a client that stopped reading can't keep its socket outside the
-/// caps (#174). With no waiting place free it closes at once, without a reason.
+/// caps (#174). With no waiting place free it closes at once, without a reason, and says so at
+/// debug (#281).
 pub(crate) async fn close_replaced<S: AsyncRead + AsyncWrite + Unpin>(
     sock: &mut S,
     close: &[u8],
@@ -657,6 +658,7 @@ pub(crate) async fn close_replaced<S: AsyncRead + AsyncWrite + Unpin>(
     time: Duration,
 ) {
     let Some(_place) = place else {
+        tracing::debug!("no waiting place is free: closed without its reason");
         return;
     };
     if send(sock, close, time).await.is_ok() {
@@ -905,14 +907,30 @@ mod tests {
         assert!(places.take(ip).is_some(), "the waiting place is given back");
     }
 
-    #[tokio::test]
-    async fn with_no_waiting_place_free_a_replaced_connection_closes_without_a_reason() {
-        let (mut sock, mut client) = tokio::io::duplex(1024);
-        close_replaced(&mut sock, b"why", None, Duration::from_secs(30)).await;
-        drop(sock);
-        let mut got = Vec::new();
-        client.read_to_end(&mut got).await.unwrap();
+    #[test]
+    fn with_no_waiting_place_free_a_replaced_connection_closes_without_a_reason() {
+        // The reason it drops is said at debug, for a host wondering why a client showed none
+        // (#281).
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (got, log) = crate::world::logged_at(tracing::Level::DEBUG, || {
+            rt.block_on(async {
+                let (mut sock, mut client) = tokio::io::duplex(1024);
+                close_replaced(&mut sock, b"why", None, Duration::from_secs(30)).await;
+                drop(sock);
+                let mut got = Vec::new();
+                client.read_to_end(&mut got).await.unwrap();
+                got
+            })
+        });
         assert!(got.is_empty());
+        assert!(
+            log.lines()
+                .any(|l| l.contains("DEBUG") && l.contains("closed without its reason")),
+            "{log}"
+        );
     }
 
     #[test]
