@@ -81,6 +81,21 @@ test("the row's PLAY waits for a verified copy and no check running, as Play's d
   }
 });
 
+test("a probe redraws the rows, and the control that had focus keeps it (#348)", () => {
+  const s = golden("servers");
+  const { root, screen } = mount(servers, s, undefined, "servers");
+  const name = root.querySelector<HTMLElement>('[data-server="2"] .server-name')!;
+  name.focus();
+  // The next probe brings a new ping: the rows are drawn again.
+  const next = golden("servers");
+  const second = next.servers[1]!;
+  second.pingMs = (second.pingMs ?? 0) + 7;
+  screen.update(next);
+  const now = document.activeElement as HTMLElement;
+  expect(now).not.toBe(name);
+  expect(now.matches('[data-server="2"] .server-name')).toBe(true);
+});
+
 test("the column has the selected server's facts, its source, and Remove with a confirmation", () => {
   const { root, sent } = mount(servers, golden("servers"), undefined, "servers");
   const column = root.querySelector("aside")!;

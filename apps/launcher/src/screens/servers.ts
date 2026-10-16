@@ -17,6 +17,30 @@ import { statusMark } from "../ui/status";
 import { serverLine, versionLine } from "../words";
 import { contextColumn, noticeSlot, refused, renew, type NoticeSlot } from "./parts";
 
+/**
+ * Where focus is in the rows, if it is: a server's name or its PLAY. The function it returns
+ * focuses the same control in rows drawn again, or the row's name if its PLAY has gone.
+ */
+function focusIn(list: HTMLElement): (() => void) | null {
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLElement) || !list.contains(focused)) {
+    return null;
+  }
+  const id = focused.closest("[data-server]")?.getAttribute("data-server");
+  if (id === null || id === undefined) {
+    return null;
+  }
+  const control = focused.classList.contains("btn-play") ? ".btn-play" : ".server-name";
+  return () => {
+    if (document.activeElement !== focused) {
+      const again =
+        list.querySelector<HTMLElement>(`[data-server="${id}"] ${control}`) ??
+        list.querySelector<HTMLElement>(`[data-server="${id}"] .server-name`);
+      again?.focus();
+    }
+  };
+}
+
 function row(v: ServerView, s: Snapshot, ctx: Ctx, now: number): HTMLElement {
   const selected = v.id === s.active;
   // In maintenance the host's message says when it's back (the Servers board), as on Play.
@@ -190,11 +214,14 @@ export function servers(root: HTMLElement, ctx: Ctx): Screen {
   return {
     update(s) {
       const now = Date.now();
+      // A probe draws the rows again every 15–30 s: the control that had focus keeps it (#348).
+      const focused = focusIn(list);
       renew(
         list,
         JSON.stringify([s.servers, s.active, s.lobby, s.platform.canPlay, s.game.kind, Math.floor(now / 60000)]),
         () => s.servers.map((v) => row(v, s, ctx, now)),
       );
+      focused?.();
       slot.update(s);
       const v = activeServer(s);
       side.show(
