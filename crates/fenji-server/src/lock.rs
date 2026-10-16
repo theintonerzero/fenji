@@ -73,10 +73,17 @@ pub(crate) fn open_lock_file(path: &Path) -> anyhow::Result<File> {
     Ok(file)
 }
 
-/// Why a server can't start on the data folder `data`.
+/// Why a server can't start on the data folder `data`, and what to do (the hosting plan's final
+/// review B, Minor 4).
 pub(crate) fn in_use(data: &Path) -> String {
+    let todo = if cfg!(unix) {
+        "it runs in another window, in tmux or as a service; attach to it with \
+         `fenji-server console`, or stop it first"
+    } else {
+        "it runs in another window; use that one, or stop it first"
+    };
     format!(
-        "a server is already using this data folder ({})",
+        "a server is already using this data folder ({}): {todo}",
         shown(data).display()
     )
 }
@@ -102,6 +109,14 @@ mod tests {
             format!("{e:#}").contains("a server is already using this data folder ("),
             "{e:#}"
         );
+        // And what to do (the hosting plan's final review B, Minor 4).
+        let todo = if cfg!(unix) {
+            "): it runs in another window, in tmux or as a service; attach to it with \
+             `fenji-server console`, or stop it first"
+        } else {
+            "): it runs in another window; use that one, or stop it first"
+        };
+        assert!(format!("{e:#}").ends_with(todo), "{e:#}");
         drop(held);
         let _again = take(&data).unwrap();
         assert!(data.join(NAME).is_file());

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use fenji_server::cli::{Cli, Command, admin};
 use fenji_server::clock::SystemClock;
-use fenji_server::config::{self, Config};
+use fenji_server::config;
 use fenji_server::console;
 use fenji_server::console::log::Sink;
 
@@ -53,13 +53,13 @@ async fn fenji_server() -> anyhow::Result<ExitCode> {
         // Attaches to the server that runs with this config (§3.5), which must be there; the
         // server's log is what it shows.
         Command::Console { run } => {
-            let cfg = Config::load(path)?;
+            let cfg = config::load_existing(given)?;
             console::attach::console(&cfg, run.as_deref(), cli.plain).await
         }
         cmd => {
             // The log goes to stderr, as systemd's journal keeps it.
             console::log::init(&[Sink::Stderr])?;
-            let cfg = Config::load(path)?;
+            let cfg = config::load_existing(given)?;
             let mut out = std::io::stdout().lock();
             admin(&cfg, &cmd, &mut out, &SystemClock).await?;
             Ok(ExitCode::SUCCESS)

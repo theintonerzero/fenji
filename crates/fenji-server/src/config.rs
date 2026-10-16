@@ -672,6 +672,25 @@ impl Loaded {
     }
 }
 
+/// The configuration the admin commands and `console` use: `path`, `--config`'s, or without it
+/// [`DEFAULT_PATH`], which must be there: they make no first run. Without `--config`, outside the
+/// server's folder, the error says how to find it (the hosting plan's final review B, Minor 4).
+pub fn load_existing(path: Option<&Path>) -> anyhow::Result<Config> {
+    if let Some(path) = path {
+        return Config::load(path);
+    }
+    let here = Path::new(DEFAULT_PATH);
+    if matches!(here.try_exists(), Ok(false)) {
+        let folder = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        bail!(
+            "can't read {DEFAULT_PATH}: there's none in this folder ({}); run fenji-server in the \
+             server's own folder, or give --config with its {DEFAULT_PATH}",
+            folder.display()
+        );
+    }
+    Config::load(here)
+}
+
 /// The configuration `run` serves with (M4 hosting spec §3.6, H9):
 /// - `path`, which must exist, so that a mistyped path under systemd never starts a server with a
 ///   fresh, empty database;

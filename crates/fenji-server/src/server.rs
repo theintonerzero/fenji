@@ -217,6 +217,19 @@ fn running_link(cfg: &Config, bases: &[(String, crate::invite::InviteBase)]) -> 
     })
 }
 
+/// Why the server can't listen on `addr`, and, for a port another program uses, what to do (the
+/// hosting plan's final review B, Minor 4).
+fn cant_listen(addr: SocketAddr, e: std::io::Error) -> anyhow::Error {
+    let todo = match e.kind() {
+        std::io::ErrorKind::AddrInUse => format!(
+            ": another program uses port {}; stop it, or give the server another port in fenji.toml",
+            addr.port()
+        ),
+        _ => String::new(),
+    };
+    anyhow::Error::new(e).context(format!("can't listen on {addr}{todo}"))
+}
+
 /// The account API's listener: plain, or TLS with the server's own key. Either keeps the open
 /// connections to their places and ends idle ones (Ruling HP9).
 enum ApiListener {
@@ -271,11 +284,11 @@ pub async fn start(
     tokio::task::spawn_blocking(fenji_auth::password::warm_dummy);
     let login = TcpListener::bind(cfg.server.login_bind)
         .await
-        .with_context(|| format!("can't listen on {}", cfg.server.login_bind))?;
+        .map_err(|e| cant_listen(cfg.server.login_bind, e))?;
     let login_addr = login.local_addr()?;
     let api = TcpListener::bind(cfg.server.api_bind)
         .await
-        .with_context(|| format!("can't listen on {}", cfg.server.api_bind))?;
+        .map_err(|e| cant_listen(cfg.server.api_bind, e))?;
     let api_addr = api.local_addr()?;
     let (conns, proxies) = (ConnLimits::default(), &cfg.server.trusted_proxies);
     let api = match &key {
@@ -846,6 +859,35 @@ mod tests {
         TcpStream::connect(server.login_addr).await.unwrap();
         TcpStream::connect(server.api_addr).await.unwrap();
         server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_port_in_use_says_what_to_do() {
+        // The hosting plan's final review B, Minor 4: "can't listen on …" said what was wrong, not
+        // what to do.
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = held.local_addr().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::parse(
+            &format!(
+                "[server]\nname = \"Fenji\"\nlogin_bind = \"{taken}\"\napi_bind = \"127.0.0.1:0\"\n"
+            ),
+            dir.path(),
+        )
+        .unwrap();
+        let clock = Arc::new(TestClock::at(NOW));
+        let e = match start(&cfg, clock, GateLimits::default()).await {
+            Ok(_) => panic!("it listened on a port in use"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            e.starts_with(&format!(
+                "can't listen on {taken}: another program uses port {}; stop it, or give the \
+                 server another port in fenji.toml",
+                taken.port()
+            )),
+            "{e}"
+        );
     }
 
     #[tokio::test]

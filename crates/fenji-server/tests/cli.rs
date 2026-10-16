@@ -405,11 +405,23 @@ fn run_with_a_config_path_that_is_missing_says_how_to_write_one_and_writes_nothi
 #[test]
 fn admin_commands_need_a_config_and_make_no_first_run() {
     let dir = tempfile::tempdir().unwrap();
-    for args in [&["invite", "list"][..], &["backup"]] {
+    for args in [
+        &["invite", "list"][..],
+        &["backup"],
+        &["console", "--run", "online"],
+    ] {
         let out = fenji_server_in(dir.path(), args);
         let said = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{args:?}: {said}");
         assert!(said.contains("fenji.toml"), "{args:?}: {said}");
+        // Run from outside the server's folder, it says how to find it (the hosting plan's final
+        // review B, Minor 4).
+        assert!(
+            said.contains(
+                "run fenji-server in the server's own folder, or give --config with its fenji.toml"
+            ),
+            "{args:?}: {said}"
+        );
         let left = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(left, 0, "{args:?}: nothing is written");
     }
