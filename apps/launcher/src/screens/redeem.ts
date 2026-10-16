@@ -31,7 +31,8 @@ export function redeem(root: HTMLElement, ctx: Ctx): Screen {
   const problem = formError();
   const create = button.primary("Create account");
   create.type = "submit";
-  const signInstead = button.link("I have an account", () => ctx.signIn(true));
+  let invitedTo: number | null = null;
+  const signInstead = button.link("I have an account", () => ctx.signIn(invitedTo));
   const submit = async (): Promise<void> => {
     const username = user.value.trim();
     const password = pass.value;
@@ -90,6 +91,7 @@ export function redeem(root: HTMLElement, ctx: Ctx): Screen {
   return {
     update(s) {
       const v = activeServer(s);
+      invitedTo = s.active;
       const name = v?.name ?? "the server";
       const key = JSON.stringify([name, v?.host ?? null]);
       if (key !== shownFor) {

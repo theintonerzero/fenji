@@ -62,5 +62,5 @@ test("a taken name shows under Username, and the rest under the form", async () 
 test("I have an account signs in there instead", () => {
   const { root, asked } = mount(redeem, golden("redeem"));
   press(root, "I have an account");
-  expect(asked.signIns).toEqual([true]);
+  expect(asked.signIns).toEqual([1]);
 });

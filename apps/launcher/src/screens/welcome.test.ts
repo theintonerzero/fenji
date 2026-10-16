@@ -44,7 +44,7 @@ test("I have an account asks for the address, then goes on to sign in", async ()
   submit(root, "moonward.example.net");
   await settle();
   expect(sent).toEqual([{ type: "addServer", text: "moonward.example.net" }]);
-  expect(asked.signIns).toEqual([true]);
+  expect(asked.signIns).toEqual(["added"]);
   press(root, "I have an invite");
   expect(root.querySelector("label")!.textContent).toBe("Invite link");
 });

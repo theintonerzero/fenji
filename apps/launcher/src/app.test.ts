@@ -128,3 +128,85 @@ test("a change while the view fetches its first snapshot isn't lost: it listens 
   });
   expect(root.querySelector(".state")!.textContent).toMatch(/^Maintenance/);
 });
+
+/** The servers golden with Jade Hall (2) active, and Play's sign-in waiting there. */
+function waitingOnJadeHall(): Snapshot {
+  const s = golden("servers");
+  s.active = 2;
+  s.needSignIn = true;
+  return s;
+}
+
+const title = (root: HTMLElement) => root.querySelector(".stage-body h1")!.textContent;
+
+test("Play's sign-in stays on its server: another seal leads to its stage, and the sign-in is cancelled", async () => {
+  const { root, sent, push } = await mounted(waitingOnJadeHall());
+  expect(title(root)).toBe("Sign in to Jade Hall");
+  root.querySelector<HTMLInputElement>('input[type="password"]')!.value = "a long password";
+  root.querySelector<HTMLButtonElement>('.rail button[data-server="1"]')!.click();
+  // The model still waits for the sign-in when the choice of Moonward comes back.
+  const moonward = waitingOnJadeHall();
+  moonward.active = 1;
+  push(moonward);
+  expect(title(root)).toBe("Moonward");
+  expect(root.querySelector('input[type="password"]')).toBeNull();
+  push(moonward);
+  expect(sent.filter((i) => i.type === "cancelSignIn")).toHaveLength(1);
+});
+
+test("an invite added while a sign-in shows opens Join for its own server", async () => {
+  const { root, push } = await mounted(golden("servers"));
+  control(root, "Account").click();
+  [...root.querySelectorAll<HTMLButtonElement>(".popover button")].find((b) => b.textContent === "Sign in")!.click();
+  const jade = golden("servers");
+  jade.active = 2;
+  push(jade);
+  expect(title(root)).toBe("Sign in to Jade Hall");
+  const invited = golden("servers");
+  invited.servers.push({ ...invited.servers[2]!, id: 4, name: "Stone Gate" });
+  invited.active = 4;
+  invited.pendingInvite = { serverId: 4, code: "K7QM-3XRD-VN2P-HT8B" };
+  push(invited);
+  expect(title(root)).toBe("Join Stone Gate");
+});
+
+test("cancelling Remove keeps the sign-in being typed", async () => {
+  const { root, push } = await mounted(golden("servers"));
+  control(root, "Account").click();
+  [...root.querySelectorAll<HTMLButtonElement>(".popover button")].find((b) => b.textContent === "Sign in")!.click();
+  const jade = golden("servers");
+  jade.active = 2;
+  push(jade);
+  root.querySelector<HTMLButtonElement>('.rail button[data-server="3"]')!.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+  );
+  [...root.querySelectorAll<HTMLButtonElement>(".dialog button")].find((b) => b.textContent === "Cancel")!.click();
+  expect(title(root)).toBe("Sign in to Jade Hall");
+});
+
+test.each([true, false])("Welcome's address goes on to sign in there, whichever comes first (snapshot first: %s)", async (snapshotFirst) => {
+  const root = document.createElement("div");
+  document.body.replaceChildren(root);
+  let push: (s: Snapshot) => void = () => {};
+  await mount(root, {
+    snapshot: async () => golden("welcome"),
+    onSnapshot: async (cb) => {
+      push = cb;
+      return () => {};
+    },
+    send: async (intent) => {
+      if (intent.type === "addServer" && snapshotFirst) {
+        push(golden("play-signed-out"));
+      }
+      return null;
+    },
+  });
+  [...root.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "I have an account")!.click();
+  root.querySelector<HTMLInputElement>("input")!.value = "moonward.example.net";
+  root.querySelector<HTMLFormElement>("form")!.requestSubmit();
+  await settle();
+  if (!snapshotFirst) {
+    push(golden("play-signed-out"));
+  }
+  expect(title(root)).toBe("Sign in to Moonward");
+});

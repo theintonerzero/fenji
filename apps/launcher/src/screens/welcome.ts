@@ -56,7 +56,7 @@ export function welcome(root: HTMLElement, ctx: Ctx): Screen {
     if (refusal === null) {
       // An invite shows Join by itself; an address goes on to sign in.
       if (asked === "address") {
-        ctx.signIn(true);
+        ctx.signIn("added");
       }
       return;
     }

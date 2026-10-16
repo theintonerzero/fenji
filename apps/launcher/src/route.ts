@@ -7,12 +7,16 @@ export type ScreenName = "welcome" | "redeem" | "signIn" | "stage";
 
 /** What the view holds over the model's snapshot. */
 export interface ViewState {
-  /** The player asked to sign in to the active server: from the Account popover, or with
-   * "I have an account" on Welcome or Join. */
-  signIn: boolean;
+  /**
+   * The server the player asked to sign in to, from the Account popover or with "I have an
+   * account" on Join or Welcome. `"added"` is the one Welcome is adding, until a snapshot names it.
+   */
+  signIn: number | "added" | null;
+  /** The server PLAY asked a sign-in for (the model's `needSignIn`), so it shows there and only there. */
+  playFor: number | null;
 }
 
-export const NO_VIEW: ViewState = { signIn: false };
+export const NO_VIEW: ViewState = { signIn: null, playFor: null };
 
 /** The server the stage shows, if there is one. */
 export function activeServer(s: Snapshot): ServerView | undefined {
@@ -21,20 +25,19 @@ export function activeServer(s: Snapshot): ServerView | undefined {
 
 /**
  * No server: welcome. The active server's invite waiting: create your account there. A sign-in
- * Play needs, or one the player asked for: sign in. Otherwise the stage. The invite waits on its own
+ * Play needs, or one the player asked for: sign in. Otherwise the stage. Each waits on its own
  * server only, so the rail's other seals still lead to their stages.
  */
 export function route(s: Snapshot, view: ViewState = NO_VIEW): ScreenName {
   if (s.servers.length === 0) {
     return "welcome";
   }
+  const asked = s.active !== null && view.signIn === s.active && activeServer(s)?.signedIn === false;
   if (s.pendingInvite !== null && s.pendingInvite.serverId === s.active) {
-    return view.signIn ? "signIn" : "redeem";
+    return asked ? "signIn" : "redeem";
   }
-  if (s.needSignIn || (view.signIn && activeServer(s)?.signedIn === false)) {
-    return "signIn";
-  }
-  return "stage";
+  const play = s.needSignIn && (view.playFor === null || view.playFor === s.active);
+  return play || asked ? "signIn" : "stage";
 }
 
 export type PlayVariant =

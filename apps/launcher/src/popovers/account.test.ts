@@ -18,7 +18,8 @@ test("who the player is on each server: Sign out on the active one, Sign in on t
   await settle();
   expect(asked.opened).toEqual([null]);
   expect(sent.at(-1)).toEqual({ type: "selectServer", id: 2 });
-  expect(asked.signIns).toEqual([true]);
+  // The sign-in is for Jade Hall, whenever the model makes it the active server.
+  expect(asked.signIns).toEqual([2]);
 });
 
 test("an invite waiting on a server offers its account", async () => {

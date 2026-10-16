@@ -13,7 +13,7 @@ export interface Asked {
   opened: (PopoverName | null)[];
   toggled: PopoverName[];
   selected: number[];
-  signIns: boolean[];
+  signIns: (number | "added" | null)[];
   adds: number;
   removes: ServerView[];
   dialogs: Dialog[];
@@ -30,7 +30,7 @@ export function recording(reply: (intent: Intent) => string | null = () => null)
     open: (which) => void asked.opened.push(which),
     toggle: (which) => void asked.toggled.push(which),
     select: (id) => void asked.selected.push(id),
-    signIn: (on) => void asked.signIns.push(on),
+    signIn: (server) => void asked.signIns.push(server),
     addServer: () => void (asked.adds += 1),
     removeServer: (v) => void asked.removes.push(v),
     show: (make) => {

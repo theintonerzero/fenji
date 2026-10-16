@@ -31,8 +31,8 @@ export interface Ctx {
   toggle(which: PopoverName): void;
   /** Chooses a server in the rail. */
   select(id: number): void;
-  /** Shows sign in for the active server, or takes it away (ViewState.signIn). */
-  signIn(on: boolean): void;
+  /** Shows sign in for a server, or takes it away (ViewState.signIn). */
+  signIn(server: number | "added" | null): void;
   /** The Add a server dialog. */
   addServer(): void;
   /** Remove's confirmation for a server. */
@@ -104,7 +104,9 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
     snapshot = await ipc.snapshot();
   }
 
-  const view: ViewState = { signIn: false };
+  const view: ViewState = { signIn: null, playFor: null };
+  // Play's sign-in was cancelled for the server the player left (see render).
+  let cancelledFor: number | null = null;
   let open: { name: PopoverName; content: PopoverContent; shown: Popover } | null = null;
   let shownDialog: Dialog | null = null;
   let adding = false;
@@ -114,12 +116,13 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
     open: (which) => setPopover(which),
     toggle: (which) => setPopover(open?.name === which ? null : which),
     select(id) {
-      view.signIn = false;
+      view.signIn = null;
       void ipc.send({ type: "selectServer", id });
       render();
     },
-    signIn(on) {
-      view.signIn = on;
+    signIn(server) {
+      // Welcome's server is known once a snapshot names it, which may already have come.
+      view.signIn = server === "added" && snapshot.active !== null ? snapshot.active : server;
       render();
     },
     addServer() {
@@ -132,12 +135,7 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
       );
     },
     removeServer(v) {
-      ctx.show((done) =>
-        removeDialog(ctx, v, () => {
-          view.signIn = false;
-          done();
-        }),
-      );
+      ctx.show((done) => removeDialog(ctx, v, done));
     },
     show(make) {
       setPopover(null);
@@ -161,7 +159,7 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
   const toastSlot = h("div", { class: "toast-slot" });
   const stageEl = h("div", { class: "stage" }, top.el, body, layer, toastSlot);
   root.replaceChildren(h("div", { class: "window" }, railPart.el, stageEl));
-  let current: { name: ScreenName; screen: Screen } | null = null;
+  let current: { name: ScreenName; server: number | null; screen: Screen } | null = null;
   let keyShown: { key: string; el: HTMLElement & { close(): void } } | null = null;
   let toastKey = "";
 
@@ -186,15 +184,42 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
     }
   }
 
+  /** Ties the view's sign-ins to their servers: Welcome's, once it's named; one for a server that's
+   * gone, dropped; and Play's, to the server PLAY was pressed on. Leaving that server cancels it, so
+   * a password typed for one host never goes to another, and no game starts unasked. */
+  function bindSignIns(): void {
+    if (view.signIn === "added" && snapshot.active !== null) {
+      view.signIn = snapshot.active;
+    }
+    if (typeof view.signIn === "number" && !snapshot.servers.some((v) => v.id === view.signIn)) {
+      view.signIn = null;
+    }
+    if (!snapshot.needSignIn) {
+      view.playFor = null;
+      cancelledFor = null;
+      return;
+    }
+    if (view.playFor === null) {
+      view.playFor = snapshot.active;
+    } else if (snapshot.active !== view.playFor && cancelledFor !== view.playFor) {
+      cancelledFor = view.playFor;
+      void ipc.send({ type: "cancelSignIn" });
+    }
+  }
+
   function render(): void {
+    bindSignIns();
     const name = route(snapshot, view);
     stageEl.dataset.ground = groundFor(snapshot, name);
     railPart.update(snapshot, adding);
-    if (current?.name !== name) {
+    // A task screen is drawn for one server: another server's gets a fresh form, never the
+    // username and password typed for the first.
+    const forServer = name === "stage" ? null : snapshot.active;
+    if (current?.name !== name || current.server !== forServer) {
       current?.screen.destroy();
       body.replaceChildren();
       body.dataset.screen = name;
-      current = { name, screen: screens[name](body, ctx) };
+      current = { name, server: forServer, screen: screens[name](body, ctx) };
     }
     current.screen.update(snapshot);
     // A popover whose control the screen no longer shows goes with it.

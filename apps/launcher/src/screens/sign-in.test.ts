@@ -19,7 +19,7 @@ test("the server's account, not Steam; remember defaults to true, and Sign in se
   fill(root);
   expect(sent).toEqual([{ type: "signIn", username: "lin_yue", password: "a long password", remember: true }]);
   await settle();
-  expect(asked.signIns).toEqual([false]);
+  expect(asked.signIns).toEqual([null]);
 });
 
 test("the username the server remembers is filled in", () => {
@@ -31,11 +31,11 @@ test("Cancel cancels the sign-in Play waits for, and goes back", () => {
   const { root, sent, asked } = mount(signIn, golden("sign-in"));
   press(root, "Cancel");
   expect(sent).toEqual([{ type: "cancelSignIn" }]);
-  expect(asked.signIns).toEqual([false]);
+  expect(asked.signIns).toEqual([null]);
   const asking = mount(signIn, golden("play-signed-out"));
   press(asking.root, "Cancel");
   expect(asking.sent).toEqual([]);
-  expect(asking.asked.signIns).toEqual([false]);
+  expect(asking.asked.signIns).toEqual([null]);
 });
 
 test("a refusal shows under the form", async () => {

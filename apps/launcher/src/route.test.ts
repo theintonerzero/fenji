@@ -16,13 +16,21 @@ test.each([
   expect(route(golden(file))).toBe(screen);
 });
 
-test("a sign-in the player asked for shows on a server they're signed out of, and only there", () => {
-  expect(route(golden("play-signed-out"), { signIn: true })).toBe("signIn");
-  expect(route(golden("play-ready"), { signIn: true })).toBe("stage");
+test("a sign-in the player asked for shows on that server, while they're signed out of it", () => {
+  expect(route(golden("play-signed-out"), { signIn: 1, playFor: null })).toBe("signIn");
+  expect(route(golden("play-ready"), { signIn: 1, playFor: null })).toBe("stage");
+  expect(route(golden("play-signed-out"), { signIn: 2, playFor: null })).toBe("stage");
+  expect(route(golden("play-signed-out"), { signIn: "added", playFor: null })).toBe("stage");
+});
+
+test("Play's sign-in shows on the server PLAY was pressed on, and only there", () => {
+  const s = golden("sign-in");
+  expect(route(s, { signIn: null, playFor: 1 })).toBe("signIn");
+  expect(route(s, { signIn: null, playFor: 2 })).toBe("stage");
 });
 
 test("the invite waits on its own server: I have an account signs in there, and other seals lead to their stages", () => {
-  expect(route(golden("redeem"), { signIn: true })).toBe("signIn");
+  expect(route(golden("redeem"), { signIn: 1, playFor: null })).toBe("signIn");
   const elsewhere = golden("servers");
   elsewhere.pendingInvite = { serverId: 2, code: "K7QM-3XRD-VN2P-HT8B" };
   expect(route(elsewhere)).toBe("stage");

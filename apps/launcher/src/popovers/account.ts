@@ -14,12 +14,12 @@ function invited(v: ServerView, s: Snapshot): boolean {
 export function accountPopover(ctx: Ctx): PopoverContent {
   const content = h("div", { class: "sections" });
   /** Goes to `v` and its sign-in, or its invite. */
-  const go = async (v: ServerView, signIn: boolean): Promise<void> => {
+  const go = (v: ServerView, signIn: boolean): void => {
     ctx.open(null);
-    await ctx.send({ type: "selectServer", id: v.id });
     if (signIn) {
-      ctx.signIn(true);
+      ctx.signIn(v.id);
     }
+    void ctx.send({ type: "selectServer", id: v.id });
   };
   return {
     title: "Account",
@@ -39,8 +39,8 @@ export function accountPopover(ctx: Ctx): PopoverContent {
             v.signedIn
               ? h("p", { class: "line" }, "Signed in as ", h("span", { class: "gold" }, v.username ?? ""))
               : invited(v, s)
-                ? h("p", { class: "line" }, "Invited · ", button.link("Create account", () => void go(v, false)))
-                : h("p", { class: "line" }, "Not signed in · ", button.link("Sign in", () => void go(v, true))),
+                ? h("p", { class: "line" }, "Invited · ", button.link("Create account", () => go(v, false)))
+                : h("p", { class: "line" }, "Not signed in · ", button.link("Sign in", () => go(v, true))),
             v.signedIn && v.id === s.active
               ? h("div", { class: "acts" }, button.secondary("Sign out", () => void ctx.send({ type: "signOut" }), true))
               : null,

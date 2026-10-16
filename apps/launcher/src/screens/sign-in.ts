@@ -28,7 +28,7 @@ export function signIn(root: HTMLElement, ctx: Ctx): Screen {
     if (last?.needSignIn) {
       void ctx.send({ type: "cancelSignIn" });
     }
-    ctx.signIn(false);
+    ctx.signIn(null);
   });
   const submit = async (): Promise<void> => {
     const username = user.value.trim();
@@ -48,7 +48,7 @@ export function signIn(root: HTMLElement, ctx: Ctx): Screen {
     go.disabled = false;
     if (refusal === null) {
       pass.value = "";
-      ctx.signIn(false);
+      ctx.signIn(null);
     } else {
       refused(ctx, slot, refusal, (words) => problem.set(words));
     }
