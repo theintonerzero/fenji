@@ -1029,7 +1029,7 @@ def baseline_rules(base):
     info = base.get("service_info", {})
     return LogRules(base["services"], {n: i["image"] for n, i in info.items()},
                     {n for n, i in info.items() if is_driver_service(i)},
-                    {n: i["type"] for n, i in info.items()})
+                    {n: i.get("type") for n, i in info.items()})
 
 
 def cmd_scanlog(a):
