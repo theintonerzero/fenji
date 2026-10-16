@@ -190,7 +190,9 @@ need_display() { [ -S "/tmp/.X11-unix/X$1" ] || die "no nested display :$1 (see 
 PRIMED_MARK=fenji-primed
 proton_build() { cat -- "$PROTON/version" 2>/dev/null || echo unknown; }
 # Whether this GE-Proton build primed the run workspace's prefix.
-prefix_marked() { [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" = "$(proton_build)" ]; }
+prefix_marked() {
+  [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" = "$(proton_build)" ]
+}
 
 # prime_prefix: makes the prefix, or brings an existing one up to this GE-Proton build, through
 # Proton's own launcher (its steam.exe shim, which also registers Proton's Discord bridge service),

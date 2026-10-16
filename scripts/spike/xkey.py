@@ -86,7 +86,8 @@ class Pointer:
 
     def windows(self):
         """The viewable top-level windows, bottom first, as pointer_target takes them."""
-        root, parent, children, n = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.POINTER(ctypes.c_ulong)(), ctypes.c_uint()
+        root, parent, n = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_uint()
+        children = ctypes.POINTER(ctypes.c_ulong)()
         if not self.x11.XQueryTree(self.dpy, self.root, ctypes.byref(root), ctypes.byref(parent),
                                    ctypes.byref(children), ctypes.byref(n)):
             return []
