@@ -5,7 +5,7 @@
 // confirmation. A row's name is its button, so the list works from the keyboard too.
 import type { Ctx, Screen } from "../app";
 import { h } from "../dom";
-import { activeServer } from "../route";
+import { activeServer, playVariant } from "../route";
 import type { ServerView, Snapshot } from "../types";
 import { button } from "../ui/button";
 import { facts } from "../ui/card";
@@ -17,11 +17,6 @@ import { statusMark } from "../ui/status";
 import { serverLine, versionLine } from "../words";
 import { contextColumn, noticeSlot, refused, renew, type NoticeSlot } from "./parts";
 
-/** Whether the row's PLAY can start the game there now. */
-function playable(v: ServerView, s: Snapshot): boolean {
-  return v.status.kind === "online" && s.platform.canPlay && s.game.kind !== "starting" && s.game.kind !== "running";
-}
-
 function row(v: ServerView, s: Snapshot, ctx: Ctx, now: number): HTMLElement {
   const selected = v.id === s.active;
   // In maintenance the host's message says when it's back (the Servers board), as on Play.
@@ -29,7 +24,8 @@ function row(v: ServerView, s: Snapshot, ctx: Ctx, now: number): HTMLElement {
   const address = v.pinned
     ? h("span", { class: "server-address" }, h("span", { class: "num" }, v.address), " · ", icons.lock(12), "own key")
     : h("span", { class: "server-address" }, v.address);
-  const play = selected && playable(v, s)
+  // The selected row's PLAY is Play's own: a verified copy, no check running, an online server (#348).
+  const play = selected && playVariant(s) === "ready"
     ? h(
         "button",
         {

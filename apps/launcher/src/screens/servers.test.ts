@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 
 import type { Ctx } from "../app";
-import type { Intent } from "../types";
+import type { Intent, Snapshot } from "../types";
 import { servers } from "./servers";
 import { embers, golden, mount, press, settle } from "./test-kit";
 
@@ -64,6 +64,18 @@ test("Play on the selected row plays there, and Refresh probes", () => {
   (root.querySelector("[data-server] .ember") as HTMLButtonElement).click();
   press(root, "Refresh");
   expect(sent).toEqual([{ type: "playOn", id: 1 }, { type: "refresh" }]);
+});
+
+test("the row's PLAY waits for a verified copy and no check running, as Play's does (#348)", () => {
+  for (const change of [
+    (s: Snapshot) => (s.client.check = { kind: "none" }),
+    (s: Snapshot) => (s.job = { kind: "checking", level: "full", filesDone: 3, filesTotal: 210, percent: 1 }),
+  ]) {
+    const s = golden("servers");
+    change(s);
+    const { root } = mount(servers, s, undefined, "servers");
+    expect(root.querySelector("[data-server] .btn-play")).toBeNull();
+  }
 });
 
 test("the column has the selected server's facts, its source, and Remove with a confirmation", () => {
