@@ -144,6 +144,46 @@ test("repair offers no command for the player's terminal without its list of fil
   expect(root.textContent).not.toContain("No Steam app?");
 });
 
+test("setup leads with a copy Steam installed: Use it, there (Amendment A, LA1)", () => {
+  const s = golden("client-setup");
+  const folder = "/home/player/.local/share/Steam/steamapps/common/Swords of Legends Online";
+  s.client.steam = { folder, build: "10015727", pinned: true };
+  const { root, sent } = mount(clientSetup, s, undefined, "client");
+  expect(root.textContent).toContain("Found in your Steam library");
+  expect(root.textContent).toContain("~/.local/share/Steam/");
+  expect(embers(root)).toBe(1);
+  expect(root.querySelector(".ember")!.textContent).toBe("Use it");
+  press(root, "Use it");
+  press(root, "Choose another folder");
+  expect(sent).toEqual([
+    { type: "chooseFolder", path: folder },
+    { type: "pickFolder", purpose: "game" },
+  ]);
+});
+
+test("setup says when Steam's copy is another build, and offers no Use it", () => {
+  const s = golden("client-setup");
+  s.client.steam = { folder: "/home/player/.local/share/Steam/steamapps/common/SoLO", build: "9999999", pinned: false };
+  const { root } = mount(clientSetup, s, undefined, "client");
+  expect(root.textContent).toContain("Steam has build 9999999");
+  expect(root.textContent).toContain("update the game in Steam");
+  expect([...root.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Use it");
+  expect(root.querySelector(".ember")!.textContent).toBe("Choose folder");
+});
+
+test("repair of a copy in a Steam library names Steam's own Verify, then checks the files (LA2)", () => {
+  const s = golden("client-repair");
+  s.client.inSteam = true;
+  s.client.manual!.repair = null;
+  const { root, sent } = mount(clientRepair, s, undefined, "client");
+  expect(root.textContent).toContain("Verify integrity of game files");
+  expect(root.textContent).not.toContain("Repair from Steam");
+  expect(root.textContent).not.toContain("Gameforge");
+  expect(embers(root)).toBe(1);
+  press(root, "Check files");
+  expect(sent).toEqual([{ type: "check", level: "quick" }]);
+});
+
 test("repair off Linux has no Repair from Steam", () => {
   const s = golden("client-repair");
   s.platform = { os: "macos", canPlay: false, canDownload: false, home: "/Users/player" };

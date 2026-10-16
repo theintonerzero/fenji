@@ -12,6 +12,8 @@ Fenji's own software sends nothing about you to the project or to anyone else. I
 
 These requests carry nothing about you or your accounts, though like any request they show GitHub your IP address. The game client is another matter (below).
 
+**Finding a copy Steam installed reads only your computer.** To offer a copy of the game Steam already installed, the launcher reads Steam's list of your libraries (`libraryfolders.vdf`) and the game's install record (`appmanifest_1418100.acf`), on Linux and Windows. It reads nothing else of Steam's, sends nothing, and never writes into a Steam library.
+
 **The launcher's log stays on your computer.** It notes what the launcher did, such as the servers you added and the account names you signed in with, but never a password, token or ticket (`launcher.<date>.log`, kept seven days). It also keeps what the game printed the last time it started (`game.log`). Both are in the launcher's data folder (`~/.local/share/fenji-launcher/logs` on Linux), which Settings opens with "Open the log folder". Nothing sends them anywhere.
 
 On Linux the launcher starts the client through [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher), which has network habits of its own:
