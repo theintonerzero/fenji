@@ -1,62 +1,70 @@
-// Buttons (DESIGN.md, Buttons). Only PLAY and the worded primary carry the ember class: one per
-// screen (The One Ember Rule). PLAY is the only tracked uppercase label (The Tracked Caps Rule).
+// Buttons (the redesign's boards). PLAY kindles (R3) and is the only tracked uppercase label; it and
+// a task's one primary action are the only ember a screen shows. Secondary actions are outlines,
+// places to go are gold words, and a quiet action is muted words.
 import { h, type Child } from "../dom";
-
-export type PlayState =
-  | { kind: "ready" }
-  /** Visible but closed; the screen writes the reason beside it. */
-  | { kind: "disabled" }
-  /** Closed while the game starts: it reads "Starting". */
-  | { kind: "starting" }
-  | { kind: "running" };
+import type { PlayLook } from "../route";
+import { playWords } from "../words";
 
 type OnClick = (event: Event) => void;
 
 /**
- * Sets PLAY's state in place, so a screen keeps one button across snapshots and a player's focus
- * stays on it (plan LP4).
+ * Sets PLAY's look in place, so the stage keeps one button across snapshots and a player's focus
+ * stays on it. Kindling, it fills to `--p` with ember; with no progress to show, the fill drifts.
  */
-export function setPlay(el: HTMLButtonElement, state: PlayState): void {
-  el.classList.toggle("ember", state.kind === "ready");
-  el.disabled = state.kind !== "ready";
-  switch (state.kind) {
-    case "ready":
-    case "disabled":
-      el.replaceChildren("Play");
-      break;
-    case "starting":
-      el.replaceChildren("Starting");
-      break;
-    case "running":
-      el.replaceChildren(h("span", { class: "dot dot-ok", "aria-hidden": "true" }), "Running");
-      break;
+export function setPlay(el: HTMLButtonElement, look: PlayLook): void {
+  el.dataset.look = look.kind;
+  el.classList.toggle("ember", look.kind === "lit");
+  el.disabled = look.kind !== "lit";
+  const percent = look.kind === "kindle" ? look.percent : null;
+  if (percent === null) {
+    el.style.removeProperty("--p");
+  } else {
+    el.style.setProperty("--p", `${Math.max(0, Math.min(100, percent))}%`);
   }
+  el.classList.toggle("drift", look.kind === "kindle" && percent === null);
+  const words = playWords(look);
+  const label = el.firstElementChild as HTMLElement | null;
+  if (label?.dataset.words === words) {
+    return;
+  }
+  const next = h("span", { class: "play-label", "data-words": words });
+  if (look.kind === "running") {
+    next.append(h("span", { class: "dot", "aria-hidden": "true" }));
+  }
+  next.append(words);
+  el.replaceChildren(next);
 }
 
 export const button = {
   /** PLAY, found by its `play` class. */
-  play(state: PlayState, onclick?: OnClick): HTMLButtonElement {
-    const el = h("button", { class: "btn btn-play play", type: "button", onclick });
-    setPlay(el, state);
+  play(onclick: OnClick): HTMLButtonElement {
+    const el = h("button", { class: "play", type: "button", onclick });
+    setPlay(el, { kind: "closed" });
     return el;
   },
 
-  /** The screen's one action when it isn't Play: Continue, Create account, Repair from Steam. */
-  primary(label: string, onclick?: OnClick): HTMLButtonElement {
-    return h("button", { class: "btn btn-primary ember", type: "button", onclick }, label);
+  /** A task's one action when it isn't Play: Continue, Create account, Repair. */
+  primary(label: Child, onclick?: OnClick, small = false): HTMLButtonElement {
+    return h("button", { class: small ? "btn btn-sm ember" : "btn ember", type: "button", onclick }, label);
   },
 
-  secondary(
-    label: Child,
-    onclick?: OnClick,
-    size: "regular" | "compact" | "small" = "regular",
-  ): HTMLButtonElement {
-    const sized = size === "regular" ? "" : ` btn-${size}`;
-    return h("button", { class: `btn${sized}`, type: "button", onclick }, label);
+  /** An outline: Cancel, Refresh, Retry, Verify integrity. */
+  secondary(label: Child, onclick?: OnClick, small = false): HTMLButtonElement {
+    return h("button", { class: small ? "btn btn-sm" : "btn", type: "button", onclick }, label);
   },
 
-  /** A gold text button: a place to go, never the primary action (The Gold Is People Rule). */
+  /** Gold words: a place to go, never the primary action. */
   link(label: Child, onclick?: OnClick): HTMLButtonElement {
-    return h("button", { class: "btn btn-link", type: "button", onclick }, label);
+    return h("button", { class: "link", type: "button", onclick }, label);
+  },
+
+  /** Muted words beside PLAY or a primary action: Stop. */
+  quiet(label: Child, onclick?: OnClick): HTMLButtonElement {
+    return h("button", { class: "quiet", type: "button", onclick }, label);
+  },
+
+  /** A control drawn as an icon alone, named for assistive technology. */
+  icon(label: string, icon: Element, onclick?: OnClick): HTMLButtonElement {
+    return h("button", { class: "icon-button", type: "button", "aria-label": label, onclick }, icon);
   },
 };

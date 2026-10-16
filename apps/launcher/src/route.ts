@@ -1,57 +1,40 @@
-// Which screen a snapshot shows on a tab (launcher spec §3.2), and which state Play's screen is in.
+// Which screen a snapshot shows (the redesign spec §3), and the stage's states: PLAY's look (R3)
+// and the ground behind it. The words for them are in words.ts.
 import type { ServerView, Snapshot } from "./types";
 
-export type Tab = "play" | "servers" | "account" | "client" | "settings";
+/** The stage, or the one task in its place: welcome, create your account, sign in. */
+export type ScreenName = "welcome" | "redeem" | "signIn" | "stage";
 
-export type ScreenName =
-  | "welcome"
-  | "redeem"
-  | "signIn"
-  | "account"
-  | "play"
-  | "servers"
-  | "clientSetup"
-  | "clientWorking"
-  | "clientRepair"
-  | "clientReady"
-  | "settings";
+/** What the view holds over the model's snapshot. */
+export interface ViewState {
+  /** The player asked to sign in to the active server: from the Account popover, or with
+   * "I have an account" on Welcome or Join. */
+  signIn: boolean;
+}
 
-/** The server Play uses, if there is one. */
+export const NO_VIEW: ViewState = { signIn: false };
+
+/** The server the stage shows, if there is one. */
 export function activeServer(s: Snapshot): ServerView | undefined {
   return s.servers.find((v) => v.id === s.active);
 }
 
-export function route(tab: Tab, s: Snapshot): ScreenName {
-  if (tab === "settings") {
-    return "settings";
-  }
+/**
+ * No server: welcome. The active server's invite waiting: create your account there. A sign-in
+ * Play needs, or one the player asked for: sign in. Otherwise the stage. The invite waits on its own
+ * server only, so the rail's other seals still lead to their stages.
+ */
+export function route(s: Snapshot, view: ViewState = NO_VIEW): ScreenName {
   if (s.servers.length === 0) {
     return "welcome";
   }
-  if (s.pendingInvite !== null) {
-    return "redeem";
+  if (s.pendingInvite !== null && s.pendingInvite.serverId === s.active) {
+    return view.signIn ? "signIn" : "redeem";
   }
-  if (s.needSignIn) {
+  if (s.needSignIn || (view.signIn && activeServer(s)?.signedIn === false)) {
     return "signIn";
   }
-  switch (tab) {
-    case "play":
-      return "play";
-    case "servers":
-      return "servers";
-    case "account":
-      return activeServer(s)?.signedIn ? "account" : "signIn";
-    case "client": {
-      const job = s.job?.kind;
-      if (job === "fetching" || job === "downloading") {
-        return "clientWorking";
-      }
-      if (s.client.folder === null) {
-        return "clientSetup";
-      }
-      return s.client.check.kind === "needsRepair" ? "clientRepair" : "clientReady";
-    }
-  }
+  return "stage";
 }
 
 export type PlayVariant =
@@ -66,7 +49,7 @@ export type PlayVariant =
   | "notReady"
   | "ready";
 
-/** Play's state, the first that holds, in this order. */
+/** The stage's state, the first that holds, in this order. */
 export function playVariant(s: Snapshot): PlayVariant {
   if (!s.platform.canPlay) {
     return "unsupported";
@@ -90,31 +73,45 @@ export function playVariant(s: Snapshot): PlayVariant {
   return s.client.check.kind === "verified" ? "ready" : "notReady";
 }
 
-/** What the blade shows (DESIGN.md, The blade): the player's copy, and how far a check has come. */
-export type BladeFor =
-  | { kind: "unlit" }
-  | { kind: "climbing"; percent: number; label: string }
+/**
+ * PLAY kindles (R3): lit when ready; kindling while files verify or the game starts, filled to the
+ * progress when there is one; closed when Play can't happen; an outline while the game runs.
+ */
+export type PlayLook =
   | { kind: "lit" }
-  | { kind: "bloom" };
+  | { kind: "kindle"; task: "verifying" | "starting"; percent: number | null }
+  | { kind: "closed" }
+  | { kind: "running" };
 
-export function bladeFor(s: Snapshot): BladeFor {
-  const job = s.job;
-  if (job?.kind === "checking") {
-    return { kind: "climbing", percent: job.percent, label: `${job.filesDone} of ${job.filesTotal} files` };
+export function playLook(s: Snapshot): PlayLook {
+  switch (playVariant(s)) {
+    case "ready":
+      return { kind: "lit" };
+    case "running":
+      return { kind: "running" };
+    case "checking":
+      return { kind: "kindle", task: "verifying", percent: s.job?.kind === "checking" ? s.job.percent : null };
+    case "starting":
+      // The first start fetches umu-launcher: its download is the only progress a start has.
+      return { kind: "kindle", task: "starting", percent: s.job?.kind === "fetching" ? s.job.percent : null };
+    default:
+      return { kind: "closed" };
   }
-  if (job?.kind === "downloading" && job.percent !== null) {
-    return { kind: "climbing", percent: job.percent, label: job.file ?? "Downloading" };
-  }
-  if (s.client.check.kind !== "verified" || !s.platform.canPlay) {
-    return { kind: "unlit" };
-  }
-  const variant = playVariant(s);
-  return variant === "ready" || variant === "starting" || variant === "running"
-    ? { kind: "bloom" }
-    : { kind: "lit" };
 }
 
-/** The ground behind the blade: warm while the active server is up and open, cool otherwise. */
-export function groundFor(s: Snapshot): "warm" | "cool" {
-  return activeServer(s)?.status.kind === "online" ? "warm" : "cool";
+export type Ground = "warm" | "cool" | "plain";
+
+/**
+ * The stage's ground (R3): warm while PLAY is lit or the game runs; cool while it kindles, while
+ * the game's files need something, and behind a task; plain ink when the server can't be played on.
+ */
+export function groundFor(s: Snapshot, screen: ScreenName): Ground {
+  if (screen !== "stage") {
+    return "cool";
+  }
+  const look = playLook(s);
+  if (look.kind === "lit" || look.kind === "running") {
+    return "warm";
+  }
+  return look.kind === "kindle" || playVariant(s) === "notReady" ? "cool" : "plain";
 }

@@ -1,14 +1,13 @@
 // Development only (`pnpm dev`; the production build leaves this module out): `?golden=<name>`
-// renders that golden snapshot, on `&tab=<tab>`, with a `send` that logs instead of acting. The
-// finish review's screenshots use it (launcher plan Task 17).
-import type { Ipc } from "./app";
-import type { Tab } from "./route";
+// renders that golden snapshot, with `&open=game|account|settings` for a popover, and a `send` that
+// logs instead of acting. The finish review's screenshots use it.
+import type { Ipc, MountOptions, PopoverName } from "./app";
 import type { Intent, Snapshot } from "./types";
 
 const files = import.meta.glob<Snapshot>("../fixtures/snapshots/*.json", { import: "default" });
-const TABS: Tab[] = ["play", "servers", "account", "client", "settings"];
+const POPOVERS: PopoverName[] = ["game", "account", "settings"];
 
-export async function goldenIpc(params: URLSearchParams): Promise<{ ipc: Ipc; tab: Tab } | null> {
+export async function goldenIpc(params: URLSearchParams): Promise<{ ipc: Ipc; options: MountOptions } | null> {
   const name = params.get("golden");
   if (name === null) {
     return null;
@@ -19,9 +18,9 @@ export async function goldenIpc(params: URLSearchParams): Promise<{ ipc: Ipc; ta
     return null;
   }
   const snapshot = await load();
-  const asked = params.get("tab") as Tab | null;
+  const asked = params.get("open") as PopoverName | null;
   return {
-    tab: asked !== null && TABS.includes(asked) ? asked : "play",
+    options: asked !== null && POPOVERS.includes(asked) ? { open: asked } : {},
     ipc: {
       snapshot: async () => snapshot,
       onSnapshot: async () => () => {},

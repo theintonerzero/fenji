@@ -4,17 +4,16 @@ import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/components.css";
 
-import { mount, type Ipc } from "./app";
+import { mount, type Ipc, type MountOptions } from "./app";
 import * as live from "./ipc";
-import type { Tab } from "./route";
 
 let ipc: Ipc = live;
-let tab: Tab = "play";
+let options: MountOptions = {};
 if (import.meta.env.DEV) {
   const { goldenIpc } = await import("./dev-golden");
   const golden = await goldenIpc(new URLSearchParams(location.search));
   if (golden) {
-    ({ ipc, tab } = golden);
+    ({ ipc, options } = golden);
   }
 }
-await mount(document.body, ipc, tab);
+await mount(document.body, ipc, options);

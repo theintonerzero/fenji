@@ -36,6 +36,28 @@ function small(d: string, size: number, width: number, extra: Record<string, str
 }
 
 export const icons = {
+  /** The boards' gear: a hub and eight spokes, 1.6 px. */
+  gear: (size = 18) =>
+    draw(
+      [
+        ["circle", { cx: 12, cy: 12, r: 3 }],
+        "M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1",
+      ],
+      size,
+      { "stroke-width": 1.6 },
+    ),
+  person: (size = 16) => draw([["circle", { cx: 12, cy: 8.5, r: 3.5 }], "M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"], size),
+  eye: (size = 18) =>
+    draw(["M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z", ["circle", { cx: 12, cy: 12, r: 3 }]], size),
+  eyeOff: (size = 18) =>
+    draw(
+      [
+        "M10.6 5.6A9 9 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-2.6 3.4M6.6 6.6C4 8.3 2.5 12 2.5 12S6 18.5 12 18.5a9 9 0 0 0 4.4-1.1",
+        "M9.9 9.9a3 3 0 0 0 4.2 4.2",
+        "M3 3l18 18",
+      ],
+      size,
+    ),
   settings: (size = 16) =>
     draw(
       [

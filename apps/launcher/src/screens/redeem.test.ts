@@ -3,44 +3,43 @@ import { expect, test } from "vitest";
 import { redeem } from "./redeem";
 import { embers, golden, mount, press, settle } from "./test-kit";
 
-test("the form checks itself before it sends, then sends the redemption", async () => {
-  const { root, sent } = mount(redeem, golden("redeem"));
-  const [user, pass, again] = root.querySelectorAll("input");
-  const submit = () => (root.querySelector("form") as HTMLFormElement).requestSubmit();
-  user!.value = "li";
-  pass!.value = "short";
-  again!.value = "short";
-  submit();
-  expect(sent).toEqual([]);
-  expect(root.textContent).toContain("Usernames are 3 to 16 letters, digits, _ or -.");
-  user!.value = "lin_yue";
-  pass!.value = "a long password";
-  again!.value = "a long passwort";
-  submit();
-  expect(root.textContent).toContain("The passwords don't match.");
-  expect(root.textContent).not.toContain("Usernames are 3 to 16 letters, digits, _ or -.");
-  again!.value = "a long password";
-  submit();
-  await Promise.resolve();
-  expect(sent).toEqual([{ type: "redeem", code: null, username: "lin_yue", password: "a long password" }]);
-  expect(root.querySelector('input[type="password"]')).not.toBeNull();
-});
+function fill(root: HTMLElement, username = "lin_yue", password = "a long password"): void {
+  const [user, pass] = root.querySelectorAll("input");
+  user!.value = username;
+  pass!.value = password;
+  (root.querySelector("form") as HTMLFormElement).requestSubmit();
+}
 
-test("it names the server, the host and the invite, with one ember action", () => {
+test("Join names the server and its host, with one ember action", () => {
   const { root } = mount(redeem, golden("redeem"));
-  expect(root.textContent).toContain("Wen invited you to Moonward. Choose a username and a password.");
-  expect(root.textContent).toContain("Invite recognised");
-  expect(root.textContent).toContain("K7QM-3XRD-VN2P-HT8B");
+  expect(root.querySelector("h1")!.textContent).toBe("Join Moonward");
+  expect(root.querySelector(".lede")!.textContent).toBe("Hosted by Wen.");
+  expect(root.textContent).toContain("Not your Steam password.");
   expect(embers(root)).toBe(1);
 });
 
-function fill(root: HTMLElement): void {
-  const [user, pass, again] = root.querySelectorAll("input");
-  user!.value = "lin_yue";
-  pass!.value = "a long password";
-  again!.value = "a long password";
-  (root.querySelector("form") as HTMLFormElement).requestSubmit();
-}
+test("the form checks itself before it sends, then sends the redemption", async () => {
+  const { root, sent } = mount(redeem, golden("redeem"));
+  fill(root, "li", "short");
+  expect(sent).toEqual([]);
+  expect(root.textContent).toContain("Usernames are 3 to 16 letters, digits, _ or -.");
+  expect(root.textContent).toContain("Passwords are 10 to 128 characters.");
+  fill(root);
+  await Promise.resolve();
+  expect(sent).toEqual([{ type: "redeem", code: null, username: "lin_yue", password: "a long password" }]);
+});
+
+test("Show reveals the one password as it's typed, to catch a typo", () => {
+  const { root } = mount(redeem, golden("redeem"));
+  const pass = root.querySelector<HTMLInputElement>('input[autocomplete="new-password"]')!;
+  const show = root.querySelector<HTMLButtonElement>('button[aria-label="Show password"]')!;
+  expect(pass.type).toBe("password");
+  show.click();
+  expect(pass.type).toBe("text");
+  expect(show.getAttribute("aria-pressed")).toBe("true");
+  show.click();
+  expect(pass.type).toBe("password");
+});
 
 test("a taken name shows under Username, and the rest under the form", async () => {
   const taken = "“lin_yue” is taken on Moonward. Try another.";
@@ -52,7 +51,6 @@ test("a taken name shows under Username, and the rest under the form", async () 
   const username = root.querySelector('input[autocomplete="username"]')!;
   expect(username.getAttribute("aria-invalid")).toBe("true");
   expect(root.querySelector(`#${username.getAttribute("aria-describedby")}`)!.textContent).toBe(taken);
-  expect(root.querySelector(".form-error")!.hasAttribute("hidden")).toBe(true);
   answer = spent;
   fill(root);
   await settle();
@@ -61,13 +59,8 @@ test("a taken name shows under Username, and the rest under the form", async () 
   expect(sent.filter((i) => i.type === "dismissNotice")).toHaveLength(2);
 });
 
-test("I already have an account cancels and shows Sign in, which can come back", () => {
-  const { root, sent, tabs } = mount(redeem, golden("redeem"));
-  press(root, "I already have an account");
-  expect(sent).toEqual([{ type: "cancelSignIn" }]);
-  expect(tabs).toEqual(["account"]);
-  expect(root.querySelector("h1")!.textContent).toBe("Sign in to Moonward");
-  press(root, "Have an invite? Create an account");
-  expect(root.querySelector("h1")!.textContent).toBe("Create your account");
-  expect(root.textContent).toContain("K7QM-3XRD-VN2P-HT8B");
+test("I have an account signs in there instead", () => {
+  const { root, asked } = mount(redeem, golden("redeem"));
+  press(root, "I have an account");
+  expect(asked.signIns).toEqual([true]);
 });
