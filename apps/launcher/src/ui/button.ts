@@ -7,11 +7,23 @@ import { playWords } from "../words";
 
 type OnClick = (event: Event) => void;
 
+function reducedMotion(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 /**
  * Sets PLAY's look in place, so the stage keeps one button across snapshots and a player's focus
  * stays on it. Kindling, it fills to `--p` with ember; with no progress to show, the fill drifts.
  */
 export function setPlay(el: HTMLButtonElement, look: PlayLook): void {
+  // Kindling to lit: the fill completes and dissolves into the ember (the redesign's finish review),
+  // unless motion is reduced.
+  if (el.dataset.look === "kindle" && look.kind === "lit" && !reducedMotion()) {
+    el.classList.add("kindled");
+    el.addEventListener("animationend", () => el.classList.remove("kindled"), { once: true });
+  } else if (look.kind !== "lit") {
+    el.classList.remove("kindled");
+  }
   el.dataset.look = look.kind;
   el.classList.toggle("ember", look.kind === "lit");
   el.disabled = look.kind !== "lit";

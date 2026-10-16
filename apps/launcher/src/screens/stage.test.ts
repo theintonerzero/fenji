@@ -42,6 +42,20 @@ test("verifying: PLAY kindles to the check's progress, and Stop is quiet words b
   expect(sent).toEqual([{ type: "stopCheck" }]);
 });
 
+test("the moment the check ends, PLAY's fill completes and dissolves into the lit ember", () => {
+  const { root, screen } = mount(stage, golden("play-checking"));
+  const button = play(root);
+  screen.update(golden("play-ready"));
+  expect(button.dataset.look).toBe("lit");
+  expect(button.classList.contains("kindled")).toBe(true);
+  button.dispatchEvent(new Event("animationend"));
+  expect(button.classList.contains("kindled")).toBe(false);
+  // Lit from the start, or after a closed PLAY, there's nothing to complete.
+  const fresh = mount(stage, golden("play-maintenance"));
+  fresh.screen.update(golden("play-ready"));
+  expect(play(fresh.root).classList.contains("kindled")).toBe(false);
+});
+
 test("starting: PLAY kindles with no progress to show, Cancel beside it, and the first start says why it's slow", () => {
   const { root, sent } = mount(stage, golden("play-starting"));
   expect(play(root).textContent).toBe("Starting");

@@ -57,6 +57,11 @@
   gap: 14px;
 }
 
+/* No servers yet (Welcome): + sits straight under the seal. */
+.seals:empty {
+  display: none;
+}
+
 /* A server: a square ink seal, its state a 3 px bar beneath. */
 .seal {
   position: relative;
@@ -634,7 +639,8 @@
   box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
-.play[data-look="kindle"]::before {
+.play[data-look="kindle"]::before,
+.play.kindled::before {
   content: "";
   position: absolute;
   top: 0;
@@ -648,10 +654,17 @@
   transition: width 600ms var(--ease-out);
 }
 
-/* No progress to show (a start): the ember drifts back and forth. */
+/* No progress to show (a start): the fill breathes from the left edge, and rests at 36% when motion is
+ * reduced. */
 .play.drift::before {
-  width: 40%;
+  width: 36%;
   animation: drift 2.6s var(--ease-in-out) infinite alternate;
+}
+
+/* Kindled: the moment PLAY is ready, its fill completes and dissolves into the lit ember. */
+.play.kindled::before {
+  width: 100%;
+  animation: kindled 600ms var(--ease-out) forwards;
 }
 
 .play[data-look="closed"] {
@@ -1352,10 +1365,16 @@
 
 @keyframes drift {
   from {
-    transform: translateX(-60%);
+    width: 12%;
   }
   to {
-    transform: translateX(150%);
+    width: 60%;
+  }
+}
+
+@keyframes kindled {
+  to {
+    opacity: 0;
   }
 }
 

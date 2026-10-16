@@ -343,6 +343,8 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             "client-waiting-for-steam",
             with(|s| {
                 s.client.check = CheckView::None;
+                // Wherever a download works, so does the player's own terminal (spec §3.12).
+                s.client.manual = Some(manual(None));
                 s.job = Some(JobView::Downloading {
                     repair: false,
                     percent: None,

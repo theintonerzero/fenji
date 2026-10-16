@@ -108,7 +108,10 @@ export function gamePopover(ctx: Ctx): PopoverContent {
       void act(stopIntent)();
     }
   }, true);
-  const working = section(h("p", { class: "work-head" }, workTitle, workPercent), bar, workLine, acts(stop));
+  // While DepotDownloader waits for a Steam sign-in, the player can run it in a terminal of their own.
+  let runCommand: (() => void) | null = null;
+  const runLink = button.link("Run it yourself", () => runCommand?.());
+  const working = section(h("p", { class: "work-head" }, workTitle, workPercent), bar, workLine, acts(stop, runLink));
 
   function build(view: Exclude<View, "working">, s: Snapshot): Child[] {
     const { client, platform } = s;
@@ -168,9 +171,6 @@ export function gamePopover(ctx: Ctx): PopoverContent {
               canRepair
                 ? button.primary("Repair", act({ type: "repair" }), true)
                 : button.primary("Verify", act({ type: "check", level: "quick" }), true),
-              canRepair ? button.secondary("Verify", act({ type: "check", level: "quick" }), true) : null,
-            ),
-            acts(
               button.link("Change folder", pick),
               command === null || client.inSteam ? null : runIt(command, s, "check"),
             ),
@@ -233,6 +233,18 @@ export function gamePopover(ctx: Ctx): PopoverContent {
         workLine.textContent = now.line ?? "";
         if (stop.textContent !== now.stop[0]) {
           stop.textContent = now.stop[0];
+        }
+        const manual = s.client.manual;
+        const job = s.job;
+        const waiting = job.kind === "downloading" && job.waitingForSteam && manual !== null;
+        runLink.hidden = !waiting;
+        runCommand = null;
+        if (waiting) {
+          // A repair's own command fetches only the files that need it, then the files are verified.
+          const repair = job.kind === "downloading" && job.repair && manual.repair !== null;
+          const command = repair ? manual.repair! : manual.download;
+          runCommand = () =>
+            ctx.show((done) => commandDialog(ctx, command, manual.get, repair ? "check" : "chooseFolder", done));
         }
         renew(content, "working", () => [working]);
         return;

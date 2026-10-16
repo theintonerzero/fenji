@@ -68,10 +68,22 @@ test("downloading: its progress and Cancel, which keeps focus as the progress st
   expect(sent).toEqual([{ type: "cancelDownload" }]);
 });
 
-test("waiting for Steam: the sign-in stays in its own window", () => {
-  const { root } = mountPopover(gamePopover, golden("client-waiting-for-steam"));
+test("waiting for Steam: the sign-in stays in its own window, or the player runs it in their own", () => {
+  const { root, asked } = mountPopover(gamePopover, golden("client-waiting-for-steam"));
   expect(root.textContent).toContain("Sign in to Steam in its own window. Fenji never sees it.");
   expect(root.querySelector('[role="progressbar"]')!.hasAttribute("aria-valuenow")).toBe(false);
+  expect(shows(root, "Run it yourself")).toBe(true);
+  press(root, "Run it yourself");
+  expect(asked.dialogs).toHaveLength(1);
+  expect(document.body.textContent).toContain("Then choose the folder it downloaded to.");
+});
+
+test("while files come in, Cancel stands alone", () => {
+  const s = golden("client-downloading");
+  s.client.manual = golden("client-waiting-for-steam").client.manual;
+  const { root } = mountPopover(gamePopover, s);
+  expect(shows(root, "Run it yourself")).toBe(false);
+  expect(shows(root, "Cancel")).toBe(true);
 });
 
 test("verifying: its progress and Stop", () => {
@@ -86,6 +98,10 @@ test("needs repair: each file and why, Repair the one ember, and its refusal sho
   expect(root.querySelector(".big")!.textContent).toBe("1 file needs repair");
   expect(root.querySelector(".file")!.textContent).toBe("data/_index/sc_res.idxWrong size");
   expect(embers(root)).toBe(1);
+  // One row, as the board has it: Repair, Change folder, and the player's own terminal.
+  const row = root.querySelectorAll(".sec .acts");
+  expect(row).toHaveLength(1);
+  expect([...row[0]!.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Repair", "Change folder", "Run it yourself"]);
   press(root, "Repair");
   await settle();
   expect(root.querySelector(".form-error")!.textContent).toBe("Something's already running. Wait, or stop it.");
