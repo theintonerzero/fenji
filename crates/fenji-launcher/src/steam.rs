@@ -71,25 +71,63 @@ pub fn find(roots: &[PathBuf]) -> Option<SteamCopy> {
     })
 }
 
-/// Whether `folder` is inside a Steam library that `roots` list: Steam looks after it. A folder
+/// Whether `folder` is inside a Steam library that `roots` list: Steam looks after it. It is, by
+/// its path as written, by where that path leads, or inside where one of the library's game
+/// folders links to, as when Steam's folder for a game is a link to another disk (#376). A folder
 /// that isn't there yet is judged by where it would be.
 pub fn in_library(folder: &Path, roots: &[PathBuf]) -> bool {
-    let Some(folder) = folder.ancestors().find_map(|existing| {
+    let written = lexical(folder);
+    let real = folder.ancestors().find_map(|existing| {
         Some(
             existing
                 .canonicalize()
                 .ok()?
                 .join(folder.strip_prefix(existing).ok()?),
         )
-    }) else {
-        return false;
-    };
+    });
     libraries(roots).iter().any(|library| {
-        library
-            .join("steamapps")
-            .canonicalize()
-            .is_ok_and(|apps| folder.starts_with(apps))
+        let apps = library.join("steamapps");
+        if written.starts_with(lexical(&apps)) {
+            return true;
+        }
+        let Some(real) = &real else {
+            return false;
+        };
+        apps.canonicalize().is_ok_and(|apps| real.starts_with(apps))
+            || linked_games(&apps).iter().any(|game| real.starts_with(game))
     })
+}
+
+/// Where the game folders under `apps/common` that are links lead, resolved.
+fn linked_games(apps: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(apps.join("common")) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_symlink()))
+        .filter_map(|entry| entry.path().canonicalize().ok())
+        .collect()
+}
+
+/// `path` with its `.` and `..` resolved by name, as it's written: no link is followed. A `..` at
+/// the root stays there.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(Component::ParentDir | Component::CurDir) | None => out.push(".."),
+            },
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// The folder the registry names for Steam: `HKCU\Software\Valve\Steam`'s `SteamPath`. Only on
@@ -392,6 +430,42 @@ mod tests {
             &roots
         ));
         assert!(!in_library(&dir.path().join("Games/SoLO"), &roots));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_game_folder_that_links_to_another_disk_is_still_steams() {
+        // #376 (the redesign's final review, Minor 6): Steam's folder for the game can be a link
+        // to another disk. As it's written, it's in the library; resolved, it's elsewhere.
+        let dir = tempfile::tempdir().unwrap();
+        let (root, disk) = (dir.path().join("Steam"), dir.path().join("disk2/SoLO"));
+        steam(&root, &[&root], Some((&root, "10015727")));
+        let folder = root.join("steamapps/common/Swords of Legends Online");
+        std::fs::remove_dir_all(&folder).unwrap();
+        std::fs::create_dir_all(disk.join("bin64")).unwrap();
+        std::os::unix::fs::symlink(&disk, &folder).unwrap();
+        let roots = [root.clone()];
+        let copy = find(&roots).unwrap();
+        assert_eq!(copy.folder, folder);
+        assert!(in_library(&copy.folder, &roots));
+        assert!(in_library(
+            &root.join("steamapps/common/./Swords of Legends Online/bin64/.."),
+            &roots
+        ));
+        // The folder the link leads to is that copy too, chosen by its own path.
+        assert!(in_library(&disk, &roots));
+        assert!(in_library(&disk.join("bin64"), &roots));
+        // Beside it on the other disk is the player's own.
+        assert!(!in_library(&dir.path().join("disk2/Other"), &roots));
+        // A name that only begins like the library's is another folder.
+        assert!(!in_library(&dir.path().join("Steam2/steamapps"), &roots));
+    }
+
+    #[test]
+    fn dots_in_a_path_are_resolved_by_name() {
+        assert_eq!(lexical(Path::new("/a/./b/../c")), PathBuf::from("/a/c"));
+        assert_eq!(lexical(Path::new("/../a")), PathBuf::from("/a"));
+        assert_eq!(lexical(Path::new("a/../../b")), PathBuf::from("../b"));
     }
 
     #[test]
