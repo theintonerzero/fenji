@@ -275,6 +275,21 @@ fn check_update(app: AppHandle, asked: bool) {
     });
 }
 
+/// What the player is told when the launcher can't start, if it can't: its settings and folders
+/// couldn't be read (`config`'s words), or `start` failed, such as its log folder that can't be made
+/// or a window that won't open. Shown in a native dialog, never as a silent panic (#348).
+fn setup_failure<C>(
+    config: Result<C, String>,
+    start: impl FnOnce(C) -> Result<(), Box<dyn std::error::Error>>,
+) -> Option<String> {
+    match config {
+        Ok(cfg) => start(cfg)
+            .err()
+            .map(|e| format!("Fenji's launcher couldn't start: {e}")),
+        Err(why) => Some(why),
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         // First, so a second start hands over to the running one before it does anything else.
@@ -290,17 +305,15 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![intent, snapshot])
         .setup(|app| {
-            match config() {
-                Ok(cfg) => start(app, cfg)?,
-                // Before the window opens: a native dialog, then the launcher ends.
-                Err(why) => {
-                    let handle = app.handle().clone();
-                    app.dialog()
-                        .message(why)
-                        .title("Fenji")
-                        .kind(MessageDialogKind::Error)
-                        .show(move |_| handle.exit(1));
-                }
+            // Before the window opens, or as it fails to: a native dialog, then the launcher ends.
+            if let Some(why) = setup_failure(config(), |cfg| start(app, cfg)) {
+                tracing::error!(%why, "the launcher couldn't start");
+                let handle = app.handle().clone();
+                app.dialog()
+                    .message(why)
+                    .title("Fenji")
+                    .kind(MessageDialogKind::Error)
+                    .show(move |_| handle.exit(1));
             }
             Ok(())
         })
@@ -326,6 +339,24 @@ mod tests {
         "installUpdate",
         "dismissUpdate",
     ];
+
+    #[test]
+    fn a_start_that_fails_ends_in_a_dialog_not_a_silent_panic() {
+        // #348: an error from start() left setup and ended the run in a panic, with no window and,
+        // on Windows, no console: the player saw nothing.
+        let failed = |_: u8| -> Result<(), Box<dyn std::error::Error>> {
+            Err("the log folder can't be made".into())
+        };
+        assert_eq!(
+            setup_failure(Ok(1), failed).as_deref(),
+            Some("Fenji's launcher couldn't start: the log folder can't be made")
+        );
+        assert_eq!(
+            setup_failure(Err::<u8, _>("no home folder".into()), failed).as_deref(),
+            Some("no home folder")
+        );
+        assert_eq!(setup_failure(Ok(1), |_| Ok(())), None);
+    }
 
     #[test]
     fn every_intent_goes_to_one_side() {
