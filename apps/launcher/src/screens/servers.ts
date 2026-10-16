@@ -218,7 +218,8 @@ export function servers(root: HTMLElement, ctx: Ctx): Screen {
       const focused = focusIn(list);
       renew(
         list,
-        JSON.stringify([s.servers, s.active, s.lobby, s.platform.canPlay, s.game.kind, Math.floor(now / 60000)]),
+        // The row's PLAY reads playVariant, so what it reads is in the key (#348).
+        JSON.stringify([s.servers, s.active, s.lobby, playVariant(s), Math.floor(now / 60000)]),
         () => s.servers.map((v) => row(v, s, ctx, now)),
       );
       focused?.();

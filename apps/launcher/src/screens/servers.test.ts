@@ -81,6 +81,22 @@ test("the row's PLAY waits for a verified copy and no check running, as Play's d
   }
 });
 
+test("the row's PLAY follows a check that starts or ends on a mounted screen (#348)", () => {
+  const { root, screen } = mount(servers, golden("servers"), undefined, "servers");
+  const play = () => root.querySelector("[data-server] .btn-play");
+  expect(play()).not.toBeNull();
+  const checking = golden("servers");
+  checking.job = { kind: "checking", level: "full", filesDone: 3, filesTotal: 210, percent: 1 };
+  screen.update(checking);
+  expect(play()).toBeNull();
+  const unverified = golden("servers");
+  unverified.client.check = { kind: "none" };
+  screen.update(unverified);
+  expect(play()).toBeNull();
+  screen.update(golden("servers"));
+  expect(play()).not.toBeNull();
+});
+
 test("a probe redraws the rows, and the control that had focus keeps it (#348)", () => {
   const s = golden("servers");
   const { root, screen } = mount(servers, s, undefined, "servers");
