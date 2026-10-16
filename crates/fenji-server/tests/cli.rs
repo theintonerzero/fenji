@@ -196,7 +196,18 @@ fn first_run_writes_the_config_and_data_then_starts() {
         running.matches("127.0.0.1:").count() == 2 && !running.contains("0.0.0.0"),
         "where the environment put them: {running}"
     );
-    for warning in ["trusted_proxies", "invite links need"] {
+    // Under tls = "self", the server's own link beside it, for players who have an account (the
+    // hosting plan's final review, Important 2): this computer's, as the API is on loopback here.
+    const LINK: &str = "server link (this computer): https://127.0.0.1:";
+    assert!(
+        at("Fenji is running") < at(LINK) && at(LINK) < at(next),
+        "{said}"
+    );
+    let link = said[at(LINK) + LINK.len()..].lines().next().unwrap();
+    let (port, pin) = link.split_once("/#pin=").unwrap();
+    assert!(port.parse::<u16>().is_ok_and(|p| p != 0), "{link}");
+    assert_eq!(pin.trim_end().len(), 43, "{link}");
+    for warning in ["trusted_proxies", fenji_server::invite::NO_LINKS] {
         assert!(!said.contains(warning), "nothing to warn about: {said}");
     }
     assert!(dir.path().join("data/fenji.db").is_file());
@@ -562,10 +573,13 @@ async fn invite_create_prints_the_code_and_a_link_with_the_code_in_the_fragment(
     .await;
     let code = text.lines().find_map(|l| l.strip_prefix("code: ")).unwrap();
     assert!(fenji_auth::invite::InviteCode::parse(code).is_some());
-    // Amendment A, HA4: each link labelled, then the code.
+    // Amendment A, HA4: each link labelled, then the code. Beside the invite link, the server's
+    // own link, for players who have an account: behind Caddy, its address alone (the hosting
+    // plan's final review, Important 2).
     assert!(
         text.starts_with(&format!(
-            "link (public_api): https://play.example.net/#invite={code}\ncode: {code}\n"
+            "link (public_api): https://play.example.net/#invite={code}\n\
+             server link (public_api): https://play.example.net\ncode: {code}\n"
         )),
         "{text}"
     );
@@ -650,8 +664,20 @@ async fn with_the_servers_own_key_every_link_carries_its_pin() {
         );
     }
     let lines: Vec<&str> = text.lines().collect();
+    // The hosting plan's final review, Important 2: beside each invite link, the server's own
+    // link, with the pin and without the invite, for players who have an account.
+    for (i, link) in links.iter().enumerate() {
+        assert_eq!(lines[2 * i], *link, "{text}");
+        let (label, url) = link.split_once(": ").unwrap();
+        let origin = url.split_once("/#").unwrap().0;
+        assert_eq!(
+            lines[2 * i + 1],
+            format!("server {label}: {origin}/#pin={pin}"),
+            "{text}"
+        );
+    }
     let code_at = lines.iter().position(|l| l.starts_with("code: ")).unwrap();
-    assert_eq!(code_at, links.len(), "the links, then the code: {text}");
+    assert_eq!(code_at, 2 * links.len(), "the links, then the code: {text}");
     assert!(
         lines[code_at + 1].contains("7800 and 7801") && lines[code_at + 1].contains("VPN"),
         "{text}"
@@ -668,6 +694,12 @@ async fn with_the_servers_own_key_every_link_carries_its_pin() {
         [format!(
             "link (public_host): https://203.0.113.5:7801/#invite={code}&pin={pin}"
         )],
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "\nserver link (public_host): https://203.0.113.5:7801/#pin={pin}\n"
+        )),
         "{text}"
     );
     assert!(!text.contains("VPN"), "{text}");

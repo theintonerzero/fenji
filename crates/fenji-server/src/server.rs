@@ -200,6 +200,23 @@ fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<&'static str> {
     warnings
 }
 
+/// The server link a start shows beside "Fenji is running" under `tls = "self"` (M4 hosting spec
+/// §3.10), for players who already have an account: the first of `bases` (`invite::bases`), the
+/// one address set for links or the machine's first, and that `link` shows the rest. None without
+/// the server's own key, whose host has an address for players already, or without a base.
+fn running_link(cfg: &Config, bases: &[(String, crate::invite::InviteBase)]) -> Option<String> {
+    if cfg.server.tls != Some(Tls::OwnKey) {
+        return None;
+    }
+    let (label, base) = bases.first()?;
+    let link = crate::invite::server_link(base);
+    let label = crate::text::escape_hidden(label);
+    Some(match bases.len() {
+        1 => format!("server link ({label}): {link}"),
+        _ => format!("server link ({label}): {link} (type link for the others)"),
+    })
+}
+
 /// The account API's listener: plain, or TLS with the server's own key. Either keeps the open
 /// connections to their places and ends idle ones (Ruling HP9).
 enum ApiListener {
@@ -365,7 +382,8 @@ pub async fn start(
 
 /// `fenji-server run`: serves until Ctrl-C, SIGTERM or the console's `stop`, with `front` in the
 /// terminal it started in (M4 hosting spec §3.1), `hub` being the log's. A first run (§3.6) says
-/// what it wrote before it starts, and what's next once it runs.
+/// what it wrote before it starts, and what's next once it runs. Under `tls = "self"` the start
+/// shows a server link beside "Fenji is running" (§3.10).
 /// - First it claims its data folder (§3.5): another server using it stops this one before it
 ///   opens the store or listens (Review Focus 5). On Linux and macOS the claim is also the console
 ///   socket, which consoles attach to while it serves, and are told goodbye on as it stops;
@@ -412,6 +430,10 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
     };
     let stop = signalled();
     tracing::info!(gate = %server.login_addr, api = %server.api_addr, "Fenji is running");
+    let bases = crate::invite::bases(&cfg, server.pin().as_deref(), server.api_addr.port());
+    if let Some(link) = running_link(&cfg, &bases) {
+        tracing::info!("{link}");
+    }
     match &first_run {
         Some([_, next @ ..]) => {
             for line in next {
@@ -864,6 +886,55 @@ mod tests {
             address_warnings(&tunnelled, Some(pin)),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn under_its_own_key_the_start_shows_one_server_link() {
+        // The hosting plan's final review, Important 2 (spec §3.10): beside "Fenji is running",
+        // the server's own link for players who have an account, and that `link` shows the rest.
+        let cfg = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/")).unwrap()
+        };
+        let pin = "q1o9C1M6ufA5UGrUkSYhW-AXXa3S7jdJ9Fxlp0f2cBo";
+        let base = |label: &str, origin: &str| {
+            let pin = Some(pin.to_owned());
+            (
+                label.to_owned(),
+                crate::invite::InviteBase {
+                    origin: origin.into(),
+                    pin,
+                },
+            )
+        };
+        let own = cfg("tls = \"self\"\napi_bind = \"0.0.0.0:7801\"\n");
+        let one = [base("public_host", "https://203.0.113.5:7801")];
+        assert_eq!(
+            running_link(&own, &one),
+            Some(format!(
+                "server link (public_host): https://203.0.113.5:7801/#pin={pin}"
+            ))
+        );
+        let several = [
+            base("eth0", "https://192.168.1.10:7801"),
+            base("this computer", "https://127.0.0.1:7801"),
+        ];
+        assert_eq!(
+            running_link(&own, &several),
+            Some(format!(
+                "server link (eth0): https://192.168.1.10:7801/#pin={pin} (type link for the \
+                 others)"
+            ))
+        );
+        // An interface's name is shown as the console shows text.
+        let odd = [base("eth\u{1b}[2J0", "https://192.168.1.10:7801")];
+        let shown = running_link(&own, &odd).unwrap();
+        assert!(
+            shown.starts_with("server link (eth\\u{1b}[2J0): "),
+            "{shown}"
+        );
+        // Without its own key there's no pin to give, and no base, no link.
+        assert_eq!(running_link(&cfg(""), &one), None);
+        assert_eq!(running_link(&own, &[]), None);
     }
 
     /// The error a server serving in `served` stops with by itself (30 s at most).

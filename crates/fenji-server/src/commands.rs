@@ -29,6 +29,8 @@ pub enum ConsoleCommand {
     Shared(Command),
     /// `online`, or `list`: who is connected.
     Online,
+    /// `link`: the server's own links, for players who have an account, without an invite.
+    Link,
     /// `accounts`: the accounts, as `account list` shows them.
     Accounts,
     /// `invites`: the invites, as `invite list` shows them, never their codes.
@@ -125,11 +127,12 @@ pub const LABEL_MAX: usize = 64;
 /// usage, which for a command without arguments is its word, and what it does. The palette shows
 /// that beside the usages: on an 80-column terminal, beside `maintenance`'s and before the list's
 /// padding column at the right, it has 26 columns.
-const CONSOLE: [(&str, &str, &str); 19] = [
+const CONSOLE: [(&str, &str, &str); 20] = [
     ("tp", TP_CONSOLE, "take a player to another"),
     ("kick", KICK, "disconnect a player"),
     ("announce", ANNOUNCE, "message everyone (or say)"),
     ("invite", INVITE, "make an invite link"),
+    ("link", "link", "show the server's links"),
     ("online", "online", "who is connected (or list)"),
     ("accounts", "accounts", "list the accounts"),
     ("invites", "invites", "list the invites"),
@@ -265,6 +268,7 @@ pub fn parse_console(line: &str) -> Result<ConsoleCommand, CommandError> {
         "say" if rest.is_empty() => Err(CommandError::Usage(SAY)),
         "say" => Ok(C::Shared(Command::Announce { text: rest.into() })),
         "online" => alone(C::Online, "online"),
+        "link" => alone(C::Link, "link"),
         "list" => alone(C::Online, "list"),
         "accounts" => alone(C::Accounts, "accounts"),
         "invites" => alone(C::Invites, "invites"),
@@ -514,6 +518,7 @@ mod tests {
     fn the_console_parses_its_own_commands_and_the_shared_ones() {
         use ConsoleCommand as C;
         assert_eq!(parse_console("online"), Ok(C::Online));
+        assert_eq!(parse_console("LINK"), Ok(C::Link));
         assert_eq!(parse_console("revoke 12"), Ok(C::Revoke { id: 12 }));
         assert_eq!(
             parse_console("maintenance"),
@@ -575,6 +580,7 @@ mod tests {
     fn console_only_words_stay_unknown_in_chat() {
         for word in [
             "online",
+            "link",
             "accounts",
             "invites",
             "revoke 1",
@@ -610,6 +616,8 @@ mod tests {
                 "kick",
                 "announce",
                 "invite",
+                // The server's links without an invite (the hosting plan's final review).
+                "link",
                 "online",
                 "accounts",
                 "invites",
@@ -716,6 +724,7 @@ mod tests {
     fn wrong_arguments_give_the_usage_of_the_word_typed() {
         for (line, usage) in [
             ("online now", "online"),
+            ("link me", "link"),
             ("list all", "list"),
             ("accounts x", "accounts"),
             ("invites x", "invites"),
