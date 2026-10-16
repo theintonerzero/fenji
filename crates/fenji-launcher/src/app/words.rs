@@ -39,9 +39,16 @@ pub const PREFIX_FAILED: &str = "Proton couldn't set up the game. See the logs."
 /// `umu-run createprefix` ran past its limit, `play::PREFIX_LIMIT` (#348).
 pub const PREFIX_TOO_LONG: &str =
     "Proton's setup ran over 60 minutes, so Fenji stopped it. See the logs.";
-/// A download into a Steam library (Amendment A, LA2).
+/// A download into a Steam library (Amendment A, LA2), where Steam has a copy of the game: the
+/// download folder is set in Settings (#376).
 pub const IN_STEAM_LIBRARY: &str =
-    "Steam looks after that folder. Choose another, or use Steam's copy.";
+    "Steam looks after the download folder. Change it in Settings, or use Steam's copy.";
+/// The same, where Steam has no copy (#376).
+pub const IN_STEAM_LIBRARY_NO_COPY: &str =
+    "Steam looks after the download folder. Change it in Settings.";
+/// Settings' download folder, chosen inside a Steam library (#376).
+pub const STEAM_FOLDER_IN_SETTINGS: &str =
+    "Steam looks after that folder. Choose one outside Steam's libraries.";
 /// Repair from Steam of a copy in a Steam library (LA2).
 pub const REPAIR_IN_STEAM: &str =
     "Steam looks after this copy: in Steam, choose Verify integrity of game files.";

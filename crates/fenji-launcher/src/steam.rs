@@ -94,7 +94,9 @@ pub fn in_library(folder: &Path, roots: &[PathBuf]) -> bool {
             return false;
         };
         apps.canonicalize().is_ok_and(|apps| real.starts_with(apps))
-            || linked_games(&apps).iter().any(|game| real.starts_with(game))
+            || linked_games(&apps)
+                .iter()
+                .any(|game| real.starts_with(game))
     })
 }
 

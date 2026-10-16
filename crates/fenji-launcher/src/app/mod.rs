@@ -309,15 +309,25 @@ impl App {
                 });
                 Ok(())
             }
+            // Each refusal is the arm's value, never a `return`, so it's noted below: Settings'
+            // "Change" passes on no answer (#376).
             Intent::SetDownloadFolder { path } => {
                 if path.trim().is_empty() {
-                    return Err(refused(words::NO_FOLDER));
+                    Err(refused(words::NO_FOLDER))
+                } else if crate::steam::in_library(
+                    std::path::Path::new(&path),
+                    &self.inner.steam_roots,
+                ) {
+                    // Steam looks after its libraries (Amendment A, LA2): refused where the
+                    // folder is chosen, not only once a download starts (#376).
+                    Err(refused(words::STEAM_FOLDER_IN_SETTINGS))
+                } else {
+                    self.change(|st| {
+                        st.settings.download_folder = Some(PathBuf::from(path));
+                        self.save(st);
+                    });
+                    Ok(())
                 }
-                self.change(|st| {
-                    st.settings.download_folder = Some(PathBuf::from(path));
-                    self.save(st);
-                });
-                Ok(())
             }
             Intent::PickFolder { .. }
             | Intent::OpenUrl { .. }
