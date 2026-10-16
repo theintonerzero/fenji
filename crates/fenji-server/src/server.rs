@@ -406,7 +406,9 @@ pub async fn start(
 /// - [`Front::Full`]: the full-screen console holds the terminal while the server runs on a task
 ///   of its own; Ctrl-C there is `stop`. However the console ends, a panic included, it gives the
 ///   terminal back first (Review Focus 2). One that ends while the server runs leaves it running,
-///   and says so, until a signal stops it. Then `run` waits for the server's end.
+///   and says so, until a signal stops it. Then `run` waits for the server's end. Once the server
+///   has stopped, it waits [`CONSOLE_GRACE`] at most for a console that hasn't ended: one whose
+///   terminal has gone may never end.
 /// - [`Front::Plain`]: commands from stdin and answers on stdout, the log being on stderr. The end
 ///   of stdin leaves the server running.
 pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()> {
@@ -476,8 +478,9 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
                 Colours::from_env(),
                 std::future::pending(),
             );
-            let ended = held(tui).await;
-            // The terminal is the host's again, whatever ended the console.
+            let ended = held_until_stopped(tui, console.stopped(), CONSOLE_GRACE).await;
+            // The terminal is the host's again, whatever ended the console, unless the console was
+            // left to its thread, its terminal gone.
             let serving = !served.is_finished() && !*console.stopping().borrow();
             if let Some(note) = closed_note(&ended, serving, &logs) {
                 say(&note);
@@ -529,6 +532,40 @@ pub(crate) async fn held(
         Ok(ended) => ended,
         Err(e) if e.is_panic() => Err(std::io::Error::other(CONSOLE_PANICKED)),
         Err(e) => Err(std::io::Error::other(e.to_string())),
+    }
+}
+
+/// How long `run` waits for its full-screen console once the server has stopped. The console ends
+/// on the server's goodbye at once, unless it's caught in a read of its terminal that never
+/// returns. Closing the window while the console waits for the terminal's answer to where its
+/// cursor is (ratatui's `Terminal::clear`, as it starts) hangs the terminal up, and crossterm then
+/// reads it over and over, a core spinning, on the console's thread (the fix pass's re-review,
+/// NB1).
+const CONSOLE_GRACE: Duration = Duration::from_secs(2);
+
+/// Why `run` stops waiting for the full-screen console: the server has stopped, and the console
+/// didn't end within [`CONSOLE_GRACE`].
+const CONSOLE_LEFT: &str = "the server has stopped, but the console hasn't ended, its terminal \
+     likely gone: it's left behind";
+
+/// [`held`], waited for no longer than `grace` once the server has `stopped`
+/// ([`ConsoleService::stopped`]). A console still running then, such as one whose terminal hung
+/// up, is left to its thread, which `main` doesn't wait for, so that the process ends.
+async fn held_until_stopped(
+    console: impl Future<Output = std::io::Result<Ending>> + Send + 'static,
+    mut stopped: watch::Receiver<bool>,
+    grace: Duration,
+) -> std::io::Result<Ending> {
+    let left = async move {
+        let _ = stopped.wait_for(|stopped| *stopped).await;
+        tokio::time::sleep(grace).await;
+    };
+    tokio::select! {
+        ended = held(console) => ended,
+        () = left => {
+            tracing::info!("{CONSOLE_LEFT}");
+            Err(std::io::Error::other(CONSOLE_LEFT))
+        }
     }
 }
 
@@ -794,6 +831,37 @@ mod tests {
             );
             assert_eq!(console.await.unwrap(), Ending::InputClosed);
         });
+    }
+
+    #[test]
+    fn a_console_that_hasnt_ended_once_the_server_has_stopped_is_left_behind() {
+        // The fix pass's re-review, NB1: a console caught in a read of a terminal that has gone
+        // never ends, and `run` waited for it without end, the process with it.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let grace = Duration::from_millis(100);
+            let (stop, stopped) = watch::channel(false);
+            let stuck = future::pending::<std::io::Result<Ending>>();
+            let mut waiting = Box::pin(held_until_stopped(stuck, stopped.clone(), grace));
+            // While the server serves, a console is waited for, however long it takes.
+            let serving = tokio::time::timeout(Duration::from_millis(500), &mut waiting).await;
+            assert!(serving.is_err(), "left while the server served");
+            // Once it has stopped, `grace` at most.
+            stop.send_replace(true);
+            let left = tokio::time::timeout(Duration::from_secs(10), waiting).await;
+            let left = left.expect("waited for without end");
+            assert_eq!(left.unwrap_err().to_string(), CONSOLE_LEFT);
+            // A console that ends on the server's goodbye ends so.
+            let bye = Ending::ServerStopped(service::STOPPING.into());
+            let ending = bye.clone();
+            let ended = held_until_stopped(async move { Ok(ending) }, stopped, grace).await;
+            assert_eq!(ended.unwrap(), bye);
+        });
+        // As `main` does: the console left behind keeps its thread, which isn't waited for.
+        rt.shutdown_background();
     }
 
     #[test]
