@@ -3,12 +3,13 @@
 //! log; or a bare code.
 use fenji_auth::invite::InviteCode;
 
-use crate::pin::ServerAddr;
+use crate::pin::{ServerAddr, unwrapped};
 
 /// The server's address (when the input is a link) and the code. A link whose pin, or anything
-/// else in its fragment, doesn't read is no link: it never falls back to an unpinned address.
+/// else in its fragment, doesn't read is no link: it never falls back to an unpinned address. A
+/// link wrapped over several lines reads as one ([`unwrapped`]).
 pub fn parse(input: &str) -> Option<(Option<ServerAddr>, InviteCode)> {
-    let input = input.trim();
+    let input = unwrapped(input);
     match input.split_once('#') {
         Some((server, fragment)) => {
             let (mut code, mut pin) = (None, None);
@@ -31,7 +32,7 @@ pub fn parse(input: &str) -> Option<(Option<ServerAddr>, InviteCode)> {
             };
             Some((Some(ServerAddr::parse(&address).ok()?), code))
         }
-        None => Some((None, InviteCode::parse(input)?)),
+        None => Some((None, InviteCode::parse(&input)?)),
     }
 }
 
@@ -78,5 +79,27 @@ mod tests {
             ))
             .is_none()
         );
+    }
+
+    #[test]
+    fn a_link_copied_from_a_wrapped_line_still_reads() {
+        // The host console wraps a long link onto rows of its own (#357), and chat apps and mail
+        // wrap it too: whitespace inside a link is never part of it.
+        let pin = "A".repeat(43);
+        let (head, tail) = pin.split_at(20);
+        for wrapped in [
+            format!("https://192.0.2.10:7801/#invite=ABCD-EFGH-JKMN-PQRS&pin={head}\n   {tail}"),
+            format!("https://192.0.2.10:7801/#invite=ABCD-EFGH-\r\nJKMN-PQRS&pin={head} {tail}\n"),
+            format!("https://192.0.2.10:\n   7801/#invite=ABCD-EFGH-JKMN-PQRS&pin={pin}"),
+        ] {
+            let (server, code) = parse(&wrapped).unwrap_or_else(|| panic!("{wrapped:?}"));
+            let server = server.unwrap();
+            assert_eq!(server.origin, "https://192.0.2.10:7801");
+            assert_eq!(server.pin.unwrap().to_string(), pin);
+            assert_eq!(code.display(), "ABCD-EFGH-JKMN-PQRS");
+        }
+        let (server, code) = parse("ABCD-EFGH-\n   JKMN-PQRS").unwrap();
+        assert!(server.is_none());
+        assert_eq!(code.display(), "ABCD-EFGH-JKMN-PQRS");
     }
 }
