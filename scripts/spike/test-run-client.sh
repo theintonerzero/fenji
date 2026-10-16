@@ -856,7 +856,7 @@ W4=$TESTROOT/w4
 workspace "$W4"
 rm -f -- "$W4/compat/fenji-primed"
 flow unmarked "$W4" --server "$F/fenji.toml" --timeout 3
-if [ "$rc" = 1 ] && [[ $out == *"or before builds were recorded"*"run once: "*" setup"* ]] &&
+if [ "$rc" = 1 ] && [[ $out == *"or before builds were recorded"*"remove "*"/compat, then run: "*" setup"* ]] &&
   [ ! -e "$F/log/unmarked/proton" ] && [ ! -e "$W4/out/unmarked" ]; then
   ok "a run refuses a prefix no GE-Proton build marked"
 else
@@ -911,8 +911,9 @@ if [ "$rc" = 1 ] && [[ $out == *"client2 exists already"* ]]; then ok "setup ref
 usage_setup=$( (cmd_setup --clients 3) 2>&1 > /dev/null)
 if [[ $usage_setup == *"--clients takes 1 or 2"* ]]; then ok "setup's --clients takes 1 or 2"; else bad "setup --clients 3: $usage_setup"; fi
 
-# setup marks the prefix with the GE-Proton build that primed it, and primes again, in place, one
-# that another build primed or that no build marked (#174).
+# setup marks the prefix with the GE-Proton build that primed it (#174), and never starts Wine in a
+# prefix that runs have used: one another build primed, or that no build marked, is refused until
+# it's removed, then made fresh, the client copies kept (#373's review; #148).
 # setup_flow NAME WORK ARGS...: cmd_setup ARGS with the stand-ins and WORK as the workspace, its
 # records in $F/log/NAME; sets rc and out.
 setup_flow() {
@@ -945,22 +946,33 @@ else
 fi
 for case in other unmarked; do
   if [ "$case" = other ]; then echo "1789000000 GE-Proton-other" > "$PW/compat/fenji-primed"; else rm -f -- "$PW/compat/fenji-primed"; fi
+  before=$(cat -- "$PW/compat/fenji-primed" 2> /dev/null || echo none)
   setup_flow "setup-$case" "$PW"
-  if [ "$rc" = 0 ] && [ "$(cat "$PW/compat/fenji-primed")" = "$(cat "$F/proton/version")" ] &&
-    [ "$(grep -c '"exe": "cmd.exe"' "$F/log/setup-$case/proton" 2> /dev/null)" = 1 ] && [ ! -e "$F/log/setup-$case/cp" ]; then
-    ok "setup primes again, in place, a prefix $([ "$case" = other ] && echo "another GE-Proton build primed" || echo "no build marked")"
+  if [ "$rc" = 1 ] && [[ $out == *"remove $PW/compat, then run setup again"* ]] &&
+    [ ! -e "$F/log/setup-$case/proton" ] && [ ! -e "$F/log/setup-$case/wrap" ] &&
+    [ "$(cat -- "$PW/compat/fenji-primed" 2> /dev/null || echo none)" = "$before" ]; then
+    ok "setup never starts Wine in a used prefix $([ "$case" = other ] && echo "another GE-Proton build primed" || echo "no build marked"), and says to remove it"
   else
-    bad "setup on a prefix ($case): rc $rc: $out"
+    bad "setup on a used prefix ($case): rc $rc: $out"
   fi
 done
-# A prime that doesn't run (here the wrapper refuses) leaves the prefix as it was, so its mark too.
-echo "1789000000 GE-Proton-other" > "$PW/compat/fenji-primed"
-FAKE_WRAP_FAIL=1 setup_flow setup-failed "$PW"
-if [ "$rc" = 1 ] && [[ $out == *"Proton's launcher failed (exit 1)"* ]] &&
-  [ "$(cat "$PW/compat/fenji-primed")" = "1789000000 GE-Proton-other" ]; then
-  ok "a prime that fails leaves the prefix's mark as it was"
+# Once the used prefix is removed, setup makes a fresh one, and keeps the client copies.
+rm -rf -- "$PW/compat"
+setup_flow setup-fresh "$PW"
+if [ "$rc" = 0 ] && [ -f "$PW/compat/pfx/system.reg" ] && [ "$(cat "$PW/compat/fenji-primed")" = "$(cat "$F/proton/version")" ] &&
+  [ "$(grep -c '"exe": "cmd.exe"' "$F/log/setup-fresh/proton" 2> /dev/null)" = 1 ] && [ ! -e "$F/log/setup-fresh/cp" ] &&
+  [ -f "$PW/client/bin64/gujianol.exe" ]; then
+  ok "setup makes a removed prefix fresh, and keeps the client copies"
 else
-  bad "a failed prime: rc $rc, mark '$(cat "$PW/compat/fenji-primed")': $out"
+  bad "setup on a removed prefix: rc $rc: $out"
+fi
+# A prime that doesn't run (here the wrapper refuses) leaves the prefix unmarked.
+rm -rf -- "$PW/compat"
+FAKE_WRAP_FAIL=1 setup_flow setup-failed "$PW"
+if [ "$rc" = 1 ] && [ ! -e "$PW/compat/fenji-primed" ]; then
+  ok "a prime that fails leaves the prefix unmarked"
+else
+  bad "a failed prime: rc $rc, mark '$(cat "$PW/compat/fenji-primed" 2> /dev/null)': $out"
 fi
 
 guard

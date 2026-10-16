@@ -10,8 +10,11 @@
 #       a second reflink copy for a two-client run's second client; on an existing workspace,
 #       client2/ only. The prefix's mark (compat/fenji-primed) names the GE-Proton build that made
 #       it. A run refuses a prefix another build primed, or one no build marked: that build would
-#       upgrade it during the run, which the watchdog takes for a gate event (#174). So after a
-#       GE-Proton bump, run setup once: on an existing workspace it primes the prefix again, in place.
+#       upgrade it during the run, which the watchdog takes for a gate event (#174). Setup never
+#       starts Wine in a prefix that runs have used, as booting it starts every service its registry
+#       holds, a driver service a stopped run left there among them, with no watchdog (#148). So
+#       after a GE-Proton bump, remove re/runs/compat and run setup: on an existing workspace it
+#       makes a fresh prefix, and keeps the client copies.
 #   scripts/spike/run-client.sh run NAME [--hosts FILE] [--ports "P1 P2"] [--timeout S]
 #       [--display N] [--no-gpu] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
 #       [--click T:X,Y]... [--key T:KEY[/MS]]... [--type T:TEXT]... [--stub-arg ARG]...
@@ -194,8 +197,7 @@ prefix_marked() {
   [ -f "$WORK/compat/$PRIMED_MARK" ] && [ "$(cat -- "$WORK/compat/$PRIMED_MARK")" = "$(proton_build)" ]
 }
 
-# prime_prefix: makes the prefix, or brings an existing one up to this GE-Proton build, through
-# Proton's own launcher (its steam.exe shim, which also registers Proton's Discord bridge service),
+# prime_prefix: makes a fresh prefix through Proton's own launcher (its steam.exe shim, which also registers Proton's Discord bridge service),
 # and leaves wineserver to exit cleanly so the registry reaches disk: everything Proton sets up
 # belongs to the watchdog's baseline. A prefix, a service or an upgrade appearing during a client run
 # would look like driver activity to the watchdog. Marks the prefix only once Proton's run has
@@ -247,15 +249,21 @@ cmd_setup() {
     return 0
   fi
   if [ -e "$WORK/client" ]; then
-    # An existing workspace's prefix that another GE-Proton build primed, or that no build marked,
-    # is primed again in place, so that this build upgrades it now, not inside a watched run.
-    if prefix_marked; then
-      die "$WORK/client exists already, and this GE-Proton build primed its prefix; remove re/runs/ to start over"
+    # Setup never starts Wine in a prefix that runs have used: booting it starts every service its
+    # registry holds, a driver service a stopped run left there among them, with no watchdog
+    # (#148). A prefix that isn't this GE-Proton build's is made again, fresh, once it's removed;
+    # the client copies stay.
+    if [ -e "$WORK/compat" ]; then
+      if prefix_marked; then
+        die "$WORK/client exists already, and this GE-Proton build primed its prefix; remove re/runs/ to start over"
+      fi
+      die "another GE-Proton build primed the prefix, or it was primed before builds were recorded, and setup never starts Wine in a prefix that runs have used (#148): remove $WORK/compat, then run setup again; it makes a fresh prefix and keeps the client copies"
     fi
     [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
     need_display "$display"
+    mkdir -p "$WORK/compat"
     prime_prefix
-    echo "the prefix is primed for this GE-Proton build: $WORK/compat"
+    echo "a fresh prefix, primed for this GE-Proton build: $WORK/compat"
     return 0
   fi
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
@@ -605,7 +613,7 @@ cmd_run() {
   [ -f "$hosts" ] || die "hosts file missing: $hosts"
   [ -x "$PROTON/proton" ] || die "GE-Proton not found at $PROTON (run scripts/bootstrap.sh)"
   prefix_marked ||
-    die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run, which the watchdog takes for a gate event; run once: $0 setup"
+    die "the prefix was primed by another GE-Proton build, or before builds were recorded, and this one would upgrade it during the run, which the watchdog takes for a gate event; remove $WORK/compat, then run: $0 setup"
   if [ -n "$server_cfg" ]; then
     [ -x "$STUBBIN/fenji-server" ] || die "build the server first: cargo build --release -p fenji-server"
     if [ -n "$launch" ]; then
