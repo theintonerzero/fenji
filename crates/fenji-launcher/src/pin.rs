@@ -354,6 +354,15 @@ mod tests {
             ServerAddr::parse("https://play.example.net:78 01"),
             Err(ApiError::BadUrl)
         ));
+        // A tab too, which the URL parser alone would take out (WHATWG), and the spaces of other
+        // scripts.
+        for gap in ['\t', '\u{a0}', '\u{3000}'] {
+            let typed = format!("https://play{gap}example.net");
+            assert!(
+                matches!(ServerAddr::parse(&typed), Err(ApiError::BadUrl)),
+                "{typed:?}"
+            );
+        }
         // A line break in the address is still a wrap.
         let a = ServerAddr::parse("https://play.\r\n   example.net").unwrap();
         assert_eq!(a.origin, "https://play.example.net");

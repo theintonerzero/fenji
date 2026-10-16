@@ -23,14 +23,23 @@ test("a paste on one line is the field's own, spaces and all", () => {
   expect(paste(input, "https://play example.net").defaultPrevented).toBe(false);
 });
 
+test("only a link's wrap is joined: other lines are the field's own, as the model reads them", () => {
+  // Task 3's review: two lines that aren't a link would join into a host neither line shows. The
+  // model joins a wrap only in a link (text with # or ://), and refuses an address with a space.
+  const input = linkField();
+  expect(paste(input, "play.example.net\nevil.example").defaultPrevented).toBe(false);
+  expect(paste(input, "https://play.example.\n  net").defaultPrevented).toBe(true);
+});
+
 test("a wrapped paste replaces the selection, and the caret ends after it", () => {
   const input = linkField();
   const typed: string[] = [];
   input.addEventListener("input", () => typed.push(input.value));
   input.value = "[old]";
   input.setSelectionRange(0, 5);
-  paste(input, "ABCD-EFGH-  \r\n\t JKMN-PQRS");
-  expect(input.value).toBe("ABCD-EFGH-JKMN-PQRS");
-  expect(input.selectionStart).toBe(19);
-  expect(typed).toEqual(["ABCD-EFGH-JKMN-PQRS"]);
+  paste(input, "https://moonward.example.net/#invite=K7QM-  \r\n\t 3XRD-VN2P-HT8B");
+  const joined = "https://moonward.example.net/#invite=K7QM-3XRD-VN2P-HT8B";
+  expect(input.value).toBe(joined);
+  expect(input.selectionStart).toBe(joined.length);
+  expect(typed).toEqual([joined]);
 });
