@@ -251,10 +251,11 @@
 }
 
 /* The top bar: the address at the left; the Game chip, the account, Settings and the window
- * controls at the right. It stays above a popover's scrim. */
+ * controls at the right. It stays above a popover's scrim and a dialog's, so the window's controls
+ * and its drag always work; under a dialog the popovers' controls are inert (#376). */
 .top {
   position: relative;
-  z-index: 4;
+  z-index: 6;
   flex: none;
   display: flex;
   align-items: center;

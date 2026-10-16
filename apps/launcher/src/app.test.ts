@@ -235,3 +235,70 @@ test("a changed key arriving while a popover is open closes it and asks once", a
   push(golden("servers"));
   expect(root.querySelectorAll('.dialog[role="dialog"]')).toHaveLength(0);
 });
+
+/** The open dialog whose title is `title`. */
+const dialogTitled = (root: HTMLElement, title: string) =>
+  [...root.querySelectorAll<HTMLElement>('.dialog[role="dialog"]')].find((d) => d.querySelector(".dialog-title")!.textContent!.startsWith(title))!;
+
+test("a dialog that closes onto another gives that one focus, not its opener (#376)", async () => {
+  const { root, push } = await mounted(golden("servers"));
+  const plus = root.querySelector<HTMLButtonElement>('.rail button[aria-label="Add a server"]')!;
+  plus.focus();
+  plus.click();
+  await settle();
+  // The key's snapshot comes while Add is open: its dialog comes over Add, and takes focus.
+  push(golden("servers-key-change"));
+  await settle();
+  const key = dialogTitled(root, "A new key");
+  expect(key.contains(document.activeElement)).toBe(true);
+  // Add then closes: focus stays in the key's dialog, never + in the rail behind it.
+  [...dialogTitled(root, "Add a server").querySelectorAll("button")].find((b) => b.textContent === "Cancel")!.click();
+  expect(key.contains(document.activeElement)).toBe(true);
+});
+
+test("under a dialog the top bar's window controls still work, and its popover controls wait (#376)", async () => {
+  const { root, push } = await mounted(golden("servers-key-change"));
+  for (const label of ["Game", "Account", "Settings"]) {
+    expect(control(root, label).closest("[inert]"), label).not.toBeNull();
+  }
+  for (const label of ["Minimise", "Close"]) {
+    expect(control(root, label).closest("[inert]"), label).toBeNull();
+  }
+  push(golden("servers"));
+  for (const label of ["Game", "Account", "Settings"]) {
+    expect(control(root, label).closest("[inert]"), label).toBeNull();
+  }
+});
+
+test("when Stop goes with its job, focus goes to PLAY, not the page (#376)", async () => {
+  const { root, push } = await mounted(golden("play-checking"));
+  const stop = [...root.querySelectorAll<HTMLButtonElement>(".stage-body button")].find((b) => b.textContent === "Stop" && !b.hidden)!;
+  stop.focus();
+  push(golden("play-ready"));
+  expect(document.activeElement).toBe(root.querySelector(".stage-body button.play"));
+});
+
+test("when the Game popover's job ends under focus, focus stays in the popover (#376)", async () => {
+  const { root, push } = await mounted(golden("client-downloading"));
+  control(root, "Game").click();
+  await settle();
+  const panel = root.querySelector<HTMLElement>(".popover")!;
+  const cancel = [...panel.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Cancel")!;
+  cancel.focus();
+  push(golden("client-verified"));
+  expect(cancel.isConnected).toBe(false);
+  expect(panel.contains(document.activeElement)).toBe(true);
+});
+
+test("Account › Sign in leaves focus on the sign-in's first field, not a hidden avatar (#376)", async () => {
+  const { root, push } = await mounted(golden("servers"));
+  control(root, "Account").click();
+  await settle();
+  [...root.querySelectorAll<HTMLButtonElement>(".popover button")].find((b) => b.textContent === "Sign in")!.click();
+  await settle();
+  const there = golden("servers");
+  there.active = 2;
+  push(there);
+  expect(root.querySelector(".stage-body h1")!.textContent).toBe("Sign in to Jade Hall");
+  expect(document.activeElement).toBe(root.querySelector(".stage-body input"));
+});

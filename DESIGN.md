@@ -481,7 +481,7 @@ The titles sit on the Minor Third (1.200) from a 15 px base, rounded to whole pi
 
 The launcher is a fixed 1200 × 720 window without the system's frame: no resizing and no maximise, minimise and close only, in its own top bar. The empty space of the rail and of the top bar drags the window.
 
-The window is two columns: the rail (72 px) and the stage (1128 px). The stage holds the top bar (56 px), the stage's body, and the layers that float over it: popovers, dialogs and the toast. Scrims cover the stage only; the rail stays lit beside them.
+The window is two columns: the rail (72 px) and the stage (1128 px). The stage holds the top bar (56 px), the stage's body, and the layers that float over it: popovers, dialogs and the toast. Scrims cover the stage's body: the top bar stays above them, and the rail lit beside them.
 
 - **The rail:** the 焚 seal 16 px from the top, then the seals, 44 px and 14 px apart (their state bars sit in the gap), then +. With more servers than fit, past nine or so, the seals scroll with the scrollbar hidden, keeping 4 px above and 8 px below so an edge or a bar is never clipped, and + stays below them, in reach. With no servers (Welcome), + sits straight under the seal.
 - **The top bar:** 72 px in from the stage's left and 16 px from its right, controls 14 px apart, so the address starts at x 144, in line with the stage's group.
@@ -533,7 +533,7 @@ The 焚 seal is a square ember tile with gently rounded corners and the glyph in
 - **Keyboard:** the arrow keys, Home and End move along the seals and +.
 
 ### The top bar
-- **Structure:** 56 px, above the stage's body and above a popover's scrim: the address at the left; then the Game chip, the account, Settings, a 1 px line, and Minimise and Close, 14 px apart.
+- **Structure:** 56 px, above the stage's body and above a popover's or a dialog's scrim: the address at the left; then the Game chip, the account, Settings, a 1 px line, and Minimise and Close, 14 px apart. Under a dialog, Minimise, Close and the drag still work, and the chip, the account and Settings wait (inert) until it closes.
 - **Address:** the active server's address in Geist Mono 13 px, faint, cut with an ellipsis at 420 px.
 - **Game chip:** a 32 px pill with 13 px sides and a 1 px line-strong ring: an 8 px dot and two or three words in 13.5 px text-2. "Game ready" has a jade dot; "Verifying", "Downloading 42%", "Set up the game" and "Not verified" a muted one; "1 file needs repair" and "Game folder missing" are amber words with an amber dot and a 40% amber ring. Under the pointer it takes text colour and an outline ring; open, ink-800 with an outline ring.
 - **Account:** a 32 px circle of ember-tint with the player's initials in gold 12.5 px 600 and a 25% gold ring (55% under the pointer); a person figure while signed out. Open, a 2 px ember-500 ring.
@@ -609,7 +609,7 @@ Game, Account and Settings open under their own control in the top bar, and clos
 - **Settings:** Auto-update with its switch, over "0.5.1 · up to date · Check now" (Restart once an update is ready); on Linux, umu-run (a mono field, "Automatic") and Download folder; then Logs, Licences, Source and Privacy as gold links.
 
 ### Dialogs
-- **Shape:** 500 px, centred on the stage, ink-850, 12 px corners, 30 px of padding above, 32 px at the sides and 28 px below, the dialog shadow. It pops in over 220 ms over the scrim, which covers the stage and its top bar but not the rail. `role="dialog"` with `aria-modal`; focus stays inside and goes back where it was when it closes; Escape or the scrim closes it.
+- **Shape:** 500 px, centred on the stage, ink-850, 12 px corners, 30 px of padding above, 32 px at the sides and 28 px below, the dialog shadow. It pops in over 220 ms over the scrim, which covers the stage's body but not the top bar or the rail. `role="dialog"` with `aria-modal`; focus stays inside and goes back where it was when it closes, or to the dialog it closes onto; Escape or the scrim closes it.
 - **Anatomy:** the title in Cinzel 600 26 px; a description 10 px below in 15 px Prose (line-height 1.55); the body 18 px below; then the actions at the bottom right, 24 px below and 12 px apart: the outline first, then the one ember.
 - **Add a server** (from +, or from Paste new link): "Address or invite link" in a mono field, then Cancel and Add; a refusal shows under the field.
 - **A key** ("A new key for Moonward"): what the link carries and whom to trust, then Keep the old key and Use the new key. Escape keeps the old key.
