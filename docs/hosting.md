@@ -176,7 +176,7 @@ Signed-in players' launchers list the characters in the world, those still loadi
 The server's program takes commands of its own too, for scripts and for times the server isn't running; `--help` lists them. They're safe while the server runs. Run them from the server's folder, as the user the server runs as:
 - on Linux and macOS, as `./fenji-server <command>`;
 - on Windows, in a Command Prompt, as `fenji-server.exe <command>`;
-- on the reference VPS (section 4), as `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`, never as root: a folder root makes in the data folder, such as `backups`, is root's, and the service can't use it.
+- on the reference VPS (section 4), as `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`, never as root: a folder root makes in the data folder, such as `backups`, is root's, and the service can't use it. The one exception is `init`, which writes the settings into `/etc/fenji`, where only root may write, and touches no data (section 4).
 
 | Command | What it does |
 |---|---|
@@ -343,7 +343,7 @@ Allow SSH first (port 22, or the port you moved it to), or `ufw enable` shuts yo
 
 ### Invite players, and attach the console
 
-Each console command runs at the server with `console --run`, as the `fenji` user. Run the server's other commands as `fenji` too (section 2's "Commands outside the console"), never as root: the data folder is that user's alone.
+Each console command runs at the server with `console --run`, as the `fenji` user. Run the server's other commands as `fenji` too (section 2's "Commands outside the console"), never as root, `init` above aside: the data folder is that user's alone.
 
 ```sh
 sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run invite
@@ -480,14 +480,17 @@ The update goes into your server's folder, so that its settings, its data and ev
 
 1. In the console, type `maintenance on 15m Updating Fenji`, then `backup`, then `stop`.
 2. Download the new version's archive (section 2), and unpack it anywhere but your server's folder, such as your Downloads folder.
-3. Copy everything in the new version's folder into your server's folder, replacing the old files. The archive holds no `fenji.toml` and no `data` folder, so yours stay. On Linux and macOS, from where you unpacked it, with the new folder's name:
+3. Copy everything in the new version's folder into your server's folder, replacing the old files. The archive holds no `fenji.toml` and no `data` folder, so yours stay.
+   - On Linux and macOS, delete the old program first, then copy. On macOS, a program copied into the old one's file can be killed as it starts, as macOS remembers the old program's signature; on Linux, a copy can't replace a program something still runs ("Text file busy"). In these two lines, put the new version's folder in place of `~/Downloads/fenji-server-0.5.1-x86_64-unknown-linux-musl`, and your server's folder in place of `~/fenji-server`, if yours are elsewhere or named otherwise:
 
-   ```sh
-   cp -R fenji-server-0.5.1-x86_64-unknown-linux-musl/. ~/fenji-server/
-   ```
+     ```sh
+     rm ~/fenji-server/fenji-server
+     cp -R ~/Downloads/fenji-server-0.5.1-x86_64-unknown-linux-musl/. ~/fenji-server/
+     ```
 
+   - On Windows, copy the new folder's files into your server's folder in Explorer, and choose "Replace the files in the destination".
 4. Start the start script. Windows and macOS may ask again, as on the first start.
-5. Check that it runs (`maintenance` shows it's still on), then type `maintenance off`.
+5. Check that it runs the new version: the console's status line shows its number, such as `v0.5.1`, and `maintenance` shows it's still on. Then type `maintenance off`.
 
 ## 6. Backups and restoring
 
@@ -554,7 +557,7 @@ sudo systemctl start fenji
 
 On your own computer: stop the server, copy the backup over `data/fenji.db`, delete `data/fenji.db-wal` and `data/fenji.db-shm` if they're there, and start it.
 
-**Moving to another VPS.** Set the server up there as in section 4, and bring your settings across: in the new `/etc/fenji/fenji.toml`, set `name`, `motd`, `host` and `admins` as they were in the old one, with the new VPS's address in `public_host`. Copy your `fenji-backup.tar.gz` to it. Then stop the server, unpack the copy into the data folder, key included, give its files to the `fenji` user, put a backup in place of the database, and start it again:
+**Moving to another VPS.** Set the server up there as in section 4, and bring your settings across: in the new `/etc/fenji/fenji.toml`, set `name`, `motd`, `host`, `max_players` and `admins` as they were in the old one, with the new VPS's address in `public_host`. Copy your `fenji-backup.tar.gz` to it. Then stop the server, unpack the copy into the data folder, key included, give its files to the `fenji` user, put a backup in place of the database, and start it again:
 
 ```sh
 sudo systemctl stop fenji
@@ -600,6 +603,40 @@ xattr -dr com.apple.quarantine ~/fenji-server
 **It says "can't attach to the server: the path of its console socket, …, is too long for a socket here".** The server said as much in its log when it started, and runs without a socket. Move the data folder to a shorter path, or start the server from its own folder, as the start scripts do (section 2).
 
 **An attached console closes at once, saying "The cursor position could not be read within a normal duration".** The full-screen console asks the terminal where its cursor is, and this terminal didn't answer. Attach with `--plain`, or from a terminal program or tmux.
+
+**The service won't start, and `systemctl status fenji` shows `status=217/USER` or `status=226/NAMESPACE`.** `sudo journalctl -u fenji` says why, such as "Failed to keep CAP_SYS_ADMIN: Operation not permitted". Your VPS is most likely a container itself (LXC, OpenVZ and the like), whose systemd lacks a privilege that part of the service's sandbox needs: the settings that filter the server's system calls. Turn those off, for both services, and start the server again:
+
+```sh
+sudo mkdir -p /etc/systemd/system/fenji.service.d /etc/systemd/system/fenji-backup.service.d
+sudo tee /etc/systemd/system/fenji.service.d/container.conf /etc/systemd/system/fenji-backup.service.d/container.conf > /dev/null <<'EOF'
+[Service]
+LockPersonality=no
+MemoryDenyWriteExecute=no
+PrivateDevices=no
+ProtectClock=no
+ProtectHostname=no
+ProtectKernelLogs=no
+ProtectKernelModules=no
+ProtectKernelTunables=no
+RestrictNamespaces=no
+RestrictRealtime=no
+RestrictSUIDSGID=no
+SystemCallArchitectures=
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart fenji
+systemctl is-active fenji
+```
+
+`sudo systemctl edit fenji` and `sudo systemctl edit fenji-backup` take the same lines, one service at a time. The server still runs as its own user, without privileges, and keeps the rest of its sandbox where the VPS allows it. If the journal says "Failed to set up mount namespacing" instead, turn off the settings that need a mount namespace too, and start it again:
+
+```sh
+printf 'ProtectSystem=no\nProtectHome=no\nPrivateTmp=no\nProtectControlGroups=no\n' | sudo tee -a /etc/systemd/system/fenji.service.d/container.conf /etc/systemd/system/fenji-backup.service.d/container.conf > /dev/null
+sudo systemctl daemon-reload
+sudo systemctl restart fenji
+```
+
+To undo either, delete the two `container.conf` files, then `sudo systemctl daemon-reload` and restart the server.
 
 **The server won't start, and its log says "can't listen on 0.0.0.0:7800".** Another program, or another Fenji server, uses that port.
 

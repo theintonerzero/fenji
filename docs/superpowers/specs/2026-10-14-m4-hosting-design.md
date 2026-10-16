@@ -198,7 +198,7 @@ Hosts with a domain keep parent §8's path: Caddy in front of the account API, w
 
 **The default path for the internet (H2)** is open ports. Parent §8 designed it that way, and players install nothing more. The write-up recommends a VPN to anyone who wants their game traffic private.
 
-**Verifying the write-up (H12):** a fresh Debian container with systemd (podman), set up by following `docs/hosting.md` alone, with `tls = "self"`, the backup timer and an attached console. A real VPS, and friends on other machines, are M4's acceptance session (umbrella §5).
+**Verifying the write-up (H12):** a fresh Debian container with systemd (podman), set up by following `docs/hosting.md` alone, with `tls = "self"`, the backup timer and an attached console. Under rootless podman the container runs with `--cap-add=SYS_ADMIN --security-opt label=disable`: the units' sandbox needs CAP_SYS_ADMIN in systemd's hands, as a VM's systemd has it (systemd keeps it for a non-root service's system call filters), and with it, systemd's own journald needs the container's SELinux label lifted. Without them, the units stop at `217/USER`, which the write-up's troubleshooting covers for a VPS that is itself a container. A real VPS, and friends on other machines, are M4's acceptance session (umbrella §5).
 
 ## 4. Testing
 
@@ -231,7 +231,7 @@ Hosts with a domain keep parent §8's path: Caddy in front of the account API, w
 ## 5. Done when
 
 The umbrella spec's §3.2, made concrete:
-- The reference deployment works in a fresh Debian container by following `docs/hosting.md` alone (H12): systemd, `tls = "self"` or Caddy, the firewall commands, nightly backups.
+- The reference deployment works in a fresh Debian container by following `docs/hosting.md` alone (H12; under rootless podman, a container with `--cap-add=SYS_ADMIN --security-opt label=disable`): systemd, `tls = "self"` or Caddy, the firewall commands, nightly backups.
 - Hosts without a domain have a documented path: `tls = "self"` and pinned links (H1).
 - The console runs `fenji-server`, with live logs above and a command line below:
   - in its own terminal on Linux, Windows and macOS, and over SSH;
