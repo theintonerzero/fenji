@@ -30,7 +30,14 @@ The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-1
 
 - **0.5.1:** T1, T2 and T3, what M4's acceptance session will touch first.
 - **0.5.2:** T4 to T7, robustness, tests, docs and tooling, and T10, a copy Steam installed.
-- **0.5.3:** T8 and T9, what needs the client, T11 to T13, DepotDownloader inside the launcher, and T14, the update script.
+- **0.5.3:** what the owner's own server on v0.5.2 showed (#382, quitting from the world; #383, the launcher's window), the deferred minors (#376, #378), T8's back to character select (#282) and T9's name check, both static and tested, and T14, the update script.
+- **0.5.4:**
+  - T11 to T13, DepotDownloader inside the launcher, whose rehearsal needs the owner's Steam account and phone;
+  - T8's and T9's client runs: back to character select and quitting, checked with the client, then `!tp` across scenes;
+  - T9's face string, validated as the client's shared validator does;
+  - the patcher (#336), whose design waits for the owner.
+
+  The ruling of 2026-10-17, while the owner was away: release what's ready, rather than hold the fixes the owner's acceptance session needs behind the work that needs the owner.
 
 Each release follows `docs/development.md`'s steps, and the owner approves its `sign` job.
 
