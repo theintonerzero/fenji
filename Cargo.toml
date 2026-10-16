@@ -36,6 +36,8 @@ fenji-store = { path = "crates/fenji-store" }
 futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
 getrandom = "0.4.3"
 if-addrs = "0.15.0"
+# The server's few C library calls that std, tokio and rustix don't wrap (fenji-server's unix.rs).
+libc = "0.2.190"
 libloading = "0.9.0"
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 mlua = { version = "0.12.2", features = ["lua53", "vendored"] }

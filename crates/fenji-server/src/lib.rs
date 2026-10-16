@@ -8,6 +8,7 @@ pub mod clock;
 pub mod commands;
 pub mod config;
 pub mod console;
+pub mod folder;
 pub mod gate;
 pub mod invite;
 mod link;
@@ -19,6 +20,8 @@ pub mod server;
 pub mod status;
 pub mod text;
 pub mod tls;
+#[cfg(unix)]
+mod unix;
 pub mod world;
 
 /// The most characters `[lobby] max_characters` may allow.

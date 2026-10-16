@@ -13,7 +13,7 @@ use fenji_store::Store;
 
 use crate::clock::{Clock, Utc};
 use crate::config::{Config, Tls};
-use crate::invite::InviteBase;
+use crate::invite::{InviteBase, server_link};
 use crate::text::escape_hidden;
 
 /// `--expires`'s durations, which the console's `maintenance on` takes too.
@@ -118,12 +118,13 @@ pub(crate) fn ms_after(now: i64, lasts: Duration) -> i64 {
 }
 
 /// What `invite create` and the console's `invite` say of a new invite with `code`: a link for each
-/// of `bases`, the code, and what links need where there are none, or how they go further. `pin` is
-/// the server's own key's, and `ports` the gate's and the API's.
+/// of `bases`, each with the server's own link beside it, the code, and what links need where
+/// there are none, or how they go further ([`link_hint`]). `pin` is the server's own key's, and
+/// `ports` the gate's and the API's.
 pub(crate) fn invite_lines(
     cfg: &Config,
     pin: Option<&str>,
-    [gate_port, api_port]: [u16; 2],
+    ports: [u16; 2],
     bases: &[(String, InviteBase)],
     code: &str,
     expires_at: Option<i64>,
@@ -132,36 +133,77 @@ pub(crate) fn invite_lines(
     for (label, base) in bases {
         let link = base.invite_link(code);
         lines.push(format!("link ({}): {link}", escape_hidden(label)));
+        lines.push(server_link_line(label, base));
     }
     lines.push(format!("code: {code}"));
+    lines.extend(link_hint(cfg, pin, ports, bases));
+    if let Some(at) = expires_at {
+        lines.push(format!("expires: {}", time(at)));
+    }
+    lines
+}
+
+/// What the console's `link` says (M4 hosting spec §3.10): the server's own link for each of
+/// `bases`, for players who already have an account, and what links need where there are none, or
+/// how they go further ([`link_hint`]). False when there's no link at all.
+pub(crate) fn link_lines(
+    cfg: &Config,
+    pin: Option<&str>,
+    ports: [u16; 2],
+    bases: &[(String, InviteBase)],
+) -> (bool, Vec<String>) {
+    let mut lines: Vec<String> = bases
+        .iter()
+        .map(|(label, base)| server_link_line(label, base))
+        .collect();
+    lines.extend(link_hint(cfg, pin, ports, bases));
+    (!bases.is_empty(), lines)
+}
+
+/// `server link (<label>): <link>`: the server's own link from `base` ([`server_link`]).
+fn server_link_line(label: &str, base: &InviteBase) -> String {
+    format!(
+        "server link ({}): {}",
+        escape_hidden(label),
+        server_link(base)
+    )
+}
+
+/// What links need where `bases` has none, or how they go further, `pin` being the server's own
+/// key's and `ports` the gate's and the API's: a line, if there's anything to say.
+fn link_hint(
+    cfg: &Config,
+    pin: Option<&str>,
+    [gate_port, api_port]: [u16; 2],
+    bases: &[(String, InviteBase)],
+) -> Option<String> {
     let s = &cfg.server;
     let own_key = s.tls == Some(Tls::OwnKey);
     if own_key && pin.is_none() {
-        lines.push(format!(
+        Some(format!(
             "link: none yet; the server makes its key in {} when it first starts with \
              tls = \"self\", and links carry the key's pin",
             crate::tls::folder(&cfg.store.path).display()
-        ));
+        ))
     } else if bases.is_empty() {
-        lines.push(format!("link: none; {}", crate::invite::NO_LINKS));
+        Some(format!("link: none; {}", crate::invite::no_links()))
     } else if !own_key && cfg.invite_base(None).is_none() {
         // Links for this computer alone, from an API that listens beyond it.
-        lines.push(format!("other computers: {}", crate::invite::NO_LINKS));
+        Some(format!("other computers: {}", crate::invite::no_links()))
     } else if own_key
         && s.public_api.is_none()
         && s.public_host.is_none()
         && !s.api_bind.ip().to_canonical().is_loopback()
     {
         // A link for each of the machine's addresses (HA4), and how to go beyond them.
-        lines.push(format!(
+        Some(format!(
             "friends over the internet: open ports {gate_port} and {api_port} on your router, or \
-             use a VPN: see docs/hosting.md"
-        ));
+             use a VPN: see {}",
+            crate::config::guide()
+        ))
+    } else {
+        None
     }
-    if let Some(at) = expires_at {
-        lines.push(format!("expires: {}", time(at)));
-    }
-    lines
 }
 
 /// `invite list`'s rows at `now`, never the codes: its header, then each invite's.
@@ -229,13 +271,15 @@ fn write_rows(out: &mut dyn Write, rows: &[Vec<String>]) -> std::io::Result<()> 
     Ok(())
 }
 
-/// Runs one admin command against the configured database, writing plain lines to `out`.
+/// Runs one admin command against the configured database, writing plain lines to `out`. A data
+/// folder that isn't this user's is refused first ([`crate::folder::check`]).
 pub async fn admin(
     cfg: &Config,
     cmd: &Command,
     out: &mut dyn Write,
     clock: &dyn Clock,
 ) -> anyhow::Result<()> {
+    crate::folder::check(&crate::config::data_folder(&cfg.store.path))?;
     let store = crate::server::open_store(cfg).await?;
     let now = clock.now_ms();
     match cmd {

@@ -37,7 +37,7 @@ Players need only the desktop launcher and the link you send them: the [README](
 3. **Start it** with the start script in that folder:
    - **Windows:** double-click `start-server.bat`. The first time, SmartScreen says "Windows protected your PC", because the server isn't signed by Microsoft: choose More info, then Run anyway. When Windows asks whether to let `fenji-server.exe` through its firewall, allow it on private networks.
    - **macOS:** double-click `start-server.command`, which opens in Terminal. The first time, macOS says Apple can't check it, because the server isn't signed by Apple: close the message, open System Settings, Privacy & Security, and choose Open Anyway beside its name. macOS may then ask the same about `fenji-server` itself, and you allow it the same way. If macOS asks whether `fenji-server` may accept incoming network connections, allow it.
-   - **Linux:** in a terminal, in that folder, run:
+   - **Linux:** open a terminal in that folder (in your file manager, right-click the folder and choose Open in Terminal), and run:
 
      ```sh
      ./start-server.sh
@@ -49,9 +49,12 @@ The first start writes the server's settings, `fenji.toml`, and its `data` folde
 09:41:07 INFO  First run: wrote fenji.toml and data/ in /home/wen/fenji-server.
 09:41:07 INFO  made the server's own key in data/tls: invite links carry its pin, so keep the folder with your backups pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
 09:41:07 INFO  Fenji is running gate=0.0.0.0:7800 api=0.0.0.0:7801
+09:41:07 INFO  server link (enp3s0): https://192.0.2.10:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw (type link for the others)
 09:41:07 INFO  Friends on this network can join now: type `invite` for a link.
-09:41:07 INFO  To let in friends over the internet, open ports 7800 and 7801 on your router, or use a VPN: see docs/hosting.md.
+09:41:07 INFO  To let in friends over the internet, open ports 7800 and 7801 on your router, or use a VPN: see https://github.com/theintonerzero/fenji/blob/v0.5.0/docs/hosting.md.
 ```
+
+The times are in UTC, as the console's title bar says, so they may differ from your clock.
 
 The server is ready for your network as it starts: it listens on all of your computer's network connections, on ports 7800 (the game) and 7801 (the account API, where launchers sign players in), and the account API speaks TLS with the server's own key.
 
@@ -61,43 +64,44 @@ Type `invite` and press Enter:
 
 ```
 link (enp3s0): https://192.0.2.10:7801/#invite=K4QW-7TPM-2XHN-9CRB&pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
+server link (enp3s0): https://192.0.2.10:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
 link (this computer): https://127.0.0.1:7801/#invite=K4QW-7TPM-2XHN-9CRB&pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
+server link (this computer): https://127.0.0.1:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
 code: K4QW-7TPM-2XHN-9CRB
-friends over the internet: open ports 7800 and 7801 on your router, or use a VPN: see docs/hosting.md
+friends over the internet: open ports 7800 and 7801 on your router, or use a VPN: see https://github.com/theintonerzero/fenji/blob/v0.5.0/docs/hosting.md
 ```
 
-There's a link for each of your computer's addresses, labelled with its network connection, and one for this computer alone. Send your friend the link for the network they share with you, by any channel you trust: it makes one account, once. They paste it into the desktop launcher, which makes their account and keeps your server in its list. A link is for the launcher, not a web browser: a browser warns about the server's own certificate, and finds no page there.
+There's an invite link for each of your computer's addresses, labelled with its network connection, and one for this computer alone. Send your friend the invite link for the network they share with you, by any channel you trust: it makes one account, once. They paste it into the desktop launcher, which makes their account and keeps your server in its list. A link is for the launcher, not a web browser: a browser warns about the server's own certificate, and finds no page there. Beside each invite link is your server's own link, its `server link`, without the invite: that one is for players who already have an account (below).
+
+**Copying a link.** Select it with the mouse, from its first letter to its last, then copy it: Ctrl-Shift-C on Linux, Cmd-C on macOS, or Ctrl-C on Windows. In a Linux terminal, Ctrl-C stops the server instead, cleanly, so use Ctrl-Shift-C there. A link is longer than many windows are wide, so it may show on two rows or more: the console starts its later rows at the window's left edge, so that the copy holds only line breaks, which the launchers leave out. For each link on one row, make the window wider until it fits, or run `./fenji-server invite create` in another terminal, in the server's folder (below), which prints each link whole, as `--plain` does.
 
 - `invite Mai` labels the invite, so that `invites` shows whom it was for.
 - An invite made at the console stays valid until it's used or revoked. The `invite create` command makes one that runs out (below).
 - The `pin` in the link identifies your server's key, and the launcher checks that the server it reaches has that key. It stays the same as long as you keep the `data/tls` folder (section 6).
 - To play on your own server, invite yourself with the `this computer` link, and make your account an op with `op <your account>`, so you can use the admins' commands in the game's chat.
 
-**A player who already has an account** and adds your server to a launcher on another computer needs your server's link without an invite. The console doesn't show that link yet. Make it from any invite link by deleting `invite=…&` from it, so that
+**A player who already has an account** and adds your server to a launcher on another computer needs your server's link without an invite, and so does every player after your server's key changes (section 7). Type `link`: it shows your server's link for each of your computer's addresses, as `invite` does, and makes no invite.
 
 ```
-https://192.0.2.10:7801/#invite=K4QW-7TPM-2XHN-9CRB&pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
+server link (enp3s0): https://192.0.2.10:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
+server link (this computer): https://127.0.0.1:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
+friends over the internet: open ports 7800 and 7801 on your router, or use a VPN: see https://github.com/theintonerzero/fenji/blob/v0.5.0/docs/hosting.md
 ```
 
-becomes
-
-```
-https://192.0.2.10:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
-```
-
-The player adds that link as a server, and signs in. With no invite link at hand, type `invite`, make the link from it, and revoke that invite: `invites` shows its id, and `revoke <id>` revokes it. A server behind Caddy, with a domain name (section 4), has no pin: its link is its address alone, such as `https://play.example.net`.
+The player adds that link as a server, and signs in. The console also shows one in its log as the server starts; copy links from `link` or `invite`, though, as a log line's later rows stay under its text, and a copy of one would hold their spaces. A server behind Caddy, with a domain name (section 4), has no pin: its link is its address alone, such as `https://play.example.net`, and `link` shows that.
 
 ### The console
 
 The console works like a Minecraft server's. The log scrolls above, the command line is at the bottom, and a status line at the top shows the server's state, its name, its version, how long it has run, how many players are online of how many it takes, and its ports.
 
 - Type a command and press Enter. While you type its first word, or when you press Tab, a list shows the commands that match: ↑ and ↓ choose, Tab completes, Enter runs and Esc closes it. With the list closed, ↑ and ↓ go back through the commands you typed.
-- PgUp and PgDn scroll back through the last 5,000 lines of the log.
-- `stop`, or Ctrl-C, stops the server cleanly: it lets every player go, saves where each one stood, and says `Fenji has stopped` with where its log is. Closing the window instead, or losing the SSH connection the server runs in, ends it at once, without that clean stop, and players may lose where they stood in the last few minutes.
+- PgUp and PgDn scroll back through the last 5,000 lines of the log. The mouse wheel doesn't: the console turns off the terminal's habit of turning it into ↑ and ↓, which would bring back your earlier commands instead.
+- The log's times are in UTC, as the title bar says (`times in UTC`).
+- `stop`, or Ctrl-C, stops the server cleanly: it lets every player go, saves where each one stood, and says `Fenji has stopped` with where its log is. Closing the window, or losing the SSH connection the server runs in, stops it cleanly too, though there's no window left to say so. On Windows, Windows ends the server a few seconds after its window closes, and the server saves where everyone stood first.
 - The window needs to be at least 60 columns by 15 rows. A smaller one shows a note asking for a bigger window, and the server keeps running.
 - The colours are exact in a terminal with 24-bit colour, and close elsewhere. With `NO_COLOR` set there are none. Any monospaced font works; Geist Mono, under the SIL Open Font License, suits the console's design.
 - This full-screen console also writes the log to files in `data/logs`, one for each day the server runs (`fenji.2026-10-16.log`, by the day in UTC), and keeps those of the last 14 days it ran. Attach the day's file to a bug report.
-- If the console itself fails, it gives the terminal back and says so. The server keeps running, and Ctrl-C stops it.
+- If the console itself fails, it gives the terminal back and says so. The server keeps running, and Ctrl-C, or closing the terminal, stops it.
 
 **Plain lines,** for a screen reader or a simple terminal: start the server with `--plain`, and the console reads commands as lines and prints their answers, with the log as plain lines too.
 
@@ -111,13 +115,17 @@ On Windows, open a Command Prompt in the server's folder and run `start-server.b
 ./start-server.sh --plain 2>> fenji.log
 ```
 
-**Over SSH,** on a computer at home or a server without the service of section 4, start the server inside `tmux` or `screen`, so that it outlives the connection, never in a bare SSH session:
+**Over SSH,** on a computer at home or a server without the service of section 4, a server started in a bare SSH session stops cleanly when the connection goes. To keep it running, start it inside `tmux` or `screen`:
 
 ```sh
 tmux new -s fenji ./start-server.sh
 ```
 
-Press Ctrl-B, then D, to leave it running, and `tmux attach -t fenji` brings it back.
+Press Ctrl-B, then D, to leave it running, and `tmux attach -t fenji` brings it back. Or start it with `nohup`, which keeps it running after the connection goes, with its log in a file and no console of its own; attach to it from another terminal (below):
+
+```sh
+nohup ./start-server.sh --plain < /dev/null >> fenji.log 2>&1 &
+```
 
 **One server to a data folder.** A running server holds `server.lock` in its data folder, on every system, so that two servers never use one data folder: a second one refuses to start (section 7). The system lets go of the lock however the server ends, a crash included.
 
@@ -135,6 +143,8 @@ It shows the same console. Ctrl-C, `exit` or `quit` leave it, and the server run
 ./fenji-server console --run online
 ```
 
+`--run stop` returns once the server has stopped, so that a script can start it again at once. It waits a minute at most, and exits with 1 if the server hasn't stopped by then, saying so.
+
 - A data folder whose path is too long for a socket (107 bytes on Linux and 103 on macOS, with `console.sock`) gets none: the server still starts, says why, and runs without attaching. The start scripts use a short relative path, so this happens only to a server started with a `--config` deep in the file system.
 - If an attached console stops reading, such as over a frozen SSH connection, a stopping server waits up to 5 seconds for it before it exits.
 - Windows has no console socket: there, the console is in the server's window.
@@ -145,7 +155,8 @@ Commands work in any case. `help` lists them, and `help <command>` shows one's u
 
 | Command | What it does |
 |---|---|
-| `invite [<label>]` | Makes an invite: a link for each of your computer's addresses, and its code. The label, at most 64 characters, says whom it's for. |
+| `invite [<label>]` | Makes an invite: a link for each of your computer's addresses, your server's own link beside each, and its code. The label, at most 64 characters, says whom it's for. |
+| `link` | Shows your server's own link for each of your computer's addresses, without making an invite: for players who already have an account. |
 | `invites` | Lists the invites, each with its id, its label, when it was made and whether it was used, never their codes. |
 | `revoke <id>` | Revokes an invite that nobody has used. |
 | `accounts` | Lists the accounts, with when each was made and last signed in, and how many characters it has. |
@@ -176,7 +187,9 @@ Signed-in players' launchers list the characters in the world, those still loadi
 The server's program takes commands of its own too, for scripts and for times the server isn't running; `--help` lists them. They're safe while the server runs. Run them from the server's folder, as the user the server runs as:
 - on Linux and macOS, as `./fenji-server <command>`;
 - on Windows, in a Command Prompt, as `fenji-server.exe <command>`;
-- on the reference VPS (section 4), as `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`, never as root: a folder root makes in the data folder, such as `backups`, is root's, and the service can't use it. The one exception is `init`, which writes the settings into `/etc/fenji`, where only root may write, and touches no data (section 4).
+- on the reference VPS (section 4), as `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`. Run as root, they refuse, and say whom to run them as: a file root made in the data folder would be root's, and the service couldn't use it. The one exception is `init`, which writes the settings into `/etc/fenji`, where only root may write, and touches no data (section 4).
+
+The server and these commands refuse a data folder that another user owns, or that every user on the computer may write in, before they write anything there (section 7).
 
 | Command | What it does |
 |---|---|
@@ -343,7 +356,7 @@ Allow SSH first (port 22, or the port you moved it to), or `ufw enable` shuts yo
 
 ### Invite players, and attach the console
 
-Each console command runs at the server with `console --run`, as the `fenji` user. Run the server's other commands as `fenji` too (section 2's "Commands outside the console"), never as root, `init` above aside: the data folder is that user's alone.
+Each console command runs at the server with `console --run`, as the `fenji` user. Run the server's other commands as `fenji` too (section 2's "Commands outside the console"): the data folder is that user's alone, and as root they refuse, `init` above aside.
 
 ```sh
 sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run invite
@@ -351,10 +364,11 @@ sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run invite
 
 ```
 link (public_host): https://203.0.113.5:7801/#invite=K4QW-7TPM-2XHN-9CRB&pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
+server link (public_host): https://203.0.113.5:7801/#pin=8pS1fXyQe0VnJ4cLr6TgWm2HbKd7uZaN3oYiE5qRtUw
 code: K4QW-7TPM-2XHN-9CRB
 ```
 
-Send that link (section 2). To play yourself, invite yourself too, and make your account an op:
+Send the invite link (section 2). The server link is for players who already have an account, and `console --run link` shows it without making an invite. To play yourself, invite yourself too, and make your account an op:
 
 ```sh
 sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run "op Wen"
@@ -496,11 +510,11 @@ The update goes into your server's folder, so that its settings, its data and ev
 
 **What a backup holds:** the database, with the accounts and their password hashes, the invites, the characters and where they stood, the ops and bans, and maintenance and the console's message of the day. It doesn't hold the server's key, the `tls` folder in the data folder, or its settings, `fenji.toml`, which seldom change: keep a copy of each somewhere safe too. Without the key, the server makes a new one, and every player needs a new link. Backups and the key are as private as the server: keep them that way.
 
-**Where backups go:** `backups` in the data folder (`data/backups` in your server's folder, or `/var/lib/fenji/backups` on the reference VPS), as `fenji-<date>-<time>.db`, named for the time in UTC. Each new copy is checked before older ones are deleted, and the last 14 are kept.
+**Where backups go:** `backups` in the data folder (`data/backups` in your server's folder, or `/var/lib/fenji/backups` on the reference VPS), as `fenji-<date>-<time>.db`, named for the time in UTC. Each new copy is checked before older ones are deleted, and the last 14 are kept. A copy takes its name only once it has passed that check: one cut short, such as by a restart as it's made, never passes for a backup, and the next backup clears it away. One backup is made at a time; a second one started meanwhile says so.
 
 ### Making backups
 
-- The console's `backup` makes one now, and so does the `backup` command outside the console (section 2), with `--keep <n>` to keep another number. Both are safe while the server runs. On the reference VPS, run it as the `fenji` user, never as root:
+- The console's `backup` makes one now, and so does the `backup` command outside the console (section 2), with `--keep <n>` to keep another number. Both are safe while the server runs. On the reference VPS, run it as the `fenji` user; as root it refuses:
 
   ```sh
   sudo -u fenji fenji-server --config /etc/fenji/fenji.toml backup
@@ -588,13 +602,23 @@ With its old key, the server keeps its pin. If the new VPS has another address, 
 xattr -dr com.apple.quarantine ~/fenji-server
 ```
 
+**Windows says Smart App Control blocked the server, with no Run anyway.** Smart App Control, on from the start on some new Windows 11 PCs, blocks programs that aren't signed, and the server isn't. The only way past it is to turn it off, in Windows Security, App & browser control, Smart App Control settings. On many PCs Windows can't turn it on again without a reset of Windows, so weigh that first, or host on another computer: a Linux or macOS one, or a VPS (section 4).
+
+**A player's launcher says "That isn't a server address or an invite link. Paste the link your host sent."** in the desktop launcher, or "that isn't an invite code or link" from `fenji-launch`. What they pasted isn't the whole link: part of it was left out as it was copied, from the console or by a chat app. Copy it again from its first letter to its last (section 2's "Copying a link"), or make it with `./fenji-server invite create`, which prints each link on one line, and send that.
+
 **"a server is already using this data folder (…)".** Another `fenji-server` is running with the same data folder: in another window, in `tmux`, or as the reference deployment's service. Use that one (on Linux and macOS, `fenji-server console` attaches to it), or stop it first. The system lets go of a server's lock however it ends, so this never means a stale lock.
 
-**A player's launcher says the server's key has changed:** "Moonward's key has changed. Ask Wen for a new link." in the desktop launcher, with your server's name and yours, or "this server's key has changed: ask your host for a new link" from `fenji-launch`. The server answering at that address has another key than the one in the link the player first used. Either the server lost its `data/tls` folder and made a new key, or something else is answering at that address. If you restore the folder from your copy (section 6), the old links work again. Otherwise, send each player your server's link without an invite (section 2). Players should hear from you before they trust a new key.
+**"the data folder … is fenji's, and this runs as root: run fenji-server as fenji (sudo -u fenji fenji-server …)…".** The server, or one of its commands, was started as another user than the one whose data folder it is, often with `sudo` alone. Run it as the user it names: on the reference VPS, `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`. A file another user made in the data folder would be theirs, and the server couldn't use it.
+
+**"every user may write in the data folder …: take that away with chmod o-w …".** Anyone on the computer could replace the server's files there. Run the `chmod` command it gives.
+
+**A player's launcher says the server's key has changed:** "Moonward's key has changed. Ask Wen for a new link." in the desktop launcher, with your server's name and yours, or "this server's key has changed: ask your host for a new link" from `fenji-launch`. The server answering at that address has another key than the one in the link the player first used. Either the server lost its `data/tls` folder and made a new key, or something else is answering at that address. If you restore the folder from your copy (section 6), the old links work again. Otherwise, send each player your server's link without an invite, which `link` shows (section 2). Players should hear from you before they trust a new key.
 
 **A player's launcher says the server uses its own key:** "Moonward uses its own key. Open the link Wen sent you." in the desktop launcher, or "this server uses its own key: open the link your host sent" from `fenji-launch`. The player added your address without its pin: send them your server's link (section 2).
 
 **"… holds the server's key but other users can open it (mode 755): run `chmod 700 …`".** The server refuses a key folder that other users can open. Run the command it gives. On a FAT or exFAT drive, folders can't be made private: move the server's folder to your computer's own disk.
+
+**A command says "can't read fenji.toml: there's none in this folder (…)".** It was run outside the server's folder, without `--config`. Run it in the server's folder, or give `--config` with the server's `fenji.toml`.
 
 **`fenji-server console` says "no server is running with this data folder (…)".** The server isn't running, or the console uses other settings: give it the same `--config` as the server, or run it in the server's folder.
 

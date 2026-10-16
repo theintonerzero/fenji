@@ -49,6 +49,7 @@ mod unix {
     use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
     use tokio::sync::{mpsc, watch};
 
+    use crate::commands::{self, ConsoleCommand};
     use crate::config::{self, Config};
     use crate::console::socket::{self, Line};
     use crate::console::{self, Front};
@@ -70,6 +71,14 @@ mod unix {
 
     /// The command lines the console may send ahead of the socket.
     const TO_SERVER: usize = 16;
+
+    /// How long `--run stop` waits for the server to stop once it has answered: a stop gives the
+    /// players in the world a grace of about 13 s to read why, and the world's last saves come
+    /// after it.
+    pub const STOP_WAIT: Duration = Duration::from_secs(60);
+
+    /// How often `--run stop` looks whether the stopped server has let go of its data folder.
+    const LOCK_LOOK: Duration = Duration::from_millis(20);
 
     pub(super) async fn console(
         cfg: &Config,
@@ -113,7 +122,7 @@ mod unix {
             // Left, but its terminal takes nothing more: there's nothing to give back, or to say.
             () = stuck(left.clone()) => return Ok(ExitCode::SUCCESS),
         };
-        let (note, ok) = ending(&ended);
+        let (note, ok) = ending(&ended, front);
         if let Some(note) = note {
             server::say(&note);
         }
@@ -181,8 +190,9 @@ mod unix {
         }
     }
 
-    /// What the host is told as an attached console ends, and whether it ended as it should.
-    fn ending(ended: &io::Result<Ending>) -> (Option<String>, bool) {
+    /// What the host is told as an attached console ends, and whether it ended as it should. A
+    /// full-screen console that failed suggests plain lines, as `run`'s own does.
+    fn ending(ended: &io::Result<Ending>, front: Front) -> (Option<String>, bool) {
         match ended {
             Ok(Ending::Detached) => (Some("Left the console. The server runs on.".into()), true),
             Ok(Ending::ServerStopped(reason)) => (
@@ -194,18 +204,39 @@ mod unix {
                 Some("The console lost the server: it closed without a goodbye.".into()),
                 false,
             ),
+            Err(e) if front == Front::Full => (
+                Some(format!(
+                    "The console has closed: {e}. `fenji-server console --plain` gives the \
+                     console as plain lines, for a terminal the full-screen one doesn't suit."
+                )),
+                false,
+            ),
             Err(e) => (Some(format!("The console has closed: {e}.")), false),
         }
     }
 
     /// Runs `line` on the server whose console socket is `socket`: whether it ran, and its
     /// answer's lines, an answer in parts put together. Everything else the server sends is let
-    /// go. A blank line is no command, and nothing is sent (carry-forward 2).
+    /// go. A blank line is no command, and nothing is sent (carry-forward 2). After `stop`'s
+    /// answer it reads on to the server's goodbye, which comes once the server has stopped, then
+    /// waits for the data folder's lock, beside the socket, to be free, for [`STOP_WAIT`] at most
+    /// in all, so that a script can start the server again once it returns (the hosting plan's
+    /// final review, Minor 2; the fix pass's re-review, NB2).
     ///
     /// # Errors
     /// If no server answers there, or it speaks another protocol, or it closes the console before
-    /// it answers.
+    /// it answers; after `stop`, if it closes the console without its goodbye, or hasn't stopped
+    /// and let go of its data folder within [`STOP_WAIT`].
     pub async fn run_once(socket: &Path, line: &str) -> anyhow::Result<(bool, Vec<String>)> {
+        run_once_within(socket, line, STOP_WAIT).await
+    }
+
+    /// [`run_once`], waiting `stop_wait` at most for a server to stop after `stop`'s answer.
+    async fn run_once_within(
+        socket: &Path,
+        line: &str,
+        stop_wait: Duration,
+    ) -> anyhow::Result<(bool, Vec<String>)> {
         let mut link = Link::connect(socket).await?;
         let line = line.trim();
         if line.is_empty() {
@@ -233,6 +264,10 @@ mod unix {
                 }) if answered == id => {
                     lines.extend(part);
                     if !more {
+                        if ok && stops(line) {
+                            let lock = socket.with_file_name(lock::NAME);
+                            link.stopped(&lines, stop_wait, &lock).await?;
+                        }
                         return Ok((ok, lines));
                     }
                 }
@@ -302,6 +337,58 @@ mod unix {
             next(&mut self.reader, &mut self.buf).await
         }
 
+        /// Waits, `wait` at most, for a server that has answered `stop` with `answered` to stop:
+        /// its goodbye, which it says once the world has let everyone go and saved them and the
+        /// store has closed, then the console's end, then its data folder's `lock` free. It holds
+        /// the folder on for its other consoles' goodbyes, 5 s at most, and a server started
+        /// meanwhile would be refused. A lock that can't be looked at isn't waited for.
+        async fn stopped(
+            &mut self,
+            answered: &[String],
+            wait: Duration,
+            lock: &Path,
+        ) -> anyhow::Result<()> {
+            let until = tokio::time::Instant::now() + wait;
+            let said = || clean(&answered.join(" ")).into_owned();
+            let mut goodbye = false;
+            loop {
+                match tokio::time::timeout_at(until, self.next()).await {
+                    Ok(Ok(Some(ServerMsg::Bye { .. }))) => goodbye = true,
+                    Ok(Ok(Some(_))) => {}
+                    // Gone after its goodbye, or still going: it has stopped.
+                    _ if goodbye => break,
+                    Ok(Ok(None)) => bail!(
+                        "the server said \"{}\", then closed the console without its goodbye: it \
+                         may not have stopped cleanly",
+                        said()
+                    ),
+                    Ok(Err(e)) => {
+                        return Err(e).with_context(|| {
+                            format!("the server said \"{}\", then the console lost it", said())
+                        });
+                    }
+                    Err(_) => bail!(
+                        "the server said \"{}\", but hasn't stopped within {} s; it may still be \
+                         stopping",
+                        said(),
+                        wait.as_secs()
+                    ),
+                }
+            }
+            while !lock::is_free(lock).unwrap_or(true) {
+                if tokio::time::Instant::now() >= until {
+                    bail!(
+                        "the server said \"{}\" and has stopped, but hasn't let go of its data \
+                         folder within {} s",
+                        said(),
+                        wait.as_secs()
+                    );
+                }
+                tokio::time::sleep(LOCK_LOOK).await;
+            }
+            Ok(())
+        }
+
         async fn send(&mut self, msg: &ConsoleMsg) -> io::Result<()> {
             send(&mut self.writer, msg).await
         }
@@ -337,6 +424,11 @@ mod unix {
                 to_server,
             }
         }
+    }
+
+    /// Whether `line` is the console's `stop`, in any case.
+    fn stops(line: &str) -> bool {
+        matches!(commands::parse_console(line), Ok(ConsoleCommand::Stop))
     }
 
     /// Why no console could attach at `socket`.
@@ -397,21 +489,174 @@ mod unix {
 
         #[test]
         fn an_attached_console_says_how_it_ended_and_fails_only_when_it_lost_the_server() {
-            let (left, ok) = ending(&Ok(Ending::Detached));
-            assert!(ok);
+            for front in [Front::Full, Front::Plain] {
+                let (left, ok) = ending(&Ok(Ending::Detached), front);
+                assert!(ok);
+                assert_eq!(
+                    left.as_deref(),
+                    Some("Left the console. The server runs on.")
+                );
+                let stopping = Ok(Ending::ServerStopped("the server is stopping".into()));
+                let (bye, ok) = ending(&stopping, front);
+                assert!(ok);
+                assert_eq!(
+                    bye.as_deref(),
+                    Some("The server closed the console: the server is stopping.")
+                );
+                assert_eq!(ending(&Ok(Ending::InputClosed), front), (None, true));
+                assert!(!ending(&Ok(Ending::Lost), front).1);
+                let panicked = Err(io::Error::other("a panic ended the console"));
+                assert!(!ending(&panicked, front).1);
+            }
+        }
+
+        #[test]
+        fn a_full_screen_console_that_fails_suggests_plain_lines() {
+            // The hosting plan's final review, carry line 9: as `run`'s own console says when it
+            // closes, a terminal the full-screen console doesn't suit has plain lines.
+            let failed = || Err(io::Error::other("the terminal has no raw mode"));
+            let (note, ok) = ending(&failed(), Front::Full);
+            assert!(!ok);
             assert_eq!(
-                left.as_deref(),
-                Some("Left the console. The server runs on.")
+                note.as_deref(),
+                Some(
+                    "The console has closed: the terminal has no raw mode. \
+                     `fenji-server console --plain` gives the console as plain lines, for a \
+                     terminal the full-screen one doesn't suit."
+                )
             );
-            let (bye, ok) = ending(&Ok(Ending::ServerStopped("the server is stopping".into())));
-            assert!(ok);
+            // Plain lines that fail have nothing plainer to suggest.
+            let (note, ok) = ending(&failed(), Front::Plain);
+            assert!(!ok);
             assert_eq!(
-                bye.as_deref(),
-                Some("The server closed the console: the server is stopping.")
+                note.as_deref(),
+                Some("The console has closed: the terminal has no raw mode.")
             );
-            assert_eq!(ending(&Ok(Ending::InputClosed)), (None, true));
-            assert!(!ending(&Ok(Ending::Lost)).1);
-            assert!(!ending(&Err(io::Error::other("a panic ended the console"))).1);
+        }
+
+        /// What a [`fake_server`] does once it has answered the first command.
+        #[derive(Clone, Copy)]
+        enum Then {
+            /// Says goodbye, then closes the console.
+            Goodbye,
+            /// Closes the console without a goodbye, as a server killed then would.
+            Closes,
+            /// Holds the console open and says nothing more, as a server stuck in its stop would.
+            Holds,
+        }
+
+        /// A server on a console socket in `dir` that says hello, answers the first command it's
+        /// sent with `answer` (done), then does as `then` says.
+        fn fake_server(dir: &Path, answer: &'static str, then: Then) -> std::path::PathBuf {
+            use tokio::io::AsyncBufReadExt;
+            let path = dir.join("console.sock");
+            let listener = tokio::net::UnixListener::bind(&path).unwrap();
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let say = |msg: ServerMsg| format!("{}\n", wire::encode(&msg));
+                let hello = Hello {
+                    version: "0.0.0".into(),
+                    proto: PROTO,
+                    server: "Fenji".into(),
+                    commands: Vec::new(),
+                };
+                write.write_all(say(hello.into()).as_bytes()).await.unwrap();
+                let mut lines = BufReader::new(read).lines();
+                let _command = lines.next_line().await.unwrap();
+                let answered = ServerMsg::Answer {
+                    id: 1,
+                    ok: true,
+                    lines: vec![answer.into()],
+                    more: false,
+                };
+                write.write_all(say(answered).as_bytes()).await.unwrap();
+                match then {
+                    Then::Goodbye => {
+                        let bye = ServerMsg::Bye {
+                            reason: "the server is stopping".into(),
+                        };
+                        write.write_all(say(bye).as_bytes()).await.unwrap();
+                    }
+                    Then::Closes => {}
+                    Then::Holds => std::future::pending::<()>().await,
+                }
+            });
+            path
+        }
+
+        /// How long the tests give a server to stop after it answers `stop`.
+        const STOPS_WITHIN: Duration = Duration::from_millis(300);
+
+        #[tokio::test]
+        async fn run_stop_returns_on_the_servers_goodbye() {
+            // The hosting plan's final review, Minor 2: `--run stop` reads on to the goodbye,
+            // which the server says once it has stopped.
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_server(dir.path(), "stopping the server", Then::Goodbye);
+            let ran = run_once_within(&socket, "STOP", STOPS_WITHIN)
+                .await
+                .unwrap();
+            assert_eq!(ran, (true, vec!["stopping the server".to_owned()]));
+        }
+
+        #[tokio::test]
+        async fn run_stop_fails_and_says_why_when_the_server_doesnt_stop_in_time() {
+            // Bounded: a server stuck in its stop leaves `--run stop` waiting no longer than the
+            // bound, and it exits 1 saying so.
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_server(dir.path(), "stopping the server", Then::Holds);
+            let began = std::time::Instant::now();
+            let e = run_once_within(&socket, "stop", STOPS_WITHIN)
+                .await
+                .unwrap_err();
+            let took = began.elapsed();
+            assert!(
+                took >= STOPS_WITHIN && took < Duration::from_secs(5),
+                "{took:?}"
+            );
+            let e = format!("{e:#}");
+            assert!(
+                e.contains("stopping the server") && e.contains("hasn't stopped within"),
+                "{e}"
+            );
+        }
+
+        #[tokio::test]
+        async fn run_stop_fails_when_the_server_closes_without_its_goodbye() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_server(dir.path(), "stopping the server", Then::Closes);
+            let e = run_once_within(&socket, "stop", STOPS_WITHIN)
+                .await
+                .unwrap_err();
+            assert!(format!("{e:#}").contains("without its goodbye"), "{e:#}");
+        }
+
+        #[tokio::test]
+        async fn run_stop_fails_and_says_why_when_the_server_keeps_its_data_folder() {
+            // The fix pass's re-review, NB2: after the goodbye, `--run stop` waits for the data
+            // folder's lock to be free, within the same bound.
+            let dir = tempfile::tempdir().unwrap();
+            let _kept = lock::take(dir.path()).unwrap();
+            let socket = fake_server(dir.path(), "stopping the server", Then::Goodbye);
+            let e = run_once_within(&socket, "stop", STOPS_WITHIN)
+                .await
+                .unwrap_err();
+            let e = format!("{e:#}");
+            assert!(e.contains("hasn't let go of its data folder"), "{e}");
+        }
+
+        #[tokio::test]
+        async fn only_stop_waits_for_the_server_to_stop() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_server(dir.path(), "nobody is online", Then::Holds);
+            let ran = tokio::time::timeout(
+                Duration::from_secs(5),
+                run_once_within(&socket, "online", Duration::from_secs(60)),
+            )
+            .await
+            .expect("answered without waiting");
+            assert_eq!(ran.unwrap(), (true, vec!["nobody is online".to_owned()]));
         }
 
         #[tokio::test]

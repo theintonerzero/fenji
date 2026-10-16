@@ -114,7 +114,13 @@ struct InTerminal {
 }
 
 impl InTerminal {
+    /// `fenji-server console` on `config`'s server.
     fn start(config: &Path) -> Self {
+        InTerminal::spawn(config, &["console"])
+    }
+
+    /// `fenji-server --config <config> <args>`.
+    fn spawn(config: &Path, args: &[&str]) -> Self {
         use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
         let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
         grantpt(&master).unwrap();
@@ -136,7 +142,7 @@ impl InTerminal {
         let child = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
             .arg("--config")
             .arg(config)
-            .arg("console")
+            .args(args)
             .env("TERM", "xterm-256color")
             .stdin(terminal.try_clone().unwrap())
             .stdout(terminal.try_clone().unwrap())
@@ -190,6 +196,130 @@ impl Drop for InTerminal {
     }
 }
 
+/// `fenji-server run` full-screen in a window of 80 × 24: a pseudo-terminal that is its
+/// controlling terminal, as a terminal window or an SSH session gives it, which the test can close
+/// as a window closes. The kernel then hangs the terminal up and sends the server SIGHUP. Linux,
+/// for util-linux's `setsid --ctty`. Killed if the test ends first.
+#[cfg(target_os = "linux")]
+struct Window {
+    child: Child,
+    master: Option<File>,
+    /// True while the window is open: the thread reading the terminal goes on.
+    open: Arc<std::sync::atomic::AtomicBool>,
+    reader: Option<std::thread::JoinHandle<()>>,
+    out: Arc<Mutex<Vec<u8>>>,
+}
+
+/// What the console asks a terminal as it clears the screen: where its cursor is.
+#[cfg(target_os = "linux")]
+const CURSOR_ASKED: &[u8] = b"\x1b[6n";
+
+#[cfg(target_os = "linux")]
+impl Window {
+    /// The window on `config`'s server. Its terminal answers the console's question of where its
+    /// cursor is at once, as terminals do, if `answers`; otherwise the console waits for the
+    /// answer, 2 s at most (crossterm's wait).
+    fn open(config: &Path, answers: bool) -> Window {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+        // Close-on-exec: a master the server inherited would keep the terminal from hanging up.
+        let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
+        let master = openpt(flags).unwrap();
+        // Read without waiting, so that the window closes at once, whatever the console is doing.
+        rustix::fs::fcntl_setfl(&master, rustix::fs::OFlags::NONBLOCK).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let name = ptsname(&master, Vec::new()).unwrap();
+        let terminal = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(rustix::fs::OFlags::NOCTTY.bits() as i32)
+            .open(OsStr::from_bytes(name.as_bytes()))
+            .unwrap();
+        let size = Winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        rustix::termios::tcsetwinsize(&terminal, size).unwrap();
+        // A session of its own whose controlling terminal is its stdin: this terminal.
+        let child = Command::new("setsid")
+            .arg("--ctty")
+            .arg(env!("CARGO_BIN_EXE_fenji-server"))
+            .arg("--config")
+            .arg(config)
+            .arg("run")
+            .env("TERM", "xterm-256color")
+            .stdin(terminal.try_clone().unwrap())
+            .stdout(terminal.try_clone().unwrap())
+            .stderr(terminal)
+            .spawn()
+            .unwrap();
+        let master = File::from(master);
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let open = Arc::new(AtomicBool::new(true));
+        let (mut reading, mut answering) =
+            (master.try_clone().unwrap(), master.try_clone().unwrap());
+        let (kept, still) = (Arc::clone(&out), Arc::clone(&open));
+        let reader = std::thread::spawn(move || {
+            let mut buf = [0; 65536];
+            let mut answered = 0;
+            while still.load(Ordering::SeqCst) {
+                let n = match reading.read(&mut buf) {
+                    Ok(n @ 1..) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    // The console's side is closed: the server has ended.
+                    Ok(0) | Err(_) => return,
+                };
+                let mut out = kept.lock().unwrap();
+                out.extend_from_slice(&buf[..n]);
+                if answers {
+                    let asked = out.windows(CURSOR_ASKED.len());
+                    let asked = asked.filter(|w| *w == CURSOR_ASKED).count();
+                    for _ in answered..asked {
+                        let _ = answering.write_all(b"\x1b[1;1R");
+                    }
+                    answered = asked;
+                }
+            }
+        });
+        Window {
+            child,
+            master: Some(master),
+            open,
+            reader: Some(reader),
+            out,
+        }
+    }
+
+    fn shown(&self) -> String {
+        String::from_utf8_lossy(&self.out.lock().unwrap()).into_owned()
+    }
+
+    /// Closes the window at once: the last handle on the terminal's master end goes, and the kernel
+    /// hangs the terminal up.
+    fn close(&mut self) {
+        self.open.store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Some(reader) = self.reader.take() {
+            reader.join().unwrap();
+        }
+        self.master.take();
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Window {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// Where `needle` last is in `bytes`.
 fn last(bytes: &[u8], needle: &[u8]) -> Option<usize> {
     bytes.windows(needle.len()).rposition(|w| w == needle)
@@ -220,8 +350,25 @@ impl Plain {
 
     /// A server on `config`, with `env` set.
     fn with(config: &Path, env: &[(&str, &str)]) -> Self {
+        Plain::spawn(
+            Command::new(env!("CARGO_BIN_EXE_fenji-server")),
+            config,
+            env,
+        )
+    }
+
+    /// A server on `config` started by `nohup`, which starts it with SIGHUP ignored so that it
+    /// outlives its terminal, as the write-up shows a host.
+    fn nohup(config: &Path) -> Self {
+        let mut nohup = Command::new("nohup");
+        nohup.arg(env!("CARGO_BIN_EXE_fenji-server"));
+        Plain::spawn(nohup, config, &[])
+    }
+
+    /// `program` run as the server on `config`, with `env` set.
+    fn spawn(mut program: Command, config: &Path, env: &[(&str, &str)]) -> Self {
         let log = tempfile::NamedTempFile::new().unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+        let mut child = program
             .arg("--config")
             .arg(config)
             .args(["run", "--plain"])
@@ -374,6 +521,183 @@ fn console_run_gives_a_script_the_answer_and_an_exit_code_that_follows_it() {
 }
 
 #[test]
+fn a_full_screen_run_refuses_an_open_data_folder_before_it_writes_its_log() {
+    // The hosting plan's final review, Minor 1: the full-screen console logs to data/logs, so a
+    // run refused for its data folder (one every user may write in here, another user's when a
+    // host types sudo) is refused before that file too, and writes nothing there.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let config = dir.path().join("fenji.toml");
+    std::fs::write(
+        &config,
+        "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n\
+         [store]\npath = \"data/fenji.db\"\n",
+    )
+    .unwrap();
+    let mut run = InTerminal::spawn(&config, &["run"]);
+    let out = Arc::clone(&run.out);
+    let shown = move || String::from_utf8_lossy(&out.lock().unwrap()).into_owned();
+    let status = exit_of(&mut run.child, shown);
+    assert!(!status.success(), "{status}");
+    until(|| run.shown().contains("chmod o-w"), || run.shown());
+    assert_eq!(
+        std::fs::read_dir(&data).unwrap().count(),
+        0,
+        "{}",
+        run.shown()
+    );
+}
+
+/// A config for a [`Window`]'s server, its data folder `dir`, on ports the system picks.
+#[cfg(target_os = "linux")]
+fn window_config(dir: &Path) -> PathBuf {
+    let config = dir.join("fenji.toml");
+    let binds = "login_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n";
+    std::fs::write(&config, format!("[server]\nname = \"Fenji\"\n{binds}")).unwrap();
+    config
+}
+
+/// Closes `window` on a server whose data folder is `dir`: the server stops on the hang-up, its
+/// store closed and its log saying why, and its process ends with success, within 15 s.
+#[cfg(target_os = "linux")]
+fn closed_cleanly(mut window: Window, dir: &Path) {
+    let wal = dir.join("fenji.db-wal");
+    assert!(wal.exists(), "the store is open");
+    window.close();
+    let closed = Instant::now();
+    let status = exit_of(&mut window.child, || {
+        "still running after its window closed".into()
+    });
+    let took = closed.elapsed();
+    assert!(status.success(), "{status}");
+    assert!(took < Duration::from_secs(15), "it took {took:?}");
+    assert!(!wal.exists() && !dir.join("fenji.db-shm").exists());
+    // Its log, in the data folder's logs as the full-screen console has it, says why it stopped.
+    let logs: String = std::fs::read_dir(dir.join("logs"))
+        .unwrap()
+        .map(|f| std::fs::read_to_string(f.unwrap().path()).unwrap())
+        .collect();
+    assert!(logs.contains("shutting down signal=SIGHUP"), "{logs}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn closing_the_window_of_a_full_screen_server_stops_it_and_ends_its_process() {
+    // The hosting plan's final review, Important 1: closing the window stops the server cleanly,
+    // and the process ends, here once the console is up and drawing.
+    let dir = tempfile::tempdir().unwrap();
+    let window = Window::open(&window_config(dir.path()), true);
+    // The status strip's word: the console is up, and the server runs.
+    until(
+        || window.shown().contains("online"),
+        || format!("not drawn: {:?}", window.shown()),
+    );
+    closed_cleanly(window, dir.path());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn closing_the_window_as_the_console_waits_on_its_terminal_still_ends_the_process() {
+    // The fix pass's re-review, NB1. As it starts, the console clears the screen, which asks the
+    // terminal where its cursor is and waits for the answer, 2 s at most, reading the terminal on
+    // the console's own thread. A window closed meanwhile hangs the terminal up, and that read
+    // (crossterm's) then never returns: the server stopped cleanly on its SIGHUP, but `run`
+    // waited for its console without end, and the process spun a core until it was killed.
+    let dir = tempfile::tempdir().unwrap();
+    let window = Window::open(&window_config(dir.path()), false);
+    until(
+        || {
+            window
+                .shown()
+                .as_bytes()
+                .windows(CURSOR_ASKED.len())
+                .any(|w| w == CURSOR_ASKED)
+        },
+        || format!("never asked: {:?}", window.shown()),
+    );
+    closed_cleanly(window, dir.path());
+}
+
+#[test]
+fn a_hangup_stops_the_server_cleanly() {
+    // The hosting plan's final review, Important 1: closing the terminal or window a server runs
+    // in, or losing its SSH session, sends it SIGHUP, which killed it at once, without its saves,
+    // without the shutdown's reason for the players, and with its write-ahead log left behind.
+    // It stops as `stop` does now.
+    let dir = tempfile::tempdir().unwrap();
+    let mut server = Plain::start(dir.path());
+    server.running();
+    kill_process(Pid::from_child(&server.child), Signal::HUP).unwrap();
+    let status = server.wait();
+    assert!(status.success(), "{status}:\n{}", server.said());
+    let said = server.said();
+    assert!(said.contains("shutting down signal=SIGHUP"), "{said}");
+    for left in ["fenji.db-wal", "fenji.db-shm"] {
+        assert!(!dir.path().join(left).exists(), "{left} is left:\n{said}");
+    }
+}
+
+#[test]
+fn a_server_nohup_started_runs_on_through_a_hangup() {
+    // `nohup` starts a server with SIGHUP ignored, so that it outlives its terminal (the hosting
+    // plan's final review, Important 1): it stays so, and the server runs on until it's stopped.
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("fenji.toml");
+    std::fs::write(
+        &config,
+        "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n",
+    )
+    .unwrap();
+    let mut server = Plain::nohup(&config);
+    server.running();
+    kill_process(Pid::from_child(&server.child), Signal::HUP).unwrap();
+    // A server that took the hangup would be stopping by now, and an idle one stops in well
+    // under a second.
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        server.child.try_wait().unwrap().is_none(),
+        "it stopped:\n{}",
+        server.said()
+    );
+    let online = server.console(&["--run", "online"], "");
+    assert!(online.status.success(), "{online:?}");
+    assert!(
+        !server.said().contains("shutting down"),
+        "{}",
+        server.said()
+    );
+    server.type_line("stop");
+    assert_eq!(server.answer(), "stopping the server");
+    assert!(server.wait().success(), "{}", server.said());
+}
+
+#[test]
+fn console_run_stop_returns_once_the_server_has_stopped() {
+    // The hosting plan's final review, Minor 2: `--run stop` returned as soon as the server
+    // answered, before its stop, so a script that started the server again found the data folder
+    // in use. It reads on to the server's goodbye, which comes once the world has saved everyone
+    // and the store has closed: by then SQLite has folded its write-ahead log in and removed it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut server = Plain::start(dir.path());
+    server.running();
+    let wal = dir.path().join("fenji.db-wal");
+    assert!(wal.exists(), "the store is open: {}", server.said());
+    let stop = server.console(&["--run", "stop"], "");
+    let (wal_left, shm_left) = (wal.exists(), dir.path().join("fenji.db-shm").exists());
+    assert!(stop.status.success(), "{stop:?}");
+    assert_eq!(text(&stop.stdout), "stopping the server\n");
+    assert!(
+        !wal_left && !shm_left,
+        "returned before the store closed:\n{}",
+        server.said()
+    );
+    assert!(server.wait().success(), "{}", server.said());
+}
+
+#[test]
 fn a_second_server_on_a_data_folder_in_use_refuses_before_it_opens_its_database_or_listens() {
     // Review Focus 5 (Task 11's review 1, Minor 6a). The second server's config names another
     // database in the same data folder, which opening its store would make, and it's given the
@@ -429,6 +753,18 @@ fn a_signal_leaves_an_attached_full_screen_console_with_the_terminal_given_back(
         );
         let cursor = last(&out, b"\x1b[?25h");
         assert!(cursor.is_some_and(|at| at > took), "{name}: no cursor");
+        // The wheel's ↑ and ↓ (alternate scroll) off while it held the terminal, and on again
+        // (the hosting plan's final review B, Minor 5).
+        let off = last(&out, b"\x1b[?1007l");
+        assert!(
+            off.is_some_and(|at| at > took),
+            "{name}: the wheel's left on"
+        );
+        let on = last(&out, b"\x1b[?1007h");
+        assert!(
+            on.is_some_and(|at| gave.is_some_and(|gave| at > gave)),
+            "{name}: the wheel isn't given back"
+        );
         assert!(console.cooked(), "{name}: not in cooked mode");
         assert!(
             console.shown().contains(LEFT),

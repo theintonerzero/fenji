@@ -250,76 +250,12 @@ pub enum WorldOut {
     Kicked(KickReason),
 }
 
-/// Work the world hands to the services task, off the tick.
+/// Work the world hands to the services task, off the tick. The tests compare the work queued.
 #[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum Service {
     /// Save where a character stands.
     SavePlace { pid: ActorId, at: Location },
     /// Make an invite for `conn`'s `!invite`, and tell it the link.
     CreateInvite { conn: ConnId, label: Option<String> },
-    /// Make an invite for the console's `invite`, and answer on `reply` as `!invite` is answered.
-    CreateInviteFor {
-        reply: oneshot::Sender<ConsoleReply>,
-        label: Option<String>,
-    },
-}
-
-/// For the tests, which compare the work queued: a reply channel has no equality of its own, so
-/// two invites for the console are alike when their labels are. The match on `self` has no
-/// catch-all, so a new kind of work doesn't compile until it says how it compares.
-#[cfg(test)]
-impl PartialEq for Service {
-    fn eq(&self, other: &Self) -> bool {
-        match self {
-            Self::SavePlace { pid, at } => {
-                matches!(other, Self::SavePlace { pid: p, at: a } if p == pid && a == at)
-            }
-            Self::CreateInvite { conn, label } => {
-                matches!(other, Self::CreateInvite { conn: c, label: l } if c == conn && l == label)
-            }
-            Self::CreateInviteFor { label, .. } => {
-                matches!(other, Self::CreateInviteFor { label: l, .. } if l == label)
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// One of each kind of work the world queues.
-    fn one_of_each() -> Vec<Service> {
-        let at = Location {
-            scene: 5,
-            pos: Pos {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0,
-                yaw: 4.0,
-            },
-        };
-        let label = Some("for Bob".to_string());
-        vec![
-            Service::SavePlace { pid: 1, at },
-            Service::CreateInvite {
-                conn: 1,
-                label: label.clone(),
-            },
-            Service::CreateInviteFor {
-                reply: oneshot::channel().0,
-                label,
-            },
-        ]
-    }
-
-    #[test]
-    fn queued_work_is_equal_to_itself_and_to_no_other_kind() {
-        let (left, right) = (one_of_each(), one_of_each());
-        for (i, a) in left.iter().enumerate() {
-            for (j, b) in right.iter().enumerate() {
-                assert_eq!(a == b, i == j, "{a:?} and {b:?}");
-            }
-        }
-    }
 }

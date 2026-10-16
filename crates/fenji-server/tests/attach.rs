@@ -402,6 +402,41 @@ async fn a_console_that_stops_reading_doesnt_hold_up_the_servers_end() {
 }
 
 #[tokio::test]
+async fn run_once_stop_returns_once_another_server_could_start() {
+    // The fix pass's re-review, NB2: `--run stop` returned at its own console's end, but the
+    // server held its claim on the data folder on for the other consoles' goodbyes, 5 s at most
+    // with one that had stopped reading, and a server started then was refused. The guide says a
+    // script can start it again as soon as `--run stop` returns.
+    let Started {
+        server,
+        serving,
+        _dir,
+        _log,
+        _asked,
+    } = started_with_socket().await;
+    let data = server.data();
+    let socket = data.join("console.sock");
+    let mut stalled = Raw::connect(&socket).await;
+    assert!(matches!(stalled.next().await, ServerMsg::Hello { .. }));
+    let filler = "x".repeat(200);
+    for n in 0..20_000 {
+        tracing::info!(n, filler, "flood");
+        if n % 100 == 0 {
+            tokio::task::yield_now().await;
+        }
+    }
+    let served = tokio::spawn(server.serve_until(std::future::pending()));
+    let (ok, _) = console::attach::run_once(&socket, "stop").await.unwrap();
+    assert!(ok);
+    // As a server starting would: the data folder's lock is free.
+    let lock = std::fs::File::open(data.join("server.lock")).unwrap();
+    assert!(lock.try_lock().is_ok(), "the data folder is still claimed");
+    drop(lock);
+    served.await.unwrap().unwrap();
+    serving.await.unwrap();
+}
+
+#[tokio::test]
 async fn a_stale_socket_left_by_a_killed_server_is_replaced() {
     // After `kill -9`, the socket file stays and nobody listens on it.
     let dir = tempfile::tempdir().unwrap();

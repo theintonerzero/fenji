@@ -1,4 +1,4 @@
-//! The one place this workspace writes `unsafe` FFI, into the client's own oo2core_6_win64.dll:
+//! The one place this workspace writes `unsafe` FFI into a DLL, the client's own oo2core_6_win64.dll:
 //! OodleLZ_Decompress with the arguments the client itself passes (FUN_14024E060; M2 plan F8), and
 //! OodleLZ_Compress with the arguments ooz passes (kraken.cpp:4375), for fenji-oodle's fixtures.
 #![allow(unsafe_code)]

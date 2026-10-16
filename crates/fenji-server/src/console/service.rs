@@ -272,6 +272,7 @@ impl ConsoleService {
             C::Shared(Command::Invite { label }) => self.invite(label.as_deref(), now).await?,
             C::Shared(order) => self.ask_world(order).await,
             C::Online => self.online(),
+            C::Link => self.link(),
             C::Accounts => listed(
                 cli::account_rows(&self.store).await?,
                 "no accounts yet: type invite for a link to send a friend",
@@ -319,7 +320,7 @@ impl ConsoleService {
     /// for (carry-forward 10), and warned about: the world logs the commands it runs, so these
     /// alone would leave no trace.
     async fn ask_world(&self, order: Command) -> Answer {
-        let command = format!("{order:?}");
+        let command = order.to_string();
         let (reply, answer) = oneshot::channel();
         let why = if self.world.send(WorldIn::Console { order, reply }) {
             match tokio::time::timeout(self.world_wait, answer).await {
@@ -358,6 +359,16 @@ impl ConsoleService {
         let ports = [self.gate_port, self.api_port];
         let lines = cli::invite_lines(&self.cfg, pin, ports, &bases, &made.code, None);
         Ok(Answer::done(lines))
+    }
+
+    /// The server's own links, without an invite, for players who have an account (M4 hosting
+    /// spec §3.10): one for each address `invite` gives a link for. Not done when there's none.
+    fn link(&self) -> Answer {
+        let pin = self.pin.as_deref();
+        let bases = crate::invite::bases(&self.cfg, pin, self.api_port);
+        let ports = [self.gate_port, self.api_port];
+        let (ok, lines) = cli::link_lines(&self.cfg, pin, ports, &bases);
+        Answer { ok, lines }
     }
 
     /// Who is connected: each account, the character it plays or `lobby`, the scene and since
@@ -1408,9 +1419,17 @@ mod tests {
         let mine = made
             .lines
             .iter()
-            .find(|l| l.starts_with("link (this computer): https://127.0.0.1:7801/#invite="))
+            .position(|l| l.starts_with("link (this computer): https://127.0.0.1:7801/#invite="))
             .unwrap_or_else(|| panic!("{made:?}"));
-        assert!(mine.ends_with(&format!("&pin={PIN}")), "{mine}");
+        assert!(
+            made.lines[mine].ends_with(&format!("&pin={PIN}")),
+            "{made:?}"
+        );
+        // Beside it, the server's own link (the hosting plan's final review, Important 2).
+        assert_eq!(
+            made.lines[mine + 1],
+            format!("server link (this computer): https://127.0.0.1:7801/#pin={PIN}")
+        );
         assert!(
             made.lines.iter().any(|l| l.starts_with("code: ")),
             "{made:?}"
@@ -1419,6 +1438,80 @@ mod tests {
     }
 
     const PIN: &str = "q1o9C1M6ufA5UGrUkSYhW-AXXa3S7jdJ9Fxlp0f2cBo";
+
+    /// A service on `server`'s `[server]` table, its own key's pin being `pin`, and its store.
+    async fn serving(dir: &Path, server: &str, pin: Option<&str>) -> (Arc<ConsoleService>, Store) {
+        let cfg = Config::parse(&format!("[server]\nname = \"Fenji\"\n{server}"), dir).unwrap();
+        let store = Store::open(&cfg.store.path).await.unwrap();
+        let status = Status::load(&store, NOW, "").await.unwrap();
+        let (world, _heard) = WorldHandle::fake();
+        let c = ConsoleService::new(Parts {
+            cfg,
+            store: store.clone(),
+            status,
+            online: Arc::new(Online::new(20)),
+            world,
+            clock: Arc::new(TestClock::at(NOW)),
+            pin: pin.map(Into::into),
+            gate_port: 7800,
+            api_port: 7801,
+            world_wait: WORLD_WAIT,
+        });
+        (c, store)
+    }
+
+    #[tokio::test]
+    async fn link_shows_the_servers_links_and_spends_no_invite() {
+        // The hosting plan's final review, Important 2 (spec §3.10): a player who has an account
+        // needs the server's link on a new computer, or after its key changes, without an invite.
+        let dir = tempfile::tempdir().unwrap();
+        let (c, store) = serving(
+            dir.path(),
+            "api_bind = \"127.0.0.1:7801\"\ntls = \"self\"\n",
+            Some(PIN),
+        )
+        .await;
+        assert_eq!(
+            c.run_line("link").await,
+            done([
+                format!("server link (this computer): https://127.0.0.1:7801/#pin={PIN}").as_str()
+            ])
+        );
+        assert!(store.list_invites().await.unwrap().is_empty(), "none spent");
+        // With an address for links, there; behind Caddy, the address alone.
+        let host = tempfile::tempdir().unwrap();
+        let (c, _store) = serving(
+            host.path(),
+            "tls = \"self\"\npublic_host = \"203.0.113.5\"\napi_bind = \"0.0.0.0:7801\"\n",
+            Some(PIN),
+        )
+        .await;
+        assert_eq!(
+            c.run_line("link").await,
+            done([
+                format!("server link (public_host): https://203.0.113.5:7801/#pin={PIN}").as_str()
+            ])
+        );
+        let caddy = tempfile::tempdir().unwrap();
+        let (c, _store) = serving(
+            caddy.path(),
+            "public_api = \"https://play.example.net\"\n",
+            None,
+        )
+        .await;
+        assert_eq!(
+            c.run_line("link").await,
+            done(["server link (public_api): https://play.example.net"])
+        );
+        // No link at all: what links need, and it didn't do what was asked.
+        let none = tempfile::tempdir().unwrap();
+        let (c, _store) = serving(none.path(), "api_bind = \"10.9.8.7:7801\"\n", None).await;
+        let shown = c.run_line("link").await;
+        assert_eq!(
+            shown,
+            failed([format!("link: none; {}", crate::invite::no_links()).as_str()])
+        );
+    }
 
     #[tokio::test]
     async fn accounts_invites_and_revoke_print_as_the_subcommands_do() {

@@ -15,7 +15,9 @@ api_bind = "127.0.0.1:7801"     # the account API, where launchers sign players 
 #                                            # links name: Caddy (TLS) in front of api_bind, say,
 #                                            # as docs/hosting.md sets it up
 max_players = 20
-trusted_proxies = []            # e.g. ["127.0.0.1"] when Caddy runs on this machine (docs/hosting.md)
+trusted_proxies = []            # proxies that add X-Forwarded-For: ["127.0.0.1"] for Caddy here
+#                               # (docs/hosting.md); never a tunnel, or anything else that passes
+#                               # TLS through
 tick_hz = 20                    # the world's ticks per second (1 to 60)
 motd = ""                       # a notice launchers show players: plain text, at most 200 characters
 # host = "Your name"            # who hosts this server, as players' launchers show it ("hosted by");

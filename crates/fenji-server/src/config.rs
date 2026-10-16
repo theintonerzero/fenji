@@ -62,7 +62,8 @@ pub struct ServerConfig {
     pub public_api: Option<String>,
     #[serde(default = "twenty")]
     pub max_players: u32,
-    /// Peers whose `X-Forwarded-For` names the client (M3 spec D12).
+    /// Peers whose `X-Forwarded-For` names the client (M3 spec D12): proxies that add it, such as
+    /// Caddy, never one that passes the players' TLS through, which can't.
     #[serde(default)]
     pub trusted_proxies: Vec<IpAddr>,
     /// The world's ticks per second (Fenji design spec §6.4).
@@ -254,6 +255,16 @@ fn source_url() -> String {
     )
 }
 
+/// The hosts' guide for this version, on the web, as the archive's README.txt names it: the
+/// archive holds no `docs/hosting.md`, so the server's lines point here (the hosting plan's final
+/// review B, Minor 7).
+pub fn guide() -> String {
+    format!(
+        "https://github.com/theintonerzero/fenji/blob/v{}/docs/hosting.md",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 /// The longest `[server] source_url`, in characters.
 pub const SOURCE_URL_MAX: usize = 200;
 
@@ -372,7 +383,7 @@ impl Config {
     /// 2. with `tls = "self"`, `https://<public_host>:<api_bind's port>`;
     /// 3. `api_bind` itself, when it's a loopback address and `public_host` is one too or unset;
     /// 4. otherwise none, and without `tls = "self"` `run` warns with
-    ///    [`crate::invite::NO_LINKS`].
+    ///    [`crate::invite::no_links`].
     ///
     /// Under `tls = "self"` each carries the pin, and there's none without it: a launcher couldn't
     /// trust the server's key. With neither `public_api` nor `public_host` set, `invite::bases`
@@ -421,8 +432,10 @@ impl Config {
         if s.name.contains(':') {
             bail!("[server] name: no colon (the client splits gj_uinfo on colons)");
         }
-        if s.name.chars().any(char::is_control) {
-            bail!("[server] name: no control characters (it goes into gj_uinfo)");
+        // Plain as `host` and `motd` are: the console's title bar, every launcher's list and the
+        // game's gj_uinfo show it.
+        if !crate::text::plain(&s.name) {
+            bail!("[server] name: no control or invisible characters (it goes into gj_uinfo)");
         }
         if s.login_bind == s.api_bind && s.login_bind.port() != 0 {
             bail!("[server] api_bind: the same address as login_bind");
@@ -551,20 +564,20 @@ pub const EXAMPLE: &str = include_str!("../fenji.example.toml");
 /// Where the configuration is without `--config`: in the working directory.
 pub const DEFAULT_PATH: &str = "fenji.toml";
 
-/// What a first run says, at `info`, `<folder>` being where it wrote: the first line before the
-/// server starts, so that a first run that can't start still explains its new files, and the
-/// others once it runs (Amendment A, HA3).
+/// What a first run says, at `info`, `<folder>` being where it wrote and `<guide>` this version's
+/// hosts' guide ([`guide`]): the first line before the server starts, so that a first run that
+/// can't start still explains its new files, and the others once it runs (Amendment A, HA3).
 pub const FIRST_RUN: [&str; 3] = [
     "First run: wrote fenji.toml and data/ in <folder>.",
     "Friends on this network can join now: type `invite` for a link.",
     "To let in friends over the internet, open ports 7800 and 7801 on your router, or use a VPN: \
-     see docs/hosting.md.",
+     see <guide>.",
 ];
 
 /// [`FIRST_RUN`]'s lines for a first run in `folder`, for `run` and the host console to show.
 pub fn first_run_lines(folder: &Path) -> [String; 3] {
-    let folder = folder.display().to_string();
-    FIRST_RUN.map(|line| line.replace("<folder>", &folder))
+    let (folder, guide) = (folder.display().to_string(), guide());
+    FIRST_RUN.map(|line| line.replace("<folder>", &folder).replace("<guide>", &guide))
 }
 
 /// The lines the template changes in the example, each pair as wide as each other so that the
@@ -669,6 +682,25 @@ impl Loaded {
     }
 }
 
+/// The configuration the admin commands and `console` use: `path`, `--config`'s, or without it
+/// [`DEFAULT_PATH`], which must be there: they make no first run. Without `--config`, outside the
+/// server's folder, the error says how to find it (the hosting plan's final review B, Minor 4).
+pub fn load_existing(path: Option<&Path>) -> anyhow::Result<Config> {
+    if let Some(path) = path {
+        return Config::load(path);
+    }
+    let here = Path::new(DEFAULT_PATH);
+    if matches!(here.try_exists(), Ok(false)) {
+        let folder = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        bail!(
+            "can't read {DEFAULT_PATH}: there's none in this folder ({}); run fenji-server in the \
+             server's own folder, or give --config with its {DEFAULT_PATH}",
+            folder.display()
+        );
+    }
+    Config::load(here)
+}
+
 /// The configuration `run` serves with (M4 hosting spec §3.6, H9):
 /// - `path`, which must exist, so that a mistyped path under systemd never starts a server with a
 ///   fresh, empty database;
@@ -718,6 +750,13 @@ mod tests {
         assert_eq!(c.world.save_every_secs, 300);
         assert_eq!(c.server.motd, "");
         assert_eq!(c.server.source_url, source_url());
+        // The hosting plan's final review, Minor 3: trusted_proxies is for a proxy that adds
+        // X-Forwarded-For, such as Caddy, never one that passes TLS through.
+        let proxies = EXAMPLE
+            .lines()
+            .find(|l| l.starts_with("trusted_proxies"))
+            .unwrap();
+        assert!(proxies.contains("X-Forwarded-For"), "{proxies}");
     }
 
     #[test]
@@ -778,17 +817,36 @@ mod tests {
 
     #[test]
     fn the_first_run_lines_name_the_folder_and_say_who_can_join() {
-        // Amendment A, HA3.
+        // Amendment A, HA3. The guide is this version's, on the web: the archive holds no
+        // docs/hosting.md (the hosting plan's final review B, Minor 7).
         let lines = first_run_lines(Path::new("/srv/fenji"));
         assert_eq!(
             lines,
             [
-                "First run: wrote fenji.toml and data/ in /srv/fenji.",
-                "Friends on this network can join now: type `invite` for a link.",
-                "To let in friends over the internet, open ports 7800 and 7801 on your router, \
-                 or use a VPN: see docs/hosting.md.",
+                "First run: wrote fenji.toml and data/ in /srv/fenji.".to_owned(),
+                "Friends on this network can join now: type `invite` for a link.".to_owned(),
+                format!(
+                    "To let in friends over the internet, open ports 7800 and 7801 on your \
+                     router, or use a VPN: see {}.",
+                    guide()
+                ),
             ]
         );
+    }
+
+    #[test]
+    fn the_guide_is_the_one_the_archives_readme_names() {
+        let guide = guide();
+        assert_eq!(
+            guide,
+            format!(
+                "https://github.com/theintonerzero/fenji/blob/v{}/docs/hosting.md",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        let readme = include_str!("../../../deploy/archive/README.txt")
+            .replace("@VERSION@", env!("CARGO_PKG_VERSION"));
+        assert!(readme.contains(&guide), "{readme}");
     }
 
     #[test]
@@ -898,6 +956,27 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("public_host"), "{e}");
+    }
+
+    #[test]
+    fn a_name_is_plain_text_as_the_host_and_the_motd_are() {
+        // The hosting plan's final review, Minor 7: the name is the most visible host text (the
+        // console's title bar, every launcher's list, the game's `gj_uinfo`), so the format
+        // characters `host` and `motd` refuse are refused here too: bidirectional overrides and
+        // isolates, zero-width characters, the byte order mark and the Hangul fillers.
+        for name in [
+            "Fen\\u202Eji",
+            "Fen\\u2066ji",
+            "Fen\\u200Bji",
+            "Fen\\uFEFFji",
+            "Fen\\u3164ji",
+        ] {
+            let text = format!("[server]\nname = \"{name}\"\n");
+            let e = format!("{:#}", Config::parse(&text, Path::new("/")).unwrap_err());
+            assert!(e.contains("[server] name"), "{name}: {e}");
+        }
+        let c = Config::parse("[server]\nname = \"Moonward é 你好\"\n", Path::new("/")).unwrap();
+        assert_eq!(c.server.name, "Moonward é 你好");
     }
 
     #[test]

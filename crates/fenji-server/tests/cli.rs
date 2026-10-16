@@ -171,8 +171,10 @@ fn first_run_writes_the_config_and_data_then_starts() {
     // directory's.
     let dir = tempfile::tempdir().unwrap();
     let mut server = Running::start(dir.path(), &[]);
-    let [wrote, next, last] = FIRST_RUN;
-    let (wrote, _) = wrote.split_once("<folder>").unwrap();
+    let (wrote, _) = FIRST_RUN[0].split_once("<folder>").unwrap();
+    // The other two name no folder; the last points at this version's guide.
+    let [_, next, last] = fenji_server::config::first_run_lines(dir.path());
+    let (next, last) = (next.as_str(), last.as_str());
     // The last line comes once the server catches SIGTERM.
     server.wait_for(last);
     let said = server.said();
@@ -196,7 +198,19 @@ fn first_run_writes_the_config_and_data_then_starts() {
         running.matches("127.0.0.1:").count() == 2 && !running.contains("0.0.0.0"),
         "where the environment put them: {running}"
     );
-    for warning in ["trusted_proxies", "invite links need"] {
+    // Under tls = "self", the server's own link beside it, for players who have an account (the
+    // hosting plan's final review, Important 2): this computer's, as the API is on loopback here.
+    const LINK: &str = "server link (this computer): https://127.0.0.1:";
+    assert!(
+        at("Fenji is running") < at(LINK) && at(LINK) < at(next),
+        "{said}"
+    );
+    let link = said[at(LINK) + LINK.len()..].lines().next().unwrap();
+    let (port, pin) = link.split_once("/#pin=").unwrap();
+    assert!(port.parse::<u16>().is_ok_and(|p| p != 0), "{link}");
+    assert_eq!(pin.trim_end().len(), 43, "{link}");
+    let no_links = fenji_server::invite::no_links();
+    for warning in ["trusted_proxies", no_links.as_str()] {
         assert!(!said.contains(warning), "nothing to warn about: {said}");
     }
     assert!(dir.path().join("data/fenji.db").is_file());
@@ -394,11 +408,23 @@ fn run_with_a_config_path_that_is_missing_says_how_to_write_one_and_writes_nothi
 #[test]
 fn admin_commands_need_a_config_and_make_no_first_run() {
     let dir = tempfile::tempdir().unwrap();
-    for args in [&["invite", "list"][..], &["backup"]] {
+    for args in [
+        &["invite", "list"][..],
+        &["backup"],
+        &["console", "--run", "online"],
+    ] {
         let out = fenji_server_in(dir.path(), args);
         let said = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{args:?}: {said}");
         assert!(said.contains("fenji.toml"), "{args:?}: {said}");
+        // Run from outside the server's folder, it says how to find it (the hosting plan's final
+        // review B, Minor 4).
+        assert!(
+            said.contains(
+                "run fenji-server in the server's own folder, or give --config with its fenji.toml"
+            ),
+            "{args:?}: {said}"
+        );
         let left = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(left, 0, "{args:?}: nothing is written");
     }
@@ -562,10 +588,13 @@ async fn invite_create_prints_the_code_and_a_link_with_the_code_in_the_fragment(
     .await;
     let code = text.lines().find_map(|l| l.strip_prefix("code: ")).unwrap();
     assert!(fenji_auth::invite::InviteCode::parse(code).is_some());
-    // Amendment A, HA4: each link labelled, then the code.
+    // Amendment A, HA4: each link labelled, then the code. Beside the invite link, the server's
+    // own link, for players who have an account: behind Caddy, its address alone (the hosting
+    // plan's final review, Important 2).
     assert!(
         text.starts_with(&format!(
-            "link (public_api): https://play.example.net/#invite={code}\ncode: {code}\n"
+            "link (public_api): https://play.example.net/#invite={code}\n\
+             server link (public_api): https://play.example.net\ncode: {code}\n"
         )),
         "{text}"
     );
@@ -650,10 +679,28 @@ async fn with_the_servers_own_key_every_link_carries_its_pin() {
         );
     }
     let lines: Vec<&str> = text.lines().collect();
+    // The hosting plan's final review, Important 2: beside each invite link, the server's own
+    // link, with the pin and without the invite, for players who have an account.
+    for (i, link) in links.iter().enumerate() {
+        assert_eq!(lines[2 * i], *link, "{text}");
+        let (label, url) = link.split_once(": ").unwrap();
+        let origin = url.split_once("/#").unwrap().0;
+        assert_eq!(
+            lines[2 * i + 1],
+            format!("server {label}: {origin}/#pin={pin}"),
+            "{text}"
+        );
+    }
     let code_at = lines.iter().position(|l| l.starts_with("code: ")).unwrap();
-    assert_eq!(code_at, links.len(), "the links, then the code: {text}");
+    assert_eq!(code_at, 2 * links.len(), "the links, then the code: {text}");
     assert!(
         lines[code_at + 1].contains("7800 and 7801") && lines[code_at + 1].contains("VPN"),
+        "{text}"
+    );
+    // The guide is this version's, on the web: the archive holds no docs/hosting.md (the hosting
+    // plan's final review B, Minor 7).
+    assert!(
+        lines[code_at + 1].ends_with(&format!("see {}", fenji_server::config::guide())),
         "{text}"
     );
     // With public_host, one link, there.
@@ -668,6 +715,12 @@ async fn with_the_servers_own_key_every_link_carries_its_pin() {
         [format!(
             "link (public_host): https://203.0.113.5:7801/#invite={code}&pin={pin}"
         )],
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "\nserver link (public_host): https://203.0.113.5:7801/#pin={pin}\n"
+        )),
         "{text}"
     );
     assert!(!text.contains("VPN"), "{text}");
@@ -865,6 +918,125 @@ async fn backup_prints_the_new_copy_which_opens_as_a_store() {
     let invites = copy.list_invites().await.unwrap();
     assert_eq!(invites.len(), 1, "the copy holds what the database did");
     assert_eq!(invites[0].label.as_deref(), Some("for bob"));
+}
+
+/// The data folder is the server's user's (the hosting plan's final review, Minor 1): on Linux and
+/// macOS, `run` and the admin commands refuse another user's, or one every user may write in,
+/// before they write anything there.
+#[cfg(unix)]
+mod the_data_folder {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A config in `dir` whose data folder is `dir/data`, made with `mode`.
+    fn with_data(dir: &Path, mode: u32) -> Config {
+        let data = dir.join("data");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(mode)).unwrap();
+        let text = "[server]\nname = \"Fenji\"\n[store]\npath = \"data/fenji.db\"\n";
+        std::fs::write(dir.join("fenji.toml"), text).unwrap();
+        Config::parse(text, dir).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_admin_command_refuses_one_every_user_may_write_in_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = with_data(dir.path(), 0o777);
+        let mut out = Vec::new();
+        let backup = Command::Backup { keep: 14 };
+        let clock = TestClock::at(1_800_000_000_000);
+        let e = admin(&cfg, &backup, &mut out, &clock).await.unwrap_err();
+        let e = format!("{e:#}");
+        let data = dir.path().join("data");
+        assert!(e.contains(&format!("chmod o-w {}", data.display())), "{e}");
+        assert_eq!(
+            std::fs::read_dir(&data).unwrap().count(),
+            0,
+            "nothing written"
+        );
+        // One its group may write in is its user's still: with a user's own group and a umask of
+        // 002, every folder its user makes is so.
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o775)).unwrap();
+        admin(&cfg, &backup, &mut out, &clock).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_admin_command_refuses_another_users_folder_and_names_whom_to_run_as() {
+        // As root, the root folder is the test's own: there's nothing to refuse.
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::parse(
+            "[server]\nname = \"Fenji\"\n[store]\npath = \"/fenji.db\"\n",
+            dir.path(),
+        )
+        .unwrap();
+        let list = Command::Account {
+            cmd: AccountCmd::List,
+        };
+        let clock = TestClock::at(1_800_000_000_000);
+        let e = admin(&cfg, &list, &mut Vec::new(), &clock)
+            .await
+            .unwrap_err();
+        let e = format!("{e:#}");
+        assert!(
+            e.contains("the data folder / is root's")
+                && e.contains("(sudo -u root fenji-server …)"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn run_refuses_one_every_user_may_write_in_before_it_writes_anything() {
+        // Not its lock, its socket, its database or its log.
+        let dir = tempfile::tempdir().unwrap();
+        with_data(dir.path(), 0o757);
+        let mut run = Running::start(dir.path(), &["--config", "fenji.toml", "run", "--plain"]);
+        let status = run.wait();
+        let said = run.said();
+        assert!(!status.success(), "{status}: {said}");
+        assert!(said.contains("chmod o-w"), "{said}");
+        let data = dir.path().join("data");
+        assert_eq!(std::fs::read_dir(&data).unwrap().count(), 0, "{said}");
+    }
+
+    #[test]
+    fn a_first_run_under_a_umask_of_002_makes_its_folders_owner_only_and_starts_again() {
+        // The hosting plan's final review, Minor 1: the check mustn't refuse what a first run
+        // makes where every file is made group-writable.
+        let dir = tempfile::tempdir().unwrap();
+        let start = || {
+            let log = tempfile::NamedTempFile::new().unwrap();
+            let child = std::process::Command::new("sh")
+                .args(["-c", "umask 002 && exec \"$0\" \"$@\""])
+                .arg(env!("CARGO_BIN_EXE_fenji-server"))
+                .arg("--plain")
+                .current_dir(dir.path())
+                .env("RUST_LOG", "info")
+                .envs(ANY_PORT)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(log.reopen().unwrap())
+                .spawn()
+                .unwrap();
+            Running { child, log }
+        };
+        let mut first = start();
+        first.wait_for("Fenji is running");
+        assert!(first.stop().success(), "{}", first.said());
+        for folder in ["data", "data/tls"] {
+            let mode = std::fs::metadata(dir.path().join(folder))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700, "{folder}");
+        }
+        let mut again = start();
+        again.wait_for("Fenji is running");
+        assert!(again.stop().success(), "{}", again.said());
+    }
 }
 
 #[test]

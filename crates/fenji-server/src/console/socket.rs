@@ -8,7 +8,7 @@
 //!   JSON lines, each within the wire's limit ([`wire::encode_server`]), and runs its numbered
 //!   commands. A console that stops reading holds up nothing: its socket and its queue fill, and
 //!   it loses log lines, as the log hub has it.
-use std::fs::{DirBuilder, Permissions};
+use std::fs::{DirBuilder, File, Permissions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -33,9 +33,12 @@ use crate::lock::{self, Lock};
 pub const NAME: &str = "console.sock";
 
 /// Where a socket is made before it's moved into place: a folder only this user may enter. With
-/// the socket's name, `s`, in it, its path is shorter than [`NAME`]'s, so it fits wherever that
-/// does.
+/// the socket's name, [`IN_NEST`], in it, its path is shorter than [`NAME`]'s, so it fits wherever
+/// that does.
 const NEST: &str = ".sock.new";
+
+/// The socket's name in [`NEST`].
+const IN_NEST: &str = "s";
 
 /// The most consoles attached at once.
 pub const CONSOLES: usize = 4;
@@ -175,24 +178,52 @@ async fn answers(path: &Path) -> anyhow::Result<bool> {
 /// A listener at `path`, never more open than 0600: it's bound in [`NEST`], a folder only this
 /// user may enter, set to 0600 there, then moved over whatever was at `path`.
 fn bind(data: &Path, path: &Path) -> io::Result<UnixListener> {
+    bind_with(data, path, |_| {})
+}
+
+/// [`bind`], with `made` called on the nest once it's made, before anything goes through it: a
+/// test swaps a link in for it there. The nest is held open from then on, and its mode, the
+/// socket's and the move into place go through it, so that none of them follows a link swapped in
+/// for it (the hosting plan's final review, Minor 1).
+fn bind_with(data: &Path, path: &Path, made: impl FnOnce(&Path)) -> io::Result<UnixListener> {
+    use rustix::fs::{AtFlags, CWD, Mode};
     let nest = data.join(NEST);
-    // Left by a server that ended as it bound: the lock says no other is here.
+    // Left by a server that ended as it bound: the lock says no other is here. A link in its place
+    // is removed, never followed.
     match std::fs::remove_dir_all(&nest) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
     DirBuilder::new().mode(0o700).create(&nest)?;
+    made(&nest);
     let bound = (|| -> io::Result<UnixListener> {
+        let folder = own_folder(&nest)?;
         // Whatever the umask left of it.
-        std::fs::set_permissions(&nest, Permissions::from_mode(0o700))?;
-        let made = nest.join("s");
-        let listener = UnixListener::bind(&made)?;
-        std::fs::set_permissions(&made, Permissions::from_mode(0o600))?;
-        std::fs::rename(&made, path)?;
+        folder.set_permissions(Permissions::from_mode(0o700))?;
+        let listener = UnixListener::bind(nest.join(IN_NEST))?;
+        rustix::fs::chmodat(&folder, IN_NEST, Mode::RUSR | Mode::WUSR, AtFlags::empty())?;
+        rustix::fs::renameat(&folder, IN_NEST, CWD, path)?;
         Ok(listener)
     })();
     let _ = std::fs::remove_dir_all(&nest);
     bound
+}
+
+/// The folder at `dir`, held open: never through a link in its place, and only as this user's.
+fn own_folder(dir: &Path) -> io::Result<File> {
+    use std::os::unix::fs::MetadataExt;
+
+    use rustix::fs::{Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let folder = File::from(rustix::fs::open(dir, flags, Mode::empty())?);
+    let meta = folder.metadata()?;
+    if !meta.is_dir() || meta.uid() != rustix::process::geteuid().as_raw() {
+        return Err(io::Error::other(format!(
+            "{} isn't the folder this server made",
+            dir.display()
+        )));
+    }
+    Ok(folder)
 }
 
 /// Serves the claim's console socket until the server has stopped, then gives its consoles
@@ -458,6 +489,43 @@ mod tests {
             }
         }
         lines
+    }
+
+    #[tokio::test]
+    async fn a_link_swapped_in_for_the_nest_is_never_followed() {
+        // The hosting plan's final review, Minor 1: the nest's mode, and the socket's, were set
+        // through their paths, so a link swapped in for the nest once it was made had its target
+        // made 0700. Nothing goes through the link now: the bind fails, and the folder it points
+        // to keeps its mode and gets no socket.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        DirBuilder::new().mode(0o700).create(&data).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        DirBuilder::new().mode(0o755).create(&elsewhere).unwrap();
+        let swap = |nest: &Path| {
+            std::fs::remove_dir(nest).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, nest).unwrap();
+        };
+        let socket = path(&data);
+        assert!(bind_with(&data, &socket, swap).is_err());
+        let mode = std::fs::metadata(&elsewhere).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755, "the link's target kept its mode");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        assert!(!socket.exists());
+        assert!(!data.join(NEST).exists(), "the link is gone");
+    }
+
+    #[tokio::test]
+    async fn a_socket_is_bound_owner_only_whatever_the_umask_left() {
+        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let socket = path(dir.path());
+        let _listener = bind(dir.path(), &socket).unwrap();
+        let meta = std::fs::symlink_metadata(&socket).unwrap();
+        assert!(meta.file_type().is_socket());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert!(!dir.path().join(NEST).exists(), "the nest is gone");
     }
 
     #[tokio::test]

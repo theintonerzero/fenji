@@ -725,7 +725,7 @@ mod tests {
     use crate::online::Online;
     use crate::world::{
         ChatChannel, ChatIn, ChatOut, ChatRefusal, KickReason, Speaker, WhisperTarget, WorldIn,
-        WorldOut,
+        WorldOut, logged, logged_at,
     };
 
     const START: Location = Location {
@@ -1214,64 +1214,47 @@ mod tests {
         assert!(events.len() >= 2, "the 772s went out: {events:?}");
     }
 
-    /// What this thread logs while the subscriber is its default, as text.
-    #[derive(Clone, Default)]
-    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Logs {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
-        type Writer = Logs;
-        fn make_writer(&'a self) -> Logs {
-            self.clone()
-        }
-    }
-
-    #[tokio::test]
-    async fn a_store_error_in_the_account_check_keeps_the_player() {
+    #[test]
+    fn a_store_error_in_the_account_check_keeps_the_player() {
         // Ruling R5, as in the lobby: a store that fails now may answer at the next check, so the
-        // check logs the error and keeps the connection.
-        let logs = Logs::default();
-        let log = tracing_subscriber::fmt()
-            .with_writer(logs.clone())
-            .with_ansi(false);
-        let _logging = tracing::subscriber::set_default(log.finish());
-        let dir = tempfile::tempdir().unwrap();
-        let (mut gate, mut inbox) = gate(dir.path()).await;
-        gate.limits.account_check = Duration::from_millis(50);
-        gate.accounts.store().close().await;
-        let (mut ours, peer, mut server, _theirs, _client) = session().await;
-        let (_newer, mut replaced) = oneshot::channel();
-        let tester = account("tester");
-        let played = play(
-            &mut ours,
-            peer,
-            &gate,
-            &mut server,
-            &tester,
-            1,
-            lin(None),
-            &mut replaced,
-        );
-        tokio::pin!(played);
-        let open = tokio::time::timeout(Duration::from_millis(400), &mut played).await;
-        assert!(open.is_err(), "the connection stays open: {open:?}");
-        let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        // check logs the error and keeps the connection. The log is caught by the process's own
+        // subscriber (`world::logged`), which no other test's thread can make blind to its lines.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (checked, text) = logged(|| {
+            rt.block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut gate, mut inbox) = gate(dir.path()).await;
+                gate.limits.account_check = Duration::from_millis(50);
+                gate.accounts.store().close().await;
+                let (mut ours, peer, mut server, _theirs, _client) = session().await;
+                let (_newer, mut replaced) = oneshot::channel();
+                let tester = account("tester");
+                let played = play(
+                    &mut ours,
+                    peer,
+                    &gate,
+                    &mut server,
+                    &tester,
+                    1,
+                    lin(None),
+                    &mut replaced,
+                );
+                tokio::pin!(played);
+                let open = tokio::time::timeout(Duration::from_millis(400), &mut played).await;
+                assert!(open.is_err(), "the connection stays open: {open:?}");
+                let WorldIn::Join { out, .. } = told(&mut inbox).await else {
+                    panic!("a join first")
+                };
+                drop(out);
+                let ended = tokio::time::timeout(Duration::from_secs(5), played).await;
+                ended.expect("the world letting go ends it")
+            })
+        });
+        checked.unwrap();
         assert!(text.matches("account check failed").count() >= 3, "{text}");
-        let WorldIn::Join { out, .. } = told(&mut inbox).await else {
-            panic!("a join first")
-        };
-        drop(out);
-        let ended = tokio::time::timeout(Duration::from_secs(5), played).await;
-        ended.expect("the world letting go ends it").unwrap();
     }
 
     // --- Slice 2 (Amendment B): seeing each other.
@@ -2012,49 +1995,45 @@ mod tests {
 
     #[test]
     fn the_logs_never_hold_a_line() {
-        // A host's log says that a line came or went, never what it said or whom a whisper named.
-        let logs = Logs::default();
-        let log = tracing_subscriber::fmt()
-            .with_writer(logs.clone())
-            .with_ansi(false)
-            .with_max_level(tracing::Level::TRACE);
-        let _logging = tracing::subscriber::set_default(log.finish());
+        // A host's log says that a line came or went, never what it said or whom a whisper named,
+        // at any level. The log is caught by the process's own subscriber (`world::logged`).
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(async {
-            let dir = tempfile::tempdir().unwrap();
-            let (gate, _inbox) = gate(dir.path()).await;
-            let secret = Value::Table(Table {
-                array: Vec::new(),
-                hash: vec![(s("name"), s("Zed@Unknown"))],
-            });
-            for args in [
-                vec![Value::Int(0), s("a secret plan"), Value::Nil],
-                vec![Value::Int(1), s("a secret plan"), secret],
-                vec![Value::Int(2), s("a secret plan"), Value::Nil],
-            ] {
-                on_message(&gate, 1, Cts::Script.to_u8(), &transmit(&args));
-            }
-            let (_ours, _peer, mut server, _theirs, _client) = session().await;
-            let said = WorldOut::Chat(ChatOut::Said {
-                channel: ChatChannel::Whisper,
-                from: Speaker {
-                    pid: 300,
-                    name: "Mai".into(),
-                    vocation: 2,
-                },
-                to: Some(Speaker {
-                    pid: 301,
-                    name: "Zed".into(),
-                    vocation: 2,
-                }),
-                text: "a secret plan".into(),
-            });
-            encode(&mut server, 258, NOW as u64, said).unwrap();
+        let ((), text) = logged_at(tracing::Level::TRACE, || {
+            rt.block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let (gate, _inbox) = gate(dir.path()).await;
+                let secret = Value::Table(Table {
+                    array: Vec::new(),
+                    hash: vec![(s("name"), s("Zed@Unknown"))],
+                });
+                for args in [
+                    vec![Value::Int(0), s("a secret plan"), Value::Nil],
+                    vec![Value::Int(1), s("a secret plan"), secret],
+                    vec![Value::Int(2), s("a secret plan"), Value::Nil],
+                ] {
+                    on_message(&gate, 1, Cts::Script.to_u8(), &transmit(&args));
+                }
+                let (_ours, _peer, mut server, _theirs, _client) = session().await;
+                let said = WorldOut::Chat(ChatOut::Said {
+                    channel: ChatChannel::Whisper,
+                    from: Speaker {
+                        pid: 300,
+                        name: "Mai".into(),
+                        vocation: 2,
+                    },
+                    to: Some(Speaker {
+                        pid: 301,
+                        name: "Zed".into(),
+                        vocation: 2,
+                    }),
+                    text: "a secret plan".into(),
+                });
+                encode(&mut server, 258, NOW as u64, said).unwrap();
+            })
         });
-        let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
         assert!(
             text.contains("115"),
             "the lines were logged as arriving: {text}"

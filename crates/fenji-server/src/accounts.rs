@@ -271,7 +271,22 @@ impl Accounts {
             .redeem_invite(&code.hash(), username, &phc, now)
             .await?;
         self.succeed(attempt);
+        self.made(id, username).await;
         Ok(id)
+    }
+
+    /// Logs the account `id`, called `username`, made with an invite: its id and its label, which
+    /// the log shows cleaned, as M3's labels weren't checked. A host who sent the link sees it
+    /// (the hosting plan's final review B, Minor 2).
+    async fn made(&self, id: i64, username: &str) {
+        const MADE: &str = "made an account with an invite";
+        match self.store.invite_of_account(id).await {
+            Ok(Some((invite, Some(label)))) => {
+                tracing::info!(account = %username, invite, label = %label, "{MADE}");
+            }
+            Ok(Some((invite, None))) => tracing::info!(account = %username, invite, "{MADE}"),
+            Ok(None) | Err(_) => tracing::info!(account = %username, "{MADE}"),
+        }
     }
 
     /// Signs in: a session token on success, and the same error for a wrong password and an unknown
@@ -410,6 +425,28 @@ mod tests {
             .unwrap();
         let a = Accounts::new(store, AuthConfig::default(), Arc::new(clock.clone()));
         (dir, a, clock, code.display())
+    }
+
+    #[test]
+    fn a_friend_making_an_account_is_logged_with_its_invite() {
+        // The hosting plan's final review B, Minor 2: a host who sent a link sees their friend's
+        // account made, with the invite it spent and its label, and the account as a name.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (_d, a, _c, code) = rt.block_on(setup());
+        let (made, log) =
+            crate::world::logged(|| rt.block_on(a.register(&code, "Mai", "a long password", ADDR)));
+        made.unwrap();
+        let line = log
+            .lines()
+            .find(|l| l.contains("made an account with an invite"))
+            .unwrap_or_else(|| panic!("no line for the account: {log}"));
+        assert!(
+            line.contains("account=Mai") && line.contains("invite=1") && line.contains("label=t"),
+            "{line}"
+        );
     }
 
     #[tokio::test]

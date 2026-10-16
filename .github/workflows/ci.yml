@@ -24,7 +24,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # tools/oodle-helper's dll.rs, the workspace's only unsafe code, builds for Windows only.
+      # tools/oodle-helper's dll.rs, unsafe code like fenji-server's unix.rs, builds for Windows only.
       - run: cargo clippy -p fenji-oodle-helper --target x86_64-pc-windows-gnu --locked -- -D warnings
       # fenji-data without its `oodle` feature, as tools/oodle-helper builds it.
       - run: cargo clippy -p fenji-data --no-default-features --all-targets --locked -- -D warnings
@@ -158,6 +158,10 @@ jobs:
           fetch-depth: 0   # a PR's commits, and dev's, for the session-link check
       - name: No game content or RE artefacts
         run: scripts/check-forbidden-files.sh
+      - name: Unsafe code only in unix.rs and dll.rs
+        run: scripts/check-unsafe-allowed.sh
+      - name: Unsafe-code check tests
+        run: scripts/test-check-unsafe-allowed.sh
       - name: Commit-subject check tests
         run: scripts/test-check-commit-subject.sh
       - name: Session-link check tests

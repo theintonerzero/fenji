@@ -1,7 +1,7 @@
-//! Making an invite (M3 spec D13; M4 spec §4.3): one place for `fenji-server invite create` and
-//! the admins' `!invite`, and later the host console's `invite`. Its links (M4 hosting spec §3.10,
-//! §3.11 and §8, HA4) start where players reach the account API, and carry the server's pin when
-//! it serves TLS with its own key.
+//! Making an invite (M3 spec D13; M4 spec §4.3): one place for `fenji-server invite create`, the
+//! admins' `!invite` and the host console's `invite`. Its links (M4 hosting spec §3.10, §3.11 and
+//! §8, HA4) start where players reach the account API, and carry the server's pin when it serves
+//! TLS with its own key.
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -30,17 +30,25 @@ impl InviteBase {
     }
 }
 
-/// The link to the server itself, `<origin>/#pin=<pin>`, for players who already have an account:
-/// only for a base with a pin, as without one the origin alone will do.
-pub fn server_link(base: &InviteBase) -> Option<String> {
-    let pin = base.pin.as_ref()?;
-    Some(format!("{}/#pin={pin}", base.origin))
+/// The link to the server itself, without an invite, for players who already have an account (M4
+/// hosting spec §3.10): `<origin>/#pin=<pin>` with a pin, and the origin alone without one, as
+/// behind Caddy. Launchers add a server by either.
+pub fn server_link(base: &InviteBase) -> String {
+    match &base.pin {
+        Some(pin) => format!("{}/#pin={pin}", base.origin),
+        None => base.origin.clone(),
+    }
 }
 
-/// What a server with no invite link beyond this computer needs (M4 hosting spec §3.11): `run`
-/// warns with it at start, and `invite` says it with the bare code.
-pub const NO_LINKS: &str =
-    "invite links need [server] public_api or tls = \"self\" (docs/hosting.md)";
+/// What a server with no link beyond this computer needs (M4 hosting spec §3.11): `run` warns with
+/// it at start, and `invite` and `link` say it. It points at this version's guide on the web, as
+/// the archive holds no `docs/hosting.md` (the hosting plan's final review B, Minor 7).
+pub fn no_links() -> String {
+    format!(
+        "invite and server links need [server] public_api or tls = \"self\": see {}",
+        crate::config::guide()
+    )
+}
 
 /// The label of the link for this computer, whose API is on loopback.
 pub const THIS_COMPUTER: &str = "this computer";
@@ -214,14 +222,18 @@ mod tests {
         );
         assert_eq!(
             server_link(&pinned),
-            Some(format!("https://203.0.113.5:7801/#pin={PIN}"))
+            format!("https://203.0.113.5:7801/#pin={PIN}")
         );
         let plain = base("http://127.0.0.1:7801", None);
         assert_eq!(
             plain.invite_link("ABCD-EFGH-JKMN-PQRS"),
             "http://127.0.0.1:7801/#invite=ABCD-EFGH-JKMN-PQRS"
         );
-        assert_eq!(server_link(&plain), None, "a server link is for a pin");
+        // Without a pin, as behind Caddy, the server's link is its address alone (the hosting
+        // plan's final review, Important 2).
+        assert_eq!(server_link(&plain), "http://127.0.0.1:7801");
+        let named = base("https://play.example.net", None);
+        assert_eq!(server_link(&named), "https://play.example.net");
     }
 
     #[test]
@@ -280,6 +292,18 @@ mod tests {
         assert_eq!(
             bases_among(&gone, Some(PIN), 7801, &interfaces()),
             [labelled("10.9.8.7", "https://10.9.8.7:7801", Some(PIN))]
+        );
+    }
+
+    #[test]
+    fn what_links_need_points_at_this_versions_guide() {
+        // The archive holds no docs/hosting.md (the hosting plan's final review B, Minor 7).
+        assert_eq!(
+            no_links(),
+            format!(
+                "invite and server links need [server] public_api or tls = \"self\": see {}",
+                crate::config::guide()
+            )
         );
     }
 

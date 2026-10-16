@@ -181,20 +181,53 @@ const PROXY_NOT_TRUSTED: &str = "public_api is set and api_bind is a loopback ad
 /// What a start warns the host about in `cfg`'s addresses, `pin` being the server's own key's:
 /// - no invite link that reaches beyond this computer (M4 hosting spec §3.11), which needs
 ///   `public_api`, or `tls = "self"`, which gives one for each of the machine's addresses (HA4);
-/// - a proxy in front of a loopback API (`public_api` set) that `trusted_proxies` doesn't list.
+/// - a proxy in front of a loopback API (`public_api` set) that `trusted_proxies` doesn't list,
+///   unless the API serves TLS itself: what's in front of it then passes the players' TLS through
+///   and can't add `X-Forwarded-For`, so trusting it would let each player name their own address
+///   (the hosting plan's final review, Minor 3).
 ///
 /// A loopback API without `public_api` is a server for this computer, and warns of nothing.
-fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<&'static str> {
+fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<String> {
     let s = &cfg.server;
     let mut warnings = Vec::new();
     if s.tls.is_none() && cfg.invite_base(pin).is_none() {
-        warnings.push(crate::invite::NO_LINKS);
+        warnings.push(crate::invite::no_links());
     }
     let loopback = s.api_bind.ip().to_canonical().is_loopback();
-    if s.public_api.is_some() && loopback && s.trusted_proxies.is_empty() {
-        warnings.push(PROXY_NOT_TRUSTED);
+    if s.tls.is_none() && s.public_api.is_some() && loopback && s.trusted_proxies.is_empty() {
+        warnings.push(PROXY_NOT_TRUSTED.to_owned());
     }
     warnings
+}
+
+/// The server link a start shows beside "Fenji is running" under `tls = "self"` (M4 hosting spec
+/// §3.10), for players who already have an account: the first of `bases` (`invite::bases`), the
+/// one address set for links or the machine's first, and that `link` shows the rest. None without
+/// the server's own key, whose host has an address for players already, or without a base.
+fn running_link(cfg: &Config, bases: &[(String, crate::invite::InviteBase)]) -> Option<String> {
+    if cfg.server.tls != Some(Tls::OwnKey) {
+        return None;
+    }
+    let (label, base) = bases.first()?;
+    let link = crate::invite::server_link(base);
+    let label = crate::text::escape_hidden(label);
+    Some(match bases.len() {
+        1 => format!("server link ({label}): {link}"),
+        _ => format!("server link ({label}): {link} (type link for the others)"),
+    })
+}
+
+/// Why the server can't listen on `addr`, and, for a port another program uses, what to do (the
+/// hosting plan's final review B, Minor 4).
+fn cant_listen(addr: SocketAddr, e: std::io::Error) -> anyhow::Error {
+    let todo = match e.kind() {
+        std::io::ErrorKind::AddrInUse => format!(
+            ": another program uses port {}; stop it, or give the server another port in fenji.toml",
+            addr.port()
+        ),
+        _ => String::new(),
+    };
+    anyhow::Error::new(e).context(format!("can't listen on {addr}{todo}"))
 }
 
 /// The account API's listener: plain, or TLS with the server's own key. Either keeps the open
@@ -251,11 +284,11 @@ pub async fn start(
     tokio::task::spawn_blocking(fenji_auth::password::warm_dummy);
     let login = TcpListener::bind(cfg.server.login_bind)
         .await
-        .with_context(|| format!("can't listen on {}", cfg.server.login_bind))?;
+        .map_err(|e| cant_listen(cfg.server.login_bind, e))?;
     let login_addr = login.local_addr()?;
     let api = TcpListener::bind(cfg.server.api_bind)
         .await
-        .with_context(|| format!("can't listen on {}", cfg.server.api_bind))?;
+        .map_err(|e| cant_listen(cfg.server.api_bind, e))?;
     let api_addr = api.local_addr()?;
     let (conns, proxies) = (ConnLimits::default(), &cfg.server.trusted_proxies);
     let api = match &key {
@@ -360,9 +393,12 @@ pub async fn start(
     })
 }
 
-/// `fenji-server run`: serves until Ctrl-C, SIGTERM or the console's `stop`, with `front` in the
-/// terminal it started in (M4 hosting spec §3.1), `hub` being the log's. A first run (§3.6) says
-/// what it wrote before it starts, and what's next once it runs.
+/// `fenji-server run`: serves until Ctrl-C, SIGTERM, its terminal closing (SIGHUP, unless it came
+/// ignored, as under `nohup`; on Windows, its window closing, logging off or shutting down) or the
+/// console's `stop`, each stopping it cleanly (`signalled`), with `front` in the terminal it
+/// started in (M4 hosting spec §3.1), `hub` being the log's. A first run (§3.6) says
+/// what it wrote before it starts, and what's next once it runs. Under `tls = "self"` the start
+/// shows a server link beside "Fenji is running" (§3.10).
 /// - First it claims its data folder (§3.5): another server using it stops this one before it
 ///   opens the store or listens (Review Focus 5). On Linux and macOS the claim is also the console
 ///   socket, which consoles attach to while it serves, and are told goodbye on as it stops;
@@ -370,7 +406,9 @@ pub async fn start(
 /// - [`Front::Full`]: the full-screen console holds the terminal while the server runs on a task
 ///   of its own; Ctrl-C there is `stop`. However the console ends, a panic included, it gives the
 ///   terminal back first (Review Focus 2). One that ends while the server runs leaves it running,
-///   and says so, until a signal stops it. Then `run` waits for the server's end.
+///   and says so, until a signal stops it. Then `run` waits for the server's end. Once the server
+///   has stopped, it waits [`CONSOLE_GRACE`] at most for a console that hasn't ended: one whose
+///   terminal has gone may never end.
 /// - [`Front::Plain`]: commands from stdin and answers on stdout, the log being on stderr. The end
 ///   of stdin leaves the server running.
 pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()> {
@@ -409,6 +447,10 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
     };
     let stop = signalled();
     tracing::info!(gate = %server.login_addr, api = %server.api_addr, "Fenji is running");
+    let bases = crate::invite::bases(&cfg, server.pin().as_deref(), server.api_addr.port());
+    if let Some(link) = running_link(&cfg, &bases) {
+        tracing::info!("{link}");
+    }
     match &first_run {
         Some([_, next @ ..]) => {
             for line in next {
@@ -436,8 +478,9 @@ pub async fn run(loaded: Loaded, front: Front, hub: LogHub) -> anyhow::Result<()
                 Colours::from_env(),
                 std::future::pending(),
             );
-            let ended = held(tui).await;
-            // The terminal is the host's again, whatever ended the console.
+            let ended = held_until_stopped(tui, console.stopped(), CONSOLE_GRACE).await;
+            // The terminal is the host's again, whatever ended the console, unless the console was
+            // left to its thread, its terminal gone.
             let serving = !served.is_finished() && !*console.stopping().borrow();
             if let Some(note) = closed_note(&ended, serving, &logs) {
                 say(&note);
@@ -492,6 +535,40 @@ pub(crate) async fn held(
     }
 }
 
+/// How long `run` waits for its full-screen console once the server has stopped. The console ends
+/// on the server's goodbye at once, unless it's caught in a read of its terminal that never
+/// returns. Closing the window while the console waits for the terminal's answer to where its
+/// cursor is (ratatui's `Terminal::clear`, as it starts) hangs the terminal up, and crossterm then
+/// reads it over and over, a core spinning, on the console's thread (the fix pass's re-review,
+/// NB1).
+const CONSOLE_GRACE: Duration = Duration::from_secs(2);
+
+/// Why `run` stops waiting for the full-screen console: the server has stopped, and the console
+/// didn't end within [`CONSOLE_GRACE`].
+const CONSOLE_LEFT: &str = "the server has stopped, but the console hasn't ended, its terminal \
+     likely gone: it's left behind";
+
+/// [`held`], waited for no longer than `grace` once the server has `stopped`
+/// ([`ConsoleService::stopped`]). A console still running then, such as one whose terminal hung
+/// up, is left to its thread, which `main` doesn't wait for, so that the process ends.
+async fn held_until_stopped(
+    console: impl Future<Output = std::io::Result<Ending>> + Send + 'static,
+    mut stopped: watch::Receiver<bool>,
+    grace: Duration,
+) -> std::io::Result<Ending> {
+    let left = async move {
+        let _ = stopped.wait_for(|stopped| *stopped).await;
+        tokio::time::sleep(grace).await;
+    };
+    tokio::select! {
+        ended = held(console) => ended,
+        () = left => {
+            tracing::info!("{CONSOLE_LEFT}");
+            Err(std::io::Error::other(CONSOLE_LEFT))
+        }
+    }
+}
+
 /// Why the full-screen console ended while the server may run on; `None` once the server said
 /// goodbye, having stopped.
 fn still_serving(ended: &std::io::Result<Ending>) -> Option<String> {
@@ -510,9 +587,9 @@ fn closed_note(ended: &std::io::Result<Ending>, serving: bool, logs: &Path) -> O
     let why = still_serving(ended)?;
     serving.then(|| {
         format!(
-            "The console has closed ({why}). The server runs on until Ctrl-C or SIGTERM stops \
-             it; its log is in {}. `fenji-server --plain` gives the console as plain lines, for \
-             a terminal the full-screen one doesn't suit.",
+            "The console has closed ({why}). The server runs on until Ctrl-C, SIGTERM or closing \
+             this terminal stops it; its log is in {}. `fenji-server --plain` gives the console \
+             as plain lines, for a terminal the full-screen one doesn't suit.",
             logs.display()
         )
     })
@@ -548,32 +625,59 @@ async fn no_one_yet(server: &RunningServer) {
     }
 }
 
-/// Ctrl-C or SIGTERM. SIGTERM is caught from this call on, not from the future's first poll, so
-/// that one sent as soon as the server says it runs stops it cleanly.
+/// Ctrl-C, SIGTERM, or SIGHUP, which the server gets when the terminal or window it runs in closes,
+/// or its SSH session is lost (the hosting plan's final review, Important 1), unless SIGHUP came
+/// ignored, as `nohup` starts a server that is to outlive its terminal. SIGTERM and SIGHUP are
+/// caught from this call on, not from the future's first poll, so that one sent as soon as the
+/// server says it runs stops it cleanly.
 #[cfg(unix)]
 fn signalled() -> impl Future<Output = ()> {
-    let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
-    async move {
-        match term {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = term.recv() => {}
-                }
+    use tokio::signal::unix::{Signal, SignalKind, signal};
+    let term = signal(SignalKind::terminate()).ok();
+    // Read first: catching SIGHUP replaces what was there.
+    let hangup = if crate::unix::hangup_ignored() {
+        None
+    } else {
+        signal(SignalKind::hangup()).ok()
+    };
+    // A signal that isn't caught never comes here.
+    async fn caught(signal: Option<Signal>) {
+        match signal {
+            Some(mut signal) => {
+                signal.recv().await;
             }
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-            }
+            None => std::future::pending().await,
         }
-        tracing::info!("shutting down");
+    }
+    async move {
+        let signal = tokio::select! {
+            _ = tokio::signal::ctrl_c() => "SIGINT",
+            () = caught(term) => "SIGTERM",
+            () = caught(hangup) => "SIGHUP",
+        };
+        tracing::info!(signal, "shutting down");
     }
 }
 
-/// Ctrl-C.
-#[cfg(not(unix))]
-async fn signalled() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutting down");
+/// Ctrl-C, or the window closing, the user logging off or the system shutting down (the hosting
+/// plan's final review, Important 1), each caught from this call on. Windows ends the process a few
+/// seconds after the last three, or once it exits: the stop lets the world save everyone first,
+/// before its grace for the players' connections.
+#[cfg(windows)]
+fn signalled() -> impl Future<Output = ()> {
+    use tokio::signal::windows::{ctrl_close, ctrl_logoff, ctrl_shutdown};
+    let close = ctrl_close().ok();
+    let logoff = ctrl_logoff().ok();
+    let shutdown = ctrl_shutdown().ok();
+    async move {
+        let event = tokio::select! {
+            _ = tokio::signal::ctrl_c() => "Ctrl-C",
+            Some(()) = async { close?.recv().await } => "the window closed",
+            Some(()) = async { logoff?.recv().await } => "logging off",
+            Some(()) = async { shutdown?.recv().await } => "the system shutting down",
+        };
+        tracing::info!(event, "shutting down");
+    }
 }
 
 #[cfg(test)]
@@ -730,18 +834,51 @@ mod tests {
     }
 
     #[test]
+    fn a_console_that_hasnt_ended_once_the_server_has_stopped_is_left_behind() {
+        // The fix pass's re-review, NB1: a console caught in a read of a terminal that has gone
+        // never ends, and `run` waited for it without end, the process with it.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let grace = Duration::from_millis(100);
+            let (stop, stopped) = watch::channel(false);
+            let stuck = future::pending::<std::io::Result<Ending>>();
+            let mut waiting = Box::pin(held_until_stopped(stuck, stopped.clone(), grace));
+            // While the server serves, a console is waited for, however long it takes.
+            let serving = tokio::time::timeout(Duration::from_millis(500), &mut waiting).await;
+            assert!(serving.is_err(), "left while the server served");
+            // Once it has stopped, `grace` at most.
+            stop.send_replace(true);
+            let left = tokio::time::timeout(Duration::from_secs(10), waiting).await;
+            let left = left.expect("waited for without end");
+            assert_eq!(left.unwrap_err().to_string(), CONSOLE_LEFT);
+            // A console that ends on the server's goodbye ends so, well within its grace.
+            let bye = Ending::ServerStopped(service::STOPPING.into());
+            let ending = bye.clone();
+            let ample = Duration::from_secs(10);
+            let ended = held_until_stopped(async move { Ok(ending) }, stopped, ample).await;
+            assert_eq!(ended.unwrap(), bye);
+        });
+        // As `main` does: the console left behind keeps its thread, which isn't waited for.
+        rt.shutdown_background();
+    }
+
+    #[test]
     fn the_console_says_the_server_runs_on_only_while_it_does() {
         // Review 1, Minor 3: a console that ends as the server stops (a key pressed just then, or
         // the server's own task failing) mustn't be told the server runs on.
         let logs = Path::new("/srv/fenji/data/logs");
         let panicked = || Err(std::io::Error::other(CONSOLE_PANICKED));
         let note = closed_note(&panicked(), true, logs).expect("a note while it serves");
+        // Closing the terminal stops it cleanly too (the hosting plan's final review, Important 1).
         assert_eq!(
             note,
             "The console has closed (a panic ended the console; its message is above). The \
-             server runs on until Ctrl-C or SIGTERM stops it; its log is in /srv/fenji/data/logs. \
-             `fenji-server --plain` gives the console as plain lines, for a terminal the \
-             full-screen one doesn't suit."
+             server runs on until Ctrl-C, SIGTERM or closing this terminal stops it; its log is \
+             in /srv/fenji/data/logs. `fenji-server --plain` gives the console as plain lines, \
+             for a terminal the full-screen one doesn't suit."
         );
         assert_eq!(closed_note(&panicked(), false, logs), None);
         assert_eq!(closed_note(&Ok(Ending::Lost), false, logs), None);
@@ -794,6 +931,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_port_in_use_says_what_to_do() {
+        // The hosting plan's final review B, Minor 4: "can't listen on …" said what was wrong, not
+        // what to do.
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = held.local_addr().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::parse(
+            &format!(
+                "[server]\nname = \"Fenji\"\nlogin_bind = \"{taken}\"\napi_bind = \"127.0.0.1:0\"\n"
+            ),
+            dir.path(),
+        )
+        .unwrap();
+        let clock = Arc::new(TestClock::at(NOW));
+        let e = match start(&cfg, clock, GateLimits::default()).await {
+            Ok(_) => panic!("it listened on a port in use"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            e.starts_with(&format!(
+                "can't listen on {taken}: another program uses port {}; stop it, or give the \
+                 server another port in fenji.toml",
+                taken.port()
+            )),
+            "{e}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_key_without_its_certificate_stops_the_start_before_anything_listens() {
         let dir = tempfile::tempdir().unwrap();
         let tls = dir.path().join("tls");
@@ -832,7 +998,7 @@ mod tests {
         ] {
             assert_eq!(
                 address_warnings(&cfg(extra), None),
-                [crate::invite::NO_LINKS],
+                [crate::invite::no_links()],
                 "{extra}"
             );
         }
@@ -852,6 +1018,64 @@ mod tests {
         let direct =
             cfg("public_api = \"https://play.example.net\"\napi_bind = \"0.0.0.0:7801\"\n");
         assert_eq!(address_warnings(&direct, None), Vec::<String>::new());
+        // The hosting plan's final review, Minor 3: under tls = "self" the API ends TLS itself,
+        // so what forwards players to a loopback API (an SSH tunnel, socat, a stream proxy) passes
+        // their TLS through and can't add X-Forwarded-For. Listed as trusted, it would let each
+        // client name its own address: no advice to list it.
+        let tunnelled = cfg("tls = \"self\"\npublic_api = \"https://play.example.net:7801\"\n");
+        assert_eq!(
+            address_warnings(&tunnelled, Some(pin)),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn under_its_own_key_the_start_shows_one_server_link() {
+        // The hosting plan's final review, Important 2 (spec §3.10): beside "Fenji is running",
+        // the server's own link for players who have an account, and that `link` shows the rest.
+        let cfg = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/")).unwrap()
+        };
+        let pin = "q1o9C1M6ufA5UGrUkSYhW-AXXa3S7jdJ9Fxlp0f2cBo";
+        let base = |label: &str, origin: &str| {
+            let pin = Some(pin.to_owned());
+            (
+                label.to_owned(),
+                crate::invite::InviteBase {
+                    origin: origin.into(),
+                    pin,
+                },
+            )
+        };
+        let own = cfg("tls = \"self\"\napi_bind = \"0.0.0.0:7801\"\n");
+        let one = [base("public_host", "https://203.0.113.5:7801")];
+        assert_eq!(
+            running_link(&own, &one),
+            Some(format!(
+                "server link (public_host): https://203.0.113.5:7801/#pin={pin}"
+            ))
+        );
+        let several = [
+            base("eth0", "https://192.168.1.10:7801"),
+            base("this computer", "https://127.0.0.1:7801"),
+        ];
+        assert_eq!(
+            running_link(&own, &several),
+            Some(format!(
+                "server link (eth0): https://192.168.1.10:7801/#pin={pin} (type link for the \
+                 others)"
+            ))
+        );
+        // An interface's name is shown as the console shows text.
+        let odd = [base("eth\u{1b}[2J0", "https://192.168.1.10:7801")];
+        let shown = running_link(&own, &odd).unwrap();
+        assert!(
+            shown.starts_with("server link (eth\\u{1b}[2J0): "),
+            "{shown}"
+        );
+        // Without its own key there's no pin to give, and no base, no link.
+        assert_eq!(running_link(&cfg(""), &one), None);
+        assert_eq!(running_link(&own, &[]), None);
     }
 
     /// The error a server serving in `served` stops with by itself (30 s at most).
