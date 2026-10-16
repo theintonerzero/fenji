@@ -69,18 +69,27 @@ Signs (any one triggers):
      services.exe's and winedevice.exe's pids and the earliest client creation in any log are
      shared. Lines are scanned in the order of Wine's timestamps, which every Wine process takes
      from one clock: a line waits until each other log has shown a later one, or was read to its
-     end in a later poll, and holds back nothing of its own that is earlier. A log's lines keep their
-     order, a line without a stamp goes with the line before it, and at equal stamps services.exe's
-     svcctl line goes after the caller's, which it answers. A split LoadDriver message is completed
-     from its own log only.
+     end in a later poll, and holds back nothing earlier, whether queued or among the newest lines
+     its Tail keeps back as look-ahead (eight, released on a quiet poll), which count as shown. A
+     last line still partial after a quiet poll (its writer stopped mid-line) is the exception: it
+     holds nothing back and is no look-ahead, until it ends or the log is read to its end. A log's
+     lines keep their order, a line without a stamp goes with the line before it, and at equal
+     stamps services.exe's svcctl line goes after the caller's, which it answers. A split
+     LoadDriver message is completed from its own log only.
   S4 the prefix's system.reg (--prefix; re-read when it changes; Wine saves it periodically and at
      exit): a new service key of a driver type (kernel or file system) or with a driver image, or a
      baseline service whose type or image path changed, or a system.reg that is no longer a regular
      file.
   Fail safe (exit 4, the sandbox killed): client n was found 20 s ago, whether or not it still
   runs, log n has been read to its end, and log n still hasn't shown a client's creation, so the
-  LoadDriver sign would be blind for the lines only that client's log carries. Each log answers
-  for its own client: one log's creation never vouches for another's (Amendment B).
+  LoadDriver sign would be blind for the lines only that client's log carries; or, once the
+  sandbox has ended and every log is read, a client whose log never showed one; or a client beyond
+  the logs given. Each log answers for its own client: one log's creation never vouches for
+  another's (Amendment B). Before exit 4, every log is read to its end, as far as it went when
+  that read began (a writer can't draw it out), and scanned, and S1 and S4 are read again, and S2
+  while the sandbox runs: a sign found then wins, with exit 3. Either way watchdog-trigger.txt
+  records it: the signs, or the failure; the clients, by start, any beyond the logs named; and the
+  sandbox's processes as they were, frozen, before the kill.
   Notes only (no trigger): a builtin .sys outside the baseline set; a new service of another type;
   CreateService re-registering a baseline service with its baseline image (Proton's discord-bridge,
   at every start); ChangeServiceConfigW that keeps the type and image, or that changes them in a
