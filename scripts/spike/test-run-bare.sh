@@ -621,7 +621,7 @@ if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
   says 1 "hasn't been through Proton's launcher" "a run refuses a prefix Proton's launcher never ran in" -- \
     with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
   cp -- "$TESTROOT/proton-nobridge/version" "$WORK/compat/fenji-primed"
-  says 1 "another GE-Proton build" "a run names a prefix primed by another GE-Proton build" -- \
+  says 1 "another GE-Proton build.*remove .*/compat, then run: " "a run names a prefix primed by another GE-Proton build, and says to remove it" -- \
     with_fakes with_proton "$TESTROOT/proton" cmd_bare_run t "${GOOD[@]}" "${NESTED[@]}"
   : > "$WORK/compat/fenji-primed"
   says 1 "before builds were recorded" "a run names a prefix primed before builds were recorded" -- \
@@ -864,13 +864,19 @@ print(*(x.getsockname()[1] for x in s))')
   # for this GE-Proton build may be one runs have used, whose registry may hold a driver service a
   # run left, which booting it would start, unwatched (#148; #373's re-review). One never primed,
   # one another build primed, and a half-built one are all refused, and nothing starts in them.
-  for case in unprimed other partial; do
+  # One setup can't list counts as held too: the client could take the folder's read bit away, and
+  # a ready prefix's files still read by name (#373's re-review). Root reads it anyway.
+  cases=(unprimed other partial)
+  if [ "$(id -u)" != 0 ]; then cases+=(unlistable); fi
+  for case in "${cases[@]}"; do
     w=$F/work2-$case
     mkdir -p "$w/compat/drive_c/windows"
     if [ "$case" != partial ]; then echo "WINE REGISTRY Version 2" > "$w/compat/system.reg"; fi
-    if [ "$case" = other ]; then echo "1789000000 GE-Proton-other" > "$w/compat/fenji-primed"; fi
+    case $case in other | unlistable) echo "1789000000 GE-Proton-other" > "$w/compat/fenji-primed" ;; esac
     before=$(cat -- "$w/compat/fenji-primed" 2> /dev/null || echo none)
+    if [ "$case" = unlistable ]; then chmod 0300 "$w/compat"; fi
     flow "setup-$case" "$w" "${on_desktop[@]}" cmd_bare_setup --desktop
+    if [ "$case" = unlistable ]; then chmod 0700 "$w/compat"; fi
     if [ "$rc" = 1 ] && [[ $out == *"remove $w/compat, then run: "*" setup"* ]] && [ ! -e "$F/log/setup-$case/umu" ] &&
       [ "$(cat -- "$w/compat/fenji-primed" 2> /dev/null || echo none)" = "$before" ]; then
       ok "setup starts nothing in a prefix that isn't ready for this build ($case), and says to remove it"

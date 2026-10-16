@@ -80,11 +80,11 @@
 # setup builds the prefix with `umu-run createprefix` inside the guard namespace, with umu's runtime
 # update off (the namespace has no network anyway), then primes it: cmd.exe started once through
 # Proton's launcher, so Proton's own service is in the watchdog's baseline (prefix_primed). A run
-# refuses an unprimed prefix. Setup builds and primes a prefix only in an empty or missing compat/:
-# one that isn't ready for this GE-Proton build is removed first (remove re/bare-metal/compat, then
-# setup), as Wine booting a prefix runs have used would start, unwatched, any driver service a run
-# left there (#148). A run whose watchdog doesn't exit
-# 0 (a gate event, or a watchdog failure) marks the prefix (compat/fenji-gate-event), and setup and
+# refuses an unprimed prefix. Setup builds and primes a prefix only in an empty or missing compat/
+# (run-client.sh's compat_held): one that isn't ready for this GE-Proton build is removed first
+# (remove re/bare-metal/compat, then setup), as Wine booting a prefix runs have used would start,
+# unwatched, any driver service a run left there (#148). A run whose watchdog doesn't exit 0 (a
+# gate event, or a watchdog failure) marks the prefix (compat/fenji-gate-event), and setup and
 # run refuse it until it is rebuilt (remove re/bare-metal/compat, then setup): a driver service that
 # run left in the registry would start, unwatched, the next time Wine boots the prefix.
 #
@@ -534,7 +534,7 @@ cmd_bare_setup() {
   # ready for this GE-Proton build may be one runs have used (another build's, one primed before
   # builds were recorded), and a run killed before its watchdog's verdict leaves no gate mark:
   # booting it would start any driver service a run left in its registry, unwatched (#148).
-  if [ -e "$WORK/compat" ] && [ -n "$(ls -A -- "$WORK/compat")" ]; then
+  if compat_held; then
     die "$WORK/compat holds a prefix that isn't ready for this GE-Proton build, which runs may have used, and setup never starts Wine in one (#148): remove $WORK/compat, then run: $0 setup"
   fi
   mkdir -p "$WORK/compat"
@@ -543,12 +543,12 @@ cmd_bare_setup() {
   mapfile -t ne < <(namespace_env "$display" "$xauth")
   mapfile -t se < <(setup_env)
   bpf=$(seccomp_filter)
-  if ! prefix_ready; then
-    # umu-launcher 1.4 ends createprefix with exit 1 once the prefix is built: the prefix decides.
-    "${ns[@]}" "${ne[@]}" "${se[@]}" "$UMU" createprefix > "$WORK/setup.log" 2>&1 \
-      7< <(printf '%b' "$bpf") || true
-    prefix_ready || die "createprefix didn't build the prefix; see $WORK/setup.log"
-  fi
+  # compat/ is empty here, so the prefix is always built, never primed as it was found.
+  ! prefix_ready || die "$WORK/compat holds a prefix already; remove it, then run: $0 setup"
+  # umu-launcher 1.4 ends createprefix with exit 1 once the prefix is built: the prefix decides.
+  "${ns[@]}" "${ne[@]}" "${se[@]}" "$UMU" createprefix > "$WORK/setup.log" 2>&1 \
+    7< <(printf '%b' "$bpf") || true
+  prefix_ready || die "createprefix didn't build the prefix; see $WORK/setup.log"
   # The prime (see prefix_primed). umu-run returns once Wine has ended, so the registry is on disk.
   mapfile -t prime < <(prime_args)
   timeout -k 10 300 "${ns[@]}" "${ne[@]}" "${se[@]}" "$UMU" "${prime[@]}" >> "$WORK/setup.log" 2>&1 \

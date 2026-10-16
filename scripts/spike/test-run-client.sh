@@ -967,6 +967,28 @@ if [ "$rc" = 1 ] && [[ $out == *"remove $PW/compat, then run setup again"* ]] &&
 else
   bad "setup on a used prefix with no client/: rc $rc: $out"
 fi
+# Nor one setup can't list: the client can write compat/, so it could take the folder's read bit
+# away, and a compat/ that can't be listed counts as held (#373's re-review). Root reads it anyway.
+if [ "$(id -u)" != 0 ]; then
+  chmod 0300 "$PW/compat"
+  setup_flow setup-unlistable "$PW"
+  chmod 0700 "$PW/compat"
+  if [ "$rc" = 1 ] && [[ $out == *"remove $PW/compat, then run setup again"* ]] && [ ! -e "$F/log/setup-unlistable/proton" ]; then
+    ok "setup never starts Wine in a compat/ it can't list"
+  else
+    bad "setup on an unlistable compat/: rc $rc: $out"
+  fi
+fi
+# Nor in a compat/ holding anything at all, a prefix's mark alone here, with no pfx/.
+rm -rf -- "$PW/compat"
+mkdir -- "$PW/compat"
+echo "1789000000 GE-Proton-other" > "$PW/compat/fenji-primed"
+setup_flow setup-partial "$PW"
+if [ "$rc" = 1 ] && [[ $out == *"remove $PW/compat, then run setup again"* ]] && [ ! -e "$F/log/setup-partial/proton" ]; then
+  ok "setup never starts Wine in a compat/ that holds anything, a pfx/ or not"
+else
+  bad "setup on a compat/ with a mark alone: rc $rc: $out"
+fi
 # An empty compat/, as a first setup that failed on a copy leaves, is no used prefix: made fresh.
 rm -rf -- "$PW/compat"
 mkdir -- "$PW/compat"
