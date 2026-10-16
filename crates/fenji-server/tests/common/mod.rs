@@ -1,8 +1,11 @@
 //! The bot (M3 spec §6): a client on `fenji_proto::client::Client` over a real socket, which sends
 //! what the real client sends on the launcher path, and helpers to set up a server for it. In the
 //! world it is the protocol bot (M4 world plan, Amendment D): it enters, sees the others, walks and
-//! chats as the plan scripts it, and checks every reply through the codecs that build it.
+//! chats as the plan scripts it, and checks every reply through the codecs that build it. And
+//! [`caught`], the log as a test catches it.
 #![allow(dead_code)]
+pub mod caught;
+
 use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;

@@ -7,7 +7,10 @@
 //! - [`serve`] gives each console, four at once, the hello and then [`service::connect`]'s feed as
 //!   JSON lines, each within the wire's limit ([`wire::encode_server`]), and runs its numbered
 //!   commands. A console that stops reading holds up nothing: its socket and its queue fill, and
-//!   it loses log lines, as the log hub has it.
+//!   it loses log lines, as the log hub has it, and is told how many once it reads again. Stalled,
+//!   it keeps its place, one of the four, as any attached console does until it goes: four
+//!   stalled consoles, such as over frozen SSH links, turn the next away until one of them goes
+//!   (the hosting plan's Task 11; #359).
 use std::fs::{DirBuilder, File, Permissions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -113,12 +116,13 @@ impl Claim {
 /// - the new socket is bound 0600 from the start.
 ///
 /// A socket that can't be made, such as one whose path is too long, leaves the server
-/// unattachable ([`Claim::unattachable`]), still one to its data folder.
+/// unattachable ([`Claim::unattachable`]), still one to its data folder. `given` is the `--config`
+/// this run was given, which the command a refusal suggests repeats.
 ///
 /// # Errors
 /// If another server uses the folder, or the folder or its lock can't be made or taken.
-pub async fn claim(data: &Path) -> anyhow::Result<Claim> {
-    let lock = lock::take(data)?;
+pub async fn claim(data: &Path, given: Option<&Path>) -> anyhow::Result<Claim> {
+    let lock = lock::take(data, given)?;
     let path = path(data);
     let unattachable = |why: String| {
         Some(format!(
@@ -134,7 +138,7 @@ pub async fn claim(data: &Path) -> anyhow::Result<Claim> {
     }
     // A server without the lock: one whose lock file was deleted from under it.
     if answers(&path).await? {
-        bail!(lock::in_use(data));
+        bail!(lock::in_use(data, given));
     }
     let (socket, unattachable) = match bind(data, &path) {
         Ok(listener) => (Some(Bound { listener, path }), None),

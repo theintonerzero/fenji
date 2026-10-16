@@ -116,8 +116,9 @@ pub struct View {
     status: Option<Status>,
     rows: VecDeque<Entry>,
     /// How far the log is scrolled back: the lines hidden below its bottom, on screen at the last
-    /// draw's width. PgUp, PgDn and the hairline's note count the same lines.
-    scroll: usize,
+    /// draw's width. PgUp, PgDn and the hairline's note count the same lines. A draw at another
+    /// width counts them again there, so that the same row stays at the bottom.
+    scroll: Cell<usize>,
     input: String,
     /// The cursor, as a byte offset into `input` at the start of a character.
     cursor: usize,
@@ -149,7 +150,7 @@ impl View {
             mode,
             status: None,
             rows: VecDeque::new(),
-            scroll: 0,
+            scroll: Cell::new(0),
             input: String::new(),
             cursor: 0,
             open: false,
@@ -231,12 +232,13 @@ impl View {
             }
             KeyCode::Up => self.up(),
             KeyCode::Down => self.down(),
-            KeyCode::PageUp => self.scroll = (self.scroll + self.step()).min(self.furthest.get()),
+            KeyCode::PageUp => {
+                let up = self.scroll.get() + self.step();
+                self.scroll.set(up.min(self.furthest.get()));
+            }
             KeyCode::PageDown => {
-                self.scroll = self
-                    .scroll
-                    .min(self.furthest.get())
-                    .saturating_sub(self.step());
+                let down = self.scroll.get().min(self.furthest.get());
+                self.scroll.set(down.saturating_sub(self.step()));
             }
             KeyCode::Left => self.cursor = before(&self.input, self.cursor),
             KeyCode::Right => self.cursor = after(&self.input, self.cursor),
@@ -292,10 +294,10 @@ impl View {
     /// lines join those hidden below.
     fn push(&mut self, row: Row) {
         let entry = Entry::new(row);
-        if self.scroll > 0 {
-            self.scroll = self
-                .scroll
-                .saturating_add(entry.lines(self.log_width.get()));
+        let scroll = self.scroll.get();
+        if scroll > 0 {
+            let lines = entry.lines(self.log_width.get());
+            self.scroll.set(scroll.saturating_add(lines));
         }
         self.rows.push_back(entry);
         if self.rows.len() > SCROLLBACK {
@@ -320,7 +322,7 @@ impl View {
             .collect()
     }
 
-    /// PgUp and PgDn's step: the log's height, less a row kept in sight.
+    /// PgUp and PgDn's step, in screen lines: the log's height, less a line kept in sight.
     fn step(&self) -> usize {
         self.page.get().saturating_sub(1).max(1)
     }
@@ -407,14 +409,14 @@ impl View {
                 self.history.pop_front();
             }
         }
-        self.scroll = 0;
+        self.scroll.set(0);
         self.push(Row::Command(line.clone()));
         Some(Action::Run(line))
     }
 
     fn interrupt(&mut self) -> Option<Action> {
         if self.mode == Mode::InProcess {
-            self.scroll = 0;
+            self.scroll.set(0);
             self.push(Row::Command("stop".into()));
         }
         Some(Action::Interrupt)
@@ -564,11 +566,15 @@ impl View {
     fn draw_log(&self, frame: &mut Frame<'_>, area: Rect, p: &Palette) -> usize {
         let (height, width) = (usize::from(area.height), usize::from(area.width));
         self.page.set(height);
-        self.log_width.set(width);
+        let was = self.log_width.replace(width);
+        if was != width && was != 0 && self.scroll.get() > 0 {
+            let scroll = self.scroll.get().min(self.furthest.get());
+            self.scroll.set(self.rescaled(scroll, was, width));
+        }
         let total: usize = self.rows.iter().map(|entry| entry.lines(width)).sum();
         let furthest = total.saturating_sub(height);
         self.furthest.set(furthest);
-        let scroll = self.scroll.min(furthest);
+        let scroll = self.scroll.get().min(furthest);
         // The lines shown, counted up from the newest: a row taller than the log shows in part.
         let shown = scroll..scroll + height;
         let mut lines = Vec::with_capacity(height);
@@ -596,6 +602,26 @@ impl View {
             area,
         );
         scroll
+    }
+
+    /// `scroll`, lines hidden below the log's bottom at `was` columns, as lines at `width`: the same
+    /// row at the bottom, as far into it, so that a resize keeps a log scrolled back on the rows
+    /// it showed (#359). Each row it passes is measured at `was`, then at `width`, which its
+    /// measure then holds for the draw.
+    fn rescaled(&self, scroll: usize, was: usize, width: usize) -> usize {
+        // The lines of the rows wholly below the bottom, at each width.
+        let (mut below_was, mut below) = (0, 0);
+        for entry in self.rows.iter().rev() {
+            let (lines_was, lines) = (entry.lines(was), entry.lines(width));
+            if below_was + lines_was > scroll {
+                // The bottom is in this row: as many of its lines below it, in proportion.
+                let into = (scroll - below_was) * lines / lines_was.max(1);
+                return below + into.min(lines.saturating_sub(1));
+            }
+            below_was += lines_was;
+            below += lines;
+        }
+        below
     }
 
     /// The palette: a square list of the commands that match, their names aligned with the line
@@ -691,7 +717,7 @@ impl View {
     }
 }
 
-/// The hairline above the prompt, with how many newer rows wait below while the log is scrolled
+/// The hairline above the prompt, with how many newer lines wait below while the log is scrolled
 /// back.
 fn draw_hairline(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
     let ground = Style::new().fg(p.ink_800).bg(p.ink_900);
@@ -1546,10 +1572,57 @@ pub(crate) mod tests {
 
     /// The rows whose first line shows in the log at 80 × 24, by their `rowNNN` names.
     fn shown_rows(view: &View) -> Vec<String> {
-        rows_of(&drawn(view, 80, 24, Colours::True))[2..22]
+        shown_rows_at(view, 80)
+    }
+
+    /// The rows whose first line shows in the log at `width` × 24, by their `rowNNN` names.
+    fn shown_rows_at(view: &View, width: u16) -> Vec<String> {
+        rows_of(&drawn(view, width, 24, Colours::True))[2..22]
             .iter()
             .filter_map(|r| r.find("row").map(|at| r[at..at + 6].to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn a_resize_keeps_a_log_scrolled_back_on_the_rows_it_showed() {
+        // #359 (the hosting plan's Task 6): the scroll counts lines at the last draw's width, and
+        // a resize kept the count rather than the place: a narrower window, its rows wrapped onto
+        // more lines, showed newer rows, and a wider one older rows.
+        let mut view = View::new("F".into(), help(), Mode::InProcess);
+        for n in 0..100 {
+            // 51 characters: one line in the message's 83 columns at 100, two in its 43 at 60.
+            let text = format!("row{n:03} {}", "x ".repeat(22));
+            view.on_server(log(Level::Info, &[(&text, false)]));
+        }
+        assert_eq!(
+            shown_rows_at(&view, 100).last().map(String::as_str),
+            Some("row099")
+        );
+        press(&mut view, KeyCode::PageUp);
+        press(&mut view, KeyCode::PageUp);
+        let wide = shown_rows_at(&view, 100);
+        assert_eq!(wide.last().map(String::as_str), Some("row061"), "{wide:?}");
+        // Narrower: the same row at the bottom, wrapped.
+        let narrow = shown_rows_at(&view, 60);
+        assert_eq!(narrow.last(), wide.last(), "{narrow:?}");
+        assert!(
+            rows_of(&drawn(&view, 60, 24, Colours::True))[22].contains("76 newer lines below"),
+            "the hairline counts lines at the new width"
+        );
+        // Wide again: the rows it showed before.
+        assert_eq!(shown_rows_at(&view, 100), wide);
+        // New rows meanwhile, and paging, go on from there.
+        view.on_server(log(Level::Info, &[("row100", false)]));
+        assert_eq!(shown_rows_at(&view, 60).last(), wide.last());
+        press(&mut view, KeyCode::PageDown);
+        press(&mut view, KeyCode::PageDown);
+        press(&mut view, KeyCode::PageDown);
+        press(&mut view, KeyCode::PageDown);
+        press(&mut view, KeyCode::PageDown);
+        assert_eq!(
+            shown_rows_at(&view, 60).last().map(String::as_str),
+            Some("row100")
+        );
     }
 
     #[test]

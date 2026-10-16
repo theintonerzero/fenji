@@ -115,6 +115,8 @@ On Windows, open a Command Prompt in the server's folder and run `start-server.b
 ./start-server.sh --plain 2>> fenji.log
 ```
 
+If the terminal stops taking what's written to it, as over a frozen SSH connection, the server doesn't wait for it, and serves on: up to 8,192 lines of the log wait for the terminal, and any more are skipped. When the terminal takes them again, the log first says how many lines it skipped (`WARN  1204 lines of the log were skipped: stderr wasn't being read`). Ctrl-C, SIGTERM or closing the terminal still stops the server cleanly, and so does `./fenji-server console --run stop` from another session. As it exits, it gives the terminal a few seconds for the lines still waiting, then leaves them.
+
 **Over SSH,** on a computer at home or a server without the service of section 4, a server started in a bare SSH session stops cleanly when the connection goes. To keep it running, start it inside `tmux` or `screen`:
 
 ```sh
@@ -608,7 +610,7 @@ xattr -dr com.apple.quarantine ~/fenji-server
 
 **A player's launcher says "That isn't a server address or an invite link. Paste the link your host sent."** in the desktop launcher, or "that isn't an invite code or link" from `fenji-launch`. What they pasted isn't the whole link: part of it was left out as it was copied, from the console or by a chat app. Copy it again from its first letter to its last (section 2's "Copying a link"), or make it with `./fenji-server invite create`, which prints each link on one line, and send that.
 
-**"a server is already using this data folder (…)".** Another `fenji-server` is running with the same data folder: in another window, in `tmux`, or as the reference deployment's service. Use that one (on Linux and macOS, `fenji-server console` attaches to it), or stop it first. The system lets go of a server's lock however it ends, so this never means a stale lock.
+**"another fenji-server holds this data folder (…)".** Another `fenji-server` is using the same data folder, and the message names the two it may be. A server: in another window, in `tmux`, or as the reference deployment's service. Use that one (on Linux and macOS, the `fenji-server console` the message shows attaches to it, with the same `--config`, and as the same user when you ran it with `sudo -u`), or stop it first. Or one of the program's other commands, such as a `backup`, bringing the database up to date just then: try again in a moment. The system lets go of a server's lock however it ends, so this never means a stale lock.
 
 **"the data folder … is fenji's, and this runs as root: run fenji-server as fenji (sudo -u fenji fenji-server …)…".** The server, or one of its commands, was started as another user than the one whose data folder it is, often with `sudo` alone. Run it as the user it names: on the reference VPS, `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml <command>`. A file another user made in the data folder would be theirs, and the server couldn't use it.
 
@@ -622,13 +624,13 @@ xattr -dr com.apple.quarantine ~/fenji-server
 
 **A command says "can't read fenji.toml: there's none in this folder (…)".** It was run outside the server's folder, without `--config`. Run it in the server's folder, or give `--config` with the server's `fenji.toml`.
 
-**`fenji-server console` says "no server is running with this data folder (…)".** The server isn't running, or the console uses other settings: give it the same `--config` as the server, or run it in the server's folder.
+**`fenji-server console` says "no server is running with this data folder (…)".** The server isn't running, or the console uses other settings: give it the same `--config` as the server, or run it in the server's folder. If the server is running, it couldn't make its console socket, and its log said why as it started: "`fenji-server console` can't attach to this server: …".
 
 **It says "… its console socket is another user's; attach as the user the server runs as".** Attach as that user: on the reference VPS, `sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console`.
 
 **It says "can't attach to the server: the path of its console socket, …, is too long for a socket here".** The server said as much in its log when it started, and runs without a socket. Move the data folder to a shorter path, or start the server from its own folder, as the start scripts do (section 2).
 
-**An SSH connection that froze comes back showing the console, though the server has stopped.** The server stopped while the connection was frozen, and the console couldn't give the screen back. The terminal reads lines again: type `reset` and press Enter.
+**An SSH connection that froze comes back showing the console, though the server has stopped, or the attached console has ended.** The server stopped, or the attached console was stopped (by `kill`, say), while the connection was frozen, and the console couldn't give the screen back. The terminal reads lines again: type `reset` and press Enter.
 
 **The service won't start, and `systemctl status fenji` shows `status=217/USER` or `status=226/NAMESPACE`.** `sudo journalctl -u fenji` says why, such as "Failed to keep CAP_SYS_ADMIN: Operation not permitted". Your VPS is most likely a container itself (LXC, OpenVZ and the like), whose systemd lacks a privilege that part of the service's sandbox needs: the settings that filter the server's system calls. Turn those off, for both services, and start the server again:
 

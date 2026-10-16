@@ -4,11 +4,14 @@
 //! socket or a lock a test has just let go of. `fenji-server console` itself is in
 //! `tests/console.rs`.
 #![cfg(unix)]
+mod common;
+
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::caught::{self, Caught};
 use fenji_console::wire::{self, ConsoleMsg, ServerMsg, State};
 use fenji_server::clock::TestClock;
 use fenji_server::config::Config;
@@ -19,8 +22,6 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::task::JoinHandle;
-use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
 
 const NOW: i64 = 1_800_000_000_000;
 
@@ -33,8 +34,7 @@ struct Started {
     server: RunningServer,
     serving: JoinHandle<()>,
     _dir: tempfile::TempDir,
-    _log: tracing::subscriber::DefaultGuard,
-    _asked: tracing::Dispatch,
+    _log: Caught,
 }
 
 impl Deref for Started {
@@ -54,17 +54,11 @@ async fn started_with_socket() -> Started {
 
 /// A server whose data folder is `data`, in `dir`, with its socket served.
 async fn started_at(dir: tempfile::TempDir, data: &Path) -> Started {
-    // While one dispatcher alone is registered, tracing-core keeps each place's interest as the
-    // first thread to log there saw it (M4 hosting plan, Task 10's finding): a second one makes it
-    // ask them all, so this test's lines reach its hub whatever other threads did first.
-    let _asked = tracing::Dispatch::new(tracing_subscriber::registry());
+    // Through the process's own subscriber, which no other test's thread can make blind to a line
+    // (#359).
     let hub = LogHub::new(500);
-    let _log = tracing::subscriber::set_default(
-        tracing_subscriber::registry()
-            .with(LevelFilter::INFO)
-            .with(hub.layer()),
-    );
-    let claim = console::socket::claim(data).await.unwrap();
+    let _log = caught::to_hub(&hub);
+    let claim = console::socket::claim(data, None).await.unwrap();
     let cfg = Config::parse(
         "[server]\nname = \"Fenji\"\nlogin_bind = \"127.0.0.1:0\"\napi_bind = \"127.0.0.1:0\"\n",
         data,
@@ -79,7 +73,6 @@ async fn started_at(dir: tempfile::TempDir, data: &Path) -> Started {
         serving,
         _dir: dir,
         _log,
-        _asked,
     }
 }
 
@@ -214,14 +207,61 @@ async fn a_console_attaches_sees_the_backlog_and_runs_a_command() {
 }
 
 #[tokio::test]
+async fn a_console_gets_the_hello_then_the_backlog_then_the_status() {
+    // The hosting plan's Task 11 (#359): in that order, the backlog whole and in order before the
+    // status, and what's logged after them comes after.
+    let s = started_with_socket().await;
+    tracing::info!("first before the console");
+    tracing::info!("second before the console");
+    let mut c = Raw::connect(&s.data().join("console.sock")).await;
+    let first = c.next().await;
+    assert!(matches!(first, ServerMsg::Hello { .. }), "{first:?}");
+    let mut backlog = Vec::new();
+    let status = loop {
+        match c.next().await {
+            ServerMsg::Log { line } => backlog.push(line.message()),
+            ServerMsg::Status { status } => break status,
+            other => panic!("before the status: {other:?}"),
+        }
+    };
+    assert_eq!(status.state, State::Online);
+    let at = |text: &str| backlog.iter().position(|m| m == text);
+    let (first, second) = (
+        at("first before the console"),
+        at("second before the console"),
+    );
+    assert!(first.is_some() && first < second, "{backlog:?}");
+    tracing::info!("after the console");
+    assert!(c.until_log_contains("after the console").await);
+}
+
+#[tokio::test]
+async fn a_console_turned_away_as_it_attaches_says_why() {
+    // The hosting plan's Task 11 (#359): a console beyond the fourth is told goodbye in place of
+    // a hello, and `fenji-server console` says why.
+    let s = started_with_socket().await;
+    let socket = s.data().join("console.sock");
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        let mut c = Raw::connect(&socket).await;
+        assert!(matches!(c.next().await, ServerMsg::Hello { .. }));
+        held.push(c);
+    }
+    let e = console::attach::run_once(&socket, "online")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        format!("{e:#}"),
+        "the server turned the console away: too many consoles (4)"
+    );
+}
+
+#[tokio::test]
 async fn a_second_server_on_the_same_data_folder_refuses_before_opening_anything() {
     // Review Focus 5.
     let s = started_with_socket().await;
-    let e = console::socket::claim(&s.data()).await.unwrap_err();
-    assert!(
-        format!("{e:#}").contains("already using this data folder"),
-        "{e:#}"
-    );
+    let e = console::socket::claim(&s.data(), None).await.unwrap_err();
+    assert!(format!("{e:#}").contains("holds this data folder"), "{e:#}");
 }
 
 #[tokio::test]
@@ -230,11 +270,8 @@ async fn a_server_whose_lock_file_was_deleted_keeps_its_data_folder_by_its_socke
     // lock file (a host tidying the folder).
     let s = started_with_socket().await;
     std::fs::remove_file(s.data().join("server.lock")).unwrap();
-    let e = console::socket::claim(&s.data()).await.unwrap_err();
-    assert!(
-        format!("{e:#}").contains("already using this data folder"),
-        "{e:#}"
-    );
+    let e = console::socket::claim(&s.data(), None).await.unwrap_err();
+    assert!(format!("{e:#}").contains("holds this data folder"), "{e:#}");
     assert!(s.data().join("console.sock").exists(), "its socket stays");
 }
 
@@ -242,7 +279,7 @@ async fn a_server_whose_lock_file_was_deleted_keeps_its_data_folder_by_its_socke
 async fn a_stale_socket_is_replaced() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("console.sock"), b"").unwrap();
-    let claim = console::socket::claim(dir.path()).await.unwrap();
+    let claim = console::socket::claim(dir.path(), None).await.unwrap();
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(dir.path().join("console.sock"))
         .unwrap()
@@ -378,7 +415,6 @@ async fn a_console_that_stops_reading_doesnt_hold_up_the_servers_end() {
         serving,
         _dir,
         _log,
-        _asked,
     } = started_with_socket().await;
     let socket = server.data().join("console.sock");
     let mut stalled = Raw::connect(&socket).await;
@@ -412,7 +448,6 @@ async fn run_once_stop_returns_once_another_server_could_start() {
         serving,
         _dir,
         _log,
-        _asked,
     } = started_with_socket().await;
     let data = server.data();
     let socket = data.join("console.sock");
@@ -443,7 +478,7 @@ async fn a_stale_socket_left_by_a_killed_server_is_replaced() {
     let path = dir.path().join("console.sock");
     drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
     assert!(path.exists());
-    let claim = console::socket::claim(dir.path()).await.unwrap();
+    let claim = console::socket::claim(dir.path(), None).await.unwrap();
     assert!(claim.unattachable().is_none());
     // It answers now, and the claim left nothing else in the data folder but its lock.
     UnixStream::connect(&path).await.unwrap();
@@ -461,7 +496,7 @@ async fn the_claim_makes_a_missing_data_folder_owner_only() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
-    let _claim = console::socket::claim(&data).await.unwrap();
+    let _claim = console::socket::claim(&data, None).await.unwrap();
     let mode = std::fs::metadata(&data).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o700);
     assert!(data.join("console.sock").exists());
@@ -475,11 +510,8 @@ async fn a_data_folder_too_deep_for_a_socket_still_starts_and_keeps_one_server_t
     let s = started_at(dir, &deep).await;
     assert!(!deep.join("console.sock").exists());
     // One server per data folder holds without the socket.
-    let e = console::socket::claim(&deep).await.unwrap_err();
-    assert!(
-        format!("{e:#}").contains("already using this data folder"),
-        "{e:#}"
-    );
+    let e = console::socket::claim(&deep, None).await.unwrap_err();
+    assert!(format!("{e:#}").contains("holds this data folder"), "{e:#}");
     // A console can't attach, and says why.
     let e = console::attach::run_once(&deep.join("console.sock"), "online")
         .await
@@ -491,11 +523,10 @@ async fn a_data_folder_too_deep_for_a_socket_still_starts_and_keeps_one_server_t
         serving,
         _dir,
         _log,
-        _asked,
     } = s;
     server.shutdown().await.unwrap();
     tokio::time::timeout(WAIT, serving).await.unwrap().unwrap();
-    let claim = console::socket::claim(&deep).await.unwrap();
+    let claim = console::socket::claim(&deep, None).await.unwrap();
     let why = claim
         .unattachable()
         .expect("it says why consoles can't attach");
@@ -529,7 +560,6 @@ async fn the_server_stopping_says_goodbye_and_takes_its_socket_away() {
         serving,
         _dir,
         _log,
-        _asked,
     } = started_with_socket().await;
     let data = server.data();
     let socket = data.join("console.sock");
@@ -546,7 +576,7 @@ async fn the_server_stopping_says_goodbye_and_takes_its_socket_away() {
     tokio::time::timeout(WAIT, serving).await.unwrap().unwrap();
     assert!(!socket.exists());
     // The data folder is free for the next server.
-    console::socket::claim(&data).await.unwrap();
+    console::socket::claim(&data, None).await.unwrap();
 }
 
 #[tokio::test]
@@ -713,6 +743,12 @@ async fn with_no_server_running_attaching_says_so() {
         let e = format!("{e:#}");
         assert!(
             e.contains("no server is running with this data folder ("),
+            "{e}"
+        );
+        // A server that runs without its socket, which it couldn't make, said why in its log
+        // (#359, the hosting plan's Task 11).
+        assert!(
+            e.ends_with("; if one is, its log says why consoles can't attach to it"),
             "{e}"
         );
     }

@@ -21,7 +21,8 @@ use tokio::time::{Instant, Sleep};
 
 use crate::gate::{Place, Places};
 
-/// How many connections the account API keeps open, and for how long one may send nothing.
+/// How many connections the account API keeps open, how long one may sit idle, its client sending
+/// nothing or reading nothing, and how long a request may take to come in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnLimits {
     /// Connections open at once, TLS handshakes among them.

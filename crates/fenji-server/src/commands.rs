@@ -150,6 +150,11 @@ const CONSOLE: [(&str, &str, &str); 20] = [
     ("bans", "bans", "list the bans"),
 ];
 
+/// The console's other words for two of its commands, as a Minecraft server's console has them:
+/// each alias, and its command. [`parse_console`] reads each as its command, `help` explains its
+/// command, and the command's help names it.
+const ALIASES: [(&str, &str); 2] = [("say", "announce"), ("list", "online")];
+
 /// The command as an admin types it, without the chat's `!`: what the log says was run (the hosting
 /// plan's final review B, Minor 3). [`parse`] reads it back as the same command.
 impl fmt::Display for Command {
@@ -363,14 +368,13 @@ fn written_as_duration(word: &str) -> bool {
 }
 
 /// The command `help <word>` asks about, as [`console_help`] names it: `word` in lower case, or
-/// for an alias, its command.
+/// for an alias, its command ([`ALIASES`]).
 fn help_topic(word: &str) -> Result<&'static str, CommandError> {
     let lower = word.to_ascii_lowercase();
-    let name = match lower.as_str() {
-        "say" => "announce",
-        "list" => "online",
-        name => name,
-    };
+    let name = ALIASES
+        .iter()
+        .find(|&&(alias, _)| alias == lower)
+        .map_or(lower.as_str(), |&(_, command)| command);
     CONSOLE
         .iter()
         .map(|&(command, ..)| command)
@@ -379,13 +383,18 @@ fn help_topic(word: &str) -> Result<&'static str, CommandError> {
 }
 
 /// Checks text the console sets for players to read, a maintenance message, an MOTD or a ban's
-/// reason, as [`crate::status::check_message`] does; text too long is answered with `usage`, so
-/// that the answer names the command the host typed.
-fn check_text(text: &str, usage: &'static str) -> Result<(), CommandError> {
-    crate::status::check_message(text).map_err(|e| match e {
-        CommandError::Usage(_) => CommandError::Usage(usage),
-        e => e,
-    })
+/// reason: plain text ([`crate::text::plain`]) of at most
+/// [`MESSAGE_MAX`](crate::status::MESSAGE_MAX) characters. Text too long is answered with `usage`,
+/// so that the answer names the command the host typed; [`crate::status::check_message`] gives
+/// `maintenance`'s.
+pub(crate) fn check_text(text: &str, usage: &'static str) -> Result<(), CommandError> {
+    if !crate::text::plain(text) {
+        return Err(CommandError::NotPlain);
+    }
+    if text.chars().count() > crate::status::MESSAGE_MAX {
+        return Err(CommandError::Usage(usage));
+    }
+    Ok(())
 }
 
 /// The console's commands, for its palette and `help`: each one's word, usage and what it does,
@@ -939,6 +948,50 @@ mod tests {
         let about = |name: &str| &all.iter().find(|h| h.name == name).unwrap().about;
         assert!(about("announce").contains("say"), "the aliases are named");
         assert!(about("online").contains("list"), "the aliases are named");
+    }
+
+    #[test]
+    fn each_alias_is_its_command_wherever_the_console_reads_it() {
+        // The hosting plan's Task 8 (#359): `parse_console` and `help_topic` each read the
+        // aliases, and the help names them. This keeps the three together.
+        let all = console_help();
+        for (alias, command) in ALIASES {
+            // The same command, with the same words after it, in any case.
+            let words = if command == "announce" {
+                " Restart at 20:00"
+            } else {
+                ""
+            };
+            let meant = parse_console(&format!("{command}{words}"));
+            assert!(meant.is_ok(), "{command}: {meant:?}");
+            for typed in [alias.to_owned(), alias.to_ascii_uppercase()] {
+                assert_eq!(parse_console(&format!("{typed}{words}")), meant, "{typed}");
+            }
+            // `help` explains its command, which names it, and it's no command of its own.
+            assert_eq!(
+                parse_console(&format!("help {alias}")),
+                parse_console(&format!("help {command}")),
+                "{alias}"
+            );
+            let about = &all
+                .iter()
+                .find(|h| h.name == command)
+                .expect("listed")
+                .about;
+            assert!(about.contains(&format!("(or {alias})")), "{about}");
+            assert!(all.iter().all(|h| h.name != alias), "{alias}");
+        }
+        // The help names no alias the console doesn't read.
+        for h in &all {
+            let named = h
+                .about
+                .split("(or ")
+                .nth(1)
+                .and_then(|r| r.strip_suffix(')'));
+            if let Some(alias) = named {
+                assert!(ALIASES.contains(&(alias, h.name.as_str())), "{h:?}");
+            }
+        }
     }
 
     #[test]

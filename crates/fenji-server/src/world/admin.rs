@@ -47,9 +47,10 @@ pub(super) fn system(world: &mut World) {
         let me = match &caller {
             Caller::Admin(admin) if world.get::<Doomed>(*admin).is_some() => continue,
             Caller::Admin(admin) => {
-                let account = world.get::<Account>(*admin).map_or(0, |a| a.id);
+                // By its id, which isn't a name: the log shows `account` as one (#359).
+                let account_id = world.get::<Account>(*admin).map_or(0, |a| a.id);
                 let character = name_of(world, *admin);
-                tracing::info!(account, character, command = %order, "an admin's command");
+                tracing::info!(account_id, character, command = %order, "an admin's command");
                 Some(*admin)
             }
             Caller::Console(_) => {
@@ -521,8 +522,11 @@ mod tests {
             h.push(bang(1, "!announce Restart at 20:00"));
             h.tick(50);
         });
-        let runs: Vec<&str> = log.lines().filter(|l| l.contains("account=1")).collect();
+        let runs: Vec<&str> = log.lines().filter(|l| l.contains("account_id=1")).collect();
         assert_eq!(runs.len(), 2, "one line for each command run: {log}");
+        // The account by its id, which isn't a name: the console shows `account` in gold, as one
+        // (#359, the hosting plan's Task 7).
+        assert!(!log.contains("account=1"), "{log}");
         // As the admin typed them, not in Rust's debug form (the hosting plan's final review B,
         // Minor 3).
         assert!(runs[0].contains("command=kick Mai"), "{log}");

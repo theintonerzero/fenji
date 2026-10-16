@@ -1,7 +1,9 @@
 //! The log hub (M4 hosting spec §3.4, H10): one place every log line goes through. Each event
 //! becomes a [`LogLine`], every part of it cleaned of hidden characters ([`clean`]), for the sinks
 //! [`init`] is given:
-//! - [`Sink::Stderr`], as before the console, which systemd's journal keeps;
+//! - [`Sink::Stderr`], as before the console, which systemd's journal keeps. A thread of its own
+//!   writes it, through a queue, and no line waits for it: a stderr that takes no more holds that
+//!   thread, never one that logs, and the lines it has no room for are skipped and counted (#359);
 //! - [`Sink::File`], a file a day, which a host attaches to a bug report;
 //! - [`Sink::Hub`], the [`LogHub`]: the last lines for a console that attaches, then each line as
 //!   it's logged.
@@ -12,7 +14,8 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use fenji_console::text::clean;
@@ -26,6 +29,7 @@ use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 
+use super::stderr::Stderr;
 use crate::clock::{Clock, SystemClock, Utc};
 use crate::config::private_folder;
 
@@ -36,7 +40,8 @@ pub(crate) const QUEUE: usize = 1024;
 /// The log files kept, one a day.
 const FILES_KEPT: usize = 14;
 /// The fields whose values name someone, a character or an account: consoles show them in gold
-/// (spec §3.2). The server's own fields name an account as `account`.
+/// (spec §3.2). The server's own fields name an account as `account`, and give its id, which isn't
+/// a name, as `account_id`.
 const NAMES: [&str; 5] = ["character", "player", "username", "name", "account"];
 
 /// Where the full-screen console's log files go: `logs` in the data folder, the directory of
@@ -54,17 +59,52 @@ pub fn folder(store_path: &Path) -> PathBuf {
 pub fn init(sinks: &[Sink]) -> anyhow::Result<LogHub> {
     let hub = LogHub::new(BACKLOG);
     let levels = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let layer = LogLayer::to(sinks, &hub)?;
+    let stderr = layer.stderr().cloned();
     tracing_subscriber::registry()
         .with(levels)
-        .with(LogLayer::to(sinks, &hub)?)
+        .with(layer)
         .try_init()?;
+    if let Some(stderr) = stderr {
+        let _ = STDERR.set(stderr);
+    }
     Ok(hub)
+}
+
+/// The process's log's stderr, when it's one of its sinks ([`init`]).
+static STDERR: OnceLock<Stderr> = OnceLock::new();
+
+/// Says why the process failed, as Rust's `main` would: `Error: `, then the error and its causes,
+/// each line cleaned. On the log's stderr when that's one of its sinks, after the lines queued
+/// there, and without waiting: its writer may hold std's stderr through a write nobody reads, which
+/// would hold the exit for ever (#359). [`finish`] then gives it a while. On the process's stderr
+/// otherwise.
+pub fn failed(error: &anyhow::Error) {
+    let text = format!("Error: {error:?}")
+        .split('\n')
+        .map(|line| clean(line).into_owned() + "\n")
+        .collect::<String>();
+    match STDERR.get() {
+        Some(stderr) => stderr.last(text),
+        None => {
+            let _ = std::io::stderr().write_all(text.as_bytes());
+        }
+    }
+}
+
+/// As the process exits: waits `grace` at most for the log's stderr to take what's queued, and
+/// what was skipped to be said, then leaves it. Nothing waits on it after that (#359).
+pub fn finish(grace: Duration) {
+    if let Some(stderr) = STDERR.get() {
+        stderr.finish(grace);
+    }
 }
 
 /// Where the log's lines go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sink {
     /// The process's stderr, a line each in the console's columns: `HH:MM:SS LEVEL message`.
+    /// Written by a thread of its own, through a queue that no line waits for ([`finish`]).
     Stderr,
     /// A file a day in this folder, `fenji.<date>.log` in UTC, each line with its date in front;
     /// the last 14 are kept. The folder is made owner-only if it's missing, as the log names
@@ -227,7 +267,8 @@ pub struct LogLayer {
 /// A sink the layer writes text to.
 #[derive(Debug)]
 enum Writer {
-    Stderr,
+    /// Through its queue, which a thread of its own writes out ([`Stderr`]).
+    Stderr(Stderr),
     File(RollingFileAppender),
 }
 
@@ -237,7 +278,7 @@ impl LogLayer {
         let mut writers = Vec::new();
         for sink in sinks {
             match sink {
-                Sink::Stderr => writers.push(Writer::Stderr),
+                Sink::Stderr => writers.push(Writer::Stderr(Stderr::new()?)),
                 Sink::File(folder) => writers.push(Writer::File(daily_file(folder)?)),
                 Sink::Hub => {}
             }
@@ -245,6 +286,14 @@ impl LogLayer {
         Ok(LogLayer {
             writers,
             hub: sinks.contains(&Sink::Hub).then(|| hub.clone()),
+        })
+    }
+
+    /// The stderr it writes to, if that's one of its sinks.
+    fn stderr(&self) -> Option<&Stderr> {
+        self.writers.iter().find_map(|writer| match writer {
+            Writer::Stderr(stderr) => Some(stderr),
+            Writer::File(_) => None,
         })
     }
 }
@@ -267,10 +316,12 @@ impl Writer {
     /// Writes `line` as this sink shows it. A write that fails is dropped: the log never stops the
     /// server, and under the full-screen console nothing else may write to the terminal.
     fn write(&self, line: &LogLine) {
-        let _ = match self {
-            Writer::Stderr => std::io::stderr().write_all(format!("{line}\n").as_bytes()),
-            Writer::File(file) => file.make_writer().write_all(dated(line).as_bytes()),
-        };
+        match self {
+            Writer::Stderr(stderr) => stderr.send(format!("{line}\n")),
+            Writer::File(file) => {
+                let _ = file.make_writer().write_all(dated(line).as_bytes());
+            }
+        }
     }
 }
 
@@ -376,6 +427,116 @@ fn dated(line: &LogLine) -> String {
     format!("{year:04}-{month:02}-{day:02} {line}\n")
 }
 
+/// The log as the server's tests catch it: through the process's own subscriber, set once, which
+/// asks at every event and takes the events of the threads catching them, writing nothing for any
+/// other. A thread's own default subscriber can miss a line: while one dispatcher alone is
+/// registered, tracing keeps whether a callsite is wanted as the first thread to log there found
+/// it, and another test's thread, with no subscriber, can make it unwanted everywhere (the hosting
+/// plan's final review A, Minor 8; #359).
+#[cfg(test)]
+pub(crate) mod caught {
+    use std::cell::{Cell, RefCell};
+    use std::io;
+    use std::sync::Once;
+
+    use tracing::{Event, Level, Subscriber};
+    use tracing_subscriber::filter;
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+    use super::{LogHub, LogLayer};
+
+    thread_local! {
+        /// What this thread's events are written to, as text, while it catches them so.
+        static TEXT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+        /// The level this thread's events are caught at as text.
+        static TEXT_LEVEL: Cell<Option<Level>> = const { Cell::new(None) };
+        /// The hub this thread's events at info and above go to, while it gives them to one.
+        static HUB: RefCell<Option<LogLayer>> = const { RefCell::new(None) };
+    }
+
+    /// What this thread logs at info and above while `f` runs, as the server's log shows it: see
+    /// [`logged_at`].
+    pub fn logged<T>(f: impl FnOnce() -> T) -> (T, String) {
+        logged_at(Level::INFO, f)
+    }
+
+    /// What this thread logs at `level` and above while `f` runs, as the server's log shows it.
+    pub fn logged_at<T>(level: Level, f: impl FnOnce() -> T) -> (T, String) {
+        subscribed();
+        TEXT.with_borrow_mut(|text| *text = Some(Vec::new()));
+        TEXT_LEVEL.set(Some(level));
+        let out = f();
+        TEXT_LEVEL.set(None);
+        let bytes = TEXT.with_borrow_mut(Option::take).unwrap_or_default();
+        (out, String::from_utf8(bytes).unwrap())
+    }
+
+    /// Runs `f`, this thread's events at info and above given to `hub` meanwhile, as the server's
+    /// log gives it each line.
+    pub fn published_to<T>(hub: &LogHub, f: impl FnOnce() -> T) -> T {
+        subscribed();
+        HUB.with_borrow_mut(|layer| *layer = Some(hub.layer()));
+        let out = f();
+        HUB.with_borrow_mut(|layer| *layer = None);
+        out
+    }
+
+    /// Sets the process's subscriber, the first time.
+    fn subscribed() {
+        static SET: Once = Once::new();
+        SET.call_once(|| {
+            // More verbose levels are greater: TRACE > DEBUG > INFO.
+            let as_text = filter::dynamic_filter_fn(|meta, _| {
+                TEXT_LEVEL.get().is_some_and(|level| *meta.level() <= level)
+            });
+            let text = tracing_subscriber::fmt::layer()
+                .with_writer(|| ThisThread)
+                .with_ansi(false)
+                .with_filter(as_text);
+            let to_hub = filter::dynamic_filter_fn(|meta, _| {
+                *meta.level() <= Level::INFO && HUB.with_borrow(Option::is_some)
+            });
+            let hub = ToHub.with_filter(to_hub);
+            let subscriber = tracing_subscriber::registry().with(text).with(hub);
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("no other test sets the process's subscriber");
+        });
+        // A callsite first seen between the subscriber's registration and its setting is wanted.
+        tracing::callsite::rebuild_interest_cache();
+    }
+
+    /// Where this thread's events are written as text.
+    struct ThisThread;
+
+    impl io::Write for ThisThread {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            TEXT.with_borrow_mut(|text| {
+                if let Some(text) = text {
+                    text.extend_from_slice(buf);
+                }
+            });
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Gives an event to the hub of the thread that logged it.
+    struct ToHub;
+
+    impl<S: Subscriber> Layer<S> for ToHub {
+        fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+            HUB.with_borrow(|hub| {
+                if let Some(layer) = hub {
+                    layer.on_event(event, ctx);
+                }
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +571,155 @@ mod tests {
             }
         });
         assert_eq!(sub.next().await, Some(LogItem::Skipped(76)));
+    }
+
+    /// A line of `text` alone, for the hub.
+    fn line(text: &str) -> LogLine {
+        LogLine {
+            at_ms: 0,
+            level: Level::Info,
+            parts: vec![Part {
+                text: text.into(),
+                name: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn with_publishers_on_many_threads_each_subscriber_gets_every_line_once() {
+        // The hosting plan's Task 7 (#359): the backlog and the channel share one lock, so that a
+        // subscriber gets each line once, in its backlog or from the channel, whichever thread
+        // logged it and whenever it subscribed. 400 lines in all, within a subscriber's queue
+        // (`QUEUE`): none can fall behind and lose lines here.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        const PUBLISHERS: usize = 4;
+        const EACH: usize = 100;
+        const SUBSCRIBERS: usize = 8;
+        const SUBSCRIPTIONS: usize = 25;
+        let hub = LogHub::new(PUBLISHERS * EACH);
+        let start = Arc::new(std::sync::Barrier::new(PUBLISHERS + SUBSCRIBERS));
+        let published = Arc::new(AtomicBool::new(false));
+        let publishers: Vec<_> = (0..PUBLISHERS)
+            .map(|p| {
+                let (hub, start) = (hub.clone(), Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    for n in 0..EACH {
+                        hub.publish(line(&format!("{p}:{n}")));
+                        std::thread::sleep(Duration::from_micros(20));
+                    }
+                })
+            })
+            .collect();
+        // Subscribing again and again while the lines come.
+        let subscribers: Vec<_> = (0..SUBSCRIBERS)
+            .map(|_| {
+                let (hub, start) = (hub.clone(), Arc::clone(&start));
+                let published = Arc::clone(&published);
+                std::thread::spawn(move || {
+                    start.wait();
+                    let mut subscriptions = Vec::new();
+                    while subscriptions.len() < SUBSCRIPTIONS && !published.load(Ordering::SeqCst) {
+                        subscriptions.push(hub.subscribe());
+                        std::thread::sleep(Duration::from_micros(100));
+                    }
+                    subscriptions
+                })
+            })
+            .collect();
+        for publisher in publishers {
+            publisher.join().unwrap();
+        }
+        published.store(true, Ordering::SeqCst);
+        let all: Vec<String> = hub.subscribe().backlog.iter().map(text_of).collect();
+        assert_eq!(all.len(), PUBLISHERS * EACH);
+        let mut checked = 0;
+        for subscriber in subscribers {
+            for mut sub in subscriber.join().unwrap() {
+                let kept = sub.backlog.len();
+                let mut seen: Vec<String> = sub.backlog.iter().map(text_of).collect();
+                while let Some(item) = sub.try_next() {
+                    match item {
+                        LogItem::Line(line) => seen.push(text_of(&line)),
+                        LogItem::Skipped(lost) => panic!("{lost} lines lost"),
+                    }
+                }
+                assert_eq!(
+                    seen, all,
+                    "{kept} lines from its backlog, then the channel's"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= SUBSCRIBERS, "{checked} subscriptions");
+    }
+
+    #[test]
+    fn an_account_is_a_name_which_the_console_shows_in_gold_and_its_id_is_not() {
+        // The hosting plan's Task 7 (#359): the console draws a name part in gold, and these
+        // fields' values are names; an account's id is a number.
+        let hub = LogHub::new(10);
+        let subscriber = tracing_subscriber::registry().with(hub.layer());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(account = "mai", account_id = 7, "signed in");
+            tracing::info!(
+                character = "Mai",
+                player = "Lin",
+                username = "wen",
+                name = "Ren",
+                "named"
+            );
+        });
+        let backlog = hub.subscribe().backlog;
+        let parts = |line: &LogLine| -> Vec<(String, bool)> {
+            line.parts
+                .iter()
+                .map(|p| (p.text.clone(), p.name))
+                .collect()
+        };
+        let part = |text: &str, name| (text.to_owned(), name);
+        assert_eq!(
+            parts(&backlog[0]),
+            [
+                part("signed in account=", false),
+                part("mai", true),
+                part(" account_id=7", false)
+            ]
+        );
+        assert_eq!(
+            parts(&backlog[1]),
+            [
+                part("named character=", false),
+                part("Mai", true),
+                part(" player=", false),
+                part("Lin", true),
+                part(" username=", false),
+                part("wen", true),
+                part(" name=", false),
+                part("Ren", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn where_a_log_crates_record_came_from_is_left_out() {
+        // The hosting plan's Task 7 (#359): tracing-log gives a `log` crate's record, as rustls
+        // logs, fields for where it came from. The line is the record's message and its own
+        // fields; a field whose name merely starts with "log" stays.
+        let hub = LogHub::new(10);
+        let subscriber = tracing_subscriber::registry().with(hub.layer());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                log.target = "rustls::conn",
+                log.module_path = "rustls::conn",
+                log.file = "src/conn.rs",
+                log.line = 42,
+                logins = 3,
+                "a TLS alert"
+            );
+        });
+        assert_eq!(text_of(&hub.subscribe().backlog[0]), "a TLS alert logins=3");
     }
 
     #[test]

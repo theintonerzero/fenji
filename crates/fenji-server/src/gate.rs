@@ -393,7 +393,9 @@ pub(crate) async fn send<W: AsyncWrite + Unpin>(
 /// Sends a reply within `deadline`, unless the online registry tells the connection to close
 /// first, for a newer login or a ban: then it gives up at once and returns false. The connection
 /// has lost its place, and a client that stopped reading shouldn't keep this socket until the
-/// deadline, outside the caps.
+/// deadline, outside the caps. False doesn't say which of the two it was, so the callers' log line
+/// names both, "replaced by a newer login, or banned"; the hosting plan's final review kept it so
+/// (#359).
 pub(crate) async fn send_or_replaced<W: AsyncWrite + Unpin>(
     sock: &mut W,
     bytes: &[u8],
