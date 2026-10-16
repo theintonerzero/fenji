@@ -1,7 +1,8 @@
-//! Interest management (Fenji design spec §6.4; world spec §3.3): a grid of 5,000-unit cells (50 m
-//! if the units are centimetres), where each player sees the players in their own cell and the
-//! eight around it, in the same scene. A player coming into view is announced (6); the client
-//! pulls it (5), and the world sends it whole (7). Going out of view, or out of the game, is 9.
+//! Interest management (Fenji design spec §6.4; world spec §3.3): a grid of 5,000-unit cells, 50 m
+//! since the units are centimetres (world.md 16.10), where each player sees the players in their
+//! own cell and the eight around it, in the same scene. A player coming into view is announced
+//! (6); the client pulls it (5), and the world sends it whole (7). Going out of view, or out of the
+//! game, is 9.
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
