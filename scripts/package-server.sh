@@ -9,6 +9,8 @@
 #   - the binary, as fenji-server or fenji-server.exe;
 #   - its system's start script from deploy/start: start-server.sh for Linux, start-server.command
 #     for macOS, or start-server.bat, with CR LF line ends, for Windows;
+#   - for Linux and macOS, deploy/start's update-server.sh, which updates the server it's beside (the
+#     hosting spec's Amendment B): Windows hosts update by hand;
 #   - fenji.example.toml, README.txt (deploy/archive's, for this version), LICENSE, and SOURCE.txt,
 #     which says where the version's source code is (the AGPL's offer);
 #   - THIRD-PARTY-NOTICES.txt: the licences of the crates the target's build links, by cargo about,
@@ -17,7 +19,8 @@
 #     hosting guide's VPS setup installs, so a VPS needs no second download (#359);
 #   - fenji-oodle/COPYING and fenji-oodle/NOTICE when the target's build links fenji-oodle, which is
 #     GPL-3.0-or-later (Oodle Ruling O16), as `cargo tree` says.
-# The folders and the two programs are 0755 and the rest 0644, and a tarball's entries are root's.
+# The folders, the program and the scripts are 0755 and the rest 0644, and a tarball's entries are
+# root's.
 # The archive is made in a staging folder inside the out-dir and renamed into place, so no archive
 # appears there until it's whole.
 #
@@ -48,9 +51,9 @@ semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 triple='^[a-z0-9_]+(-[a-z0-9_.]+)+$'
 [[ $target =~ $triple ]] || fail "not a target triple: '$target'" 2
 case $target in
-  *-windows-*) exe=fenji-server.exe start=start-server.bat ext=zip ;;
-  *-apple-darwin) exe=fenji-server start=start-server.command ext=tar.gz ;;
-  *-linux-*) exe=fenji-server start=start-server.sh ext=tar.gz ;;
+  *-windows-*) exe=fenji-server.exe start=start-server.bat ext=zip update= ;;
+  *-apple-darwin) exe=fenji-server start=start-server.command ext=tar.gz update=update-server.sh ;;
+  *-linux-*) exe=fenji-server start=start-server.sh ext=tar.gz update=update-server.sh ;;
   *) fail "no start script for $target: there are ones for Linux, macOS and Windows" 2 ;;
 esac
 [ -f "$binary" ] || fail "no binary at '$binary'" 2
@@ -114,6 +117,7 @@ case $start in
   *.bat) awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "$root/deploy/start/$start" > "$dir/$start" ;;
   *) tr -d '\r' < "$root/deploy/start/$start" > "$dir/$start" ;;
 esac
+if [ -n "$update" ]; then tr -d '\r' < "$root/deploy/start/$update" > "$dir/$update"; fi
 cp -- "$root/crates/fenji-server/fenji.example.toml" "$root/LICENSE" "$dir/"
 sed "s/@VERSION@/$version/g" "$root/deploy/archive/README.txt" > "$dir/README.txt"
 cat > "$dir/SOURCE.txt" <<EOF
@@ -127,9 +131,11 @@ If you change Fenji and host it for other people, the AGPL requires you to
 offer them your version's source code: [server] source_url in fenji.toml
 tells their launchers where it is.
 EOF
-chmod 0755 "$dir" "$dir/$exe" "$dir/$start"
+chmod 0755 "$dir" "$dir/$exe" "$dir/$start" ${update:+"$dir/$update"}
 chmod 0644 "$dir/fenji.example.toml" "$dir/README.txt" "$dir/LICENSE" "$dir/SOURCE.txt" "$dir/THIRD-PARTY-NOTICES.txt"
-files=("$exe" "$start" fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)
+files=("$exe" "$start")
+if [ -n "$update" ]; then files+=("$update"); fi
+files+=(fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)
 case $target in
   *-linux-*)
     mkdir -- "$dir/systemd" "$dir/caddy"
