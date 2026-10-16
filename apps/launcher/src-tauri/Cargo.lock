@@ -1220,6 +1220,7 @@ name = "fenji-launcher-app"
 version = "0.5.0"
 dependencies = [
  "fenji-launcher",
+ "semver",
  "serde_json",
  "tauri",
  "tauri-build",
