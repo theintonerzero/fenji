@@ -7,7 +7,8 @@ name: Release
 # Fenji's release key, with the updater's latest.json. A v* tag attaches them all, with SHA256SUMS,
 # to the tag's draft release, which the release steps in docs/development.md check and publish. A
 # pull request that changes this workflow, the packaging scripts, what they pack (deploy/start,
-# deploy/archive, deploy/launcher, the launcher's bundle settings) or the pinned tools builds
+# deploy/archive, deploy/systemd, deploy/caddy, deploy/launcher, the launcher's bundle settings) or
+# the pinned tools builds
 # everything without signing or publishing (Ruling HP4), as does a run by hand; its files stay with
 # the run.
 on:
@@ -25,6 +26,8 @@ on:
       - apps/launcher/src-tauri/tauri.conf.json
       - deploy/start/**
       - deploy/archive/**
+      - deploy/systemd/**
+      - deploy/caddy/**
       - deploy/launcher/**
   workflow_dispatch:
 
@@ -114,6 +117,12 @@ jobs:
           # what this system's own tools find in it: GNU tar, bsdtar on macOS, 7-Zip on Windows.
           name=fenji-server-$version-$TARGET
           files=("$exe" "$script" fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)
+          # A Linux archive also carries the VPS's units and its Caddyfile (#359).
+          case $TARGET in
+            *-linux-*)
+              files+=(systemd/ systemd/fenji.service systemd/fenji-backup.service systemd/fenji-backup.timer)
+              files+=(caddy/ caddy/Caddyfile) ;;
+          esac
           deps=$(cargo tree --locked -p fenji-server --target "$TARGET" -e normal --prefix none)
           if grep -q '^fenji-oodle v' <<< "$deps"; then
             files+=(fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)

@@ -45,5 +45,15 @@ export function press(root: HTMLElement, words: string): void {
   found.click();
 }
 
+/** A paste of `text` into `input`, as the clipboard holds it, line breaks and all. */
+export function paste(input: HTMLInputElement, text: string): Event {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: { getData: (type: string) => (type === "text/plain" ? text : "") },
+  });
+  input.dispatchEvent(event);
+  return event;
+}
+
 /** Lets the screen's pending sends answer. */
 export const settle = (): Promise<void> => new Promise((done) => setTimeout(done, 0));

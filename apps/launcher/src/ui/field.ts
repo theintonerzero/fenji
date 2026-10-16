@@ -61,3 +61,25 @@ export function checkbox(label: string, checked: boolean): { el: HTMLLabelElemen
   );
   return { el, input };
 }
+
+/**
+ * Makes a link field join a wrapped link as it's pasted (#359). The host console wraps a long link
+ * at the window's edge, and a one-line field turns a pasted line break into a space and keeps the
+ * indent after it, which the model can't tell from a space typed inside a host name, and refuses.
+ * In a link (text with `#` or `://`, the model's own test), each line break goes with the spaces
+ * around it. Anything else is the field's own, as the model reads it: two lines that aren't a link
+ * never join into a host neither shows.
+ */
+export function joinWrapsOnPaste(input: HTMLInputElement): void {
+  input.addEventListener("paste", (event) => {
+    const text = (event as ClipboardEvent).clipboardData?.getData("text/plain") ?? "";
+    if (!/[\r\n]/.test(text) || !(text.includes("#") || text.includes("://"))) {
+      return;
+    }
+    event.preventDefault();
+    const joined = text.trim().replace(/\s*[\r\n]\s*/g, "");
+    const start = input.selectionStart ?? input.value.length;
+    input.setRangeText(joined, start, input.selectionEnd ?? start, "end");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
