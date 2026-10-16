@@ -56,10 +56,13 @@ Signs (any one triggers):
      path other than its baseline one or none readable (needs +service, r7 on); ChangeServiceConfigW
      (needs +service; issue #202) that sets a type other than a user-mode one or a driver image, or
      none readable, or that changes the type or image while its process has opened (OpenServiceW,
-     CreateServiceW) a baseline driver service, a service that isn't a user-mode baseline one, or
-     none the log names (sechost's line has the service's handle, not its name); services.exe's
-     svcctl_ChangeServiceConfigW, which logs only its name, with no ChangeServiceConfigW before it
-     (a caller the log doesn't trace); the strings ProcessProtect, AGTDriver or AurogonGameTrust.
+     CreateServiceW; since its pid's creation, as Wine gives an ended process's pid to a new one) a
+     baseline driver service, a service that isn't a user-mode baseline one (by its baseline type:
+     its own process or a shared one; #174), or none the log names (sechost's line has the
+     service's handle, not its name); services.exe's svcctl_ChangeServiceConfigW, which logs only
+     its name, with no unanswered ChangeServiceConfigW from the 5 s before it (a caller the log
+     doesn't trace; sechost logs before its RPC, so a call that never reached services.exe lapses);
+     the strings ProcessProtect, AGTDriver or AurogonGameTrust.
      The logs are scanned as one stream with one rule state (Amendment B): the prefix's one
      wineserver has processes writing to each log (services.exe, which client 1's session starts,
      answers client 2's calls in log 1), so the pending changes, the services each Wine pid opened,
@@ -144,14 +147,18 @@ R_SVCCTL_IMAGE = re.compile(rb', 0x[0-9a-f]+, L"((?:[^"\\\n]|\\.)*)"\)\s*$')
 # +service, ChangeServiceConfig (Wine 11.0, issue #202): sechost's opens, which name the services a
 # process holds handles to (the manager's handle, then the name); its ChangeServiceConfigW, which has
 # the service's handle but not its name; and services.exe's svcctl_ChangeServiceConfigW, which logs
-# nothing but its name. ChangeServiceConfigA's line is followed by ChangeServiceConfigW's.
+# nothing but its name. ChangeServiceConfigA's line is followed by ChangeServiceConfigW's. With them,
+# in the same pass, +process's creation of a process (its pid, group 3): Wine may give it the pid of
+# one that has ended, whose opens aren't its own.
 R_SVC_CALL = re.compile(
-    rb"trace:service:(OpenServiceW|CreateServiceW|ChangeServiceConfigW|svcctl_ChangeServiceConfigW) ([^\n]*)")
+    rb"trace:service:(OpenServiceW|CreateServiceW|ChangeServiceConfigW|svcctl_ChangeServiceConfigW) ([^\n]*)"
+    rb'|NtCreateUserProcess L"[^"\n]*" pid ([0-9a-f]+) tid')
 R_OPEN_NAME = re.compile(rb'[0-9A-Fa-f]+ L"((?:[^"\\\n]|\\.)*)"')
 # ChangeServiceConfigW's "%p %ld %ld %ld %s ...": the handle; the new type, start type and error
-# control (-1, SERVICE_NO_CHANGE, keeps one); the new image ((null) keeps it; `"...` is one cut short).
+# control (-1, SERVICE_NO_CHANGE, keeps one); the new image ((null) keeps it; `"...` is one cut short,
+# which the space or end of line after the quote refuses).
 R_CHANGE = re.compile(rb'[0-9A-Fa-f]+ (-?\d+) -?\d+ -?\d+ '
-                      rb'(?:\(null\)|L"((?:[^"\\\n]|\\.)*)"(?!\.\.\.))(?: |$)')
+                      rb'(?:\(null\)|L"((?:[^"\\\n]|\\.)*)")(?: |$)')
 # The sandbox's tmpfs mounts (isolated-run.sh): walked whole, and the root's own entries.
 TMPFS_SUBS = ("/tmp", "/dev/shm", "/run", "/var", "/etc", HOST_HOME)
 TMPFS_SHALLOW = ("/",)
@@ -161,6 +168,10 @@ DRIVER_TYPES = {1, 2}  # SERVICE_KERNEL_DRIVER, SERVICE_FILE_SYSTEM_DRIVER
 USER_MODE_TYPES = {0x10, 0x20}  # SERVICE_WIN32_OWN_PROCESS, SERVICE_WIN32_SHARE_PROCESS
 SERVICE_INTERACTIVE_PROCESS = 0x100  # may be added to a user-mode type
 SERVICE_NO_CHANGE = 0xFFFFFFFF
+# Seconds, by Wine's clock, that services.exe has to answer a ChangeServiceConfigW line sechost
+# logged: the RPC is synchronous, so its answer comes within milliseconds, and a change still
+# unanswered after this never reached services.exe (#174).
+CHANGE_ANSWER_WITHIN = 5.0
 
 
 def now():
@@ -292,6 +303,12 @@ def parse_services(system_reg):
 def is_driver_service(info):
     image = info.get("image") or ""
     return info.get("type") in DRIVER_TYPES or image.endswith(".sys") or "\\drivers\\" in image
+
+
+def is_user_mode_type(stype):
+    """Whether a service type is a user-mode one: its own process or a shared one, with
+    SERVICE_INTERACTIVE_PROCESS or without. None (a key with no Type) is not."""
+    return stype is not None and stype & ~SERVICE_INTERACTIVE_PROCESS in USER_MODE_TYPES
 
 
 def compare_services(base, cur):
@@ -507,18 +524,35 @@ def alive(pid):
 
 # --- log rules ---------------------------------------------------------------------------------
 class LogRules:
-    def __init__(self, baseline_services, images=None, drivers=None):
+    def __init__(self, baseline_services, images=None, drivers=None, types=None):
         self.services = set(baseline_services)
         self.images = dict(images or {})  # baseline service -> its normalised image path
         self.drivers = set(drivers or ())  # the baseline services of a driver type (is_driver_service)
         # The baseline services known to be user-mode: those whose registry entry the baseline has
-        # (images) and that aren't drivers. A baseline without service_info (M0's) knows none.
-        self.user_mode = (self.services & set(self.images)) - self.drivers
-        self.opened = {}  # pid -> the services its OpenServiceW and CreateServiceW lines named
-        self.changes_pending = 0  # ChangeServiceConfigW lines that services.exe's line hasn't followed yet
+        # (types) with a user-mode type, and that aren't drivers by their image either. A key with
+        # no Type isn't one (#174), and a baseline without service_info (M0's) knows none.
+        self.user_mode = {n for n, t in (types or {}).items()
+                          if n in self.services and is_user_mode_type(t)} - self.drivers
+        self.opened = {}  # Wine pid -> the services its OpenServiceW and CreateServiceW lines named
+        # The stamps of the ChangeServiceConfigW lines that services.exe's line hasn't followed yet.
+        self.changes_pending = collections.deque()
         self.services_pids = set()
         self.winedevice_pids = set()
         self.client_ts = None  # Wine timestamp of the client's process creation, once logged
+
+    def answered(self, ts):
+        """Whether services.exe's svcctl_ChangeServiceConfigW line, stamped `ts`, answers a pending
+        ChangeServiceConfigW line, which it then takes: the oldest one services.exe may still be
+        answering. sechost logs a change before its RPC, so one that never reached services.exe (a
+        bad handle) stays pending: it lapses CHANGE_ANSWER_WITHIN seconds after its stamp, so it
+        can't answer for a later caller the log doesn't trace (#174)."""
+        pending = self.changes_pending
+        while pending and ts is not None and pending[0] is not None and ts - pending[0] > CHANGE_ANSWER_WITHIN:
+            pending.popleft()
+        if not pending:
+            return False
+        pending.popleft()
+        return True
 
     def change_verdict(self, names, args):
         """S3 for sechost's ChangeServiceConfigW line, whose text after the function's name is
@@ -530,7 +564,7 @@ class LogRules:
         stype, image = int(a.group(1)) & 0xFFFFFFFF, a.group(2)
         if stype == SERVICE_NO_CHANGE and image is None:
             return "ChangeServiceConfig that keeps the type and image", False
-        if stype != SERVICE_NO_CHANGE and stype & ~SERVICE_INTERACTIVE_PROCESS not in USER_MODE_TYPES:
+        if stype != SERVICE_NO_CHANGE and not is_user_mode_type(stype):
             return f"S3 ChangeServiceConfig sets service type {stype:#x}, not a user-mode one", True
         if image is not None and is_driver_service({"image": norm_image(image.decode("utf-8", "replace"))}):
             return "S3 ChangeServiceConfig sets a driver image", True
@@ -663,20 +697,23 @@ class LogRules:
             else:
                 notes.append((f"CreateService for baseline service {svc}", line_at(m.start())))
         for m in R_SVC_CALL.finditer(chunk):
+            if m.group(3) is not None:
+                # A new process: what a process that had its pid before opened isn't its own.
+                self.opened.pop(m.group(3).decode(), None)
+                continue
             call, args, pid = m.group(1), m.group(2), pid_at(m.start())
             if call in (b"OpenServiceW", b"CreateServiceW"):
                 n = R_OPEN_NAME.match(args)
                 name = n.group(1).decode("utf-8", "replace").lower() if n else "(an unreadable name)"
                 self.opened.setdefault(pid, set()).add(name)
             elif call == b"ChangeServiceConfigW":
-                self.changes_pending += 1
+                self.changes_pending.append(ts_at(m.start()))
                 rule, triggers = self.change_verdict(self.opened.get(pid, set()), args)
                 (trig if triggers else notes).append((rule, line_at(m.start())))
-            elif self.changes_pending:  # services.exe's line for the change sechost's line showed
-                self.changes_pending -= 1
-            else:
-                # A caller whose sechost logs nothing (another environment, or the RPC called
-                # directly): services.exe's line is all there is, and it can't say what changed.
+            elif not self.answered(ts_at(m.start())):
+                # services.exe's line, with no change from sechost's lines for it to answer: a caller
+                # whose sechost logs nothing (another environment, or the RPC called directly), for
+                # which services.exe's line is all there is, and it can't say what changed.
                 trig.append(("S3 services.exe changed a service's configuration, with no "
                              "ChangeServiceConfigW before it", line_at(m.start())))
         if self.services_pids:
@@ -978,11 +1015,12 @@ def load_baseline(out):
 
 
 def baseline_rules(base):
-    """LogRules for a baseline: its service names, each one's image path (S3 CreateService), and
-    which of them are drivers (S3 LoadDriver)."""
+    """LogRules for a baseline: its service names, each one's image path (S3 CreateService), which
+    of them are drivers (S3 LoadDriver), and each one's type (S3 ChangeServiceConfigW)."""
     info = base.get("service_info", {})
     return LogRules(base["services"], {n: i["image"] for n, i in info.items()},
-                    {n for n, i in info.items() if is_driver_service(i)})
+                    {n for n, i in info.items() if is_driver_service(i)},
+                    {n: i["type"] for n, i in info.items()})
 
 
 def cmd_scanlog(a):

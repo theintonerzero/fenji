@@ -111,10 +111,16 @@ def changes(names):
     return f"S3 ChangeServiceConfig changes the type or image of {names}"
 
 
+def wine_rules():
+    """LogRules for a baseline of Wine's winebth and mountmgr, kernel drivers, and Proton's
+    discord-bridge, a service in its own process."""
+    return wd.LogRules(["winebth", "mountmgr", "discord-bridge"], {"discord-bridge": wd.norm_image(DISCORD)},
+                       drivers=["winebth", "mountmgr"], types={"winebth": 1, "mountmgr": 1, "discord-bridge": 0x10})
+
+
 class S3(unittest.TestCase):
     def rules(self):
-        return wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
-                           {"discord-bridge": wd.norm_image(DISCORD)}, drivers=["winebth", "mountmgr"])
+        return wine_rules()
 
     def scan(self, *lines):
         trig, notes = self.rules().scan(("\n".join(lines) + "\n").encode())
@@ -311,6 +317,34 @@ class S3(unittest.TestCase):
             found += [t[0] for t in rules.scan((line + "\n").encode())[0]]
         self.assertEqual(found, [changes("baseline driver service winebth")])
 
+    def test_two_changes_answered_twice_are_no_sign(self):  # #174: a count of changes, not a flag
+        trig, notes = self.scan(open_service("discord-bridge"), change_config(stype=16), change_config(stype=32),
+                                SVCCTL_CHANGE, SVCCTL_CHANGE)
+        self.assertEqual((trig, notes), ([], [USER_MODE_NOTE] * 2))
+
+    def test_an_interactive_user_mode_type_is_a_note(self):  # #174: SERVICE_INTERACTIVE_PROCESS may be added
+        trig, notes = self.scan(open_service("discord-bridge"), change_config(stype=0x110), SVCCTL_CHANGE)
+        self.assertEqual((trig, notes), ([], [USER_MODE_NOTE]))
+
+    def test_a_change_services_exe_never_answered_expires(self):  # #174, #281
+        # sechost logs a change before its RPC, so one that fails on a bad handle never reaches
+        # services.exe. Its count must not answer, seconds later, for services.exe's line from a
+        # caller the log doesn't trace.
+        late = SVCCTL_CHANGE.replace("2.000:", "9.000:", 1)
+        self.assertEqual(self.scan(open_service("discord-bridge"), change_config(stype=16), late)[0], [UNSEEN_CHANGE])
+        soon = SVCCTL_CHANGE.replace("2.000:", "3.000:", 1)
+        self.assertEqual(self.scan(open_service("discord-bridge"), change_config(stype=16), soon), ([], [USER_MODE_NOTE]))
+
+    def test_a_pid_used_again_starts_with_no_open_service(self):  # Task 18's review
+        # Process 0134 opened discord-bridge and ended, and Wine gave its pid to a new process: the
+        # new one's change can't stand for a service only the old one opened.
+        new_0134 = (r'2.000:0020:0024:trace:process:NtCreateUserProcess L"\\??\\C:\\windows\\system32\\x.exe" '
+                    "pid 0134 tid 0138 handles 0xf8/0xfc")
+        trig, _ = self.scan(open_service("discord-bridge"), new_0134, change_config(stype=16), SVCCTL_CHANGE)
+        self.assertEqual(trig, [changes("a service the log doesn't name")])
+        trig, notes = self.scan(new_0134, open_service("discord-bridge"), change_config(stype=16), SVCCTL_CHANGE)
+        self.assertEqual((trig, notes), ([], [USER_MODE_NOTE]))
+
 
 SYSTEM_REG = r"""WINE REGISTRY Version 2
 [System\\ControlSet001\\Services\\discord-bridge] 1791759044
@@ -397,6 +431,18 @@ class S4Registry(unittest.TestCase):
         rules = wd.baseline_rules({"services": ["discord-bridge"]})  # M0's baselines (r5-r9, look-1, look-2)
         trig, _ = rules.scan(f"{open_service('discord-bridge')}\n{change_config(stype=16)}\n".encode())
         self.assertEqual([t[0] for t in trig], [changes("discord-bridge, not a user-mode baseline service")])
+
+    def test_a_baseline_service_is_user_mode_only_by_its_type(self):  # #174, #281
+        # With no Type, or of SERVICE_ADAPTER (0x4) or SERVICE_RECOGNIZER_DRIVER (0x8), a baseline
+        # service isn't a user-mode one, whatever its image: a change to it triggers. Own or shared
+        # process types are, SERVICE_INTERACTIVE_PROCESS (0x100) added or not.
+        lines = f"{open_service('discord-bridge')}\n{change_config(stype=16)}\n{SVCCTL_CHANGE}\n".encode()
+        for stype in (None, 0x4, 0x8, 0x10, 0x20, 0x110, 0x120):
+            info = {"discord-bridge": {"type": stype, "image": wd.norm_image(DISCORD)}}
+            trig, notes = wd.baseline_rules({"services": ["discord-bridge"], "service_info": info}).scan(lines)
+            want = ([], [USER_MODE_NOTE]) if stype in (0x10, 0x20, 0x110, 0x120) else (
+                [changes("discord-bridge, not a user-mode baseline service")], [])
+            self.assertEqual(([t[0] for t in trig], [n[0] for n in notes]), want, stype)
 
 
 class ClientRename(unittest.TestCase):  # issue #142
@@ -846,8 +892,7 @@ class TwoLogs(unittest.TestCase):
         self.paths = [d / "1.log", d / "2.log"]
         for p in self.paths:
             p.write_bytes(b"")
-        self.rules = wd.LogRules(["winebth", "mountmgr", "discord-bridge"],
-                                 {"discord-bridge": wd.norm_image(DISCORD)}, drivers=["winebth", "mountmgr"])
+        self.rules = wine_rules()
         self.stream = wd.LogStream([str(p) for p in self.paths])
         self.addCleanup(self.stream.close)
         self.trig, self.notes = [], []
