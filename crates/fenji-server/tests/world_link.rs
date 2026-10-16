@@ -15,7 +15,9 @@ use fenji_proto::packet::script_body;
 use fenji_proto::pickle::{self, Table, Value};
 use fenji_proto::world::{self, BlobValue, MoveDetail};
 use fenji_server::clock::Clock;
-use fenji_server::gate::{AUTH_FAILED, BANNED, DUPLICATE_LOGIN, KICKED, SERVER_STOPPING};
+use fenji_server::gate::{
+    AUTH_FAILED, BANNED, CLIENT_EXIT, DUPLICATE_LOGIN, KICKED, SERVER_STOPPING,
+};
 use fenji_server::server::{GateLimits, RunningServer};
 use fenji_server::world::WorldIn;
 use fenji_store::{Place, Store};
@@ -299,14 +301,16 @@ async fn exit_and_leave_end_the_session() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
     // 392 as 0xFF (`send_gateway`, as `RequestQuitGame` sends it in the world), as 0, and type 4
-    // (world.md 1.3, 1.5): each ends the session, and the world lets the player go.
+    // (world.md 1.3, 1.5): each ends the session, and the world lets the player go. 392 closes with
+    // `client-exit`, which makes the client quit (world.md 10.1): closed without a reason, it took
+    // the player to its login screen and an error (#382). Type 4 waits for 330 (#282).
     let exit = fenji_proto::packet::script_body(lobby::CLIENT_EXIT, &[]).unwrap();
     let ways = [
-        ("aaa", "Lin", 0xFF, exit.clone()),
-        ("bbb", "Mai", 0, exit),
-        ("ccc", "Kai", Cts::ClientLeave.to_u8(), Vec::new()),
+        ("aaa", "Lin", 0xFF, exit.clone(), Some(CLIENT_EXIT)),
+        ("bbb", "Mai", 0, exit, Some(CLIENT_EXIT)),
+        ("ccc", "Kai", Cts::ClientLeave.to_u8(), Vec::new(), None),
     ];
-    for (name, character, ty, body) in ways {
+    for (name, character, ty, body, reason) in ways {
         let (mut bot, pid) = in_lobby(&s, name, character).await;
         select(&mut bot, pid).await;
         enter(&mut bot, pid).await;
@@ -323,7 +327,13 @@ async fn exit_and_leave_end_the_session() {
         // The idle timeout is 60 s and the bot's reads give up after 5 s, so an end within 2 s
         // is the server closing.
         let end = tokio::time::timeout(Duration::from_secs(2), bot.next()).await;
-        assert!(matches!(end, Ok(None)), "{name}: {end:?}");
+        match reason {
+            Some(reason) => assert!(
+                matches!(&end, Ok(Some(fenji_proto::client::ClientEvent::Closed(r))) if r == reason.as_bytes()),
+                "{name}: {end:?}"
+            ),
+            None => assert!(matches!(end, Ok(None)), "{name}: {end:?}"),
+        }
         saved_at(store, name, pid, START_PLACE).await;
     }
     s.shutdown().await.unwrap();

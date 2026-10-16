@@ -241,7 +241,7 @@ The item ids are documented interoperability data, by the owner's decision of 20
 |---|---|---|---|
 | 10.1 | **What the player sees.** A type-1 message closes the connection, its body becoming the close reason ([`../transport.md`](../transport.md) 7.4). In the world, UIMain's net-status timer (`0.3`) then shows the text `NET.FetchNetErrorByErr(reason)` finds for state 5, or a generic text about a server or connection failure when it finds none; the reason `client-exit` makes the client quit instead. A connection the server just drops ends in state 4 once the client's next send fails ([`../transport.md`](../transport.md) 1.4–1.5), and for state 4 the timer shows a fixed text about server maintenance. | **Observed** (bytecode), **Inferred** (the states) | S6 `0.3`; [`lobby.md`](lobby.md) §9; D4 |
 | 10.2 | **The keys the link can use** ([`lobby.md`](lobby.md) 9.3): `error duplicate-login`, M3's choice for a login that a newer one replaced; `error server-not-running`, whose text says the server is unavailable for now; `error kick-by-gm`, whose text says suspicious activity was found on the account; and `error kick-by-user`, whose text says the player is offline and may log in again. | **Observed** (keys; D4's English texts) | S16; D4 |
-| 10.3 | **Fenji's choices:** a replaced login gets `error duplicate-login`; a server stopping gets `error server-not-running`; an admin's `!kick` gets `error kick-by-user`, which accuses the player of nothing, unlike `error kick-by-gm`; a client that stops reading or floods gets no reason, so it sees 10.1's maintenance text. | the choices are Fenji's | 10.1, 10.2 |
+| 10.3 | **Fenji's choices:** a replaced login gets `error duplicate-login`; a server stopping gets `error server-not-running`; an admin's `!kick` gets `error kick-by-user`, which accuses the player of nothing, unlike `error kick-by-gm`; a client that stops reading or floods gets no reason, so it sees 10.1's maintenance text; a client quitting (392) gets `client-exit`, the client's own reason, on which it quits (#382). | the choices are Fenji's | 10.1, 10.2 |
 
 ## 11. What Fenji sends
 
@@ -252,7 +252,7 @@ The item ids are documented interoperability data, by the owner's decision of 20
 | type 3 | type 7, type 8 | the header `(pid, 1, 255, vocation × 10000)` and §5's blob, with the speed and full health; then `pid` |
 | type 3 of any length but 21 bytes | closes the connection | without a reason; only the length is checked (3.2) |
 | the cached type-0 script messages | nothing | none needs an answer in slice 1 |
-| 392 (0xFF) | closes the connection | as in the lobby |
+| 392 (0xFF) | closes the connection with the reason `client-exit` | the client quits on it (10.1). Closed without it, the client took the close for a lost connection: its login screen, then the login error (#382) |
 | type 4 | closes the connection | without a reason or 330, so the client doesn't go back to the select screen: that is outside slice 1 (1.5) |
 
 **Golden vector** of a type-7 body, for the character M3's run created (Lin, vocation 7, skeleton 3, level 37, portrait `169 << 16`, voice 3, base face 1, outfit 2), with a short face string `v:5;` in place of its real one, pid 258, the default start (scene 5, `2366, −71735, 64854, 345`), a speed of 100 and full health. It is 141 bytes: the 14-byte header, then the entries of §5's table in index order.

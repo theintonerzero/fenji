@@ -37,7 +37,7 @@ All lobby messages are script messages on the one gate connection. The client se
 | 26 | `PROTOC2G_ROLE_RENAME` | two values (not read) | `NET.RenameActor` (S1 `0.52`) | nothing (§11) |
 | 454 | `PROTOC2G_ROLE_REBORN` | three values (not read) | `NET.RebornActor` (S1 `0.53`) | nothing (§11) |
 | 321 | `PROTOC2G_ROLE_SLOT` | pid, slot, then nil or the other pid | `NET.ChangeActorSlot` (S1 `0.54`): the list builder renumbers with two values, and the up and down buttons swap with three (S6 `0.3`, `0.5`) | nothing: 509's handler only logs |
-| 392 | `PROTOC2S_CLIENT_EXIT` | none | `SYSTEM.RequestQuitGame` (S17, `system.luac` `0.5`) | closes the connection |
+| 392 | `PROTOC2S_CLIENT_EXIT` | none | `SYSTEM.RequestQuitGame` (S17, `system.luac` `0.5`) | closes the connection with the reason `client-exit` |
 
 ### Server to client
 
@@ -253,7 +253,7 @@ M3's server answers as follows, with M4's changes noted (`crates/fenji-proto/src
 | 10, one of the account's characters | 772 | since M4: the world's answer ([`world.md`](world.md) §11); `(270, ERR_SERVER_NOT_RUNNING)` in M3 |
 | 10, any other pid, or none | 270 | `(270, ERR_ROLE_NOT_FOUND)` since M4; `(270, ERR_SERVER_NOT_RESP)` while the world has stopped |
 | 321, 26, 454 | nothing | 509 only logs; renaming and rebirth aren't in M3 |
-| 392 | closes the connection | the client quits 5 s later whatever the server does (L1 Q12) |
+| 392 | closes the connection with the reason `client-exit` | the client quits on it at once ([`world.md`](world.md) 10.1); otherwise 5 s later at best, whatever the server does (L1 Q12), and in the world it first took a close without the reason for a lost connection (#382) |
 
 ## 12. The platform paths
 

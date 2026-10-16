@@ -6,7 +6,9 @@ use std::time::Duration;
 use common::*;
 use fenji_proto::lobby::{self, code};
 use fenji_proto::pickle::{Table, Value};
-use fenji_server::gate::{AUTH_FAILED, DUPLICATE_LOGIN, PRE_AUTH_CAP, SERVER_ERROR, SERVER_FULL};
+use fenji_server::gate::{
+    AUTH_FAILED, CLIENT_EXIT, DUPLICATE_LOGIN, PRE_AUTH_CAP, SERVER_ERROR, SERVER_FULL,
+};
 use fenji_server::server::GateLimits;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -349,11 +351,12 @@ async fn client_exit_closes_the_connection() {
     bot.expect_work().await;
     bot.send(lobby::CLIENT_EXIT, &[]).await;
     // The idle timeout is 60 s and the bot's reads give up after 5 s, so an end within 2 s is the
-    // server closing on 392 (lobby.md §2).
+    // server closing on 392 (lobby.md §2), with `client-exit`, which makes the client quit at once
+    // (world.md 10.1; #382).
     let end = tokio::time::timeout(Duration::from_secs(2), bot.next()).await;
     assert!(
-        matches!(end, Ok(None)),
-        "392 didn't close the connection: {end:?}"
+        matches!(&end, Ok(Some(fenji_proto::client::ClientEvent::Closed(r))) if r == CLIENT_EXIT.as_bytes()),
+        "392 didn't close the connection with client-exit: {end:?}"
     );
     s.shutdown().await.unwrap();
 }
