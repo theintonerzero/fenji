@@ -580,10 +580,16 @@ pub(crate) async fn held(
 }
 
 /// How long `run` waits for its console, full-screen or plain lines, once the server has stopped.
-/// The console ends on the server's goodbye at once, unless it's caught in a write to a terminal
-/// that has stopped reading, as over a stalled SSH link (the fix pass's re-review, NB1), or to a
-/// stdout nobody reads (#359).
-const CONSOLE_GRACE: Duration = Duration::from_secs(2);
+/// The console ends on the server's goodbye, unless it's caught in a write to a terminal that has
+/// stopped reading, as over a stalled SSH link (the fix pass's re-review, NB1), or to a stdout
+/// nobody reads (#359). The goodbye itself may wait `ANSWERS_WAIT` for an answer still due, from
+/// the same moment, so this is a second longer: a console is never left as its goodbye comes.
+const CONSOLE_GRACE: Duration =
+    crate::console::service::ANSWERS_WAIT.saturating_add(Duration::from_secs(1));
+
+// The order the grace's doc promises.
+const _: () =
+    assert!(CONSOLE_GRACE.as_millis() > crate::console::service::ANSWERS_WAIT.as_millis());
 
 /// How long `run` gives the server to begin stopping once its full-screen console's terminal has
 /// gone: the hang-up's SIGHUP stops it, unless SIGHUP came ignored.
@@ -897,6 +903,19 @@ mod tests {
             );
             assert_eq!(console.await.unwrap(), Ending::InputClosed);
         });
+    }
+
+    #[test]
+    fn run_waits_for_its_console_longer_than_a_goodbye_waits_for_an_answer() {
+        // #359 (Task 7's review, Minor 3): a console's goodbye may wait ANSWERS_WAIT for an
+        // answer still due as the server stops, and both waits count from its stop. Equal, `run`
+        // could leave a console at the instant its goodbye came: the last answer lost, and a
+        // full-screen console's screen never given back.
+        let answers = crate::console::service::ANSWERS_WAIT;
+        assert!(
+            CONSOLE_GRACE >= answers + Duration::from_secs(1),
+            "CONSOLE_GRACE {CONSOLE_GRACE:?}, ANSWERS_WAIT {answers:?}"
+        );
     }
 
     #[test]

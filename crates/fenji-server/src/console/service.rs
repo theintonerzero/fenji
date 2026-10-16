@@ -55,7 +55,7 @@ const TO_SERVER: usize = 16;
 
 /// How long a console's goodbye waits for the answers to commands still running as the server
 /// stopped.
-const ANSWERS_WAIT: Duration = Duration::from_secs(2);
+pub(crate) const ANSWERS_WAIT: Duration = Duration::from_secs(2);
 
 /// What a command line came to: whether it did what was asked, and what it says.
 #[derive(Debug, Clone, PartialEq, Eq)]
