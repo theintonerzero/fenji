@@ -70,7 +70,7 @@ const FRAME_WAIT: Duration = Duration::from_secs(1);
 /// `block_on` on a thread of its own: it marks that thread as the console's, which the panic hook
 /// asks, and gives the mark back as it ends. On a runtime that moves tasks between threads, its own
 /// panics on another thread would be logged rather than end it, and the wrong thread would keep the
-/// mark. Each poll checks, in a debug build (#359).
+/// mark. A debug build checks at each turn of its loop, each time something wakes it (#359).
 pub async fn run_tui(
     session: Session,
     mode: Mode,
