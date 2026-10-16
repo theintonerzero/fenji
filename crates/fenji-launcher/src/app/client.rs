@@ -56,6 +56,8 @@ pub(super) struct CheckJob {
     folder: PathBuf,
     manifest: Manifest,
     level: LevelView,
+    /// Files hashed in full before every file has `level`'s check: a repair's (spec §3.5).
+    deep: Vec<String>,
     stop: Arc<AtomicBool>,
 }
 
@@ -142,14 +144,14 @@ impl App {
             free(st)?;
             st.settings.client = Some(PathBuf::from(&path));
             self.save(st);
-            self.begin_check(st, LevelView::Quick)
+            self.begin_check(st, LevelView::Quick, Vec::new())
         })?;
         self.run_check(job);
         Ok(())
     }
 
     pub(super) fn check(&self, level: LevelView) -> Result<(), IntentError> {
-        let job = self.change(|st| self.begin_check(st, level))?;
+        let job = self.change(|st| self.begin_check(st, level, Vec::new()))?;
         self.run_check(job);
         Ok(())
     }
@@ -158,7 +160,7 @@ impl App {
     pub(super) fn check_at_start(&self) {
         let job = self.change(|st| {
             st.settings.client.as_ref()?;
-            self.begin_check(st, LevelView::Quick).ok()
+            self.begin_check(st, LevelView::Quick, Vec::new()).ok()
         });
         if let Some(job) = job {
             self.run_check(job);
@@ -173,9 +175,14 @@ impl App {
         });
     }
 
-    /// Marks a check of the saved folder as the running job: of `only` those paths, or of every
-    /// file.
-    fn begin_check(&self, st: &mut State, level: LevelView) -> Result<CheckJob, IntentError> {
+    /// Marks a check of the saved folder as the running job: every file at `level`, after the
+    /// files in `deep` are hashed in full.
+    fn begin_check(
+        &self,
+        st: &mut State,
+        level: LevelView,
+        deep: Vec<String>,
+    ) -> Result<CheckJob, IntentError> {
         free(st)?;
         let folder = st
             .settings
@@ -186,15 +193,24 @@ impl App {
         let stop = Arc::new(AtomicBool::new(false));
         st.client.stop = Some(stop.clone());
         st.client.job = Some(JobView::Checking {
-            level,
+            level: if deep.is_empty() {
+                level
+            } else {
+                LevelView::Full
+            },
             files_done: 0,
-            files_total: manifest.entries.len(),
+            files_total: if deep.is_empty() {
+                manifest.entries.len()
+            } else {
+                deep.len()
+            },
             percent: 0.0,
         });
         Ok(CheckJob {
             folder,
             manifest,
             level,
+            deep,
             stop,
         })
     }
@@ -213,27 +229,46 @@ impl App {
         &self,
         level: LevelView,
     ) -> Result<Option<CheckView>, IntentError> {
-        let job = self.change(|st| self.begin_check(st, level))?;
+        let job = self.change(|st| self.begin_check(st, level, Vec::new()))?;
         Ok(self.run_check_here(job).await)
     }
 
-    /// Runs the check on a blocking thread, publishing its progress, then its result.
+    /// Runs the check on a blocking thread, publishing its progress, then its result: the files
+    /// in `deep` hashed in full, then every file at the job's level, as one report.
     async fn run_check_here(&self, job: CheckJob) -> Option<CheckView> {
         let CheckJob {
             folder,
             manifest,
             level,
+            deep,
             stop,
         } = job;
         let (reporter, looked) = (self.clone(), folder.clone());
         let report = tokio::task::spawn_blocking(move || {
             let throttle = Throttle::new();
-            let progress = |p: Progress| {
-                if throttle.due() {
-                    reporter.checking(level, p);
+            let progress = |level: LevelView| {
+                let (reporter, throttle) = (&reporter, &throttle);
+                move |p: Progress| {
+                    if throttle.due() {
+                        reporter.checking(level, p);
+                    }
                 }
             };
-            verify::verify_with(&looked, &manifest, level.into(), &progress, &stop)
+            let mut report = verify::Report::default();
+            if !deep.is_empty() {
+                let repaired = Manifest {
+                    entries: (manifest.entries.iter())
+                        .filter(|e| deep.contains(&e.path))
+                        .cloned()
+                        .collect(),
+                };
+                let full = progress(LevelView::Full);
+                report = verify::verify_with(&looked, &repaired, Level::Full, &full, &stop)?;
+            }
+            let all =
+                verify::verify_with(&looked, &manifest, level.into(), &progress(level), &stop)?;
+            report.merge(all);
+            Ok(report)
         })
         .await;
         let report = report.map_err(anyhow::Error::from).and_then(|r| r);
@@ -254,8 +289,7 @@ impl App {
     }
 
     /// A check's end, and what it found (`None` when it was stopped or failed). Every file the
-    /// manifest lists counts toward `fine`, so a repair's check of just its files still reads as
-    /// the whole copy.
+    /// manifest lists had the check, so every one counts toward `fine`.
     fn checked(
         &self,
         level: LevelView,
@@ -533,9 +567,13 @@ impl App {
                 st.settings.client = Some(folder);
                 self.save(st);
             }
-            // Every file, after a repair too: a check of the repaired files alone would say every
-            // file was checked, and miss one damaged since the check that found the others (#348).
-            self.begin_check(st, LevelView::Full)
+            // After a download, every file in full. After a repair, the repaired files in full
+            // (spec §3.5), then every file's quick check, which the record names: a full check of
+            // every file would hash the whole copy, 100 GiB for the pinned build (#348).
+            match files {
+                None => self.begin_check(st, LevelView::Full, Vec::new()),
+                Some(files) => self.begin_check(st, LevelView::Quick, files),
+            }
         });
         match job {
             Ok(job) => self.run_check(job),
@@ -850,15 +888,18 @@ exit {code}"#,
         })
         .await;
         app.intent(Intent::Repair).await.unwrap();
-        until(&app, checked(LevelView::Full)).await;
+        // The repaired file in full, then every file's quick check (spec §3.5).
+        until(&app, checked(LevelView::Quick)).await;
         assert_eq!(t.fake_dd_filelist(), vec!["bin64/b.dll"]);
     }
 
     #[tokio::test]
-    async fn a_repair_ends_with_every_file_checked_again() {
-        // #348: the check after a repair took only the repaired files, yet said every file had
-        // been checked: a file damaged after the check that found the others went unseen.
-        let t = Testbed::new(&[("a.bin", 1000), ("bin64/b.dll", 10)]);
+    async fn a_repair_checks_its_files_fully_then_every_file_quickly() {
+        // #348: the check after a repair said every file had been checked when it had hashed only
+        // the repaired ones; then it hashed the whole copy, 100 GiB for the pinned build, where
+        // spec §3.5 asks for the repaired files to be checked fully again. Now they are, every file
+        // has the quick check, and the record says quick.
+        let t = Testbed::new(&[("bin64/a.dll", 10), ("data/c.pak", 100)]);
         let app = t.app_with_fakes(FakeDd::WritesFiles { code: 0 });
         app.intent(Intent::ChooseFolder {
             path: t.good.display().to_string(),
@@ -866,9 +907,9 @@ exit {code}"#,
         .await
         .unwrap();
         until(&app, checked(LevelView::Quick)).await;
-        std::fs::write(t.good.join("bin64/b.dll"), b"x").unwrap();
+        std::fs::write(t.good.join("data/c.pak"), b"short").unwrap();
         app.intent(Intent::Check {
-            level: LevelView::Full,
+            level: LevelView::Quick,
         })
         .await
         .unwrap();
@@ -876,19 +917,38 @@ exit {code}"#,
             matches!(s.client.check, CheckView::NeedsRepair { .. })
         })
         .await;
-        // A file that check found fine is damaged before the repair.
-        let mut a = std::fs::read(t.good.join("a.bin")).unwrap();
-        a[0] ^= 0xff;
-        std::fs::write(t.good.join("a.bin"), a).unwrap();
+        // What comes back has the right size and the wrong bytes, outside bin64: only a full
+        // check of the repaired file can tell.
+        let mut bytes = std::fs::read(t.pristine.join("data/c.pak")).unwrap();
+        bytes[0] ^= 0xff;
+        std::fs::write(t.pristine.join("data/c.pak"), &bytes).unwrap();
         app.intent(Intent::Repair).await.unwrap();
         let s = until(&app, |s| s.job.is_none()).await;
-        match s.client.check {
-            CheckView::NeedsRepair { files, .. } => {
-                let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
-                assert_eq!(paths, ["a.bin"]);
-            }
-            other => panic!("after the repair: {other:?}"),
-        }
+        let CheckView::NeedsRepair { files, .. } = &s.client.check else {
+            panic!("after the first repair: {:?}", s.client.check)
+        };
+        assert_eq!(
+            files
+                .iter()
+                .map(|f| (f.path.as_str(), f.problem))
+                .collect::<Vec<_>>(),
+            [("data/c.pak", Problem::WrongHash)]
+        );
+        bytes[0] ^= 0xff;
+        std::fs::write(t.pristine.join("data/c.pak"), &bytes).unwrap();
+        app.intent(Intent::Repair).await.unwrap();
+        let s = until(&app, |s| s.job.is_none()).await;
+        assert!(
+            matches!(
+                s.client.check,
+                CheckView::Verified {
+                    level: LevelView::Quick,
+                    ..
+                }
+            ),
+            "after the second repair: {:?}",
+            s.client.check
+        );
     }
 
     #[tokio::test]

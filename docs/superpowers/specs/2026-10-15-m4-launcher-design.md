@@ -119,7 +119,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
 
   A check runs off the interface's thread, shows its progress on the blade, and can be stopped.
 - **The results** go file by file: fine, missing, wrong size, or doesn't match the build. Files the manifest doesn't list are left alone.
-- **Repair.** On Linux, "Repair from Steam" has DepotDownloader fetch only the failing files (§3.6), then fully checks those files again. Under it, the board's instruction tells a Gameforge owner which files to copy over again from that install. The launcher can't tell the two kinds of copy apart, so it offers both.
+- **Repair.** On Linux, "Repair from Steam" has DepotDownloader fetch only the failing files (§3.6), then fully checks those files again, and gives every file the quick check. The record then says "Quick check", since the other files weren't hashed again (#348). Under it, the board's instruction tells a Gameforge owner which files to copy over again from that install. The launcher can't tell the two kinds of copy apart, so it offers both.
 
 ### 3.6 Downloading with Steam (L2, L3, L4)
 
