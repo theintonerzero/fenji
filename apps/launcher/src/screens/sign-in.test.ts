@@ -37,7 +37,7 @@ test("a refusal shows under the form", async () => {
   fill(root);
   await settle();
   expect(root.querySelector(".form-error")!.textContent).toBe(words);
-  expect(sent.at(-1)).toEqual({ type: "dismissNotice" });
+  expect(sent.at(-1)).toEqual({ type: "dismissNotice", text: words });
 });
 
 test("an empty password isn't sent", () => {

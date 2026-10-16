@@ -119,7 +119,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
 
   A check runs off the interface's thread, shows its progress on the blade, and can be stopped.
 - **The results** go file by file: fine, missing, wrong size, or doesn't match the build. Files the manifest doesn't list are left alone.
-- **Repair.** On Linux, "Repair from Steam" has DepotDownloader fetch only the failing files (§3.6), then fully checks those files again. Under it, the board's instruction tells a Gameforge owner which files to copy over again from that install. The launcher can't tell the two kinds of copy apart, so it offers both.
+- **Repair.** On Linux, "Repair from Steam" has DepotDownloader fetch only the failing files (§3.6), then fully checks those files again, and gives every file the quick check. The record then says "Quick check", since the other files weren't hashed again (#348). Under it, the board's instruction tells a Gameforge owner which files to copy over again from that install. The launcher can't tell the two kinds of copy apart, so it offers both.
 
 ### 3.6 Downloading with Steam (L2, L3, L4)
 
@@ -129,7 +129,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
   - The launcher opens the system's terminal: `xdg-terminal-exec`, then `$TERMINAL`, then a short list of common terminals.
   - The terminal runs a small script Fenji ships, which starts DepotDownloader with `-qr`. The player scans the code with the Steam app, as on Steam's own sign-in page.
   - No Steam login or password is typed into Fenji or into any script of Fenji's (ground rule 7, L3). DepotDownloader 3.4.0 takes a login only on its command line, so the QR code is the one sign-in that keeps the login out of Fenji's code.
-- **Without the Steam app,** or when no terminal can be found, the screen shows the exact command to run in the player's own terminal: their folder and the pinned build filled in, their own login left for them to type. Then they choose the folder.
+- **Without the Steam app,** or when no terminal can be found, the screen shows the exact command to run in the player's own terminal, on one line: their folder and the pinned build filled in, their own login left for them to type. Then they choose the folder. The command runs the DepotDownloader Fenji fetched, if it has one. Otherwise the dialog says where to get the pinned release, and the command makes it executable and runs it from its folder. Repair has a command of its own: the failing files, which Fenji lists in a file of its own, with `-validate`, then a check of the files (#348).
 - **The pinned build only:** app 1418100, depot 1418101, manifest 5002037851744157048, with `-os windows -osarch 64`, into the chosen folder. A repair adds `-filelist` with the failing files.
 - **Progress:**
   - the script shows everything DepotDownloader prints in the terminal;
@@ -152,6 +152,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
   These are `fenji-launcher`'s `start` steps, with the session the model holds, where `fenji-launch` signs in for each game.
 - **umu-run** is the one on `PATH`, or umu-launcher 1.4.4's zipapp, fetched on first Play from its GitHub release and checked against a SHA-256 (L4).
   - The first start makes the prefix, and umu-run downloads Proton and Valve's runtime. That takes a few minutes, so Play says "Starting · the first start sets up Proton, which takes a few minutes".
+  - **Cancel start,** beside Play while it starts, ends the start before the game runs: umu-run making the prefix, with everything it started, or the ticket (#348). Making the prefix may take 60 minutes before Fenji stops it. A prefix whose making was stopped is made again on the next start.
   - `PROTONPATH` in the launcher's environment, or the umu-run path in Settings, overrides the defaults, as `fenji-launch`'s options do.
 - **While the game runs:**
   - Play reads "Running", and the lobby lists the player;
@@ -233,7 +234,7 @@ Every error is a sentence in DESIGN.md's voice: what happened, and what to try.
 | umu-run failing | "The game couldn't start: umu-run ended with \<code\>. The log folder has the details." |
 | umu-run ending with 0 within 15 s (#332) | "The game couldn't start: umu-run ended at once. The log folder has the details." |
 | DepotDownloader failing | "The download stopped: DepotDownloader ended with \<code\>. Try again." |
-| No terminal | "Fenji couldn't open a terminal for DepotDownloader. Run this in yours:", then the command |
+| No terminal | "Fenji couldn't open a terminal for DepotDownloader. Open one yourself, and run the command under "No Steam app? Run DepotDownloader yourself" on the Client tab." (#348) |
 
 Without a host's name, "Wen" becomes "your host".
 

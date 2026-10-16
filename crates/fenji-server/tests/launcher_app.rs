@@ -347,10 +347,69 @@ async fn a_server_signed_in_without_remember_stays_off_the_disk() {
     s.shutdown().await.unwrap();
 }
 
-/// umu-run as Play uses it: `createprefix` makes the prefix's two marks; the game records its
-/// environment, waits, and ends as the test says.
+#[tokio::test]
+async fn unticking_remember_forgets_a_server_saved_in_an_earlier_run_too() {
+    // #348: unticked, "Remember this server" forgot only a server added in this run; launcher spec
+    // §3.4 says the server is forgotten when the launcher closes, whenever it was added.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "", GateLimits::default()).await;
+    account(&s, "tester").await;
+    let first = App::start(config(dir.path()), tokio::runtime::Handle::current());
+    first
+        .intent(Intent::AddServer {
+            text: format!("http://{}", s.api_addr),
+        })
+        .await
+        .unwrap();
+    first
+        .intent(Intent::SignIn {
+            username: "tester".into(),
+            password: password(),
+            remember: true,
+        })
+        .await
+        .unwrap();
+    let file = dir.path().join("config/settings.json");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("tester"));
+    // A later run signs in on the saved server without remembering it.
+    let later = App::start(config(dir.path()), tokio::runtime::Handle::current());
+    later
+        .intent(Intent::SignIn {
+            username: "tester".into(),
+            password: password(),
+            remember: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        later.snapshot().servers.len(),
+        1,
+        "it stays while the launcher runs"
+    );
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        !saved.contains(&s.api_addr.to_string()) && !saved.contains("tester"),
+        "{saved}"
+    );
+    s.shutdown().await.unwrap();
+}
+
+/// umu-run as Play uses it: `createprefix` makes the prefix's two marks, then, if the test says,
+/// waits on "Proton" as umu-run 1.4.4 does: Proton in a session of its own, which here ignores
+/// SIGTERM and has a child of its own, SIGTERM forwarded to it, and a wait while it lives. The game
+/// records its environment, waits, and ends as the test says.
 const FAKE_UMU_RUN: &str = r#"#!/bin/sh
-if [ "$1" = createprefix ]; then mkdir -p "$WINEPREFIX/drive_c/windows" && : > "$WINEPREFIX/system.reg"; exit 0; fi
+if [ "$1" = createprefix ]; then
+  mkdir -p "$WINEPREFIX/drive_c/windows" && : > "$WINEPREFIX/system.reg"
+  if [ "${FENJI_TEST_PREFIX_SLEEP:-0}" != 0 ]; then
+    setsid sh -c 'trap "" TERM; sleep "$0" & echo $! > "$1"; wait' \
+      "$FENJI_TEST_PREFIX_SLEEP" "$FENJI_TEST_RECORD.prefix" &
+    proton=$!
+    trap 'kill -TERM "$proton" 2>/dev/null' TERM
+    while kill -0 "$proton" 2>/dev/null; do wait "$proton"; done
+  fi
+  exit 0
+fi
 env > "$FENJI_TEST_RECORD"
 sleep "${FENJI_TEST_SLEEP:-1}"
 exit "${FENJI_TEST_EXIT:-0}"
@@ -363,6 +422,7 @@ struct PlayBed {
     s: RunningServer,
     _c: TestClock,
     app: App,
+    cfg: AppConfig,
     code: InviteCode,
     client: PathBuf,
     record: PathBuf,
@@ -370,22 +430,27 @@ struct PlayBed {
 
 impl PlayBed {
     async fn new() -> PlayBed {
-        Self::build(Os::Linux, 1, 0).await
+        Self::build(Os::Linux, 1, 0, 0).await
     }
 
     async fn with_sleep(secs: u32) -> PlayBed {
-        Self::build(Os::Linux, secs, 0).await
+        Self::build(Os::Linux, secs, 0, 0).await
     }
 
     async fn with_exit(code: i32) -> PlayBed {
-        Self::build(Os::Linux, 1, code).await
+        Self::build(Os::Linux, 1, code, 0).await
     }
 
     async fn on(os: Os) -> PlayBed {
-        Self::build(os, 1, 0).await
+        Self::build(os, 1, 0, 0).await
     }
 
-    async fn build(os: Os, sleep: u32, exit: i32) -> PlayBed {
+    /// A first start whose `umu-run createprefix` never ends by itself.
+    async fn with_stuck_prefix() -> PlayBed {
+        Self::build(Os::Linux, 1, 0, 600).await
+    }
+
+    async fn build(os: Os, sleep: u32, exit: i32, prefix_sleep: u32) -> PlayBed {
         let dir = tempfile::tempdir().unwrap();
         let (s, c) = server(dir.path(), "", GateLimits::default()).await;
         let code = InviteCode::generate().unwrap();
@@ -410,8 +475,12 @@ impl PlayBed {
             ("FENJI_TEST_RECORD".into(), record.clone().into()),
             ("FENJI_TEST_SLEEP".into(), sleep.to_string().into()),
             ("FENJI_TEST_EXIT".into(), exit.to_string().into()),
+            (
+                "FENJI_TEST_PREFIX_SLEEP".into(),
+                prefix_sleep.to_string().into(),
+            ),
         ]);
-        let app = App::start(cfg, tokio::runtime::Handle::current());
+        let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
         app.intent(Intent::ChooseFolder {
             path: client.display().to_string(),
         })
@@ -432,10 +501,16 @@ impl PlayBed {
             s,
             _c: c,
             app,
+            cfg,
             code,
             client,
             record,
         }
+    }
+
+    /// The launcher opened again on the same folders, as a player does after closing it.
+    fn reopened(&self) -> App {
+        App::start(self.cfg.clone(), tokio::runtime::Handle::current())
     }
 
     /// The invite link added and redeemed, as a new player does.
@@ -515,9 +590,19 @@ impl PlayBed {
 
 #[tokio::test]
 async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
+    // Review Focus 1 to its end (#348): redeem, sign in and Play leave the password, the session
+    // token and the ticket in no snapshot, log line or settings file.
+    let logs = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let sink = logs.clone();
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || Writer(sink.clone()))
+            .finish(),
+    );
     let t = PlayBed::new().await;
-    t.signed_in().await;
     let seen = t.collect_snapshots();
+    t.signed_in().await;
     t.app.intent(Intent::Play).await.unwrap();
     until(&t.app, |s| {
         matches!(s.game, GameView::Starting { first_start: true })
@@ -531,8 +616,19 @@ async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
         "{record}"
     );
     assert!(record.contains("gj_uinfo=") && record.contains("gj_gates="));
-    for json in seen.lock().unwrap().iter() {
-        assert!(!json.contains("fenji1-"), "the ticket reached a snapshot");
+    let settings = std::fs::read_to_string(t.cfg.config_dir.join("settings.json")).unwrap();
+    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("the game is running"),
+        "the log wasn't caught"
+    );
+    let seen = seen.lock().unwrap().clone();
+    assert!(seen.iter().any(|json| json.contains(r#""signedIn":true"#)));
+    for text in seen.iter().chain([&settings, &logs]) {
+        assert!(
+            !text.contains("a long password") && !text.contains("fenji1-"),
+            "a secret leaked: {text}"
+        );
     }
     t.s.shutdown().await.unwrap();
 }
@@ -584,6 +680,126 @@ async fn one_game_at_a_time_and_play_refuses_in_words() {
     for bed in [t, w, m] {
         bed.s.shutdown().await.unwrap();
     }
+}
+
+/// Linux only: the game's mark reads `/proc`, as Play runs only there (launcher spec L2).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_game_a_closed_launcher_left_running_holds_play_in_the_next() {
+    // #348: one game at a time across a restart. Closing the launcher leaves the game running
+    // (spec L12), and the next launcher saw no game: a second Play started a second client on the
+    // same prefix, over the first's game.log.
+    let t = PlayBed::with_sleep(4).await;
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    let GameView::Running { since_ms } =
+        until(&t.app, |s| matches!(s.game, GameView::Running { .. }))
+            .await
+            .game
+    else {
+        unreachable!()
+    };
+    let next = t.reopened();
+    assert_eq!(next.snapshot().game, GameView::Running { since_ms });
+    assert_eq!(
+        next.intent(Intent::Play).await.unwrap_err().to_string(),
+        "The game is already running."
+    );
+    // Once the game ends, the next launcher plays again.
+    until(&next, |s| matches!(s.game, GameView::Idle)).await;
+    t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_folder_and_downloads_wait_while_the_game_starts_or_runs() {
+    // #348: Play reads the folder again after the prefix and the ticket, so a folder changed during
+    // a first start launched one that was never checked; a download or repair would write into a
+    // copy the game was running from.
+    let t = PlayBed::with_sleep(5).await;
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    until(&t.app, |s| {
+        matches!(s.game, GameView::Starting { .. } | GameView::Running { .. })
+    })
+    .await;
+    let other = t.client.with_file_name("elsewhere").display().to_string();
+    for intent in [
+        Intent::ChooseFolder {
+            path: other.clone(),
+        },
+        Intent::Download {
+            folder: other.clone(),
+        },
+    ] {
+        assert_eq!(
+            t.app.intent(intent).await.unwrap_err().to_string(),
+            "Not while the game is starting or running. Try again once it has ended."
+        );
+    }
+    assert_eq!(
+        t.app.snapshot().client.folder.as_deref(),
+        Some(t.client.display().to_string().as_str())
+    );
+    t.s.shutdown().await.unwrap();
+}
+
+/// Linux only: what the cancel ends is found, and looked for here, in `/proc`.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_start_stuck_making_the_prefix_can_be_cancelled() {
+    // #348: Starting had no way out, so a first start whose prefix never finished held Play until
+    // the launcher closed.
+    let t = PlayBed::with_stuck_prefix().await;
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    let child = t.record.with_extension("prefix");
+    let pid = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&child)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("createprefix never started");
+    assert!(matches!(
+        t.app.snapshot().game,
+        GameView::Starting { first_start: true }
+    ));
+    t.app.intent(Intent::CancelStart).await.unwrap();
+    let s = until(&t.app, |s| matches!(s.game, GameView::Idle)).await;
+    let notice = s.notice.unwrap();
+    assert_eq!(notice.text, "The start was cancelled.");
+    assert!(!notice.error);
+    // Everything umu-run started ends, though Proton has a session of its own and ignores SIGTERM
+    // (#348's final review).
+    let gone = Instant::now();
+    while alive(pid) {
+        assert!(
+            gone.elapsed() < Duration::from_secs(10),
+            "createprefix's child outlived the cancel"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Its two marks are there, but the prefix was never finished: the next start makes it again.
+    let prefix = t.cfg.data_dir.join("prefix");
+    assert!(prefix.join("system.reg").is_file());
+    assert!(!fenji_launcher::start::prefix_ready(&prefix));
+    assert!(!t.record.exists(), "the client was started");
+    t.s.shutdown().await.unwrap();
+}
+
+/// Whether `pid` runs: a process that has ended but isn't reaped yet doesn't.
+#[cfg(target_os = "linux")]
+fn alive(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .is_some_and(|(_, rest)| !rest.trim_start().starts_with(['Z', 'X']))
+    })
 }
 
 #[tokio::test]

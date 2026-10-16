@@ -54,7 +54,14 @@
       ],
       "atMs": 1792055400000
     },
-    "manualCommand": null
+    "manual": {
+      "download": "chmod +x ./DepotDownloader && ./DepotDownloader -app 1418100 -depot 1418101 -manifest 5002037851744157048 -os windows -osarch 64 -username <your Steam login> -dir '/home/player/Games/SoLO'",
+      "repair": "chmod +x ./DepotDownloader && ./DepotDownloader -app 1418100 -depot 1418101 -manifest 5002037851744157048 -os windows -osarch 64 -username <your Steam login> -dir '/home/player/Games/SoLO' -filelist '/home/player/.local/share/fenji-launcher/repair-files.txt' -validate",
+      "get": {
+        "version": "3.4.0",
+        "url": "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-linux-x64.zip"
+      }
+    }
   },
   "job": null,
   "game": {

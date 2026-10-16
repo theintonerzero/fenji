@@ -105,6 +105,53 @@ jobs:
       - name: The launcher's versions are the workspace's
         run: scripts/check-launcher-version.sh
 
+  # The launcher on the other systems its release builds for, so what compiles only there shows
+  # before a tag, not at one (#348). The model's tests and Play run on Linux only (launcher spec L2).
+  launcher-systems:
+    name: launcher (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, macos-15]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out with the repository's line ends
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain from rust-toolchain.toml
+        run: |
+          rustup set profile minimal
+          rustup toolchain install
+          rustc -vV
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            . -> target
+            apps/launcher/src-tauri -> target
+      - name: pnpm, at the version scripts/versions.env pins
+        run: |
+          source scripts/versions.env
+          npm install -g "pnpm@$PNPM_VERSION"
+      - name: The model
+        run: cargo clippy -p fenji-launcher --all-targets --locked -- -D warnings
+      # The shell embeds the view's build (tauri.conf.json's frontendDist).
+      - name: The view's build
+        working-directory: apps/launcher
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - name: The shell
+        working-directory: apps/launcher/src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+
   deny:
     runs-on: ubuntu-24.04
     steps:

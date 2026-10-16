@@ -72,7 +72,22 @@ export interface Ipc {
 
 /** Mounts the view in `root`, starting on `start`, and keeps it on the model's snapshots. */
 export async function mount(root: HTMLElement, ipc: Ipc, start: Tab = "play"): Promise<void> {
+  // The view listens before it asks for the first snapshot, so that a change the model makes
+  // meanwhile isn't lost until the next one, up to a probe later (#348). One that comes while the
+  // first is fetched may be older than the answer, or newer: the view asks once more then.
+  let mounted = false;
+  let changed = false;
+  await ipc.onSnapshot((next) => {
+    changed = true;
+    if (mounted) {
+      snapshot = next;
+      render();
+    }
+  });
   let snapshot = await ipc.snapshot();
+  if (changed) {
+    snapshot = await ipc.snapshot();
+  }
   const ctx: Ctx = {
     tab: start,
     send: (intent) => ipc.send(intent),
@@ -115,11 +130,8 @@ export async function mount(root: HTMLElement, ipc: Ipc, start: Tab = "play"): P
   }
 
   render();
+  mounted = true;
   void ipc.send({ type: "viewTab", tab: ctx.tab });
   window.addEventListener("focus", () => void ipc.send({ type: "focus", focused: true }));
   window.addEventListener("blur", () => void ipc.send({ type: "focus", focused: false }));
-  await ipc.onSnapshot((next) => {
-    snapshot = next;
-    render();
-  });
 }

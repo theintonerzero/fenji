@@ -23,6 +23,8 @@ const BACK: i64 = 1_792_058_400_000;
 const SEEN_YESTERDAY: i64 = 1_791_979_800_000;
 
 const FOLDER: &str = "/home/player/Games/SoLO";
+/// Where the model lists the files to repair, for the player's own terminal.
+const REPAIR_LIST: &str = "/home/player/.local/share/fenji-launcher/repair-files.txt";
 const MOTD: &str = "the lobby is open. Make your characters now; the world opens with Fenji 0.5.";
 const SOURCE: &str = "https://github.com/theintonerzero/fenji";
 const MAINTENANCE: &str = "Updating to Fenji 0.4.1. Back around 21:00.";
@@ -120,7 +122,7 @@ fn base() -> Snapshot {
                 level: LevelView::Quick,
                 at_ms: CHECKED,
             },
-            manual_command: None,
+            manual: None,
         },
         job: None,
         game: GameView::Idle,
@@ -148,6 +150,20 @@ fn with(change: impl FnOnce(&mut Snapshot)) -> Snapshot {
     let mut s = base();
     change(&mut s);
     s
+}
+
+/// DepotDownloader for the player's own terminal, which Fenji hasn't fetched: the download, and the
+/// repair of `list`'s files when there's one.
+fn manual(list: Option<&Path>) -> ManualView {
+    let tool = crate::tools::depot_downloader();
+    ManualView {
+        download: crate::depot::manual_command(None, Path::new(FOLDER), None),
+        repair: list.map(|list| crate::depot::manual_command(None, Path::new(FOLDER), Some(list))),
+        get: Some(ToolLinkView {
+            version: tool.version,
+            url: tool.url,
+        }),
+    }
 }
 
 /// No folder chosen yet, and nothing checked.
@@ -294,8 +310,7 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             "client-setup",
             with(|s| {
                 no_client(s);
-                s.client.manual_command =
-                    Some(crate::depot::manual_command(Path::new(FOLDER), None));
+                s.client.manual = Some(manual(None));
             }),
         ),
         (
@@ -343,6 +358,7 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
                     }],
                     at_ms: CHECKED,
                 };
+                s.client.manual = Some(manual(Some(Path::new(REPAIR_LIST))));
             }),
         ),
         (

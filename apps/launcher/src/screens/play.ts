@@ -39,6 +39,8 @@ function besidePlay(variant: PlayVariant, s: Snapshot): [string, Intent] | null 
       return ["Check files", QUICK_CHECK];
     case "checking":
       return ["Stop checking", { type: "stopCheck" }];
+    case "starting":
+      return ["Cancel start", { type: "cancelStart" }];
     case "maintenance":
       return ["Check again", { type: "refresh" }];
     case "unsupported":

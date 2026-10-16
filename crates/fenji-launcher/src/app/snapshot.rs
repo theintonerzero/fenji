@@ -124,8 +124,31 @@ pub struct ClientView {
     pub build: String,
     pub files: usize,
     pub check: CheckView,
-    /// DepotDownloader's command, for the player's own terminal when Fenji found none.
-    pub manual_command: Option<String>,
+    /// DepotDownloader for the player's own terminal, wherever a download works (spec §3.12).
+    pub manual: Option<ManualView>,
+}
+
+/// DepotDownloader's commands for the player's own terminal, each on one line, their own Steam
+/// login left for them to type (#348).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct ManualView {
+    /// The download into the folder.
+    pub download: String,
+    /// The repair of the files the last check found wrong, which Fenji listed in a file of its
+    /// own, with `-validate`: none unless the copy needs repair.
+    pub repair: Option<String>,
+    /// Where to get DepotDownloader first, when Fenji hasn't fetched it.
+    pub get: Option<ToolLinkView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct ToolLinkView {
+    pub version: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -46,7 +46,7 @@
     "check": {
       "kind": "none"
     },
-    "manualCommand": null
+    "manual": null
   },
   "job": {
     "kind": "fetching",

@@ -20,9 +20,9 @@ pub const BAD_CODE: &str = "That isn't an invite code. Check it against the link
 pub const DOWNLOAD_LINUX_ONLY: &str = "Downloading with Steam works on Linux only for now.";
 /// A check, download or repair while another runs.
 pub const BUSY: &str = "Something is already running: wait for it to finish, or stop it.";
-/// No terminal to open DepotDownloader in: the view shows `client.manualCommand` after it.
-pub const NO_TERMINAL: &str =
-    "Fenji couldn't open a terminal for DepotDownloader. Run this in yours:";
+/// No terminal to open DepotDownloader in: the player runs the command from the Client tab's
+/// dialog, on its first screen and on Repair, in a terminal of their own (#348).
+pub const NO_TERMINAL: &str = "Fenji couldn't open a terminal for DepotDownloader. Open one yourself, and run the command under \"No Steam app? Run DepotDownloader yourself\" on the Client tab.";
 pub const CHECK_STOPPED: &str = "The check was stopped.";
 pub const DOWNLOAD_CANCELLED: &str = "The download was cancelled.";
 pub const WINDOW_CLOSED: &str =
@@ -33,11 +33,18 @@ pub const NO_FOLDER: &str =
     "Fenji doesn't know where your game is yet. Set it up on the Client tab.";
 /// Play while the game starts or runs (spec L12: one game at a time).
 pub const RUNNING: &str = "The game is already running.";
+/// Choosing the game folder, a download or a repair while the game starts or runs (#348).
+pub const WHILE_PLAYING: &str =
+    "Not while the game is starting or running. Try again once it has ended.";
 /// Play when the quick check finds files to repair.
 pub const NEEDS_REPAIR: &str = "Some game files need repair. The Client tab shows which.";
 /// `umu-run createprefix` didn't make the Wine prefix.
 pub const PREFIX_FAILED: &str =
     "Proton couldn't make the game's Wine prefix. The log folder has the details.";
+/// `umu-run createprefix` ran past its limit, `play::PREFIX_LIMIT` (#348).
+pub const PREFIX_TOO_LONG: &str = "Proton was still making the game's Wine prefix after 60 minutes, so Fenji stopped it. The log folder has the details.";
+/// Cancel start, before the game ran (#348).
+pub const START_CANCELLED: &str = "The start was cancelled.";
 
 /// The game ended with 0 within its first seconds: umu-run 1.4 logs a failure and ends that way
 /// (#332).

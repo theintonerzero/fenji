@@ -8,8 +8,9 @@ import { groundFor } from "../route";
 import type { FileProblem, Snapshot } from "../types";
 import { blade } from "../ui/blade";
 import { button } from "../ui/button";
+import type { Dialog } from "../ui/dialog";
 import { icons } from "../ui/icons";
-import { clientColumn } from "./client-parts";
+import { clientColumn, commandDialog } from "./client-parts";
 import { noticeSlot, renew } from "./parts";
 
 function problem(file: FileProblem, build: string): HTMLElement {
@@ -37,6 +38,7 @@ export function clientRepair(root: HTMLElement, ctx: Ctx): Screen {
   const actions = h("div", { class: "actions" });
   const notes = h("div", {});
   const side = clientColumn();
+  let open: Dialog | null = null;
   root.append(
     h(
       "main",
@@ -101,7 +103,9 @@ export function clientRepair(root: HTMLElement, ctx: Ctx): Screen {
         button.secondary("Choose another folder", () => void ctx.send({ type: "pickFolder", purpose: "game" })),
       ]);
       const these = one ? "this file" : "these files";
-      renew(notes, `${s.platform.canDownload}\n${one}`, () => [
+      const commands = s.client.manual;
+      const command = commands?.repair ?? null;
+      renew(notes, `${s.platform.canDownload}\n${one}\n${JSON.stringify(commands)}`, () => [
         s.platform.canDownload
           ? h(
               "p",
@@ -109,6 +113,20 @@ export function clientRepair(root: HTMLElement, ctx: Ctx): Screen {
               `Repair downloads just ${these} again with DepotDownloader. Any Steam sign-in happens in its own window, never in Fenji.`,
             )
           : null,
+        // Without a terminal Fenji can open, the player runs it in their own (#348).
+        command === null
+          ? null
+          : h(
+              "p",
+              { class: "manual" },
+              button.link("No Steam app? Run DepotDownloader yourself", () => {
+                open?.close();
+                open = commandDialog(ctx, command, commands?.get ?? null, "check", () => {
+                  open = null;
+                });
+                document.body.append(open.el);
+              }),
+            ),
         h(
           "p",
           { class: "gameforge" },
@@ -119,7 +137,8 @@ export function clientRepair(root: HTMLElement, ctx: Ctx): Screen {
             `Got the game from Gameforge's launcher? Copy ${these} over again from that install, then `,
             h(
               "button",
-              { class: "inline-link", type: "button", onclick: () => void ctx.send({ type: "check", level: "full" }) },
+              // A quick check, which hashes the files that needed repair in full (#348).
+              { class: "inline-link", type: "button", onclick: () => void ctx.send({ type: "check", level: "quick" }) },
               "check again",
             ),
             ".",
@@ -130,6 +149,7 @@ export function clientRepair(root: HTMLElement, ctx: Ctx): Screen {
       side.update(s);
     },
     destroy() {
+      open?.close();
       root.replaceChildren();
     },
   };

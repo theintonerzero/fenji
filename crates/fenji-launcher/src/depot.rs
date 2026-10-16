@@ -5,6 +5,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::appimage;
@@ -99,22 +100,32 @@ fn quoted(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
-/// The command a player without the Steam app runs in their own terminal, their own login left
-/// for them to type; a repair's paths follow it, one a line.
-pub fn manual_command(folder: &Path, files: Option<&[String]>) -> String {
+/// The command a player without the Steam app runs in their own terminal, on one line, their own
+/// login left for them to type. It runs `dd`, the DepotDownloader Fenji fetched, by its path;
+/// without one, the player gets the pinned release (the dialog says where) and runs it from its
+/// folder, made executable first (#348). A repair names `list`, the failing files as Fenji listed
+/// them ([`write_file_list`]), with `-validate`, as the terminal's script does (plan LP6).
+pub fn manual_command(dd: Option<&Path>, folder: &Path, list: Option<&Path>) -> String {
+    let program = match dd {
+        Some(dd) => quoted(dd),
+        None => "chmod +x ./DepotDownloader && ./DepotDownloader".to_string(),
+    };
     let mut command = format!(
-        "DepotDownloader {} -username <your Steam login> -dir {}",
+        "{program} {} -username <your Steam login> -dir {}",
         PINNED_ARGS.join(" "),
         quoted(folder)
     );
-    if let Some(files) = files {
-        command.push_str(" -filelist <a file listing the paths below> -validate");
-        for f in files {
-            command.push('\n');
-            command.push_str(f);
-        }
+    if let Some(list) = list {
+        command.push_str(&format!(" -filelist {} -validate", quoted(list)));
     }
     command
+}
+
+/// DepotDownloader's `-filelist`: one path a line, as the manifest names them.
+pub fn write_file_list(path: &Path, files: &[String]) -> std::io::Result<()> {
+    let mut text = files.join("\n");
+    text.push('\n');
+    std::fs::write(path, text)
 }
 
 /// One of DepotDownloader's progress lines, `{0,6:#00.00}% {path}`: the percentage and the path.
@@ -139,6 +150,8 @@ pub enum RunState {
     },
     /// The window closed before DepotDownloader ended, or the terminal never ran the script.
     Lost,
+    /// The terminal failed before it ran the script: it opened nothing (#348).
+    NotOpened,
 }
 
 /// A run of DepotDownloader in a terminal, followed through files in `run_dir`.
@@ -148,6 +161,10 @@ pub struct DepotRun {
     /// How long the terminal has to start the script before the run is [`RunState::Lost`].
     pub start_limit: Duration,
     started: Instant,
+    /// The terminal's own process, once it has ended: whether it succeeded. One that fails before
+    /// the script starts opened nothing; one that succeeds may have handed the script to a server
+    /// of its own, as `gnome-terminal` does, so only the start limit can tell.
+    terminal: Arc<Mutex<Option<bool>>>,
 }
 
 impl DepotRun {
@@ -176,9 +193,7 @@ impl DepotRun {
             .arg(&job.folder);
         if let Some(files) = &job.files {
             let list = run_dir.join("files.txt");
-            let mut text = files.join("\n");
-            text.push('\n');
-            std::fs::write(&list, text)?;
+            write_file_list(&list, files)?;
             cmd.arg(list);
         }
         cmd.env_clear()
@@ -187,14 +202,21 @@ impl DepotRun {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let mut child = cmd.spawn()?;
-        // Reaped off this thread, so a terminal that lingers never leaves a zombie.
+        // Reaped off this thread, so a terminal that lingers never leaves a zombie; its end is
+        // kept for state().
+        let terminal = Arc::new(Mutex::new(None));
+        let ended = terminal.clone();
         std::thread::spawn(move || {
-            let _ = child.wait();
+            let ok = child.wait().is_ok_and(|status| status.success());
+            *ended
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ok);
         });
         Ok(DepotRun {
             run_dir: run_dir.to_path_buf(),
             start_limit: Duration::from_secs(30),
             started: Instant::now(),
+            terminal,
         })
     }
 
@@ -217,6 +239,13 @@ impl DepotRun {
             return ended;
         }
         let Some(pgid) = self.pgid() else {
+            let terminal = *self
+                .terminal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if terminal == Some(false) {
+                return RunState::NotOpened;
+            }
             return if self.started.elapsed() > self.start_limit {
                 RunState::Lost
             } else {
@@ -360,6 +389,31 @@ mod tests {
         assert!(progress.contains("100.00% b.bin") && !progress.contains("QR here"));
     }
 
+    /// #348: a terminal opener that opens nothing (an `xdg-terminal-exec` with no terminal set up)
+    /// fails at once, and the run says so then, not after waiting out its start limit.
+    #[test]
+    fn a_terminal_that_opens_nothing_is_known_at_once() {
+        let _spawn = spawning();
+        let dir = tempfile::tempdir().unwrap();
+        let term = Terminal {
+            program: script(dir.path(), "term", "exit 1"),
+            before: vec![],
+        };
+        let job = Job {
+            dd: script(dir.path(), "dd", "exit 0"),
+            folder: dir.path().join("game"),
+            files: None,
+        };
+        let run = DepotRun::start(&term, &job, &dir.path().join("run"), []).unwrap();
+        drop(_spawn);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            wait_for(&run, |s| *s != RunState::Waiting),
+            RunState::NotOpened
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
     /// #329: the terminal, and DepotDownloader in it, start outside the AppImage.
     #[test]
     fn the_terminal_gets_the_environment_outside_the_appimage() {
@@ -489,6 +543,54 @@ mod tests {
         assert_eq!(wait_for(&run, |s| *s == RunState::Lost), RunState::Lost);
     }
 
+    /// Review Focus 4 as a window really closes (#348): the terminal and its pty go, so the session
+    /// is hung up (`SIGHUP`) rather than killed. Python's `pty` module stands in for the terminal.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_window_hung_up_mid_download_ends_as_lost() {
+        let spawn = spawning();
+        let dir = tempfile::tempdir().unwrap();
+        let holder = dir.path().join("holder");
+        let term = Terminal {
+            program: script(
+                dir.path(),
+                "term",
+                &format!(
+                    r#"python3 -I -c 'import os, pty, sys; open(sys.argv[1], "w").write(str(os.getpid())); pty.spawn(sys.argv[2:])' '{}' "$@" </dev/null >/dev/null 2>&1 &"#,
+                    holder.display()
+                ),
+            ),
+            before: vec![],
+        };
+        let dd = script(dir.path(), "dd", "echo ' 10.00% a.bin'; sleep 30");
+        let job = Job {
+            dd,
+            folder: dir.path().join("game"),
+            files: None,
+        };
+        let run =
+            DepotRun::start(&term, &job, &dir.path().join("run"), std::env::vars_os()).unwrap();
+        drop(spawn);
+        assert!(
+            matches!(
+                wait_for(&run, |s| matches!(s, RunState::Running { .. })),
+                RunState::Running { .. }
+            ),
+            "the fake terminal needs python3"
+        );
+        let pid: i32 = std::fs::read_to_string(&holder)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        rustix::process::kill_process(
+            rustix::process::Pid::from_raw(pid).unwrap(),
+            rustix::process::Signal::KILL,
+        )
+        .unwrap();
+        assert_eq!(wait_for(&run, |s| *s == RunState::Lost), RunState::Lost);
+    }
+
     #[test]
     fn cancel_ends_the_download_and_a_terminal_that_never_starts_is_lost() {
         let spawn = spawning();
@@ -554,13 +656,61 @@ mod tests {
 
     #[test]
     fn the_manual_command_leaves_the_login_to_the_player() {
-        let c = manual_command(Path::new("/home/p/Games/It's SoLO"), None);
-        assert!(c.starts_with(
-            "DepotDownloader -app 1418100 -depot 1418101 -manifest 5002037851744157048"
+        let c = manual_command(None, Path::new("/home/p/Games/It's SoLO"), None);
+        assert!(c.contains(
+            "./DepotDownloader -app 1418100 -depot 1418101 -manifest 5002037851744157048"
         ));
         assert!(
             c.contains("-username <your Steam login>")
                 && c.contains("-dir '/home/p/Games/It'\\''s SoLO'")
+        );
+    }
+
+    #[test]
+    fn the_manual_command_names_a_depot_downloader_the_player_has() {
+        // #348: it named a DepotDownloader the player had never got. Fenji's own copy, if it
+        // fetched one, is used by its path; otherwise the player gets one (the dialog says where)
+        // and runs it from its folder, made executable first. Either way it's one line.
+        let dd = Path::new("/home/p/.local/share/fenji-launcher/tools/DepotDownloader");
+        let c = manual_command(Some(dd), Path::new("/home/p/Games/SoLO"), None);
+        assert!(
+            c.starts_with(
+                "'/home/p/.local/share/fenji-launcher/tools/DepotDownloader' -app 1418100"
+            ),
+            "{c}"
+        );
+        let c = manual_command(None, Path::new("/home/p/Games/SoLO"), None);
+        assert!(
+            c.starts_with("chmod +x ./DepotDownloader && ./DepotDownloader -app 1418100"),
+            "{c}"
+        );
+        assert!(!c.contains('\n') && !c.contains('#'), "{c}");
+    }
+
+    #[test]
+    fn a_repairs_manual_command_validates_the_files_fenji_listed() {
+        // #348's final review: without -validate, DepotDownloader trusts what it saved about a copy
+        // it made, and fetches nothing (plan LP6).
+        let c = manual_command(
+            None,
+            Path::new("/home/p/Games/SoLO"),
+            Some(Path::new(
+                "/home/p/.local/share/fenji-launcher/repair-files.txt",
+            )),
+        );
+        assert!(
+            c.ends_with(
+                " -filelist '/home/p/.local/share/fenji-launcher/repair-files.txt' -validate"
+            ),
+            "{c}"
+        );
+        assert!(!c.contains('\n'), "{c}");
+        let dir = tempfile::tempdir().unwrap();
+        let list = dir.path().join("list");
+        write_file_list(&list, &["bin64/a.dll".into(), "data/c.pak".into()]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&list).unwrap(),
+            "bin64/a.dll\ndata/c.pak\n"
         );
     }
 }

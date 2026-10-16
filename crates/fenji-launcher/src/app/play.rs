@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::{info, warn};
 
+use super::client::or_cancelled;
 use super::{
     App, CheckView, GameView, IntentError, JobView, LevelView, Notice, State, now_ms, refused,
     words,
@@ -25,6 +26,13 @@ use crate::tools;
 /// #332).
 const STARTUP: Duration = Duration::from_secs(15);
 const UMU_LAUNCHER: &str = "umu-launcher";
+/// How long `umu-run createprefix` may take: a first one fetches umu's runtime, and Proton too when
+/// none is set, before it builds the prefix (#348). `words::PREFIX_TOO_LONG` says it.
+const PREFIX_LIMIT: Duration = Duration::from_secs(60 * 60);
+/// How long a stopped process group has to end before it's killed.
+const GRACE: Duration = Duration::from_secs(5);
+/// How often a start looks for Cancel start.
+const LOOK_EVERY: Duration = Duration::from_millis(100);
 
 impl App {
     /// Play on the active server: the refusals, then a sign-in if there's no session (LP8), the
@@ -72,17 +80,51 @@ impl App {
             st.game = GameView::Starting {
                 first_start: !start::prefix_ready(&prefix),
             };
+            st.start_cancelled = false;
             Ok(())
         })?;
         let app = self.clone();
         self.inner.rt.spawn(async move {
-            if let Err(text) = app.start_game(id, prefix).await {
-                app.change(|st| {
+            let started = app.start_game(id, prefix).await;
+            app.change(|st| {
+                // Whatever else stopped the start meanwhile, the player's cancel is the news.
+                let cancelled = std::mem::take(&mut st.start_cancelled);
+                if let Err(text) = started {
                     st.game = GameView::Idle;
-                    st.notice = Some(Notice { text, error: true });
-                });
+                    st.notice = Some(if cancelled {
+                        Notice {
+                            text: words::START_CANCELLED.into(),
+                            error: false,
+                        }
+                    } else {
+                        Notice { text, error: true }
+                    });
+                }
+            });
+        });
+        Ok(())
+    }
+
+    /// Cancel start (#348): the start sees it within [`LOOK_EVERY`], ends umu-run's prefix run with
+    /// everything it started, and goes back to Play. The game itself, once running, is the
+    /// player's to close.
+    pub(super) fn cancel_start(&self) {
+        self.change(|st| {
+            if matches!(st.game, GameView::Starting { .. }) {
+                st.start_cancelled = true;
             }
         });
+    }
+
+    fn start_cancelled(&self) -> bool {
+        self.inner.lock().start_cancelled
+    }
+
+    /// The start goes on unless it was cancelled.
+    fn going_on(&self) -> Result<(), String> {
+        if self.start_cancelled() {
+            return Err(words::START_CANCELLED.into());
+        }
         Ok(())
     }
 
@@ -115,6 +157,7 @@ impl App {
     async fn start_game(&self, id: u32, prefix: PathBuf) -> Result<(), String> {
         let cfg = &self.inner.cfg;
         let umu_run = self.umu_run().await?;
+        self.going_on()?;
         let var = |name: &str| env_var(&cfg.env, name);
         let platform = start::linux_platform(
             UmuOptions {
@@ -132,25 +175,37 @@ impl App {
             info!("making the Wine prefix");
             let spec =
                 start::prepare_spec(&platform).ok_or_else(|| words::PREFIX_FAILED.to_string())?;
-            let (env, out) = (cfg.env.clone(), log.try_clone().map_err(|e| e.to_string())?);
-            let made = tokio::task::spawn_blocking(move || {
-                std::fs::create_dir_all(&spec.cwd)?;
-                let err = out.try_clone()?;
-                start::command(&spec, env)
-                    .stdin(Stdio::null())
-                    .stdout(out)
-                    .stderr(err)
-                    .status()
-            })
-            .await;
-            if let Ok(Err(e)) | Err(e) = made.map_err(std::io::Error::other) {
-                warn!(error = %e, "umu-run createprefix didn't run");
+            let (out, err) = log_pair(&log).map_err(|e| words::couldnt_launch(&e.to_string()))?;
+            if let Err(e) =
+                std::fs::create_dir_all(&spec.cwd).and_then(|()| start::mark_unfinished(&prefix))
+            {
+                warn!(error = %e, "couldn't ready the prefix's folder");
+                return Err(words::PREFIX_FAILED.into());
+            }
+            let mut cmd = tokio::process::Command::from(start::command(&spec, cfg.env.clone()));
+            cmd.stdin(Stdio::null()).stdout(out).stderr(err);
+            match run_in_group(cmd, || self.start_cancelled(), PREFIX_LIMIT).await {
+                // Stopped by a signal from elsewhere, it may not have finished: the mark stays.
+                GroupEnd::Ended(status) if status.code().is_none() => {
+                    warn!(%status, "umu-run createprefix was stopped");
+                }
+                GroupEnd::Ended(_) => {
+                    if let Err(e) = start::mark_finished(&prefix) {
+                        warn!(error = %e, "couldn't mark the prefix finished");
+                    }
+                }
+                GroupEnd::Cancelled => return Err(words::START_CANCELLED.into()),
+                GroupEnd::TooLong => return Err(words::PREFIX_TOO_LONG.into()),
+                GroupEnd::NotRun(e) => warn!(error = %e, "umu-run createprefix didn't run"),
             }
             if !start::prefix_ready(&prefix) {
                 return Err(words::PREFIX_FAILED.into());
             }
         }
-        let pairs = self.ticket(id).await?;
+        self.going_on()?;
+        let pairs = or_cancelled(self.ticket(id), || self.start_cancelled(), LOOK_EVERY)
+            .await
+            .ok_or_else(|| words::START_CANCELLED.to_string())??;
         let client = self
             .inner
             .lock()
@@ -168,6 +223,7 @@ impl App {
             .stderr(err)
             // Closing the launcher leaves the game running (spec L12).
             .kill_on_drop(false);
+        self.going_on()?;
         let spawned = {
             // A fork while a test writes a script would make that script busy to exec.
             #[cfg(test)]
@@ -177,7 +233,15 @@ impl App {
         drop(cmd);
         let mut child = spawned.map_err(|e| words::couldnt_launch(&e.to_string()))?;
         let started = Instant::now();
-        self.change(|st| st.game = GameView::Running { since_ms: now_ms() });
+        let since_ms = now_ms();
+        // Kept for the next launcher while the game runs, should this one close (#348).
+        let mark = child.id().and_then(|pid| GameMark::of(pid, since_ms));
+        if let Some(mark) = &mark
+            && let Err(e) = mark.write(&cfg.data_dir)
+        {
+            warn!(error = %e, "couldn't note the running game for the next launcher");
+        }
+        self.change(|st| st.game = GameView::Running { since_ms });
         info!(server = id, "the game is running");
         let code = match child.wait().await {
             Ok(status) => i32::from(start::exit_byte(status)),
@@ -187,6 +251,9 @@ impl App {
             }
         };
         info!(code, "the game ended");
+        if mark.is_some() {
+            GameMark::forget(&cfg.data_dir);
+        }
         let notice = end_notice(code, started.elapsed());
         self.change(|st| {
             st.game = GameView::Ended { code };
@@ -219,7 +286,13 @@ impl App {
                 });
             }
         });
-        let fetched = self.fetch_tool(tools::umu_launcher(), UMU_LAUNCHER).await;
+        let fetched = or_cancelled(
+            self.fetch_tool(tools::umu_launcher(), UMU_LAUNCHER),
+            || self.start_cancelled(),
+            LOOK_EVERY,
+        )
+        .await
+        .unwrap_or_else(|| Err(words::START_CANCELLED.into()));
         self.change(|st| {
             if matches!(&st.client.job, Some(JobView::Fetching { tool, .. }) if tool == UMU_LAUNCHER) {
                 st.client.job = None;
@@ -290,8 +363,117 @@ impl State {
     }
 }
 
+impl App {
+    /// Follows a game an earlier launcher started and left running (#348) until it ends, then lets
+    /// Play go again. Its end code can't be had, as it isn't this launcher's child.
+    pub(super) fn follow_left_game(&self, mark: GameMark) {
+        let app = self.clone();
+        self.inner.rt.spawn(async move {
+            while mark.alive() {
+                tokio::time::sleep(LEFT_GAME_POLL).await;
+            }
+            GameMark::forget(&app.inner.cfg.data_dir);
+            info!("the game an earlier launcher started has ended");
+            app.change(|st| {
+                if st.game
+                    == (GameView::Running {
+                        since_ms: mark.since_ms,
+                    })
+                {
+                    st.game = GameView::Idle;
+                }
+            });
+        });
+    }
+}
+
+/// How often a launcher looks whether a game an earlier one left running has ended.
+const LEFT_GAME_POLL: Duration = Duration::from_secs(1);
+
+/// The game a launcher started, kept in `<data dir>/game.pid` while it runs, so that the next
+/// launcher knows (spec L12: one game at a time, across a restart too; #348). It names umu-run's
+/// process, which lasts as long as the game: its pid, its start time in clock ticks since boot,
+/// which tells it from a later process given the same pid, and when the game started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GameMark {
+    pid: u32,
+    start: u64,
+    pub(super) since_ms: i64,
+}
+
+impl GameMark {
+    const FILE: &'static str = "game.pid";
+
+    /// The mark for process `pid`, if it's there to be marked.
+    fn of(pid: u32, since_ms: i64) -> Option<GameMark> {
+        Some(GameMark {
+            pid,
+            start: process_start(pid)?,
+            since_ms,
+        })
+    }
+
+    /// The mark an earlier launcher left whose game still runs, if any. A mark whose game has
+    /// ended, or that doesn't read, is removed.
+    pub(super) fn left_running(data_dir: &Path) -> Option<GameMark> {
+        let text = std::fs::read_to_string(data_dir.join(Self::FILE)).ok()?;
+        let mark = Self::parse(&text).filter(GameMark::alive);
+        if mark.is_none() {
+            Self::forget(data_dir);
+        }
+        mark
+    }
+
+    fn parse(text: &str) -> Option<GameMark> {
+        let mut words = text.split_whitespace();
+        let mark = GameMark {
+            pid: words.next()?.parse().ok()?,
+            start: words.next()?.parse().ok()?,
+            since_ms: words.next()?.parse().ok()?,
+        };
+        words.next().is_none().then_some(mark)
+    }
+
+    /// Whether the marked process is still the same one, alive.
+    fn alive(&self) -> bool {
+        process_start(self.pid) == Some(self.start)
+    }
+
+    /// Writes the mark whole, through a temporary name, so that a reader never sees half of one.
+    fn write(&self, data_dir: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(data_dir)?;
+        let part = data_dir.join(format!("{}.part", Self::FILE));
+        std::fs::write(
+            &part,
+            format!("{} {} {}\n", self.pid, self.start, self.since_ms),
+        )?;
+        std::fs::rename(part, data_dir.join(Self::FILE))
+    }
+
+    fn forget(data_dir: &Path) {
+        let _ = std::fs::remove_file(data_dir.join(Self::FILE));
+    }
+}
+
+/// When process `pid` started, in clock ticks since boot (`/proc/<pid>/stat`'s 22nd field); none
+/// if there's no such process, or no `/proc` (Play is Linux-only, spec L2).
+fn process_start(pid: u32) -> Option<u64> {
+    proc_stat(pid).map(|(_, start)| start)
+}
+
+/// Process `pid`'s parent and its start (`/proc/<pid>/stat`'s 4th and 22nd fields).
+fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command's name comes in parentheses and may hold spaces or parentheses: the fields
+    // after it start at the last ')', with the state, the third field.
+    let mut fields = stat.get(stat.rfind(')')? + 2..)?.split(' ');
+    let parent = fields.nth(4 - 3)?.parse().ok()?;
+    let start = fields.nth(22 - 5)?.parse().ok()?;
+    Some((parent, start))
+}
+
 /// Whether a game is starting or running (spec L12: one at a time).
-fn playing(st: &State) -> bool {
+pub(super) fn playing(st: &State) -> bool {
     matches!(
         st.game,
         GameView::Starting { .. } | GameView::Running { .. }
@@ -322,6 +504,128 @@ fn env_var(
     env.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
 }
 
+/// The game's log, twice: for a child's stdout and its stderr.
+fn log_pair(log: &std::fs::File) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    Ok((log.try_clone()?, log.try_clone()?))
+}
+
+/// How a command run in a process group of its own ended.
+#[derive(Debug)]
+enum GroupEnd {
+    /// By itself: with a code, or by a signal from elsewhere.
+    Ended(std::process::ExitStatus),
+    Cancelled,
+    TooLong,
+    /// It couldn't be run, or waited for.
+    NotRun(std::io::Error),
+}
+
+/// Runs `cmd` in a process group of its own until it ends, `cancelled` says so, or `limit` passes.
+/// The last two stop everything it started (#348). umu-run 1.4.4 starts Proton in a session of
+/// its own, and passes SIGTERM on to it. So the stop sends umu-run's group SIGTERM and gives it
+/// [`GRACE`]. Then it kills every process under umu-run, and the group. umu-run is a subreaper, so
+/// what it started stays under it while it lives, double forks such as wineserver included; what
+/// was under it as the stop began is killed too, should umu-run end first.
+async fn run_in_group(
+    mut cmd: tokio::process::Command,
+    cancelled: impl Fn() -> bool,
+    limit: Duration,
+) -> GroupEnd {
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let spawned = {
+        // A fork while a test writes a script would make that script busy to exec.
+        #[cfg(test)]
+        let _spawn = crate::test_support::spawning();
+        cmd.spawn()
+    };
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(e) => return GroupEnd::NotRun(e),
+    };
+    let group = child.id();
+    let waited = tokio::time::timeout(limit, or_cancelled(child.wait(), cancelled, LOOK_EVERY));
+    let end = match waited.await {
+        Ok(Some(Ok(status))) => return GroupEnd::Ended(status),
+        Ok(Some(Err(e))) => return GroupEnd::NotRun(e),
+        Ok(None) => GroupEnd::Cancelled,
+        Err(_) => GroupEnd::TooLong,
+    };
+    let mut tree = group.map(descendants).unwrap_or_default();
+    signal_group(group, false);
+    let _ = tokio::time::timeout(GRACE, child.wait()).await;
+    // What's left, once umu-run has ended or had its time.
+    tree.extend(group.map(descendants).unwrap_or_default());
+    kill_each(&tree);
+    signal_group(group, true);
+    let _ = child.start_kill();
+    end
+}
+
+/// The processes under `root`, by `/proc`'s parent links, each with its start, so that a pid the
+/// system has given to another process since is never killed. None off Linux, which has no
+/// `/proc` (Play is Linux-only, spec L2).
+fn descendants(root: u32) -> Vec<(u32, u64)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let all: Vec<(u32, u32, u64)> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter_map(|pid| proc_stat(pid).map(|(parent, start)| (pid, parent, start)))
+        .collect();
+    let mut found: Vec<(u32, u64)> = Vec::new();
+    let mut parents = vec![root];
+    while let Some(parent) = parents.pop() {
+        for &(pid, of, start) in &all {
+            if of == parent && !found.iter().any(|&(seen, _)| seen == pid) {
+                found.push((pid, start));
+                parents.push(pid);
+            }
+        }
+    }
+    found
+}
+
+/// SIGKILL to each of `processes` that is still the process it was.
+#[cfg(unix)]
+fn kill_each(processes: &[(u32, u64)]) {
+    use rustix::process::{Pid, Signal, kill_process};
+    for &(pid, start) in processes {
+        if process_start(pid) != Some(start) {
+            continue;
+        }
+        if let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) {
+            let _ = kill_process(pid, Signal::KILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_each(_: &[(u32, u64)]) {}
+
+/// SIGTERM to the process group `group` leads, or SIGKILL when `kill`. Off Unix, nothing: the
+/// leader alone is killed there.
+#[cfg(unix)]
+fn signal_group(group: Option<u32>, kill: bool) {
+    use rustix::process::{Pid, Signal, kill_process_group};
+    let Some(pid) = group
+        .and_then(|g| i32::try_from(g).ok())
+        .and_then(Pid::from_raw)
+    else {
+        return;
+    };
+    let signal = if kill { Signal::KILL } else { Signal::TERM };
+    if let Err(e) = kill_process_group(pid, signal)
+        && e != rustix::io::Errno::SRCH
+    {
+        warn!(error = %e, "couldn't signal umu-run's process group");
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_group(_: Option<u32>, _: bool) {}
+
 /// `<data dir>/logs/game.log`, new for each start: what umu-run, Proton and the client print,
 /// which the words "the log folder has the details" point to.
 fn game_log(data_dir: &Path) -> std::io::Result<std::fs::File> {
@@ -343,9 +647,111 @@ mod tests {
     }
 
     #[test]
+    fn a_mark_reads_three_numbers_and_nothing_else() {
+        let mark = GameMark::parse("4242 987654 1792128679626\n").unwrap();
+        assert_eq!(
+            (mark.pid, mark.start, mark.since_ms),
+            (4242, 987654, 1792128679626)
+        );
+        for bad in [
+            "",
+            "4242 987654",
+            "4242 987654 1 2",
+            "x 987654 1",
+            "4242 -1 1",
+        ] {
+            assert_eq!(GameMark::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    /// Linux only: the mark reads `/proc`, as Play runs only there (spec L2).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_mark_whose_game_has_ended_is_forgotten_and_a_live_one_is_kept() {
+        // #348: a pid the system gave to another process since doesn't hold Play.
+        let dir = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        let start = process_start(me).expect("this process has a start time");
+        let stale = GameMark {
+            pid: me,
+            start: start + 1,
+            since_ms: 1,
+        };
+        stale.write(dir.path()).unwrap();
+        assert_eq!(GameMark::left_running(dir.path()), None);
+        assert!(
+            !dir.path().join(GameMark::FILE).exists(),
+            "a stale mark stays"
+        );
+        let live = GameMark::of(me, 2).unwrap();
+        live.write(dir.path()).unwrap();
+        assert_eq!(GameMark::left_running(dir.path()), Some(live));
+        assert_eq!(process_start(u32::MAX), None);
+    }
+
+    #[test]
     fn later_only_a_code_other_than_0_is_worth_a_word() {
         let later = STARTUP + Duration::from_secs(1);
         assert_eq!(end_notice(0, later), None);
         assert_eq!(end_notice(3, later), Some(words::ended(3)));
+    }
+
+    #[test]
+    fn the_words_for_a_prefix_past_its_limit_name_the_limit() {
+        let minutes = format!("after {} minutes", PREFIX_LIMIT.as_secs() / 60);
+        assert!(words::PREFIX_TOO_LONG.contains(&minutes));
+    }
+
+    /// #348: past its limit, a command is stopped with everything it started, even what it put in
+    /// a session of its own that ignores SIGTERM, as umu-run 1.4.4 does with Proton.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_run_past_its_limit_ends_with_everything_it_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        let umu_run = dir.path().join("umu-run");
+        std::fs::write(
+            &umu_run,
+            format!(
+                r#"setsid sh -c 'trap "" TERM; sleep 600 & echo $! > "$0"; wait' '{}' &
+proton=$!
+trap 'kill -TERM "$proton" 2>/dev/null' TERM
+while kill -0 "$proton" 2>/dev/null; do wait "$proton"; done
+"#,
+                child.display()
+            ),
+        )
+        .unwrap();
+        let mut cmd = tokio::process::Command::new("sh");
+        // Nothing left behind may hold the test's own output open.
+        cmd.arg(&umu_run)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let started = Instant::now();
+        let end = run_in_group(cmd, || false, Duration::from_secs(1)).await;
+        assert!(matches!(end, GroupEnd::TooLong), "{end:?}");
+        assert!(started.elapsed() < GRACE + Duration::from_secs(5));
+        let pid: u32 = std::fs::read_to_string(&child)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let gone = Instant::now();
+        while alive(pid) {
+            assert!(
+                gone.elapsed() < Duration::from_secs(10),
+                "its child outlived it"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Whether `pid` runs: a process that has ended but isn't reaped yet doesn't.
+    #[cfg(target_os = "linux")]
+    fn alive(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| !rest.trim_start().starts_with(['Z', 'X']))
+        })
     }
 }

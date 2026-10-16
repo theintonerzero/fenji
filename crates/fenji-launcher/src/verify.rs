@@ -53,6 +53,14 @@ impl Report {
         all
     }
 
+    /// Adds what `other` found, as one check of both: a file in both is in [`Report::failing`]
+    /// once.
+    pub fn merge(&mut self, other: Report) {
+        self.missing.extend(other.missing);
+        self.wrong_size.extend(other.wrong_size);
+        self.wrong_hash.extend(other.wrong_hash);
+    }
+
     /// What is wrong with `path`, if anything: missing first, then the size, then the hash.
     pub fn problem(&self, path: &str) -> Option<Problem> {
         let has = |list: &[String]| list.iter().any(|p| p == path);
