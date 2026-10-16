@@ -181,7 +181,10 @@ const PROXY_NOT_TRUSTED: &str = "public_api is set and api_bind is a loopback ad
 /// What a start warns the host about in `cfg`'s addresses, `pin` being the server's own key's:
 /// - no invite link that reaches beyond this computer (M4 hosting spec §3.11), which needs
 ///   `public_api`, or `tls = "self"`, which gives one for each of the machine's addresses (HA4);
-/// - a proxy in front of a loopback API (`public_api` set) that `trusted_proxies` doesn't list.
+/// - a proxy in front of a loopback API (`public_api` set) that `trusted_proxies` doesn't list,
+///   unless the API serves TLS itself: what's in front of it then passes the players' TLS through
+///   and can't add `X-Forwarded-For`, so trusting it would let each player name their own address
+///   (the hosting plan's final review, Minor 3).
 ///
 /// A loopback API without `public_api` is a server for this computer, and warns of nothing.
 fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<&'static str> {
@@ -191,7 +194,7 @@ fn address_warnings(cfg: &Config, pin: Option<&str>) -> Vec<&'static str> {
         warnings.push(crate::invite::NO_LINKS);
     }
     let loopback = s.api_bind.ip().to_canonical().is_loopback();
-    if s.public_api.is_some() && loopback && s.trusted_proxies.is_empty() {
+    if s.tls.is_none() && s.public_api.is_some() && loopback && s.trusted_proxies.is_empty() {
         warnings.push(PROXY_NOT_TRUSTED);
     }
     warnings
@@ -852,6 +855,15 @@ mod tests {
         let direct =
             cfg("public_api = \"https://play.example.net\"\napi_bind = \"0.0.0.0:7801\"\n");
         assert_eq!(address_warnings(&direct, None), Vec::<String>::new());
+        // The hosting plan's final review, Minor 3: under tls = "self" the API ends TLS itself,
+        // so what forwards players to a loopback API (an SSH tunnel, socat, a stream proxy) passes
+        // their TLS through and can't add X-Forwarded-For. Listed as trusted, it would let each
+        // client name its own address: no advice to list it.
+        let tunnelled = cfg("tls = \"self\"\npublic_api = \"https://play.example.net:7801\"\n");
+        assert_eq!(
+            address_warnings(&tunnelled, Some(pin)),
+            Vec::<String>::new()
+        );
     }
 
     /// The error a server serving in `served` stops with by itself (30 s at most).

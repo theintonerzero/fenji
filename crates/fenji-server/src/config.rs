@@ -62,7 +62,8 @@ pub struct ServerConfig {
     pub public_api: Option<String>,
     #[serde(default = "twenty")]
     pub max_players: u32,
-    /// Peers whose `X-Forwarded-For` names the client (M3 spec D12).
+    /// Peers whose `X-Forwarded-For` names the client (M3 spec D12): proxies that add it, such as
+    /// Caddy, never one that passes the players' TLS through, which can't.
     #[serde(default)]
     pub trusted_proxies: Vec<IpAddr>,
     /// The world's ticks per second (Fenji design spec §6.4).
@@ -720,6 +721,13 @@ mod tests {
         assert_eq!(c.world.save_every_secs, 300);
         assert_eq!(c.server.motd, "");
         assert_eq!(c.server.source_url, source_url());
+        // The hosting plan's final review, Minor 3: trusted_proxies is for a proxy that adds
+        // X-Forwarded-For, such as Caddy, never one that passes TLS through.
+        let proxies = EXAMPLE
+            .lines()
+            .find(|l| l.starts_with("trusted_proxies"))
+            .unwrap();
+        assert!(proxies.contains("X-Forwarded-For"), "{proxies}");
     }
 
     #[test]
