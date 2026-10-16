@@ -801,10 +801,12 @@ enum LongWords {
     /// can pass for another log line, whatever a player or an op wrote in it (a security review
     /// of the link fix).
     Indented,
-    /// At the edge: an answer to the host's own command, whose only words that long are the
-    /// server's links, so that a link copied from the screen holds only line breaks, which
-    /// launchers drop, rather than the indent's spaces as well (the hosting plan's final review B,
-    /// Important 1).
+    /// At the edge: an answer to the host's own command, so that a link copied from the screen
+    /// holds only line breaks, which launchers drop, rather than the indent's spaces as well (the
+    /// hosting plan's final review B, Important 1). Its words that long are mostly the server's
+    /// links; the rest is text an op chose, such as an invite's label, which the server keeps to
+    /// 64 characters: at the console's narrowest, [`MIN_WIDTH`], 8 of them at most reach the edge,
+    /// too few to pass for a log line.
     AtTheEdge,
 }
 
