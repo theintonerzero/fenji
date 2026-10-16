@@ -9,7 +9,7 @@ const play = (root: HTMLElement): HTMLButtonElement => root.querySelector("butto
 test("ready: the name, one line of state, the host's notice, PLAY alight, and who's playing", () => {
   const { root, sent } = mount(stage, golden("play-ready"));
   expect(text(root, ".name")).toBe("Moonward");
-  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms");
+  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms · Australia");
   expect(text(root, ".host")).toBe("Wen: the lobby is open. Make your characters now; the world opens with Fenji 0.5.");
   expect(play(root).dataset.look).toBe("lit");
   expect(play(root).textContent).toBe("Play");
@@ -152,11 +152,24 @@ test("the state line speaks on a change of state, not on every ping", () => {
   const { root, screen } = mount(stage, golden("play-ready"));
   const live = root.querySelector('.state [role="status"]')!;
   expect(live.textContent).toBe("Online · 3/10 players");
-  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms");
+  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms · Australia");
   const pinged = golden("play-ready");
   pinged.servers[0]!.pingMs = 31;
   const before = live.firstChild;
   screen.update(pinged);
   expect(live.firstChild).toBe(before);
-  expect(text(root, ".state")).toBe("Online · 3/10 players · 31 ms");
+  expect(text(root, ".state")).toBe("Online · 3/10 players · 31 ms · Australia");
+});
+
+test("the region its host set closes the line of state, and a server without one shows none (hosting spec Amendment C, HC5)", () => {
+  const { root, screen } = mount(stage, golden("play-ready"));
+  // Outside the live region, which speaks on a change of state: a region rarely changes.
+  expect(root.querySelector('.state [role="status"]')!.textContent).toBe("Online · 3/10 players");
+  const elsewhere = golden("play-ready");
+  elsewhere.servers[0]!.region = null;
+  screen.update(elsewhere);
+  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms");
+  // Offline, the place it had at its last answer stays beside when that was.
+  const { root: offline } = mount(stage, golden("play-offline"));
+  expect(text(offline, ".state")).toMatch(/^Offline · last seen .* · Australia$/);
 });

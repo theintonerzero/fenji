@@ -134,7 +134,14 @@ pub struct ServerInfo {
     /// Who hosts the server, when the host gave a name (launcher spec L9).
     #[serde(default)]
     pub host: Option<String>,
+    /// Where the server is, when the host set it (hosting spec Amendment C, HC4).
+    #[serde(default)]
+    pub region: Option<String>,
 }
+
+/// The most of a server's region the launcher shows, in characters: what a server may set
+/// (hosting spec Amendment C, HC1).
+const REGION_SHOWN: usize = 32;
 
 /// How many players are connected, of how many the server takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -478,8 +485,8 @@ impl ServerInfo {
     }
 
     /// The facts with the host's words ready to show: the server's name, the MOTD, the maintenance
-    /// message and the host's name with their hidden characters as escapes (#348 for the name),
-    /// and a source only if it's a web address.
+    /// message, the host's name and the region with their hidden characters as escapes (#348 for
+    /// the name), and a source only if it's a web address.
     fn shown(mut self) -> Self {
         self.name = escape_hidden(&self.name);
         self.motd = escape_hidden(&self.motd);
@@ -488,6 +495,11 @@ impl ServerInfo {
         }
         self.source = self.source.filter(|url| web_address(url));
         self.host = self.host.map(|h| escape_hidden(&h));
+        // At most what a server may set, so that one sending more can't stretch the line it's in.
+        self.region = self
+            .region
+            .filter(|r| !r.trim().is_empty())
+            .map(|r| escape_hidden(&r.chars().take(REGION_SHOWN).collect::<String>()));
         self
     }
 }
@@ -681,6 +693,18 @@ mod tests {
             (info.source.as_deref(), info.motd.as_str()),
             (Some("https://example.net/fenji"), "Welcome")
         );
+    }
+
+    #[test]
+    fn a_servers_region_is_read_when_set_and_shown_safely_and_short() {
+        // Hosting spec Amendment C, HC4–HC5: a server sets at most 32 characters; one that sends
+        // more, or hidden characters, can't stretch or reorder the line the launcher shows it in.
+        assert_eq!(info_with(json!({})).shown().region, None);
+        assert_eq!(info_with(json!({"region": "  "})).shown().region, None);
+        let info = info_with(json!({"region": "Austra\u{202e}lia"})).shown();
+        assert_eq!(info.region.as_deref(), Some("Austra\\u{202e}lia"));
+        let long = info_with(json!({ "region": "x".repeat(40) })).shown();
+        assert_eq!(long.region.as_deref(), Some("x".repeat(32).as_str()));
     }
 
     #[test]

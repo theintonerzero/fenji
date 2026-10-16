@@ -94,15 +94,24 @@ export function stateLine(v: ServerView, now: number, lit: boolean): string {
   }
 }
 
-/** A seal's tip in the rail, after the server's name: its players, or its state. */
+/**
+ * " · Australia": where the server is, when its host set it (hosting spec Amendment C, HC5), after
+ * its facts in the states that show them: online, maintenance, and offline, with its last answer's.
+ */
+export function regionPart(v: ServerView): string {
+  const shown = v.status.kind === "online" || v.status.kind === "maintenance" || v.status.kind === "offline";
+  return shown && v.region !== null ? `${JOIN}${v.region}` : "";
+}
+
+/** A seal's tip in the rail, after the server's name: its players, or its state, and its region. */
 export function sealLine(v: ServerView): string {
   switch (v.status.kind) {
     case "online":
-      return v.players === null ? "Online" : `${v.players.online}/${v.players.max} players`;
+      return (v.players === null ? "Online" : `${v.players.online}/${v.players.max} players`) + regionPart(v);
     case "maintenance":
-      return "Maintenance";
+      return "Maintenance" + regionPart(v);
     case "offline":
-      return "Offline";
+      return "Offline" + regionPart(v);
     case "unknown":
       return "Connecting…";
     default:

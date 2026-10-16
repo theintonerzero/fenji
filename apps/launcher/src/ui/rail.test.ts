@@ -21,7 +21,7 @@ test("each server is a seal with its state in a bar, the active one marked, then
   expect(seals.map((s) => s.dataset.bar)).toEqual(["ok", "warn", "off"]);
   expect(seals.map((s) => s.getAttribute("aria-current"))).toEqual(["true", null, null]);
   expect(seals.map((s) => s.getAttribute("aria-label"))).toEqual([
-    "Moonward, 3/10 players",
+    "Moonward, 3/10 players · Australia",
     "Jade Hall, Maintenance",
     "Ember Peak, Offline",
   ]);
@@ -50,7 +50,7 @@ test("the arrow keys move along the rail, + included, and a seal's tip shows its
   seals[0]!.focus();
   const tip = part.el.querySelector(".tip")!;
   expect(tip.hasAttribute("hidden")).toBe(false);
-  expect(tip.textContent).toBe("Moonward3/10 players");
+  expect(tip.textContent).toBe("Moonward3/10 players · Australia");
   key(seals[0]!, "ArrowDown");
   expect(document.activeElement).toBe(seals[1]);
   key(seals[1]!, "End");

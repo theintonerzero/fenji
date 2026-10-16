@@ -13,6 +13,7 @@
       "address": "moonward.example.net",
       "pinned": false,
       "host": "Wen",
+      "region": "Australia",
       "status": {
         "kind": "maintenance",
         "message": "Updating to Fenji 0.4.1. Back around 21:00.",
