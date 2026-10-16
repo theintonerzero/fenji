@@ -484,13 +484,18 @@ impl View {
             Mode::InProcess => "Ctrl-C stops the server",
             Mode::Attached => "attached · Ctrl-C or exit leaves",
         };
-        at_right(
-            frame,
-            area,
-            keys,
-            Style::new().fg(p.faint),
-            width(&title) + 2,
-        );
+        // The log's times are UTC (Ruling HP6), said once, here: shorter where the server's name
+        // leaves less room (the hosting plan's final review B, Minor 1).
+        let taken = width(&title) + 2;
+        let hints = [
+            format!("{keys} · times in UTC"),
+            format!("{keys} · UTC"),
+            keys.to_owned(),
+        ];
+        let room = usize::from(area.width);
+        if let Some(hint) = hints.iter().find(|h| taken + width(h) < room) {
+            at_right(frame, area, hint, Style::new().fg(p.faint), taken);
+        }
     }
 
     /// The status strip: the state word in its colour, the server's name in gold, then the facts
@@ -1330,6 +1335,34 @@ pub(crate) mod tests {
             "{rows:#?}"
         );
         assert!(rows[12].trim_end().ends_with("w29"), "{rows:#?}");
+    }
+
+    #[test]
+    fn the_title_says_the_times_are_utc() {
+        // The hosting plan's final review B, Minor 1: the log's times are UTC (Ruling HP6), and
+        // the console says so once, on the title bar's right, at 80 columns whatever the name.
+        let title = |server: &str, mode| {
+            let view = View::new(server.into(), help(), mode);
+            rows_of(&drawn(&view, 80, 24, Colours::True))[0]
+                .trim_end()
+                .to_owned()
+        };
+        let moonward = title("Moonward", Mode::InProcess);
+        assert!(
+            moonward.ends_with("Ctrl-C stops the server · times in UTC"),
+            "{moonward:?}"
+        );
+        // The longest name leaves room for it said shorter.
+        let longest = title(&"M".repeat(32), Mode::InProcess);
+        assert!(
+            longest.ends_with("Ctrl-C stops the server · UTC"),
+            "{longest:?}"
+        );
+        let attached = title("Moonward", Mode::Attached);
+        assert!(
+            attached.ends_with("attached · Ctrl-C or exit leaves · times in UTC"),
+            "{attached:?}"
+        );
     }
 
     /// What a host copies of `link` from `rows`: from where it starts, row by row, as a terminal
