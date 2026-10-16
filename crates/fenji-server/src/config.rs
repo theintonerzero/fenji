@@ -421,8 +421,10 @@ impl Config {
         if s.name.contains(':') {
             bail!("[server] name: no colon (the client splits gj_uinfo on colons)");
         }
-        if s.name.chars().any(char::is_control) {
-            bail!("[server] name: no control characters (it goes into gj_uinfo)");
+        // Plain as `host` and `motd` are: the console's title bar, every launcher's list and the
+        // game's gj_uinfo show it.
+        if !crate::text::plain(&s.name) {
+            bail!("[server] name: no control or invisible characters (it goes into gj_uinfo)");
         }
         if s.login_bind == s.api_bind && s.login_bind.port() != 0 {
             bail!("[server] api_bind: the same address as login_bind");
@@ -898,6 +900,27 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("public_host"), "{e}");
+    }
+
+    #[test]
+    fn a_name_is_plain_text_as_the_host_and_the_motd_are() {
+        // The hosting plan's final review, Minor 7: the name is the most visible host text (the
+        // console's title bar, every launcher's list, the game's `gj_uinfo`), so the format
+        // characters `host` and `motd` refuse are refused here too: bidirectional overrides and
+        // isolates, zero-width characters, the byte order mark and the Hangul fillers.
+        for name in [
+            "Fen\\u202Eji",
+            "Fen\\u2066ji",
+            "Fen\\u200Bji",
+            "Fen\\uFEFFji",
+            "Fen\\u3164ji",
+        ] {
+            let text = format!("[server]\nname = \"{name}\"\n");
+            let e = format!("{:#}", Config::parse(&text, Path::new("/")).unwrap_err());
+            assert!(e.contains("[server] name"), "{name}: {e}");
+        }
+        let c = Config::parse("[server]\nname = \"Moonward é 你好\"\n", Path::new("/")).unwrap();
+        assert_eq!(c.server.name, "Moonward é 你好");
     }
 
     #[test]
