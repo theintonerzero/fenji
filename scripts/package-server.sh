@@ -141,8 +141,11 @@ case $target in
     mkdir -- "$dir/systemd" "$dir/caddy"
     chmod 0755 "$dir/systemd" "$dir/caddy"
     files+=(systemd)
-    for unit in fenji.service fenji-backup.service fenji-backup.timer; do
-      cp -- "$root/deploy/systemd/$unit" "$dir/systemd/"
+    # Every unit deploy/systemd holds, in byte order (LC_ALL=C), so none can be left out (#367).
+    for path in "$root"/deploy/systemd/*; do
+      [ -f "$path" ] || continue
+      unit=${path##*/}
+      cp -- "$path" "$dir/systemd/"
       chmod 0644 "$dir/systemd/$unit"
       files+=("systemd/$unit")
     done
