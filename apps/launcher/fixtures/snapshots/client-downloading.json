@@ -56,7 +56,8 @@
     "repair": false,
     "percent": 42.0,
     "file": "data/_index/sc_res.idx",
-    "waitingForSteam": false
+    "waitingForSteam": false,
+    "code": null
   },
   "game": {
     "kind": "idle"

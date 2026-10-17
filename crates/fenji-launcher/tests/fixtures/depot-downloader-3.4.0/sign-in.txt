@@ -1,0 +1,59 @@
+Using filelist: '/home/player/.local/share/fenji-launcher/depot/1792300000000/files.txt'.
+Connecting to Steam3... Done!
+Logging in with QR code...
+Use the Steam Mobile App to sign in with this QR code:
+                                                                          
+                                                                          
+                                                                          
+                                                                          
+        ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██          
+          ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██        
+            ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██          
+        ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██        
+          ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██            
+        ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██          
+          ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██        
+            ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██          
+        ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██        
+          ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██            
+        ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██          
+          ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██        
+            ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██          
+        ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██        
+          ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██            
+        ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██          
+          ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██        
+            ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██          
+        ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██        
+          ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██            
+        ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██          
+          ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██        
+            ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██          
+        ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██        
+          ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██            
+        ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██          
+          ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██        
+            ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██          
+        ██    ██  ██    ██  ██    ██  ██    ██  ██    ██  ██    ██        
+                                                                          
+                                                                          
+                                                                          
+                                                                          
+Success! Next time you can login with -username lin_yue_on_steam -remember-password instead of -qr.
+ Done!
+Using Steam3 suggested CellID: 0
+Got 12 licenses for account!
+Got AppInfo for 1418100
+Using app branch: 'public'.
+Got depot key for 1418101 result: OK
+
+Processing depot 1418101
+Downloading depot 1418101 manifest
+Got manifest request code for depot 1418101 from app 1418100, manifest 5002037851744157048, result: 1234567890123456789
+Manifest 5002037851744157048 (11/25/2022 11:26:18)
+Downloading depot 1418101
+Pre-allocating /home/player/Games/SoLO/bin64/loader.ini
+100.00% /home/player/Games/SoLO/bin64/loader.ini
+Depot 1418101 - Downloaded 128 bytes (93 bytes uncompressed)
+Total downloaded: 128 bytes (93 bytes uncompressed) from 1 depots
+Disconnected from Steam

@@ -35,7 +35,6 @@ fn config(dir: &Path) -> AppConfig {
         pinned_build: "10015727".into(),
         env: vec![("PATH".into(), std::env::var_os("PATH").unwrap_or_default())],
         depot_downloader: None,
-        terminal: None,
         umu_run: None,
         ge_proton: None,
     }

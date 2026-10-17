@@ -16,6 +16,7 @@ export type * from "./gen/FileProblem";
 export type * from "./gen/Problem";
 export type * from "./gen/LevelView";
 export type * from "./gen/JobView";
+export type * from "./gen/CodeView";
 export type * from "./gen/GameView";
 export type * from "./gen/UpdateView";
 export type * from "./gen/SettingsView";

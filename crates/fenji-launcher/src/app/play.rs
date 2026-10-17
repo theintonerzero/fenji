@@ -720,7 +720,6 @@ mod tests {
                 pinned_build: "10015727".into(),
                 env,
                 depot_downloader: None,
-                terminal: None,
                 umu_run: None,
                 ge_proton,
             },

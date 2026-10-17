@@ -203,7 +203,6 @@ fn config() -> Result<AppConfig, String> {
         pinned_build: PINNED_BUILD.into(),
         env: std::env::vars_os().collect(),
         depot_downloader: None,
-        terminal: None,
         umu_run: None,
         ge_proton: Some(fenji_launcher::proton::GE_RELEASES.into()),
     })
@@ -319,8 +318,18 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("Fenji's launcher couldn't run");
+        .build(tauri::generate_context!())
+        .expect("Fenji's launcher couldn't run")
+        .run(|app, event| {
+            // Closing, restarting after an update, or the last window gone: a hidden
+            // DepotDownloader is the launcher's own child, with no window of its own, so it ends
+            // with the launcher (the final review of #429, I3).
+            if let tauri::RunEvent::Exit = event
+                && let Some(shell) = app.try_state::<Shell>()
+            {
+                shell.model.end_downloads();
+            }
+        });
 }
 
 #[cfg(test)]
