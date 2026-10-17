@@ -97,13 +97,25 @@ async fn create(
     now: i64,
     args: &[Value],
 ) -> anyhow::Result<Vec<Vec<u8>>> {
-    let req = match CreateRequest::parse(args) {
+    let mut req = match CreateRequest::parse(args) {
         Ok(r) => r,
         Err(refusal) => {
             tracing::debug!(account = %account.username, ?refusal, "create refused");
             return Ok(vec![lobby::error_code(refusal.code())]);
         }
     };
+    // Only a face in the shape the client's shared validator writes (#391): another would reach
+    // other players' clients, which in the world load it in native code without the validator.
+    // The character is made without it, as the validator falls back to the default face.
+    let vocation = req.vocation;
+    if let Some(face) = (req.appearance.face).take_if(|f| !fenji_proto::face::valid(f, vocation)) {
+        tracing::warn!(
+            account = %account.username,
+            name = %req.name,
+            face_len = face.len(),
+            "a face not in the client's own shape: the character is made without it"
+        );
+    }
     tracing::debug!(
         account = %account.username,
         name = %req.name,
@@ -182,7 +194,7 @@ mod tests {
                 (s("prop_base_skeleton"), Value::Int(2)),
                 (s("prop_sys_player_voice"), Value::Int(4)),
                 (s("prop_sys_avatar_feature"), Value::Int(2)),
-                (s("prop_sys_avatar_feature_face"), s("v:5;2:1")),
+                (s("prop_sys_avatar_feature_face"), s(FACE)),
                 (s("prop_base_equips_id"), Value::Int(2)),
                 (s("prop_sys_portrait"), Value::Int(24 << 16)),
             ],
@@ -190,6 +202,9 @@ mod tests {
     }
 
     const NINE: LobbyLimits = LobbyLimits { max_characters: 9 };
+
+    /// The shortest face in the client's own shape (#391).
+    const FACE: &str = "v:5;2:0,0,0;3:0,0,0,0,0;4:0";
 
     /// A short string as the pickle writes it: tag 08, a length byte, the bytes.
     fn st(x: &str) -> Vec<u8> {
@@ -260,7 +275,7 @@ mod tests {
         }
         want.push(0x00);
         want.extend(st("prop_sys_avatar_feature_face"));
-        want.extend(st("v:5;2:1"));
+        want.extend(st(FACE));
         // The head hidden, as the creation template hides it (world.md 9.2); the rest shown.
         assert_eq!(SHOW_FLAGS[0].0, "prop_sys_show_equip_head");
         want.extend(st("prop_sys_show_equip_head"));
@@ -286,6 +301,37 @@ mod tests {
             0x04, 0x03, 0x54, 0x03, 0x01, 0x03, 0x00, 0x05, 0xFF, 0xFF, 0xFF, 0x7F,
         ];
         assert_eq!(out, vec![want]);
+    }
+
+    #[test]
+    fn a_face_out_of_the_clients_shape_is_left_out_and_logged() {
+        // #391: the character is made without it, since in the world a client hands another
+        // player's face to native code without the shared validator.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (_d, store, account) = rt.block_on(setup());
+        let mut req = request("Lin");
+        if let Value::Table(t) = &mut req[0] {
+            t.hash[5].1 = s("v:5;2:1;%n%n");
+        }
+        let at = lobby::CREATE_ACTOR;
+        let (out, log) =
+            crate::world::logged(|| rt.block_on(handle(&store, &NINE, &account, NOW, at, &req)));
+        assert_eq!(out.len(), 1, "an answer");
+        let made = rt.block_on(store.list_characters(account.id)).unwrap();
+        assert_eq!(made.len(), 1, "the character is made");
+        let appearance = stored_appearance(&made[0].appearance).unwrap();
+        assert_eq!(appearance.face, None);
+        let line = log
+            .lines()
+            .find(|l| l.contains("a face not in the client's own shape"))
+            .unwrap_or_else(|| panic!("no warning: {log}"));
+        assert!(
+            line.contains("account=tester") && line.contains("face_len=12"),
+            "{line}"
+        );
     }
 
     #[tokio::test]

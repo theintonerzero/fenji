@@ -7,6 +7,7 @@
 //! under their type; 772 is a script message, built by `script_body`, which refuses `NEVER_SEND`.
 //! This module builds and parses; the server decides. Functions are the pinned exe's; their REA
 //! Evidence IDs are in world.md's REA Evidence IDs table.
+use crate::face;
 use crate::lobby::Appearance;
 use crate::opcode::Cts;
 use crate::packet::script_body;
@@ -432,7 +433,9 @@ pub fn sync_enter_player(actor: &PlayerActor) -> Vec<u8> {
         entries.push((prop::VOICE, BlobValue::Int(v)));
     }
     entries.push((prop::AVATAR_FEATURE, BlobValue::Int(a.base_face)));
-    if let Some(f) = &a.face {
+    // Only a face in the shape the client's shared validator writes, as a client hands it to
+    // native code without the validator here (#391; world.md 4.10).
+    if let Some(f) = (a.face.as_ref()).filter(|f| face::valid(f, actor.vocation)) {
         entries.push((
             prop::AVATAR_FEATURE_FACE,
             BlobValue::Str(f.as_bytes().to_vec()),

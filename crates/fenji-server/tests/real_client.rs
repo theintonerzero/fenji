@@ -3,7 +3,9 @@
 //! writes), its keys, their order, its integer and string forms, LZ4-compressed in its framing.
 //! Only the face string's value digits are ours, a running counter with the same sections, item
 //! counts and digit counts, since the real ones may hold the client's built-in presets (plan
-//! Amendment A). Nothing in it is machine data, and the name is ours.
+//! Amendment A); two of them, section 4's mask and section 7's tail, were then set to fit the
+//! shape the client's shared validator writes, as the real face did (#391). Nothing in it is
+//! machine data, and the name is ours.
 //!
 //! Beside it, run m4-e1's first time sync (type 2) and its type 3 (M4 world plan Task 11), as the
 //! server's trace log showed them. The log masks the bytes that describe the player's machine
@@ -104,6 +106,8 @@ fn the_real_create_request_parses_as_the_run_recorded() {
         "six sections and a trailing ';'"
     );
     assert!(face.starts_with("v:5;"), "{face}");
+    // In the shape the client's shared validator writes, so the server keeps it (#391).
+    assert!(fenji_proto::face::valid(face, 7), "{face}");
     assert_eq!(Value::Str(face.as_bytes().to_vec()), fixture_face());
     // Section 7 holds two pairs joined by `|` (lobby.md 5.9).
     let seven = face.split(';').find(|s| s.starts_with("7:")).unwrap();

@@ -264,7 +264,7 @@ async fn client_enter_brings_7_and_8_in_order() {
     assert_eq!(get(1458), Some(BlobValue::Int(world::FULL_HEALTH)));
     // The look the 304 gave (`common::request`): its portrait, voice, base face, face and
     // second outfit.
-    let face = b"v:5;2:1,2,3;3:1,2,3,4,5;4:1,2,3,4".to_vec();
+    let face = b"v:5;2:1,2,3;3:1,2,3,4,5;4:7,2,3,4".to_vec();
     assert_eq!(get(105), Some(BlobValue::Int(24 << 16)));
     assert_eq!(get(177), Some(BlobValue::Int(4)));
     assert_eq!(get(214), Some(BlobValue::Int(2)));

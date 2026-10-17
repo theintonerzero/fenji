@@ -22,7 +22,7 @@ fn request(name: &str, vocation: i64, skeleton: i64) -> Vec<Value> {
             (s("prop_sys_avatar_feature"), Value::Int(2)),
             (
                 s("prop_sys_avatar_feature_face"),
-                s("v:5;2:1,2,3;3:1,2,3,4,5;4:1,2,3,4"),
+                s("v:5;2:1,2,3;3:1,2,3,4,5;4:7,2,3,4"),
             ),
             (s("prop_sys_player_tattoo_pos"), Value::Int(0)),
             (s("prop_sys_player_birthday"), Value::Int(0)),
@@ -46,7 +46,7 @@ fn a_create_request_parses_into_typed_fields() {
     assert_eq!((r.name.as_str(), r.vocation, r.skeleton), ("Lin", 0, 2));
     assert_eq!(
         r.appearance.face.as_deref(),
-        Some("v:5;2:1,2,3;3:1,2,3,4,5;4:1,2,3,4")
+        Some("v:5;2:1,2,3;3:1,2,3,4,5;4:7,2,3,4")
     );
     assert_eq!(
         (
@@ -279,6 +279,31 @@ fn lin() -> Actor {
             .unwrap()
             .appearance,
     }
+}
+
+#[test]
+fn the_select_screen_gets_a_face_only_in_the_validators_shape() {
+    // #391: a face out of the shape the client's shared validator writes, one stored before Fenji
+    // checked it, goes to no one: the select screen then shows the default face, as for a
+    // character made without one.
+    let with_face = |face: &str, vocation: i64| Actor {
+        vocation,
+        appearance: Appearance {
+            face: Some(face.into()),
+            ..lin().appearance
+        },
+        ..lin()
+    };
+    let shown = |a: Actor| get(&a.to_table(1), "prop_sys_avatar_feature_face").cloned();
+    let face = "v:5;2:1,2,3;3:1,2,3,4,5;4:7,2,3,4";
+    assert_eq!(shown(with_face(face, 0)), Some(s(face)));
+    for bad in ["v:5;", "v:5;2:1,2,3;3:1,2,3,4,5;4:1,2,3,4", "%n%n%n%s"] {
+        assert_eq!(shown(with_face(bad, 0)), None, "{bad}");
+    }
+    // A fox's ears and tail, for a Fox Mage alone.
+    let fox = format!("{face};7:1,1|300,502");
+    assert_eq!(shown(with_face(&fox, 7)), Some(s(&fox)));
+    assert_eq!(shown(with_face(&fox, 0)), None);
 }
 
 #[test]
