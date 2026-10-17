@@ -95,7 +95,7 @@ export function stateLine(v: ServerView, now: number, lit: boolean): string {
 }
 
 /**
- * " · Australia": where the server is, when its host set it (hosting spec Amendment C, HC5), after
+ * " · Germany": where the server is, when its host set it (hosting spec Amendment C, HC5), after
  * its facts in the states that show them: online, maintenance, and offline, with its last answer's.
  */
 export function regionPart(v: ServerView): string {

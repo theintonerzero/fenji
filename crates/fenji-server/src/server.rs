@@ -218,11 +218,11 @@ fn own_key_proxies() -> String {
     )
 }
 
-/// What a start says when `cfg` sets no region and this computer's timezone names one, `guess`
+/// What a start says when `cfg` has no region and this computer's timezone names one, `guess`
 /// (M4 hosting spec Amendment C, HC3): the host's file is theirs, so the server only says where
-/// the line would go.
+/// the line would go. A blank region is the host's choice of none, and gets no hint.
 fn region_hint(cfg: &Config, guess: Option<String>) -> Option<String> {
-    let guess = guess.filter(|_| cfg.server.region.is_none())?;
+    let guess = guess.filter(|_| cfg.server.region.is_none() && !cfg.server.region_blank)?;
     Some(format!(
         "To show players where this server is, set [server] region = \"{guess}\" in fenji.toml."
     ))
@@ -789,15 +789,20 @@ mod tests {
             Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/")).unwrap()
         };
         assert_eq!(
-            region_hint(&cfg(""), Some("Australia".into())).as_deref(),
+            region_hint(&cfg(""), Some("Germany".into())).as_deref(),
             Some(
-                "To show players where this server is, set [server] region = \"Australia\" in fenji.toml."
+                "To show players where this server is, set [server] region = \"Germany\" in fenji.toml."
             )
         );
         assert_eq!(region_hint(&cfg(""), None), None);
         assert_eq!(
-            region_hint(&cfg("region = \"Sydney\"\n"), Some("Australia".into())),
+            region_hint(&cfg("region = \"Berlin\"\n"), Some("Germany".into())),
             None
+        );
+        assert_eq!(
+            region_hint(&cfg("region = \"\"\n"), Some("Germany".into())),
+            None,
+            "a blank region is the host's choice of none"
         );
     }
 

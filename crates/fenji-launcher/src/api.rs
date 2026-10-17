@@ -495,13 +495,33 @@ impl ServerInfo {
         }
         self.source = self.source.filter(|url| web_address(url));
         self.host = self.host.map(|h| escape_hidden(&h));
-        // At most what a server may set, so that one sending more can't stretch the line it's in.
         self.region = self
             .region
-            .filter(|r| !r.trim().is_empty())
-            .map(|r| escape_hidden(&r.chars().take(REGION_SHOWN).collect::<String>()));
+            .map(|r| shown_cut(&r, REGION_SHOWN))
+            .filter(|r| !r.trim().is_empty());
         self
     }
+}
+
+/// `text` as [`escape_hidden`] shows it, cut to at most `max` characters as shown, and never
+/// inside an escape: a server that sends more, or hidden characters, whose escapes are longer than
+/// they are, can't stretch the line the text is in.
+fn shown_cut(text: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut width = 0;
+    for c in text.chars() {
+        let shown = if hidden(c) {
+            c.escape_unicode().to_string()
+        } else {
+            c.to_string()
+        };
+        width += shown.chars().count();
+        if width > max {
+            break;
+        }
+        out.push_str(&shown);
+    }
+    out
 }
 
 impl GameGrant {
@@ -701,10 +721,17 @@ mod tests {
         // more, or hidden characters, can't stretch or reorder the line the launcher shows it in.
         assert_eq!(info_with(json!({})).shown().region, None);
         assert_eq!(info_with(json!({"region": "  "})).shown().region, None);
-        let info = info_with(json!({"region": "Austra\u{202e}lia"})).shown();
-        assert_eq!(info.region.as_deref(), Some("Austra\\u{202e}lia"));
+        let info = info_with(json!({"region": "Ger\u{202e}many"})).shown();
+        assert_eq!(info.region.as_deref(), Some("Ger\\u{202e}many"));
         let long = info_with(json!({ "region": "x".repeat(40) })).shown();
         assert_eq!(long.region.as_deref(), Some("x".repeat(32).as_str()));
+        // Escapes count as they show, and none is cut in half: three of a tag's nine-character
+        // escape fit, where the cut once came before escaping and let 40 of them through as 360.
+        let tags = info_with(json!({ "region": "\u{e0041}".repeat(40) })).shown();
+        assert_eq!(tags.region, Some("\\u{e0041}".repeat(3)));
+        // Blank once cut is none, as blank is.
+        let spaces = info_with(json!({ "region": format!("{}X", " ".repeat(32)) })).shown();
+        assert_eq!(spaces.region, None);
     }
 
     #[test]

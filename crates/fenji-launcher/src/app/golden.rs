@@ -43,7 +43,7 @@ fn moonward() -> ServerView {
         address: "moonward.example.net".into(),
         pinned: false,
         host: Some("Wen".into()),
-        region: Some("Australia".into()),
+        region: Some("Germany".into()),
         status: StatusView::Online,
         players: Some(PlayersView { online: 3, max: 10 }),
         motd: MOTD.into(),

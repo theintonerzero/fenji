@@ -83,11 +83,15 @@ pub struct ServerConfig {
     /// plain text of at most [`HOST_MAX`] characters. Unset, or blank, the launcher names no one.
     #[serde(default)]
     pub host: Option<String>,
-    /// Where this server is, as players' launchers show it ("Australia"; M4 hosting spec Amendment
+    /// Where this server is, as players' launchers show it ("Germany"; M4 hosting spec Amendment
     /// C, HC1): plain text of at most [`REGION_MAX`] characters. Unset, or blank, they show none.
     /// A first run guesses it from this computer's timezone ([`crate::region::guess`]).
     #[serde(default)]
     pub region: Option<String>,
+    /// Whether the file sets `region` blank: its host chose to show none, so a start never hints
+    /// at a guess (HC3).
+    #[serde(skip)]
+    pub region_blank: bool,
 }
 
 pub use crate::region::REGION_MAX;
@@ -360,6 +364,7 @@ impl Config {
             .is_some_and(|r| r.trim().is_empty())
         {
             c.server.region = None;
+            c.server.region_blank = true;
         }
         if c.store.path.is_relative() {
             c.store.path = base.join(&c.store.path);
@@ -650,13 +655,11 @@ pub fn template_with(region: Option<&str>) -> String {
         "region = \"{}\"",
         region.replace('\\', "\\\\").replace('"', "\\\"")
     );
-    // The comment starts where the line it replaces had it.
+    // The comment starts where the line it replaces had it, counted in characters, as the
+    // padding is.
     let width = REGION_LINE.len() - "\n #".len();
-    text.replacen(
-        REGION_LINE,
-        &format!("\n{value:<width$} #", width = width.max(value.len())),
-        1,
-    )
+    let width = width.max(value.chars().count());
+    text.replacen(REGION_LINE, &format!("\n{value:<width$} #"), 1)
 }
 
 /// Writes the [`template`] at `path` for a host to edit (`fenji-server init`), making any folders
@@ -849,9 +852,9 @@ mod tests {
     fn a_guessed_region_takes_the_place_of_the_commented_out_one() {
         // Amendment C, HC2: a first run writes the timezone's country where the host reads it.
         let dir = tempfile::tempdir().unwrap();
-        let written = template_with(Some("Australia"));
+        let written = template_with(Some("Germany"));
         let cfg = Config::parse(&written, dir.path()).unwrap();
-        assert_eq!(cfg.server.region.as_deref(), Some("Australia"));
+        assert_eq!(cfg.server.region.as_deref(), Some("Germany"));
         let base = template_with(None);
         assert_eq!(
             Config::parse(&base, dir.path()).unwrap().server.region,
@@ -863,11 +866,13 @@ mod tests {
             .filter(|(a, b)| a != b)
             .collect();
         assert_eq!(changed.len(), 1, "{changed:#?}");
-        assert_eq!(
-            changed[0].0.find(" # "),
-            changed[0].1.find(" # "),
-            "{changed:?}"
-        );
+        // The comment's column, in characters.
+        let column = |line: &str| line[..line.find(" # ").unwrap()].chars().count();
+        assert_eq!(column(changed[0].0), column(changed[0].1), "{changed:?}");
+        // Likewise for a name of many accented letters, whose bytes outnumber its characters.
+        let accented = template_with(Some("Éàéèêëîïôöùûüç Åäö"));
+        let line = accented.lines().find(|l| l.starts_with("region")).unwrap();
+        assert_eq!(column(line), column(changed[0].0), "{line}");
         // A name the shell or TOML would read otherwise stays the name.
         let odd = template_with(Some(r#"Côte d'Ivoire "\" x"#));
         assert_eq!(
@@ -883,19 +888,21 @@ mod tests {
     #[test]
     fn the_servers_region_is_short_plain_text() {
         let parse = |t: &str| Config::parse(t, Path::new("/"));
-        let c = parse("[server]\nname = \"M\"\nregion = \"Australia\"\n").unwrap();
-        assert_eq!(c.server.region.as_deref(), Some("Australia"));
+        let c = parse("[server]\nname = \"M\"\nregion = \"Germany\"\n").unwrap();
+        assert_eq!(c.server.region.as_deref(), Some("Germany"));
+        assert!(!c.server.region_blank);
         assert_eq!(
             parse("[server]\nname = \"M\"\n").unwrap().server.region,
             None
         );
-        assert_eq!(
-            parse("[server]\nname = \"M\"\nregion = \"  \"\n")
+        let blank = parse("[server]\nname = \"M\"\nregion = \"  \"\n").unwrap();
+        assert_eq!(blank.server.region, None, "blank is none");
+        assert!(blank.server.region_blank, "and the host's choice");
+        assert!(
+            !parse("[server]\nname = \"M\"\n")
                 .unwrap()
                 .server
-                .region,
-            None,
-            "blank is none"
+                .region_blank
         );
         let long = parse(&format!(
             "[server]\nname = \"M\"\nregion = \"{}\"\n",

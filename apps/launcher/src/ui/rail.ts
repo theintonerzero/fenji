@@ -1,9 +1,9 @@
 // The rail (R2): Fenji's seal, then each saved server as a square ink seal with its state in a 3 px
 // bar beneath: jade online, amber in maintenance, faint offline or not yet known, cinnabar where this
 // launcher can't play. The active seal is ember-edged, and + adds a server. A seal's tip shows its
-// name and players on hover or focus. The arrow keys move along the rail. A seal's menu (a right
-// click, the context-menu key or Shift+F10) has the server's source code and Remove, and Delete asks
-// to remove it.
+// name, its players or its state, and its region, on hover or focus. The arrow keys move along the
+// rail. A seal's menu (a right click, the context-menu key or Shift+F10) has the server's source
+// code and Remove, and Delete asks to remove it.
 import type { Ctx } from "../app";
 import { h } from "../dom";
 import type { ServerView, Snapshot } from "../types";

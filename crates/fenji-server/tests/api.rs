@@ -1206,11 +1206,11 @@ async fn without_tls_there_is_no_key_and_no_pin() {
 async fn the_servers_facts_name_its_region_only_when_set() {
     // Amendment C, HC4: the place players' launchers show.
     let with = get_json(
-        &started_with("region = \"Australia\"\n").await,
+        &started_with("region = \"Germany\"\n").await,
         "/api/v1/server",
     )
     .await;
-    assert_eq!(with["region"], "Australia");
+    assert_eq!(with["region"], "Germany");
     let without = get_json(&started().await, "/api/v1/server").await;
     assert!(without.get("region").is_none(), "{without}");
 }

@@ -9,7 +9,7 @@ const play = (root: HTMLElement): HTMLButtonElement => root.querySelector("butto
 test("ready: the name, one line of state, the host's notice, PLAY alight, and who's playing", () => {
   const { root, sent } = mount(stage, golden("play-ready"));
   expect(text(root, ".name")).toBe("Moonward");
-  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms · Australia");
+  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms · Germany");
   expect(text(root, ".host")).toBe("Wen: the lobby is open. Make your characters now; the world opens with Fenji 0.5.");
   expect(play(root).dataset.look).toBe("lit");
   expect(play(root).textContent).toBe("Play");
@@ -77,7 +77,7 @@ test("running: an outline with a dot, since when, and the player leads the frien
 
 test("maintenance: the host's message, when they're back, PLAY closed and Refresh", () => {
   const { root, sent } = mount(stage, golden("play-maintenance"));
-  expect(text(root, ".state")).toMatch(/^Maintenance · back around/);
+  expect(text(root, ".state")).toMatch(/^Maintenance · back around .* · Germany$/);
   expect(text(root, ".host")).toBe("Wen: Updating to Fenji 0.4.1. Back around 21:00.");
   expect(play(root).dataset.look).toBe("closed");
   expect(root.querySelector(".friends")).toBeNull();
@@ -152,24 +152,31 @@ test("the state line speaks on a change of state, not on every ping", () => {
   const { root, screen } = mount(stage, golden("play-ready"));
   const live = root.querySelector('.state [role="status"]')!;
   expect(live.textContent).toBe("Online · 3/10 players");
-  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms · Australia");
+  expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms · Germany");
   const pinged = golden("play-ready");
   pinged.servers[0]!.pingMs = 31;
   const before = live.firstChild;
   screen.update(pinged);
   expect(live.firstChild).toBe(before);
-  expect(text(root, ".state")).toBe("Online · 3/10 players · 31 ms · Australia");
+  expect(text(root, ".state")).toBe("Online · 3/10 players · 31 ms · Germany");
 });
 
 test("the region its host set closes the line of state, and a server without one shows none (hosting spec Amendment C, HC5)", () => {
   const { root, screen } = mount(stage, golden("play-ready"));
   // Outside the live region, which speaks on a change of state: a region rarely changes.
   expect(root.querySelector('.state [role="status"]')!.textContent).toBe("Online · 3/10 players");
+  // But read with the line: PLAY's description holds it, and nothing hides it from assistive
+  // technology, as it does the ping.
+  const region = root.querySelector(".state .region")!;
+  expect(region.textContent).toBe(" · Germany");
+  expect(region.getAttribute("aria-hidden")).toBeNull();
+  const described = root.querySelector(`[id="${play(root).getAttribute("aria-describedby")}"]`)!;
+  expect(described.contains(region)).toBe(true);
   const elsewhere = golden("play-ready");
   elsewhere.servers[0]!.region = null;
   screen.update(elsewhere);
   expect(text(root, ".state")).toBe("Online · 3/10 players · 24 ms");
   // Offline, the place it had at its last answer stays beside when that was.
   const { root: offline } = mount(stage, golden("play-offline"));
-  expect(text(offline, ".state")).toMatch(/^Offline · last seen .* · Australia$/);
+  expect(text(offline, ".state")).toMatch(/^Offline · last seen .* · Germany$/);
 });
