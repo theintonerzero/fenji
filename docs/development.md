@@ -89,7 +89,7 @@ cargo check --workspace          # refreshes Cargo.lock; CI builds with --locked
 # example folder names (fenji-server-X.Y.Z-…): X.Y.Z where it installs, and the next patch where it
 # updates
 # from v0.5.4 on, the release key's line must be in deploy/allowed_signers, the update script and
-# docs/hosting.md (scripts/set-release-key.sh KEY.pub writes all three), or the sign job fails
+# docs/hosting.md (scripts/set-release-key.sh KEY.pub writes all three), or the sums job fails
 git cliff --tag vX.Y.Z -o CHANGELOG.md
 # stage the release files only, so no unrelated local edit rides into the release commit
 git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md README.md PRIVACY.md SECURITY.md docs/hosting.md \
@@ -130,28 +130,38 @@ gh api -X PATCH "repos/{owner}/{repo}/milestones/$m" -f state=closed
 
 The release workflow (`.github/workflows/release.yml`) builds `fenji-server` for four targets, each on a runner of its own system: Linux on x86_64 and arm64 (static, with musl), Windows on x86_64, and macOS on Apple silicon. `scripts/package-server.sh` packs each build with its system's start script (`deploy/start/`), `fenji.example.toml`, `README.txt` (`deploy/archive/`), `LICENSE`, `SOURCE.txt` and `THIRD-PARTY-NOTICES.txt`, and `scripts/test-package-server.sh` checks what it packs. The notices are the licences of every crate the target's build links or runs in its proc-macros, which cargo-about (pinned in `scripts/versions.env`) collects from the locked dependency graph, and, for the static Linux builds, musl's notice (`deploy/archive/musl-COPYRIGHT`). cargo-about's `deploy/archive/about.toml` accepts exactly the licences `deny.toml` allows, and the test fails while the two lists differ. For a crate whose own licence text cargo-about can't find or read, it puts in the licence's standard text, which for MIT and BSD leaves the copyright line a template (`<year> <copyright holders>`), so the script refuses notices that hold one, and names the crates: each needs a checksum-pinned clarification in `about.toml` (#328). CI's `notices` job runs the script on every pull request for each of the workflow's server targets, around a stand-in for the binary, so a dependency change that needs one fails there rather than on a tag. Each build job checks its archive's entries with its own system's tools, and the publish job attaches nothing unless the tag still points at the run's commit. A pull request that changes the workflow, the packaging scripts, what they pack (`deploy/start/`, `deploy/archive/`, the launcher's `tauri.conf.json`) or `scripts/versions.env` runs it as a dry run: it builds every archive and bundle, unsigned, and publishes nothing, and the files stay with the run. So does a run by hand from the Actions tab.
 
-The same workflow builds the desktop launcher's bundles, each on its own runner: the AppImage on Linux (x86_64), the NSIS installer on Windows (x86_64) and the app on macOS (Apple silicon), with `cargo tauri build --bundles <bundle>`. Before each build, `scripts/launcher-notices.sh` writes the bundle's third-party notices (#341). They hold the licences of the shell's crates for the bundle's target, which cargo-about collects from the shell's own lock with `deploy/launcher/about.toml`; it accepts exactly the shell's `deny.toml` licences, has the shell's clarifications, and says where the source of the crates under the MPL-2.0 is. Then come the licence files of the view's production npm packages and the fonts' OFL texts. The script refuses notices with a placeholder where a copyright line belongs (`scripts/check-notices.sh`, as for the server), and `scripts/test-launcher-notices.sh` tests it. Each bundle carries the notices at the root of its resources, as `THIRD-PARTY-NOTICES.txt` (`bundle.resources`, which the build passes with `--config`), and the Settings popover's Licences opens them. CI's `launcher` job makes the Linux notices on every pull request. On a tag, the tag must match the launcher's version. The builds never see a key. The `sign` job, in the `release` environment (below), makes everything the release attaches:
-- It signs each bundle for the updater with `cargo tauri signer sign` (launcher spec §3.8, L5), from a fresh tauri-cli with no cache.
-- It writes the updater's `latest.json` with `scripts/launcher-latest-json.sh`, whose notes are the tag's changelog section.
-- It writes `SHA256SUMS` over every file, and signs it with the release's SSH key as `SHA256SUMS.sig` (`scripts/sign-sums.sh`; the hosting spec's Amendment D). It checks that signature against `deploy/allowed_signers`, so a secret that isn't the key's private half, or a repository without the key's line, fails the release there. `scripts/test-sign-sums.sh` tests the script.
+The same workflow builds the desktop launcher's bundles, each on its own runner: the AppImage on Linux (x86_64), the NSIS installer on Windows (x86_64) and the app on macOS (Apple silicon), with `cargo tauri build --bundles <bundle>`. Before each build, `scripts/launcher-notices.sh` writes the bundle's third-party notices (#341). They hold the licences of the shell's crates for the bundle's target, which cargo-about collects from the shell's own lock with `deploy/launcher/about.toml`; it accepts exactly the shell's `deny.toml` licences, has the shell's clarifications, and says where the source of the crates under the MPL-2.0 is. Then come the licence files of the view's production npm packages and the fonts' OFL texts. The script refuses notices with a placeholder where a copyright line belongs (`scripts/check-notices.sh`, as for the server), and `scripts/test-launcher-notices.sh` tests it. Each bundle carries the notices at the root of its resources, as `THIRD-PARTY-NOTICES.txt` (`bundle.resources`, which the build passes with `--config`), and the Settings popover's Licences opens them. CI's `launcher` job makes the Linux notices on every pull request. On a tag, the tag must match the launcher's version. The builds never see a key. After them, on a tag (the hosting spec's Amendment D, HD2):
+- **`sign`**, in the `release` environment (below), signs each bundle for the updater with `cargo tauri signer sign` (launcher spec §3.8, L5), from a fresh tauri-cli with no cache.
+- **`notes`**, which holds no secret, writes the updater's `latest.json` with `scripts/launcher-latest-json.sh`, whose notes are the tag's changelog section from git-cliff.
+- **`sums`**, in the `release` environment too, builds and installs nothing, so no third-party code runs beside the release's SSH key. It first checks that the update script's key line is one of `deploy/allowed_signers`'s. Then it writes `SHA256SUMS` over every file the release attaches, signs it as `SHA256SUMS.sig` (`scripts/sign-sums.sh`), and checks the signature against `deploy/allowed_signers`. A secret that isn't the key's private half, or a repository without the key's line, fails the release there. `scripts/test-sign-sums.sh` tests the script.
+- **`publish`** only attaches what `sums` put together.
 
-The publish job only attaches what `sign` made. The installed launchers read `latest.json` from the latest release, so the draft must be published, not just made, before players get the update. `scripts/test-launcher-latest-json.sh` checks the script.
+So the owner approves the environment twice per release: `sign`, then `sums`. The installed launchers read `latest.json` from the latest release, so the draft must be published, not just made, before players get the update. `scripts/test-launcher-latest-json.sh` checks the script.
 
 **The release key.** Its private half lives only on the owner's game box, in `~/.config/fenji/release-key/` (readable by the owner only), and in the secrets `TAURI_SIGNING_PRIVATE_KEY` (the key file's text) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` of the repository's `release` environment, whose deployment rule admits `v*` tags only: GitHub itself keeps them from any other run, whatever its workflow file says, and only the release workflow's `sign` job names that environment. It never goes into any repository. The environment also has the owner as its required reviewer, with no bypass for administrators: each release's `sign` job waits until the owner approves it, so a pushed tag alone can't sign an update. Its public half is in `apps/launcher/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`, key ID 02D8621117AE26ED). A launcher only installs updates signed with that key, so losing the private half means a new key, a release that carries the new public half, and players updating by hand once.
 
 **The release's SSH key** (the hosting spec's Amendment D). It signs each release's `SHA256SUMS`, which the update script checks. Its private half lives only:
-- on the owner's game box, beside the launcher's key, in `~/.config/fenji/release-key/` (readable by the owner only);
-- in the `release` environment's secret `SSH_SIGNING_PRIVATE_KEY`, behind the same deployment rule and approval.
+- on the owner's game box, beside the launcher's key, in `~/.config/fenji/release-key/` (readable by the owner only), under a passphrase;
+- in the `release` environment's secret `SSH_SIGNING_PRIVATE_KEY`, without one, behind the same deployment rule and approval.
 
-The owner makes it once:
+The owner makes it once. The first line asks for a passphrase. The secret's copy goes through a temporary file without it, which the last step removes:
 
 ```sh
-ssh-keygen -t ed25519 -N '' -C 'Fenji releases' -f ~/.config/fenji/release-key/ssh-release
-gh secret set SSH_SIGNING_PRIVATE_KEY --env release < ~/.config/fenji/release-key/ssh-release
+ssh-keygen -t ed25519 -C 'Fenji releases' -f ~/.config/fenji/release-key/ssh-release
+plain=$(mktemp) && cp ~/.config/fenji/release-key/ssh-release "$plain" && ssh-keygen -p -N '' -f "$plain" &&
+  gh secret set SSH_SIGNING_PRIVATE_KEY --env release < "$plain"; rm -f "$plain"
 scripts/set-release-key.sh ~/.config/fenji/release-key/ssh-release.pub
 ```
 
-The last line writes its public half, as an allowed-signers line, into `deploy/allowed_signers`, the update script and section 5 of `docs/hosting.md`, which a test keeps equal. A lost or leaked key goes as HD7 says: the new line in a release signed with the old key while that's possible, else one update by hand.
+The last line writes the key's public half, as an allowed-signers line, into three places: `deploy/allowed_signers`, the update script, and sections 4 and 5 of `docs/hosting.md`. A test keeps them agreeing.
+
+**A new key** (HD7), when the old one may go out of use:
+1. Make the new key as above, but keep the secret as it is.
+2. Run `scripts/set-release-key.sh --next NEW.pub`. The update script and the guide then trust the new key, while `deploy/allowed_signers` keeps the old key's line beside it.
+3. Release. That release is signed with the old key, so the scripts hosts run now accept it, and it brings them the new line.
+4. Then set the secret to the new key, and run `scripts/set-release-key.sh NEW.pub` (without `--next`), which leaves the new key's line alone.
+
+If the old key is lost or leaked, skip steps 2 and 3. Hosts' scripts then refuse the next release, saying to update by hand once (section 5 of the guide), which brings the new line.
 
 ## Checks before a PR
 
