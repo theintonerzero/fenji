@@ -1,7 +1,7 @@
 {
   "name": "fenji-launcher",
   "private": true,
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Fenji's desktop launcher: the view the Tauri shell shows",
   "license": "AGPL-3.0-or-later",
   "type": "module",
