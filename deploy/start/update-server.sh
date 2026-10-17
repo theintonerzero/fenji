@@ -41,7 +41,7 @@ me=${0##*/}
 # The release key's public half, as an OpenSSH allowed-signers line (HD1): deploy/allowed_signers
 # and section 5 of docs/hosting.md hold the same line, and a test pins that they agree. None until
 # the owner makes the key, before 0.5.4 is tagged (HD5); scripts/set-release-key.sh puts it in.
-RELEASE_KEY=''
+RELEASE_KEY='fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90'
 # Fenji's own units, the only ones a service's update installs.
 UNITS='fenji.service fenji-backup.service fenji-backup.timer'
 

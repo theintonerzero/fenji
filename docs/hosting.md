@@ -283,7 +283,7 @@ curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fe
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS.sig
 cat > allowed_signers <<'END'
-(Fenji's release key goes on this line once it's made, before v0.5.4 is released)
+fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90
 END
 ssh-keygen -Y verify -f allowed_signers -I fenji-release -n fenji-release -s SHA256SUMS.sig < SHA256SUMS &&
   sha256sum --ignore-missing -c SHA256SUMS
@@ -526,7 +526,7 @@ curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fe
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS.sig
 cat > allowed_signers <<'END'
-(Fenji's release key goes on this line once it's made, before v0.5.4 is released)
+fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90
 END
 ssh-keygen -Y verify -f allowed_signers -I fenji-release -n fenji-release -s SHA256SUMS.sig < SHA256SUMS &&
   sha256sum --ignore-missing -c SHA256SUMS &&

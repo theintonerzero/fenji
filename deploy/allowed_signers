@@ -4,3 +4,4 @@
 # section 5 of docs/hosting.md carry the same line (scripts/set-release-key.sh writes all three). The
 # owner makes the key before 0.5.4 is tagged (HD5); until then this file holds no line, and no
 # release can be signed.
+fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90
