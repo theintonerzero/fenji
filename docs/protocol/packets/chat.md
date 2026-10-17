@@ -123,8 +123,9 @@ Task 16's runs (2026-10-15) ran two clients at once as Task 13's and Task 15's d
 **Unknown:**
 - **Where a far 20 starts.** No run sent a 20 between t16-c1's 1.9 m and t16-c3's 374 m, so the 200 m line itself wasn't tried.
 
-**The follow-ups' runs** (2026-10-17, for 0.5.4; [`world.md`](world.md) §13), two clients as Task 16's ran:
+**The follow-ups' runs** (2026-10-17, for 0.5.4; [`world.md`](world.md) §13), with one client or two, as Task 16's ran:
 - **A `!tp` across scenes** (054-t1 to 054-t3; [`world.md`](world.md) 1.6). The mover's client loads the other scene on a 772. On its type 3, Fenji sends a 9 naming the client's own actor, then its 7 and 8, and the client makes the actor anew. The mover stands at the target's place, "S Lin is with Mai" shows in its chat box, and each client shows the other. The refusal (#280) is lifted.
+- **The MOTD and the marquee** (054-m1, one client). An MOTD of `Welcome to [Fenji] & friends, <3`, a System line through `server_text`, showed in the chat box as written, brackets and all, as 2.5 reads the tag parser. `!announce Fish & chips <3` scrolled "Fish & chips <3" across the marquee, and the chat box showed the same line. An announcement never carries a bracket: the console's `announce` goes through the world's checks, as `!announce` does, and they refuse markup (1.5; #359).
 
 ## Evidence index
 
