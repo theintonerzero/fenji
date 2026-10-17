@@ -134,6 +134,10 @@ export function gameChip(s: Snapshot): { label: string; tone: Tone } {
     return { label: "Verifying", tone: "quiet" };
   }
   if (job?.kind === "downloading") {
+    // A sign-in waits on the player, and the popover may be closed (the final review, I6).
+    if (job.waitingForSteam) {
+      return { label: "Sign in to Steam", tone: "warn" };
+    }
     const words = job.repair ? "Repairing" : "Downloading";
     return { label: job.percent === null ? words : `${words} ${percent(job.percent)}`, tone: "quiet" };
   }

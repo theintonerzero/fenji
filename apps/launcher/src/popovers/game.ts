@@ -1,10 +1,12 @@
 // The Game popover (the redesign's Your game boards): the player's copy, as it is. Verified, with
 // where it is, when, Verify integrity and Change folder. Set up: the Steam library first, then
-// another folder, then a download. Downloading or verifying, with its progress. Needs repair, with
-// each file and Repair. Its actions' refusals show in it, under its sections.
+// another folder, then a download. Downloading or verifying, with its progress; while a download
+// waits for its Steam sign-in, the code DepotDownloader drew, to scan (Amendment A, LA4), or the
+// player's own command for a password sign-in (LA5). Needs repair, with each file and Repair. Its
+// actions' refusals show in it, under its sections.
 import type { Ctx, PopoverContent } from "../app";
-import { h, type Child } from "../dom";
-import type { FileProblem, Intent, JobView, Snapshot } from "../types";
+import { h, s as svg, type Child } from "../dom";
+import type { CodeView, FileProblem, Intent, JobView, Snapshot } from "../types";
 import { button } from "../ui/button";
 import { commandDialog } from "../ui/command-dialog";
 import { formError, pathEnd, refused, renew } from "../screens/parts";
@@ -75,9 +77,38 @@ function work(job: JobView): { title: string; percent: number | null; stop: [str
         title: job.repair ? "Repairing" : "Downloading",
         percent: job.percent,
         stop: ["Cancel", { type: "cancelDownload" }],
-        line: job.waitingForSteam ? "Sign in to Steam in its own window. Fenji never sees it." : null,
+        // A code to scan carries its own words.
+        line: !job.waitingForSteam || job.code !== null ? null : "Connecting to Steam…",
       };
   }
+}
+
+/**
+ * A sign-in code as DepotDownloader drew it, as squares (Amendment A, LA4): one path of each row's
+ * runs of dark modules, `M x y h n v1 h-n z`, over the tile's light ground. Fenji never decodes it.
+ */
+function drawCode(code: CodeView): SVGElement {
+  const { size, dark } = code;
+  let d = "";
+  for (let y = 0; y < size; y += 1) {
+    let x = 0;
+    while (x < size) {
+      if (dark[y * size + x] !== "1") {
+        x += 1;
+        continue;
+      }
+      const start = x;
+      while (x < size && dark[y * size + x] === "1") {
+        x += 1;
+      }
+      d += `M${start} ${y}h${x - start}v1h-${x - start}z`;
+    }
+  }
+  return svg(
+    "svg",
+    { class: "code", viewBox: `0 0 ${size} ${size}`, role: "img", "aria-label": "Steam sign-in code", "shape-rendering": "crispEdges" },
+    svg("path", { d }),
+  );
 }
 
 export function gamePopover(ctx: Ctx): PopoverContent {
@@ -108,10 +139,22 @@ export function gamePopover(ctx: Ctx): PopoverContent {
       void act(stopIntent)();
     }
   }, true);
-  // While DepotDownloader waits for a Steam sign-in, the player can run it in a terminal of their own.
-  let runCommand: (() => void) | null = null;
-  const runLink = button.link("Run it yourself", () => runCommand?.());
-  const working = section(h("p", { class: "work-head" }, workTitle, workPercent), bar, workLine, acts(stop, runLink));
+  // While DepotDownloader waits for a Steam sign-in, a player without the Steam Mobile App signs in
+  // with their password through their own command, in their own terminal (L3, LA5).
+  let passwordRoute: (() => void) | null = null;
+  // While it waits, the code it drew, drawn again only when it changes (LA4), and the password
+  // sign-in for a player without the Steam Mobile App (LA5).
+  const codeTile = h("div", { class: "scan-code" });
+  let drawn = "";
+  const scan = h(
+    "div",
+    { class: "scan" },
+    codeTile,
+    h("p", { class: "scan-words" }, "Scan this with the Steam Mobile App."),
+    line("Fenji never sees your sign-in."),
+  );
+  const password = line("No Steam Mobile App? ", button.link("Sign in with your password", () => passwordRoute?.()));
+  const working = section(h("p", { class: "work-head" }, workTitle, workPercent), bar, scan, workLine, acts(stop), password);
 
   function build(view: Exclude<View, "working">, s: Snapshot): Child[] {
     const { client, platform } = s;
@@ -240,15 +283,25 @@ export function gamePopover(ctx: Ctx): PopoverContent {
         }
         const manual = s.client.manual;
         const job = s.job;
+        // The code is the next step, not progress: it takes the bar's place.
+        const code = job.kind === "downloading" ? job.code : null;
+        scan.hidden = code === null;
+        bar.hidden = code !== null;
+        if ((code?.dark ?? "") !== drawn) {
+          codeTile.replaceChildren(...(code === null ? [] : [drawCode(code)]));
+          drawn = code?.dark ?? "";
+        }
         const waiting = job.kind === "downloading" && job.waitingForSteam && manual !== null;
-        runLink.hidden = !waiting;
-        runCommand = null;
+        password.hidden = !waiting;
+        passwordRoute = null;
         if (waiting) {
           // A repair's own command fetches only the files that need it, then the files are verified.
           const repair = job.kind === "downloading" && job.repair && manual.repair !== null;
           const command = repair ? manual.repair! : manual.download;
-          // Two DepotDownloaders would write one folder: Fenji's own, waiting, goes first.
-          runCommand = () => {
+          // A password sign-in is the player's own command, with their own login (L3, LA5; the
+          // final review, C2). Two DepotDownloaders would write one folder: Fenji's own, waiting,
+          // goes first.
+          passwordRoute = () => {
             void ctx.send({ type: "cancelDownload" });
             ctx.show((done) => commandDialog(ctx, command, manual.get, repair ? "check" : "chooseFolder", done));
           };
