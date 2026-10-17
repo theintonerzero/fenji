@@ -217,6 +217,8 @@ jobs:
         run: scripts/test-package-server.sh
       - name: Update script tests
         run: scripts/test-update-server.sh
+      - name: Release signing tests
+        run: scripts/test-sign-sums.sh
       - name: The launcher's third-party notices tests
         run: scripts/test-launcher-notices.sh
       - name: The launcher's latest.json tests
