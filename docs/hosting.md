@@ -277,7 +277,7 @@ Some steps use `VERSION` and `TARGET`, which the first one sets in your shell, a
 Set `VERSION` to the latest release's number, without its `v`, and download that release's archive for your server's processor, with its checksums:
 
 ```sh
-VERSION=0.5.2
+VERSION=0.5.3
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
@@ -400,7 +400,7 @@ With a domain name, Caddy can serve the account API on the usual HTTPS port, wit
 3. Install Fenji's `Caddyfile` from the archive's `caddy` folder, put your name in place of `play.example.net` in it, and reload Caddy. In the folder you unpacked the archive in:
 
    ```sh
-   VERSION=0.5.2
+   VERSION=0.5.3
    TARGET=$(uname -m)-unknown-linux-musl
    sudo install -m 644 fenji-server-$VERSION-$TARGET/caddy/Caddyfile /etc/caddy/Caddyfile
    sudo nano /etc/caddy/Caddyfile
