@@ -56,12 +56,12 @@ test("the moment the check ends, PLAY's fill completes and dissolves into the li
   expect(play(fresh.root).classList.contains("kindled")).toBe(false);
 });
 
-test("starting: PLAY kindles with no progress to show, Cancel beside it, and the first start says why it's slow", () => {
+test("starting: PLAY kindles with no progress to show, Cancel beside it, and Proton's setup says why it's slow", () => {
   const { root, sent } = mount(stage, golden("play-starting"));
   expect(play(root).textContent).toBe("Starting");
   expect(play(root).classList.contains("drift")).toBe(true);
   expect(root.querySelector('[role="progressbar"]')!.hasAttribute("aria-valuenow")).toBe(false);
-  expect(text(root, ".meta")).toBe("Setting up Proton (first start only)");
+  expect(text(root, ".meta")).toBe("Setting up Proton");
   press(root, "Cancel");
   expect(sent).toEqual([{ type: "cancelStart" }]);
 });

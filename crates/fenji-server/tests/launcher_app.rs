@@ -453,10 +453,11 @@ async fn unticking_remember_forgets_a_server_saved_in_an_earlier_run_too() {
 
 /// umu-run as Play uses it: `createprefix` makes the prefix's two marks, then, if the test says,
 /// waits on "Proton" as umu-run 1.4.4 does: Proton in a session of its own, which here ignores
-/// SIGTERM and has a child of its own, SIGTERM forwarded to it, and a wait while it lives. The game
-/// records its environment, waits, and ends as the test says.
+/// SIGTERM and has a child of its own, SIGTERM forwarded to it, and a wait while it lives. Both runs
+/// record their environment; the game then waits, and ends as the test says.
 const FAKE_UMU_RUN: &str = r#"#!/bin/sh
 if [ "$1" = createprefix ]; then
+  env > "$FENJI_TEST_RECORD.prefix-env"
   mkdir -p "$WINEPREFIX/drive_c/windows" && : > "$WINEPREFIX/system.reg"
   if [ "${FENJI_TEST_PREFIX_SLEEP:-0}" != 0 ]; then
     setsid sh -c 'trap "" TERM; sleep "$0" & echo $! > "$1"; wait' \
@@ -728,8 +729,9 @@ async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
 #[tokio::test]
 async fn play_starts_the_game_with_the_ge_proton_it_has_or_the_players_own() {
     // Launcher spec Amendment B, LB1: umu-run gets the build in the data folder's proton/ as
-    // PROTONPATH, and a player's own PROTONPATH takes its place.
-    for own in [None, Some("/home/me/proton")] {
+    // PROTONPATH, and a player's own PROTONPATH takes its place as it is: umu's own names (the
+    // final review, I2) too, never anchored to the launcher's folder.
+    for own in [None, Some("/home/me/proton"), Some("GE-Proton")] {
         let t = match own {
             None => PlayBed::new().await,
             Some(path) => PlayBed::with_env(&[("PROTONPATH", path)]).await,
@@ -788,6 +790,48 @@ async fn play_starts_the_game_under_gamemode_when_its_installed_and_on() {
         }
         t.s.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn a_new_proton_sets_the_prefix_up_again_before_the_game() {
+    // The final review, I4 (#430): the prefix remembers the Proton that set it up, and a new one
+    // sets it up again before the ticket is taken, not inside the game's own run.
+    let t = PlayBed::new().await;
+    let protons = t.cfg.data_dir.join("proton");
+    let build = |name: &str| {
+        let home = protons.join(name);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("proton"), "#!/bin/sh\n").unwrap();
+        std::fs::write(home.join(fenji_launcher::proton::MARKER), "done").unwrap();
+        home
+    };
+    let prefix_env = t.record.with_extension("prefix-env");
+    let set_up_with = |home: &std::path::Path| {
+        let env = std::fs::read_to_string(&prefix_env).expect("the prefix was set up");
+        let line = format!("PROTONPATH={}", home.display());
+        assert!(env.lines().any(|l| l == line), "{line}: {env}");
+    };
+    t.signed_in().await;
+    let play = || async {
+        t.app.intent(Intent::Play).await.unwrap();
+        until(&t.app, |s| matches!(s.game, GameView::Running { .. })).await;
+        until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+    };
+    let first = build("GE-Proton11-9");
+    play().await;
+    set_up_with(&first);
+    std::fs::remove_file(&prefix_env).unwrap();
+    // The same Proton: nothing sets the prefix up again.
+    play().await;
+    assert!(!prefix_env.exists(), "the same Proton set it up");
+    // A newer one sets it up again first.
+    let newer = build("GE-Proton11-10");
+    play().await;
+    set_up_with(&newer);
+    let record = std::fs::read_to_string(&t.record).unwrap();
+    let line = format!("PROTONPATH={}", newer.display());
+    assert!(record.lines().any(|l| l == line), "{line}: {record}");
+    t.s.shutdown().await.unwrap();
 }
 
 #[tokio::test]
