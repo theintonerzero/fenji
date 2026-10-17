@@ -9,7 +9,7 @@ set -euo pipefail
 export LC_ALL=C
 [ $# -eq 1 ] || { echo "usage: $0 KEY.pub" >&2; exit 2; }
 root=${FENJI_REPO:-$(cd "$(dirname "$0")/.." && pwd)}
-type= key=
+type='' key=''
 read -r type key _ < "$1" || true
 if [ "$type" != ssh-ed25519 ] || ! [[ $key =~ ^AAAAC3NzaC1lZDI1NTE5[A-Za-z0-9+/]+=*$ ]]; then
   echo "$1 isn't an ssh-ed25519 public key: make one with ssh-keygen -t ed25519" >&2

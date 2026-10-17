@@ -702,10 +702,10 @@ refused "an ssh-keygen before OpenSSH 8 is refused" "it needs OpenSSH 8 or later
 # Its own line, without FENJI_RELEASE_KEY: none until the owner makes the key (HD5), and the run's
 # releases aren't signed with the real one.
 if [ -z "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$SCRIPT")" ]; then
-  FENJI_RELEASE_KEY= run "$D/update-server.sh" 1.2.10
+  FENJI_RELEASE_KEY='' run "$D/update-server.sh" 1.2.10
   refused "a script that holds no release key refuses" "holds no release key"
 else
-  FENJI_RELEASE_KEY= run "$D/update-server.sh" 1.2.10
+  FENJI_RELEASE_KEY='' run "$D/update-server.sh" 1.2.10
   refused "its own line refuses the run's key" "isn't signed with the release key"
 fi
 run "$D/update-server.sh" 9.9.9
@@ -1241,13 +1241,13 @@ else
 fi
 fresh
 SCRIPT=$K/deploy/start/update-server.sh folder "$D" 1.2.3
-FENJI_RELEASE_KEY= run "$D/update-server.sh" 1.2.10
+FENJI_RELEASE_KEY='' run "$D/update-server.sh" 1.2.10
 exits "a script holding the release key's line checks a release with it" 0
 same "and updates the folder" "$(version "$D/fenji-server")" "fenji-server 1.2.10"
 fresh
 SCRIPT=$K/deploy/start/update-server.sh folder "$D" 1.2.3
 was=$(snapshot "$D")
-FENJI_RELEASE_KEY= run "$D/update-server.sh" 1.2.14
+FENJI_RELEASE_KEY='' run "$D/update-server.sh" 1.2.14
 refused "and refuses one signed with another key" "isn't signed with the release key"
 
 # One release key wherever it's written (HD8): deploy/allowed_signers, this script's RELEASE_KEY and
