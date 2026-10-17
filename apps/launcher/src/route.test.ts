@@ -53,6 +53,15 @@ test.each([
   expect(playVariant(golden(file))).toBe(variant);
 });
 
+test("a check while the game starts still offers Cancel start (#367), and one while it runs shows as a check", () => {
+  const starting = golden("play-starting");
+  starting.job = golden("play-checking").job;
+  expect(playVariant(starting)).toBe("starting");
+  const running = golden("play-running");
+  running.job = golden("play-checking").job;
+  expect(playVariant(running)).toBe("checking");
+});
+
 test("PLAY kindles: lit when ready, filled to a check's progress, closed when Play can't happen, an outline running", () => {
   expect(playLook(golden("play-ready"))).toEqual({ kind: "lit" });
   expect(playLook(golden("play-checking"))).toEqual({ kind: "kindle", task: "verifying", percent: 78 });

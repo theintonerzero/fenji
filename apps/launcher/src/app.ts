@@ -71,6 +71,9 @@ const OPENS_ON: Record<PopoverName, ReadonlySet<ScreenName>> = {
   settings: new Set(["welcome", "redeem", "signIn", "stage"]),
 };
 
+/** How many times the view asks again for its first snapshot while changes keep coming. */
+const FIRST_FETCHES = 8;
+
 /** The shell, as the view sees it (ipc.ts; dev-golden.ts in development). */
 export interface Ipc {
   snapshot(): Promise<Snapshot>;
@@ -88,8 +91,10 @@ export interface MountOptions {
 /** Mounts the view in `root`, and keeps it on the model's snapshots. */
 export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions = {}): Promise<void> {
   // The view listens before it asks for the first snapshot, so that a change the model makes
-  // meanwhile isn't lost until the next one, up to a probe later (#348). One that comes while the
-  // first is fetched may be older than the answer, or newer: the view asks once more then.
+  // meanwhile isn't lost until the next one, up to a probe later (#348). One that comes while a
+  // fetch is answered may be older than the answer, or newer: the view asks again then, until a
+  // fetch comes through with no change (#367), a few times at most, since the next change after
+  // that is drawn as it comes.
   let mounted = false;
   let changed = false;
   await ipc.onSnapshot((next) => {
@@ -100,7 +105,8 @@ export async function mount(root: HTMLElement, ipc: Ipc, options: MountOptions =
     }
   });
   let snapshot = await ipc.snapshot();
-  if (changed) {
+  for (let again = 0; changed && again < FIRST_FETCHES; again += 1) {
+    changed = false;
     snapshot = await ipc.snapshot();
   }
 

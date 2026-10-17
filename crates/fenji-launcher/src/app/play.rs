@@ -25,7 +25,7 @@ use crate::tools;
 /// An end this soon after the start means the game couldn't start, whatever its code (spec §3.12;
 /// #332).
 const STARTUP: Duration = Duration::from_secs(15);
-const UMU_LAUNCHER: &str = "umu-launcher";
+pub(super) const UMU_LAUNCHER: &str = "umu-launcher";
 /// How long `umu-run createprefix` may take: a first one fetches umu's runtime, and Proton too when
 /// none is set, before it builds the prefix (#348). `words::PREFIX_TOO_LONG` says it.
 const PREFIX_LIMIT: Duration = Duration::from_secs(60 * 60);
@@ -65,18 +65,20 @@ impl App {
             self.change(|st| st.need_sign_in = true);
             return Ok(());
         }
-        match self.check_here(LevelView::Quick).await? {
-            Some(CheckView::Verified { .. }) => {}
-            Some(CheckView::NeedsRepair { .. }) => return Err(refused(words::NEEDS_REPAIR)),
+        let client = match self.check_here(LevelView::Quick).await? {
+            Some((CheckView::Verified { .. }, folder)) => folder,
+            Some((CheckView::NeedsRepair { .. }, _)) => return Err(refused(words::NEEDS_REPAIR)),
             Some(_) => return Err(refused(words::NO_FOLDER)),
             // Stopped, or it failed: its notice says so.
             None => return Ok(()),
-        }
+        };
         let prefix = self.inner.cfg.data_dir.join("prefix");
         self.change(|st| {
             if playing(st) {
                 return Err(refused(words::RUNNING));
             }
+            // From Starting on, the folder can't change (#348): the start launches the one checked.
+            still_checked(st.settings.client.as_deref(), &client)?;
             st.game = GameView::Starting {
                 first_start: !start::prefix_ready(&prefix),
             };
@@ -85,7 +87,7 @@ impl App {
         })?;
         let app = self.clone();
         self.inner.rt.spawn(async move {
-            let started = app.start_game(id, prefix).await;
+            let started = app.start_game(id, prefix, client).await;
             app.change(|st| {
                 // Whatever else stopped the start meanwhile, the player's cancel is the news.
                 let cancelled = std::mem::take(&mut st.start_cancelled);
@@ -154,7 +156,7 @@ impl App {
     }
 
     /// umu-run, the prefix, the ticket, the start, and the wait. An error is the notice's words.
-    async fn start_game(&self, id: u32, prefix: PathBuf) -> Result<(), String> {
+    async fn start_game(&self, id: u32, prefix: PathBuf, client: PathBuf) -> Result<(), String> {
         let cfg = &self.inner.cfg;
         let umu_run = self.umu_run().await?;
         self.going_on()?;
@@ -206,13 +208,6 @@ impl App {
         let pairs = or_cancelled(self.ticket(id), || self.start_cancelled(), LOOK_EVERY)
             .await
             .ok_or_else(|| words::START_CANCELLED.to_string())??;
-        let client = self
-            .inner
-            .lock()
-            .settings
-            .client
-            .clone()
-            .ok_or_else(|| words::NO_FOLDER.to_string())?;
         let mut spec = base_spec(&client, &platform);
         spec.env.extend(pairs);
         let mut cmd = tokio::process::Command::from(start::command(&spec, cfg.env.clone()));
@@ -338,6 +333,16 @@ impl App {
                 Err(words::api_error(answer, &server, host.as_deref(), None))
             }
         }
+    }
+}
+
+/// The folder the settings name now is the one Play's check passed (#367): one chosen between the
+/// check and Starting is refused, rather than started unchecked.
+fn still_checked(saved: Option<&Path>, checked: &Path) -> Result<(), IntentError> {
+    if saved == Some(checked) {
+        Ok(())
+    } else {
+        Err(refused(words::FOLDER_CHANGED))
     }
 }
 
@@ -687,6 +692,21 @@ mod tests {
         live.write(dir.path()).unwrap();
         assert_eq!(GameMark::left_running(dir.path()), Some(live));
         assert_eq!(process_start(u32::MAX), None);
+    }
+
+    #[test]
+    fn play_starts_only_the_folder_its_check_passed() {
+        // #367: a folder chosen between Play's quick check and Starting would have been launched
+        // unchecked.
+        let checked = Path::new("/games/Swords of Legends Online");
+        assert!(still_checked(Some(checked), checked).is_ok());
+        for now in [Some(Path::new("/games/another copy")), None] {
+            assert_eq!(
+                still_checked(now, checked).unwrap_err().to_string(),
+                words::FOLDER_CHANGED,
+                "{now:?}"
+            );
+        }
     }
 
     #[test]

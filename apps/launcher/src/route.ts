@@ -57,11 +57,15 @@ export function playVariant(s: Snapshot): PlayVariant {
   if (!s.platform.canPlay) {
     return "unsupported";
   }
+  // Cancel start, whatever else runs meanwhile (#367).
+  if (s.game.kind === "starting") {
+    return "starting";
+  }
   if (s.job?.kind === "checking") {
     return "checking";
   }
-  if (s.game.kind === "starting" || s.game.kind === "running") {
-    return s.game.kind;
+  if (s.game.kind === "running") {
+    return "running";
   }
   const status = activeServer(s)?.status.kind;
   if (status === "maintenance") {

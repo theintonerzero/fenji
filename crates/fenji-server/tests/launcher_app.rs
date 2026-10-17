@@ -765,8 +765,9 @@ async fn a_game_a_closed_launcher_left_running_holds_play_in_the_next() {
 
 #[tokio::test]
 async fn the_folder_and_downloads_wait_while_the_game_starts_or_runs() {
-    // #348: Play reads the folder again after the prefix and the ticket, so a folder changed during
-    // a first start launched one that was never checked; a download or repair would write into a
+    // #348: Play read the folder again after the prefix and the ticket (since #367 the start takes
+    // the folder its check passed), so a folder changed during a first start launched one that was
+    // never checked; a download or repair would write into a
     // copy the game was running from.
     let t = PlayBed::with_sleep(5).await;
     t.signed_in().await;
