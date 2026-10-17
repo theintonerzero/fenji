@@ -9,6 +9,7 @@ Fenji isn't a game yet. From v0.5.0 a Fenji server runs accounts, the character 
 Fenji's own software sends nothing about you to the project or to anyone else. It has no analytics or crash reporters. It talks to the servers you point it at, to Steam through DepotDownloader if you download your game client that way, and, from the desktop launcher, to GitHub:
 - **Its updates.** When it starts, the launcher asks GitHub for the latest release's `latest.json`, to see whether there's a newer launcher, and it asks again when you press "Check now" in Settings. With "Update automatically" off, it asks only when you press that. A newer launcher downloads from the same release, and installs only if Fenji's release key signed it.
 - **Two tools, once, on Linux.** The first time it needs them, the launcher downloads DepotDownloader and umu-launcher from their GitHub releases, at pinned versions that it checks by SHA-256. A `umu-run` on your `PATH` is used instead of a download.
+- **GE-Proton, before each start on Linux.** Before it starts the game, the launcher asks GitHub for GE-Proton's latest release. When that release is newer than the build it has, it downloads it, checks it against the release's own SHA-512 sum, and removes the older build. A `PROTONPATH` you set yourself is used instead, and then it asks nothing.
 
 A server's update script talks to GitHub too, when its host runs it: `update-server.sh`, or `fenji-update` on a VPS, asks where Fenji's latest release is, and downloads that release's server archive and `SHA256SUMS`. The server itself never does: it has no update check.
 
@@ -25,7 +26,7 @@ These requests carry nothing about you or your accounts, though like any request
 On Linux the launcher starts the client through [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher), which has network habits of its own:
 - it checks for a network route, with a UDP `connect` to `1.1.1.1` that sends nothing;
 - it downloads its Steam Linux Runtime from Valve's servers (`repo.steampowered.com`) on first use, and asks them later whether it has an update;
-- when you don't name a Proton build with `--proton` (or `$PROTONPATH`), it checks GitHub for the latest UMU-Proton each time it starts, and downloads it when it's new.
+- when it isn't given a Proton build, it checks GitHub for the latest UMU-Proton each time it starts, and downloads it when it's new. The desktop launcher gives it GE-Proton once it has a build, or your own `$PROTONPATH`; `fenji-launch` gives it the build you name with `--proton` (or `$PROTONPATH`).
 
 Those requests come from umu, not from Fenji. They carry nothing about your account, though like any request they show your IP address.
 

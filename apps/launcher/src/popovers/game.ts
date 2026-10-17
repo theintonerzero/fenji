@@ -17,7 +17,7 @@ export const GAME = "Swords of Legends Online";
 type View = "working" | "setup" | "repair" | "missing" | "ready" | "unchecked";
 
 function viewFor(s: Snapshot): View {
-  // umu-launcher's fetch on a first start is PLAY's, not the copy's.
+  // A start's fetches, umu-launcher's and GE-Proton's, are PLAY's, not the copy's.
   if (s.job !== null && !(s.job.kind === "fetching" && s.game.kind === "starting")) {
     return "working";
   }

@@ -204,6 +204,7 @@ fn config() -> Result<AppConfig, String> {
         env: std::env::vars_os().collect(),
         depot_downloader: None,
         umu_run: None,
+        ge_proton: Some(fenji_launcher::proton::GE_RELEASES.into()),
     })
 }
 

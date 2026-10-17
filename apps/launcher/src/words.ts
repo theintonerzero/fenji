@@ -141,7 +141,7 @@ export function gameChip(s: Snapshot): { label: string; tone: Tone } {
     const words = job.repair ? "Repairing" : "Downloading";
     return { label: job.percent === null ? words : `${words} ${percent(job.percent)}`, tone: "quiet" };
   }
-  // DepotDownloader comes first on a first download; umu-launcher on a first start is PLAY's.
+  // DepotDownloader comes first on a first download; a start's umu-launcher and GE-Proton are PLAY's.
   if (job?.kind === "fetching" && s.game.kind !== "starting") {
     return { label: "Downloading", tone: "quiet" };
   }

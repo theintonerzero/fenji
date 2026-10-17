@@ -278,6 +278,16 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             with(|s| s.game = GameView::Starting { first_start: true }),
         ),
         (
+            "play-getting-proton",
+            with(|s| {
+                s.game = GameView::Starting { first_start: false };
+                s.job = Some(JobView::Fetching {
+                    tool: "GE-Proton".into(),
+                    percent: Some(42.0),
+                });
+            }),
+        ),
+        (
             "play-running",
             with(|s| {
                 s.game = GameView::Running { since_ms: STARTED };

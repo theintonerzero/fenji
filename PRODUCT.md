@@ -32,7 +32,7 @@ Fenji is clean-room and legitimate by construction. It uses no leaked server fil
   1. They get an invite link from their host, open the launcher and redeem the invite with a username and password.
   2. They point the launcher at their game folder. A Steam owner can instead have it fetch the pinned build from their own Steam account through DepotDownloader; they sign in to Steam by scanning the code the launcher draws with the Steam Mobile App, or with their password, by running the command the launcher shows in their own terminal, never in Fenji.
   3. The launcher verifies the files, repairing them through DepotDownloader for Steam owners.
-  4. They press Play. The launcher signs in, takes a single-use ticket and starts the unmodified client through umu-launcher and Proton on Linux.
+  4. They press Play. The launcher signs in, takes a single-use ticket and starts the unmodified client through umu-launcher and the latest GE-Proton on Linux.
 - **Where the server runs:** on the same PC, on the LAN or on the internet. The launcher works without internet when the server is local, and update checks then fail quietly.
 - **When the server can't take players:** it may be down or in maintenance. The launcher says so, with the host's message, and doesn't offer Play.
 - **The host's console:** a start script per OS opens `fenji-server` in a terminal, with live logs above and a command line below: help, invites, who is online, kick, maintenance on or off with a message, and stop. Over SSH on a VPS it is the same console.
