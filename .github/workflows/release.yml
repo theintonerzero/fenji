@@ -517,6 +517,18 @@ jobs:
             diff <(echo "$listed") <(echo "$here") || true
             exit 1
           fi
+          # And they're this tag's: an older release's files, with its own signature, would pass the
+          # checks above as well.
+          version=${GITHUB_REF_NAME#v}
+          archives=$(grep '^fenji-server-' <<< "$listed" || true)
+          if [[ -z $archives ]] || grep -v -q -F -e "fenji-server-$version-" <<< "$archives"; then
+            echo "::error::The archives to attach aren't all fenji-server-$version's: $(echo $archives)"
+            exit 1
+          fi
+          if [[ $(jq -r .version latest.json) != "$version" ]]; then
+            echo "::error::latest.json is for $(jq -r .version latest.json), not $version."
+            exit 1
+          fi
       - name: Attach the archives and SHA256SUMS
         env:
           GH_TOKEN: ${{ github.token }}

@@ -710,13 +710,18 @@ same "before anything is downloaded" "$(fetched)" ""
 FENJI_RELEASE_KEY=$T/no_signers run "$D/update-server.sh" 1.2.10
 refused "a key file that isn't there is refused" "can't read $T/no_signers"
 same "before anything is downloaded" "$(fetched)" ""
-# Its own line, without FENJI_RELEASE_KEY: none until the owner makes the key (HD5), and the run's
-# releases aren't signed with the real one.
-if [ -z "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$SCRIPT")" ]; then
-  FENJI_RELEASE_KEY='' run "$D/update-server.sh" 1.2.10
-  refused "a script that holds no release key refuses" "holds no release key"
-  same "before anything is downloaded" "$(fetched)" ""
-else
+# Its own line, without FENJI_RELEASE_KEY. A copy whose line is blank, as the script was before the
+# owner made the key (HD5), refuses before anything is downloaded, rather than check nothing; the
+# script itself refuses the run's releases, which aren't signed with the real key.
+sed "s/^RELEASE_KEY='.*'\$/RELEASE_KEY=''/" "$D/update-server.sh" > "$D/keyless.sh"
+chmod +x "$D/keyless.sh"
+was=$(snapshot "$D")
+FENJI_RELEASE_KEY='' run "$D/keyless.sh" 1.2.10
+refused "a script that holds no release key refuses" "holds no release key"
+same "before anything is downloaded" "$(fetched)" ""
+rm -f -- "$D/keyless.sh"
+was=$(snapshot "$D")
+if [ -n "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$SCRIPT")" ]; then
   FENJI_RELEASE_KEY='' run "$D/update-server.sh" 1.2.10
   refused "its own line refuses the run's key" "isn't signed with the release key"
 fi
@@ -1168,6 +1173,11 @@ kept "and another user's" "won't check a release as root"
 FENJI_RELEASE_KEY=$T/no_signers run "$B/fenji-update" 1.2.10
 kept "and one that isn't there" "won't check a release as root"
 same "before anything is fetched" "$(fetched)" ""
+mkdir "$T/open-keys"
+cp "$T/allowed_signers" "$T/open-keys/allowed_signers"
+chmod o+w "$T/open-keys"
+FENJI_RELEASE_KEY=$T/open-keys/allowed_signers run "$B/fenji-update" 1.2.10
+kept "and one in a folder everyone may write in" "won't check a release as root"
 # The key is checked where it really is, every link on the way resolved, and copied before anything
 # is fetched: a folder link on the way to it, swapped as the download starts, changes nothing.
 mkdir "$T/keys-real" "$T/keys-other"

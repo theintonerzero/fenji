@@ -53,8 +53,8 @@ trap 'rm -rf -- "$work"' EXIT
 # reported WHAT JSON: JSON's keys and values, as "KEY SUM NAME" lines, once each is checked: an
 # object whose keys are plain words and whose values are each a SHA-256 and a plain file name.
 reported() {
-  printf '%s' "$2" | jq -r --arg what "$1" '
-    if type != "object" then error("\($what) is not a JSON object") else . end
+  printf '%s' "$2" | jq -r -s --arg what "$1" '
+    if length != 1 or (.[0] | type) != "object" then error("\($what) is not one JSON object") else .[0] end
     | to_entries[]
     | if (.key | test("\\A[a-z0-9][a-z0-9_-]*\\z"))
         and (.value | type == "string")

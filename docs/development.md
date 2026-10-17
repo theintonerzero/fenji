@@ -156,7 +156,7 @@ scripts/set-release-key.sh ~/.config/fenji/release-key/ssh-release.pub
 
 The last line writes the key's public half, as an allowed-signers line, into three places: `deploy/allowed_signers`, the update script, and sections 4 and 5 of `docs/hosting.md`. A test keeps them agreeing.
 
-**A new key** (HD7), when the old one may go out of use:
+**A new key** (HD7), when the old one may go out of use. Read #424 first: two mistakes a rotation can make aren't caught yet.
 1. Make the new key as above, but keep the secret as it is.
 2. Run `scripts/set-release-key.sh --next NEW.pub`. The update script and the guide then trust the new key, while `deploy/allowed_signers` keeps the old key's line beside it.
 3. Release. That release is signed with the old key, so the scripts hosts run now accept it, and it brings them the new line.

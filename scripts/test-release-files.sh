@@ -109,11 +109,22 @@ artifacts "$T/in"
 printf 'odd\n' > "$T/in/fenji-launcher-app/odd name"
 refused "a file whose name isn't plain is refused" "isn't a plain file name"
 artifacts "$T/in"
+printf 'hidden\n' > "$T/in/fenji-launcher-nsis/.hidden"
+refused "a hidden file no job reported is refused" "unreported .hidden"
+artifacts "$T/in"
+mv "$T/in/fenji-launcher-app" "$T/app-elsewhere"
+ln -s "$T/app-elsewhere" "$T/in/fenji-launcher-app"
+refused "an artifact's folder that's a link is refused" "isn't an artifact's folder"
+rm -rf -- "$T/app-elsewhere"
+artifacts "$T/in"
 BUILD=$(printf '%s' "$BUILD" | sed 's/fenji-server-1.2.3-x86_64-unknown-linux-musl.tar.gz/fenji-server-1.2.3-aarch64-unknown-linux-musl.tar.gz/')
 refused "a target that reports another target's archive is refused" "not fenji-server-1.2.3-x86_64-unknown-linux-musl.tar.gz"
 artifacts "$T/in"
 LAUNCHER=$(printf '%s' "$LAUNCHER" | jq -c '.nsis += "\nfenji-server-1.2.3-x86_64-unknown-linux-musl.tar.gz"')
 refused "a report with more than one line in it is refused" "not as a SHA-256 and a file name"
+artifacts "$T/in"
+LAUNCHER=$(printf '%s' "$LAUNCHER" | jq -c '.nsis += "\n"')
+refused "and one that ends in a newline" "not as a SHA-256 and a file name"
 artifacts "$T/in"
 LAUNCHER=$(printf '%s' "$LAUNCHER" | jq -c '.deb = .app')
 refused "a bundle Fenji doesn't make is refused" "a bundle Fenji doesn't make"
@@ -128,7 +139,10 @@ SIGNED=$(printf '%s' "$SIGNED" | jq -c '.app = (.app | sub(" .*"; " Fenji_1.2.3_
 refused "a signature reported under another bundle's name is refused" "not Fenji.app.tar.gz.sig"
 artifacts "$T/in"
 BUILD='["not", "an object"]'
-refused "reports that aren't an object are refused" "is not a JSON object"
+refused "reports that aren't an object are refused" "is not one JSON object"
+artifacts "$T/in"
+BUILD="$BUILD $BUILD"
+refused "and two objects in a row" "is not one JSON object"
 artifacts "$T/in"
 mkdir "$T/dist"
 code=0
