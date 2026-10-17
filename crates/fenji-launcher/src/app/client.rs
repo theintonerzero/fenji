@@ -535,7 +535,7 @@ impl App {
                 let _ = run.cancel();
             }
             let (text, error) = match run.state() {
-                RunState::Waiting => {
+                RunState::Waiting | RunState::SignIn { .. } => {
                     self.change(|st| st.client.job = Some(waiting_for_steam(repair)));
                     continue;
                 }
