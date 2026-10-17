@@ -909,6 +909,8 @@ mod tests {
         assert_eq!(closed.unwrap(), Ending::InputClosed);
     }
 
+    // On Unix alone, where systemd runs the server and consoles attach through the socket.
+    #[cfg(unix)]
     #[test]
     fn systemd_waits_out_a_stops_worst_case_with_room_to_spare() {
         // #281: a stop takes at most the connections' grace, the world thread's wait, the last
