@@ -1,11 +1,12 @@
-// The top bar (R1; the boards): the server's address, faint, at the left; the Game chip, the
-// account, Settings and the window controls at the right. Its empty space drags the window. Each
-// control opens its popover under it and shows it open; the window has no maximise.
+// The top bar (R1; the boards): the server's address, faint, at the left, then the Fenji it runs;
+// the Game chip, the account, Settings and the window controls at the right. Its empty space drags
+// the window. Each control opens its popover under it and shows it open; the window has no
+// maximise.
 import type { Ctx, PopoverName } from "../app";
 import { h } from "../dom";
 import { activeServer, type ScreenName } from "../route";
 import type { Snapshot } from "../types";
-import { gameChip } from "../words";
+import { gameChip, versionPart } from "../words";
 import { button } from "./button";
 import { icons } from "./icons";
 import { initials } from "./people";
@@ -21,6 +22,9 @@ export interface TopBar {
 
 export function topBar(ctx: Ctx): TopBar {
   const address = h("span", { class: "address", "data-tauri-drag-region": true });
+  // Never cut short: the address gives way first. One line with it, apart from the controls.
+  const version = h("span", { class: "server-version", "data-tauri-drag-region": true });
+  const where = h("span", { class: "where", "data-tauri-drag-region": true }, address, version);
   const chipWords = h("span", {});
   const chip = h(
     "button",
@@ -35,7 +39,7 @@ export function topBar(ctx: Ctx): TopBar {
   const el = h(
     "header",
     { class: "top", "data-tauri-drag-region": true },
-    address,
+    where,
     h("span", { class: "spacer", "data-tauri-drag-region": true }),
     chip,
     me,
@@ -54,6 +58,10 @@ export function topBar(ctx: Ctx): TopBar {
     update(s, screen, open, modal = false) {
       const v = activeServer(s);
       address.textContent = screen === "welcome" ? "" : (v?.address ?? "");
+      const runs = screen === "welcome" ? "" : versionPart(v);
+      if (version.textContent !== runs) {
+        version.textContent = runs;
+      }
       // The boards: no chip until there's a server and an account to play with; the account on the
       // stage only, where its popover means something.
       chip.hidden = screen === "welcome" || screen === "redeem";
