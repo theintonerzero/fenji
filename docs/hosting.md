@@ -286,13 +286,13 @@ cat > allowed_signers <<'END'
 fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90
 END
 ssh-keygen -Y verify -f allowed_signers -I fenji-release -n fenji-release -s SHA256SUMS.sig < SHA256SUMS &&
-  sha256sum --ignore-missing -c SHA256SUMS
+  sha256sum --ignore-missing -c SHA256SUMS &&
+  tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 ```
 
-The last command checks the release's signature, then its sums, and should end with the archive's name and `OK`. If the signature isn't Fenji's release key's, `sha256sum` doesn't run: download again, and don't go on. The `allowed_signers` line above is that key's public half, as the update script carries it. `ssh-keygen` needs OpenSSH 8.1 or later, which Debian 11 and Ubuntu 20.04 and later have. Releases before v0.5.4 have no signature: for those, the `sha256sum` line alone. Then install the program and its update script, `fenji-update`, which updates the server later (section 5). Make the user the server runs as, `fenji`, which owns the server's data and nothing else:
+The last command checks the release's signature, then its sums, which should end with the archive's name and `OK`, and unpacks the archive only if both checks pass. If the signature isn't Fenji's release key's, nothing after `ssh-keygen` runs: download again, and don't go on. Go by whether the archive unpacked, not by what `ssh-keygen` prints. The `allowed_signers` line above is that key's public half, as the update script carries it. `ssh-keygen` needs OpenSSH 8.1 or later, which Debian 11 and Ubuntu 20.04 and later have. Releases before v0.5.4 have no signature: for those, the `sha256sum` and `tar` lines alone. Then install the program and its update script, `fenji-update`, which updates the server later (section 5). Make the user the server runs as, `fenji`, which owns the server's data and nothing else:
 
 ```sh
-tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 sudo install -m 755 fenji-server-$VERSION-$TARGET/fenji-server /usr/local/bin/fenji-server
 sudo install -m 755 fenji-server-$VERSION-$TARGET/update-server.sh /usr/local/bin/fenji-update
 sudo useradd --system --user-group --home-dir /var/lib/fenji --shell /usr/sbin/nologin fenji

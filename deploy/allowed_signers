@@ -1,7 +1,6 @@
 # Fenji's release key, as an OpenSSH allowed-signers line (the hosting spec's Amendment D, HD1):
 #   fenji-release namespaces="fenji-release" ssh-ed25519 <its public key>
-# The release workflow's sign job checks SHA256SUMS.sig against this file, and the update script and
-# section 5 of docs/hosting.md carry the same line (scripts/set-release-key.sh writes all three). The
-# owner makes the key before 0.5.4 is tagged (HD5); until then this file holds no line, and no
-# release can be signed.
+# The release workflow's sums job checks SHA256SUMS.sig against this file, and the update script and
+# sections 4 and 5 of docs/hosting.md carry the same line (scripts/set-release-key.sh writes all
+# three). While a new key takes over from the old one (HD7, docs/development.md), it holds both lines.
 fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90
