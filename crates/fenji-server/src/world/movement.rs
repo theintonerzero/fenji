@@ -4,10 +4,11 @@
 //! Horizontal distance and climbing count; falling doesn't, so drops and glides pass.
 //!
 //! A tick tells whoever has a mover in view one thing of it: its last accepted move (13), or, when
-//! the tick refused any of its moves, that it stops where it then stands (13 with direction 0), and
-//! answers the mover itself once, with that place (20): the M4 world plan's Amendment C, with #265's
-//! stop, without which a viewer's client runs the mover on from its last relay, up to 1.5 s past
-//! where the world has it (docs/protocol/packets/world.md 16.9, 16.17). A client sends at most one
+//! the tick's last move of it was refused, that it stops where it then stands, at that move's time
+//! (13 with direction 0); and it answers the mover itself once if it refused any of its moves, with
+//! that place (20): the M4 world plan's Amendment C, with #265's stop, without which a viewer's
+//! client runs the mover on from its last relay, up to 1.5 s past where the world has it
+//! (docs/protocol/packets/world.md 16.9, 16.17). A client sends at most one
 //! move per 50 ms besides starting and stopping, and each relay places the mover afresh (16.6,
 //! 16.8), so at 20 ticks a second this drops nothing a client means to show, and no client can make
 //! the world send anyone more than one 13 of its own a tick. A mover that sent nothing in a tick is
@@ -15,6 +16,7 @@
 //! jumps do (types 9 and 15), only direction commands may coalesce: a newer move must never replace
 //! a cast.
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
 
@@ -101,18 +103,20 @@ impl Gait {
 /// What a tick did with one mover's moves.
 #[derive(Default)]
 struct Outcome {
-    /// The last move the check accepted, which the tick relays unless it refused one too.
+    /// The last move the check accepted, which the tick relays unless its last move was refused.
     relay: Option<MoveStep>,
-    /// Whether the check refused any, so that the tick corrects the mover, and stops it for its
-    /// viewers.
+    /// Whether the check refused any, so that the tick corrects the mover.
     refused: bool,
+    /// The detail of the tick's last move, when the check refused it: the viewers then hear that
+    /// the mover stops, at that move's time (#265).
+    last_refused: Option<Arc<[u8]>>,
 }
 
 /// Checks the tick's moves in the order they arrived, each from where the last accepted one put its
 /// mover. Then, for each mover in the order its first move of the tick arrived, tells each viewer
-/// that has it its last accepted move (Moved), or, if any move was refused, that it stops where it
-/// then stands (Stopped), and puts the mover there once (Correct). Players still loading can't
-/// move.
+/// that has it its last accepted move (Moved), or, if the tick's last move of it was refused, that
+/// it stops where it then stands (Stopped), and puts the mover there once if any move was refused
+/// (Correct). Players still loading can't move.
 pub(super) fn system(
     now: Res<Now>,
     rules: Res<Rules>,
@@ -144,8 +148,10 @@ pub(super) fn system(
         ) {
             here.0.pos = step.pos;
             outcome.relay = Some(step);
+            outcome.last_refused = None;
         } else {
             outcome.refused = true;
+            outcome.last_refused = Some(step.detail);
         }
     }
     for (e, outcome) in outcomes {
@@ -153,16 +159,18 @@ pub(super) fn system(
             continue;
         };
         let (pid, pos) = (actor.pid, here.0.pos);
-        // The stop takes the place of the last accepted move, which put the mover where it stops,
-        // so that a viewer still hears one thing of each mover a tick (#265).
-        let news = match (outcome.refused, outcome.relay) {
-            (true, _) => WorldOut::Stopped { pid, pos },
-            (false, Some(step)) => WorldOut::Moved { pid, step },
-            (false, None) => continue,
+        // A stop takes the place of the tick's last accepted move, which put the mover where it
+        // stops, so that a viewer still hears one thing of each mover a tick (#265). A tick that
+        // ends on an accepted move relays it, whatever it refused before.
+        let news = match (outcome.last_refused, outcome.relay) {
+            (Some(detail), _) => Some(WorldOut::Stopped { pid, pos, detail }),
+            (None, step) => step.map(|step| WorldOut::Moved { pid, step }),
         };
-        for (v, sight, to) in &viewers {
-            if sight.0.get(&pid) == Some(&Seen::Entered) {
-                deliver(to, v, news.clone(), &mut commands);
+        if let Some(news) = news {
+            for (v, sight, to) in &viewers {
+                if sight.0.get(&pid) == Some(&Seen::Entered) {
+                    deliver(to, v, news.clone(), &mut commands);
+                }
             }
         }
         if outcome.refused {
@@ -173,15 +181,15 @@ pub(super) fn system(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::super::ecs::test_util::*;
     use super::*;
 
+    /// A move to (x, y), whose detail names it, so that a test can tell whose a relay or a stop
+    /// carries.
     fn step(x: f64, y: f64) -> MoveStep {
         MoveStep {
             pos: at(x, y).pos,
-            detail: Arc::from(&[7u8][..]),
+            detail: Arc::from(format!("to {x}, {y}").as_bytes()),
         }
     }
 
@@ -192,12 +200,14 @@ mod tests {
         }
     }
 
-    /// What a viewer whose client has `pid` hears when the world corrects it at (x, y): it stops
-    /// there (#265).
-    fn stopped(pid: ActorId, x: f64, y: f64) -> WorldOut {
+    /// What a viewer whose client has `pid` hears when the world, which has it at (x, y), refused
+    /// the tick's last move of it, the one to `refused`: it stops at (x, y), at that move's time,
+    /// which its detail holds (#265).
+    fn stopped(pid: ActorId, (x, y): (f64, f64), refused: (f64, f64)) -> WorldOut {
         WorldOut::Stopped {
             pid,
             pos: at(x, y).pos,
+            detail: step(refused.0, refused.1).detail,
         }
     }
 
@@ -383,8 +393,8 @@ mod tests {
             }]
         );
         // Mai's client would run Lin on from that relay: it hears she stops where the world has
-        // her (#265), and nothing of the jump. Ren's client never had her.
-        assert_eq!(h.take(2), vec![stopped(1, 100.0, 0.0)]);
+        // her, at the jump's time (#265), and nothing else of the jump. Ren's client never had her.
+        assert_eq!(h.take(2), vec![stopped(1, (100.0, 0.0), (9_000.0, 0.0))]);
         assert!(h.take(3).is_empty(), "3 never pulled 1");
     }
 
@@ -406,13 +416,14 @@ mod tests {
             h.push(mv(1, x, 0.0));
         }
         h.tick(50);
-        // The eighth was refused, so the tick tells Mai, in place of Lin's last accepted move, that
-        // Lin stops where the world has her (#265): where the seventh put her, at 700. That it is
-        // 700, and that Lin is corrected there, pins the speed rule: had the budget held eight,
-        // Mai would get the eighth's move, and no stop or correction would come.
+        // The tick's last move, the eighth, was refused, so it tells Mai, in place of Lin's last
+        // accepted move, that Lin stops where the world has her, at the eighth's time (#265): where
+        // the seventh put her, at 700. That it is 700, and that Lin is corrected there, pins the
+        // speed rule: had the budget held eight, Mai would get the eighth's move, and no stop or
+        // correction would come.
         assert_eq!(
             h.take(2),
-            vec![stopped(1, 700.0, 0.0)],
+            vec![stopped(1, (700.0, 0.0), (800.0, 0.0))],
             "one stop, where the last move that fit put her"
         );
         assert_eq!(
@@ -434,8 +445,14 @@ mod tests {
             },
         });
         h.tick(50);
-        // Nothing of the hostile move reaches Mai: only the world's own place for Lin.
-        assert_eq!(h.take(2), vec![stopped(1, 700.0, 0.0)]);
+        // Nothing of the hostile move reaches Mai but its detail, for its time, which the
+        // connection side bounded: the stop's place is the world's own for Lin.
+        let stop = WorldOut::Stopped {
+            pid: 1,
+            pos: at(700.0, 0.0).pos,
+            detail: Arc::from(&[][..]),
+        };
+        assert_eq!(h.take(2), vec![stop]);
         assert_eq!(
             h.take(1),
             vec![WorldOut::Correct {
@@ -502,7 +519,7 @@ mod tests {
         h.take(2);
         h.tick(200);
         // Two jumps too far in one tick: one Correct, with where Lin stands, and Mai, who has Lin,
-        // one stop there (#265), and no move: neither jump was accepted.
+        // one stop there, at the last jump's time (#265), and no move: neither jump was accepted.
         h.push(mv(1, 9_000.0, 0.0));
         h.push(mv(1, 0.0, 9_000.0));
         h.tick(50);
@@ -512,15 +529,52 @@ mod tests {
                 pos: at(0.0, 0.0).pos
             }]
         );
-        assert_eq!(h.take(2), vec![stopped(1, 0.0, 0.0)], "one stop, no relay");
+        assert_eq!(
+            h.take(2),
+            vec![stopped(1, (0.0, 0.0), (0.0, 9_000.0))],
+            "one stop, no relay"
+        );
         // A refused move around an accepted one: the mover gets one Correct, with where it stands
-        // after the tick's moves, and the viewer the stop there, in place of the accepted move,
-        // which put the mover there: a tick tells a viewer one thing of each mover at most.
+        // after the tick's moves, and the viewer, since the last move was refused, the stop there
+        // in place of the accepted move, which put the mover there: a tick tells a viewer one thing
+        // of each mover at most.
         h.push(mv(1, 9_000.0, 0.0));
         h.push(mv(1, 50.0, 0.0));
         h.push(mv(1, 0.0, 9_000.0));
         h.tick(50);
-        assert_eq!(h.take(2), vec![stopped(1, 50.0, 0.0)]);
+        assert_eq!(h.take(2), vec![stopped(1, (50.0, 0.0), (0.0, 9_000.0))]);
+        assert_eq!(
+            h.take(1),
+            vec![WorldOut::Correct {
+                pos: at(50.0, 0.0).pos
+            }]
+        );
+    }
+
+    #[test]
+    fn a_tick_that_ends_on_an_accepted_move_relays_it_after_a_refusal() {
+        // #265's review, I2: the stop is for a mover whose last move of the tick was refused. One
+        // whose last move was accepted gets that move relayed, with its direction and rate, so that
+        // a viewer shows it running as its own client does, and the mover is still corrected.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        h.enter(player(2, "Mai", at(0.0, 0.0)));
+        h.push(WorldIn::Pull { conn: 2, pid: 1 });
+        h.tick(50);
+        h.take(1);
+        h.take(2);
+        h.tick(200);
+        h.push(mv(1, 9_000.0, 0.0));
+        h.push(mv(1, 50.0, 0.0));
+        h.tick(50);
+        assert_eq!(
+            h.take(2),
+            vec![WorldOut::Moved {
+                pid: 1,
+                step: step(50.0, 0.0)
+            }],
+            "the accepted move, not a stop"
+        );
         assert_eq!(
             h.take(1),
             vec![WorldOut::Correct {
@@ -532,8 +586,8 @@ mod tests {
     #[test]
     fn a_corrected_movers_stop_comes_in_its_turn_among_the_ticks_relays() {
         // #265: each viewer hears of each mover once a tick, in the order the movers' first moves
-        // of the tick arrived: its last accepted move, or, when the tick refused any of its moves,
-        // a stop where the world has it.
+        // of the tick arrived: its last accepted move, or, when the tick's last move of it was
+        // refused, a stop where the world has it.
         let mut h = Harness::new();
         h.enter(player(1, "Lin", at(0.0, 0.0)));
         h.enter(player(2, "Mai", at(0.0, 0.0)));
@@ -557,10 +611,10 @@ mod tests {
                     pid: 2,
                     step: step(0.0, 100.0)
                 },
-                stopped(1, 0.0, 0.0),
+                stopped(1, (0.0, 0.0), (9_000.0, 0.0)),
             ]
         );
-        assert_eq!(h.take(2), vec![stopped(1, 0.0, 0.0)]);
+        assert_eq!(h.take(2), vec![stopped(1, (0.0, 0.0), (9_000.0, 0.0))]);
         // Lin hears her 20 and nothing else: no stop of her own, and nothing of Mai's move, since
         // her client was only told of Mai.
         assert_eq!(
@@ -576,7 +630,7 @@ mod tests {
         assert_eq!(
             h.take(3),
             vec![
-                stopped(1, 0.0, 0.0),
+                stopped(1, (0.0, 0.0), (9_000.0, 0.0)),
                 WorldOut::Moved {
                     pid: 2,
                     step: step(0.0, 200.0)
@@ -619,7 +673,7 @@ mod tests {
                 pos: at(0.0, 0.0).pos
             }]
         );
-        assert_eq!(h.take(2), vec![stopped(1, 0.0, 0.0)]);
+        assert_eq!(h.take(2), vec![stopped(1, (0.0, 0.0), (9_000.0, 0.0))]);
         assert!(h.take(3).is_empty());
     }
 

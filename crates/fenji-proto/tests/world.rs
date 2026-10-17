@@ -839,40 +839,33 @@ fn a_relay_from_a_hostile_body_carries_only_the_checked_position() {
     );
 }
 
-/// V12d: pid 258 stopped at V11's position, with the server's clock at T: a relay with direction 0
-/// and nothing else, at T + 16 (`10 70 b5 37 a1 01 00 00`).
-const V12D: &str = "02 01 00 00 00 00 00 00 01 10 70 b5 37 a1 01 00 00 3e 09 00 00 c9 e7 fe ff
+/// V12d: V11's move stopped, for pid 258: V12 with direction 0 and the rest of the part 0, at
+/// V11's own time T.
+const V12D: &str = "02 01 00 00 00 00 00 00 01 00 70 b5 37 a1 01 00 00 3e 09 00 00 c9 e7 fe ff
     56 fd 00 00 f1 ff 00 f1 ff 00 00 00 00 00 00 00 00";
 
 #[test]
-fn a_stop_is_a_relay_with_direction_0_one_step_after_the_clock() {
-    // #265 (world.md 16.17): a corrected mover's viewers get a 13 at the world's place for it,
-    // with direction 0, which stops it (16.9), and the rest of the part 0.
-    let stop = MoveDetail::stop(T);
-    assert_eq!(
-        stop,
-        MoveDetail {
-            time: T + 16,
-            dir: 0,
-            yaw_offset: 0,
-            rate: 0,
-            pitch: 0,
-            pitch2: 0,
-        }
-    );
-    assert_eq!(world::move_dir_relay(258, V11_POS, &stop), unhex(V12D)[..]);
-    // The clock floored to 16 ms, then one step on: always after it.
-    assert_eq!(MoveDetail::stop(T + 15).time, T + 16);
-    assert_eq!(MoveDetail::stop(T + 16).time, T + 32);
-    // So it comes after the relay of any move whose time is at most the clock: the bound floors
-    // one at T + 15 to T (16.15).
-    let made_now = MoveDetail {
-        time: T + 15,
-        ..V11_DETAIL
+fn a_stop_keeps_the_refused_moves_time_alone() {
+    // #265 (world.md 16.17): a corrected mover's viewers get a 13 at the world's place for it, at
+    // its refused move's time, with direction 0, which stops it (16.9), and the rest of the part 0.
+    let still = |time| MoveDetail {
+        time,
+        dir: 0,
+        yaw_offset: 0,
+        rate: 0,
+        pitch: 0,
+        pitch2: 0,
     };
-    assert_eq!(made_now.bounded(T + 15).time, T);
-    // A stop is bounded already: a link that bounded it again would change nothing.
-    assert_eq!(stop.bounded(T), stop);
+    assert_eq!(V11_DETAIL.stopped(), still(T));
+    assert_eq!(
+        world::move_dir_relay(258, V11_POS, &V11_DETAIL.stopped()),
+        unhex(V12D)[..]
+    );
+    // A hostile move's stop has its bounded time, T − 4,912, and nothing else of it: the link reads
+    // the refused detail as it reads a relay's.
+    let raw = unhex("00 00 00 00 00 00 00 00 c8 e8 03 ff ff 00 80 ff 7f");
+    let hostile = MoveDetail::from_bytes(&raw, T + 100).unwrap();
+    assert_eq!(hostile.stopped(), still(1_791_935_995_088));
 }
 
 /// V13: pid 258 put at the default start with yaw −15, with the server's clock at T.

@@ -634,14 +634,14 @@ impl MoveDetail {
         out
     }
 
-    /// What the relay of a stop carries for a mover the world corrected (#265; world.md 16.17):
-    /// direction 0, which stops the mover (16.9), and the yaw offset, the rate and the pitches 0,
-    /// at the first step after the server's clock `now_ms`: floored to 16 ms, then 16 on. For a
-    /// client whose clock doesn't lead the server's, the bound keeps a move's time at or before
-    /// the clock floored (16.15), so the stop comes after every relay of the mover a viewer holds.
-    pub fn stop(now_ms: u64) -> Self {
+    /// This move's time alone, stopped: what the relay of a stop carries for a mover the world
+    /// corrected, from its refused move (#265; world.md 16.17). Direction 0 stops the mover (16.9),
+    /// and the yaw offset, the rate and the pitches are 0. A client times each command by its
+    /// clock as the command starts (16.3, 16.5), so no relay of the mover a viewer holds is timed
+    /// after the stop, and no move the mover made after the refused one is timed before it.
+    pub fn stopped(self) -> Self {
         Self {
-            time: (now_ms - now_ms % 16).saturating_add(16),
+            time: self.time,
             dir: 0,
             yaw_offset: 0,
             rate: 0,

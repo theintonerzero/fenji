@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use common::*;
 use fenji_proto::chat;
+use fenji_proto::handshake::Message;
 use fenji_proto::lobby::{self, code};
 use fenji_proto::opcode::{Cts, Stc};
 use fenji_proto::packet::script_body;
@@ -750,17 +751,31 @@ async fn a_move_reaches_the_player_who_sees_the_mover() {
     s.shutdown().await.unwrap();
 }
 
-/// The next message is a 13 that stops `pid` at `at` (#265; world.md 16.17), as the client of a
-/// player who has a mover the world corrected gets it: direction 0, one step after the server's
-/// clock.
-async fn stopped(bot: &mut Bot, pid: i64, at: [f64; 4]) {
+/// The next message is a 13 that stops `pid` at `at` at `time` (#265; world.md 16.17), as the
+/// client of a player who has a mover the world corrected gets it: the refused move's bounded time,
+/// with direction 0 and the rest of the part 0. The 13, for its time.
+async fn stopped(bot: &mut Bot, pid: i64, at: [f64; 4], time: u64) -> Message {
     let m = bot.recv_message().await;
-    let stop = world::move_dir_relay(pid, at, &MoveDetail::stop(NOW_MS));
+    let still = MoveDetail {
+        time,
+        dir: 0,
+        yaw_offset: 0,
+        rate: 0,
+        pitch: 0,
+        pitch2: 0,
+    };
+    let stop = world::move_dir_relay(pid, at, &still);
     assert_eq!(
-        (m.ty, m.body),
-        (Stc::MoveDir.to_u8(), stop.to_vec()),
-        "a stop for {pid} at {at:?}"
+        (m.ty, &m.body[..]),
+        (Stc::MoveDir.to_u8(), &stop[..]),
+        "a stop for {pid} at {at:?} at {time}"
     );
+    m
+}
+
+/// A 13's time, at 9 (world.md §16, type 13's table).
+fn relay_time(m: &Message) -> u64 {
+    u64::from_le_bytes(m.body[9..17].try_into().unwrap())
 }
 
 #[tokio::test]
@@ -768,8 +783,9 @@ async fn a_jump_too_far_is_corrected_and_not_relayed() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
     let (mut a, lin, mut b, _mai) = two_who_see_each_other(&s).await;
-    // 9,000 units off: past the budget's second at rate 100 and the tolerance.
-    let body = move_body(NOW_MS, [9_100, -200, 300], 90, 1, 100);
+    // 9,000 units off: past the budget's second at rate 100 and the tolerance. Its time is 5 ms
+    // behind the server's clock, which the link floors to 16 ms.
+    let body = move_body(NOW_MS - 5, [9_100, -200, 300], 90, 1, 100);
     a.send_native(Cts::MoveDir.to_u8(), &body).await;
     let sync = a.recv_message().await;
     assert_eq!(
@@ -780,8 +796,9 @@ async fn a_jump_too_far_is_corrected_and_not_relayed() {
         ),
         "where she stood"
     );
-    // Mai's client, which has Lin, hears she stops there too, and nothing of the jump.
-    stopped(&mut b, lin, START).await;
+    // Mai's client, which has Lin, hears she stops there too, at the jump's time, and nothing
+    // else of it.
+    stopped(&mut b, lin, START, NOW_MS - 16).await;
     b.quiet(300).await;
     a.quiet(300).await;
     s.shutdown().await.unwrap();
@@ -804,13 +821,44 @@ async fn a_hostile_move_body_is_corrected_and_not_relayed() {
             world::move_sync_svr(lin, world::sync_time(NOW_MS), START).to_vec()
         )
     );
-    // Mai's client hears only that Lin stops where the world has her: nothing of the body.
-    stopped(&mut b, lin, START).await;
+    // Mai's client hears only that Lin stops where the world has her, at the move's time:
+    // nothing else of the body.
+    stopped(&mut b, lin, START, NOW_MS).await;
     b.quiet(300).await;
     // A move that fits after it is relayed as usual: the refusal changed nothing.
     let body = move_body(NOW_MS, [130, -200, 300], 90, 1, 100);
     a.send_native(Cts::MoveDir.to_u8(), &body).await;
     assert_eq!(b.recv_message().await.ty, Stc::MoveDir.to_u8());
+    s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_corrected_movers_next_move_is_timed_after_its_stop() {
+    // #265's review, I1. A real client's moves lag the server's clock, by 0.13 to 2.01 s in Task
+    // 15's runs (world.md §16's runs), and a viewer applies each at its own time, rolling back for a
+    // late one (16.8). The stop takes the refused move's time, so the mover's next move, which its
+    // client made after it, is timed after it too, however far both lag the clock: the viewer
+    // applies that move after the stop, not under it.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _clock) = server(dir.path(), WORLD, GateLimits::default()).await;
+    let (mut a, lin, mut b, _mai) = two_who_see_each_other(&s).await;
+    // A jump 9,000 units off, made a second before the clock: refused.
+    let body = move_body(NOW_MS - 1_003, [9_100, -200, 300], 90, 1, 100);
+    a.send_native(Cts::MoveDir.to_u8(), &body).await;
+    assert_eq!(a.recv_message().await.ty, Stc::MoveSyncSvr.to_u8());
+    let stop = stopped(&mut b, lin, START, NOW_MS - 1_008).await;
+    // Then a step that fits, made 0.2 s later and still 0.8 s before the clock: accepted.
+    let body = move_body(NOW_MS - 803, [130, -200, 300], 90, 1, 100);
+    a.send_native(Cts::MoveDir.to_u8(), &body).await;
+    let relay = b.recv_message().await;
+    assert_eq!(relay.ty, Stc::MoveDir.to_u8());
+    assert_eq!(relay_time(&relay), NOW_MS - 816);
+    assert!(
+        relay_time(&stop) < relay_time(&relay),
+        "the stop at {}, the move after it at {}",
+        relay_time(&stop),
+        relay_time(&relay)
+    );
     s.shutdown().await.unwrap();
 }
 
