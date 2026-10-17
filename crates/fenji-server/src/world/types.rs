@@ -261,6 +261,15 @@ pub enum WorldOut {
     Leave { pids: Vec<ActorId> },
     /// Another player moved.
     Moved { pid: ActorId, step: MoveStep },
+    /// Another player's last move this tick was refused, and it stands here: the client, which
+    /// would run it on from its last relay, stops it here (13 with direction 0; #265), as the
+    /// mover's own client is put here with [`WorldOut::Correct`]. `detail` is the refused move's,
+    /// as the connection side bounded it: the stop takes its time, and nothing else of it.
+    Stopped {
+        pid: ActorId,
+        pos: Pos,
+        detail: Arc<[u8]>,
+    },
     /// The player's move was refused: it stands here (20).
     Correct { pos: Pos },
     /// An admin moved the player within its scene.
