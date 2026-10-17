@@ -45,7 +45,7 @@ pub struct Restart {
 /// Tauri's own restart, then.
 pub fn restart(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Option<Restart> {
     let vars: Vec<_> = vars.into_iter().collect();
-    image(&vars)?;
+    let image = image(&vars)?;
     let absolute = |name: &str| {
         vars.iter()
             .find(|(k, _)| k == name)
@@ -53,7 +53,10 @@ pub fn restart(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Option<R
             .filter(|p| p.is_absolute())
     };
     let program = absolute("APPIMAGE")?;
+    // Not an image's own folder: the old AppRun cds into its usr/, and a restart before this one,
+    // Tauri's, passed that on as the next image's OWD (#419's review).
     let dir = absolute("OWD")
+        .filter(|d| !d.starts_with(&image) && !in_a_mount(d))
         .or_else(|| absolute("HOME"))
         .unwrap_or_else(|| PathBuf::from("/"));
     Some(Restart {
@@ -172,10 +175,29 @@ mod tests {
             ("HOME", "/home/p"),
         ]);
         assert_eq!(restart(v).unwrap().dir, PathBuf::from("/home/p"));
-        // Not in an image: Tauri's own restart.
+        // Not in an image, even with APPIMAGE set: Tauri's own restart.
         assert!(restart(vars(&[("HOME", "/home/p")])).is_none());
+        let v = vars(&[("APPIMAGE", "/x/F.AppImage"), ("HOME", "/home/p")]);
+        assert!(restart(v).is_none(), "APPIMAGE without APPDIR");
         let v = vars(&[("APPDIR", "$IMG"), ("APPIMAGE", "relative.AppImage")]);
         assert!(restart(v).is_none(), "an image named by a relative path");
+        // A folder the player started it in that is an image's own (the AppRun's cd, passed on by
+        // a restart before this one), or relative, isn't one: their home instead; with none, /.
+        for owd in [
+            format!("{old}/usr"),
+            format!("{IMAGE}/usr"),
+            "Downloads".to_string(),
+        ] {
+            let v = vars(&[
+                ("APPDIR", "$IMG"),
+                ("APPIMAGE", "/x/F.AppImage"),
+                ("OWD", &owd),
+                ("HOME", "/home/p"),
+            ]);
+            assert_eq!(restart(v).unwrap().dir, PathBuf::from("/home/p"), "{owd}");
+        }
+        let v = vars(&[("APPDIR", "$IMG"), ("APPIMAGE", "/x/F.AppImage")]);
+        assert_eq!(restart(v).unwrap().dir, PathBuf::from("/"));
     }
 
     #[test]

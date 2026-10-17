@@ -292,11 +292,11 @@ fn newer(current: &str, offered: &str) -> bool {
     }
 }
 
-/// Starts the updated launcher. Inside an AppImage on Linux, Fenji does it itself, outside the old
-/// image's environment and folder ([`fenji_launcher::appimage::restart`]; #413), on the main
-/// thread as Tauri's own restart does there: Tauri's passed the old image's folders on, so the new
-/// launcher loaded the old image's libraries and kept its mount busy. Elsewhere, or if that fails,
-/// Tauri's restart.
+/// Starts the updated launcher. Tauri's restart passes the old image's environment and folder on,
+/// so the new launcher would load the old image's libraries and keep its mount busy (#413). So
+/// inside an AppImage on Linux, Fenji restarts it itself, outside the old image
+/// ([`fenji_launcher::appimage::restart`]), on the main thread, where Tauri's own restart also runs
+/// its cleanup. Elsewhere, or if that fails, Tauri's restart.
 fn restart(app: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     if let Some(plan) = fenji_launcher::appimage::restart(std::env::vars_os()) {
