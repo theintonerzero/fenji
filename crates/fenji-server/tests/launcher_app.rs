@@ -503,8 +503,15 @@ impl PlayBed {
         Self::build_with(Os::Linux, 1, 0, 0, env, false).await
     }
 
-    /// With GameMode installed: a fake gamemoderun, as the shell would find it.
+    /// With GameMode installed: a fake gamemoderun, as the shell would find it, and a session bus
+    /// to reach its daemon by, as a player's desktop has.
     async fn with_gamemode() -> PlayBed {
+        let bus = ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+        Self::build_with(Os::Linux, 1, 0, 0, &[bus], true).await
+    }
+
+    /// With GameMode installed but no session bus, as under `run-bare.sh`.
+    async fn with_gamemode_but_no_session_bus() -> PlayBed {
         Self::build_with(Os::Linux, 1, 0, 0, &[], true).await
     }
 
@@ -790,6 +797,21 @@ async fn play_starts_the_game_under_gamemode_when_its_installed_and_on() {
         }
         t.s.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn play_starts_the_game_without_gamemode_where_no_session_bus_is() {
+    // Launcher spec Amendment B, LB2: with no session bus, gamemoderun kept the game from starting
+    // (Task 11's rehearsal); the game starts without it, and Settings has no switch.
+    let t = PlayBed::with_gamemode_but_no_session_bus().await;
+    assert_eq!(t.app.snapshot().settings.gamemode, None);
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+    assert!(t.record.is_file(), "the game ran");
+    let wrapped = std::fs::read_to_string(t.record.with_extension("gamemode"));
+    assert!(wrapped.is_err(), "no gamemoderun: {wrapped:?}");
+    t.s.shutdown().await.unwrap();
 }
 
 #[tokio::test]

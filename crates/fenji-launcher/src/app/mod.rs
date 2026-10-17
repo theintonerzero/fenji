@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use fenji_auth::invite::InviteCode;
 use tokio::sync::watch;
 use tokio::time::Instant;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::api::{ApiClient, ApiError, ServerInfo, Session};
 use crate::manifest::Manifest;
@@ -58,8 +58,9 @@ pub struct AppConfig {
     /// asks, and plays the build there (tests).
     pub ge_proton: Option<String>,
     /// Feral GameMode's `gamemoderun`, where it's installed: the shell finds it on the launcher's
-    /// `PATH` ([`crate::start::gamemoderun`]), and tests give a fake. With none, Settings shows no
-    /// GameMode switch and the game starts without it (launcher spec Amendment B, LB2).
+    /// `PATH` ([`crate::start::gamemoderun`]), and tests give a fake. With none, or with no
+    /// session bus in `env` ([`crate::start::session_bus`]), Settings shows no GameMode switch and
+    /// the game starts without it (launcher spec Amendment B, LB2).
     pub gamemoderun: Option<PathBuf>,
 }
 
@@ -165,7 +166,13 @@ struct KeyChange {
 impl App {
     /// Loads the settings (a damaged file is moved aside, with a notice), and starts the loop on
     /// `rt`.
-    pub fn start(cfg: AppConfig, rt: tokio::runtime::Handle) -> App {
+    pub fn start(mut cfg: AppConfig, rt: tokio::runtime::Handle) -> App {
+        // GameMode's daemon is reached over the session bus, and with none gamemoderun would keep
+        // the game from starting (launcher spec Amendment B, LB2).
+        if cfg.gamemoderun.is_some() && !crate::start::session_bus(&cfg.env) {
+            info!("GameMode is installed, but no session bus is: the game starts without it");
+            cfg.gamemoderun = None;
+        }
         let (settings, problem) = Settings::load_or_reset(&cfg.config_dir);
         // A game an earlier launcher started may still run (#348).
         let left = play::GameMark::left_running(&cfg.data_dir);
@@ -1006,8 +1013,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gamemodes_switch_shows_only_where_its_installed_and_is_saved() {
-        // Launcher spec Amendment B, LB2: on by default, shown only with GameMode installed.
+    async fn gamemodes_switch_shows_only_where_it_and_a_session_bus_are_and_is_saved() {
+        // Launcher spec Amendment B, LB2: on by default, shown only with GameMode installed and a
+        // session bus its daemon is reached by.
         let dir = tempfile::tempdir().unwrap();
         let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
         assert_eq!(
@@ -1018,6 +1026,15 @@ mod tests {
         drop(app);
         let mut cfg = config(dir.path());
         cfg.gamemoderun = Some("/usr/bin/gamemoderun".into());
+        let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
+        assert_eq!(
+            app.snapshot().settings.gamemode,
+            None,
+            "no session bus, no switch"
+        );
+        drop(app);
+        let bus = ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+        cfg.env.push((bus.0.into(), bus.1.into()));
         let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
         assert_eq!(
             app.snapshot().settings.gamemode,

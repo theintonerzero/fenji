@@ -325,9 +325,9 @@ impl App {
     }
 
     /// What the game starts under, outermost first, umu-run inside them all (launcher spec
-    /// Amendment B, LB2): GameMode's `gamemoderun`, where it's installed and its switch is on.
-    /// `gamemoderun` runs what it's given in its own place, so the game's process is the one
-    /// started, as without it.
+    /// Amendment B, LB2): GameMode's `gamemoderun`, where it's installed, a session bus is (the
+    /// config keeps none otherwise), and its switch is on. `gamemoderun` runs what it's given in
+    /// its own place, so the game's process is the one started, as without it.
     fn wrappers(&self) -> Vec<std::ffi::OsString> {
         let on = self.inner.lock().settings.gamemode;
         let gamemode = self.inner.cfg.gamemoderun.iter().filter(|_| on);
@@ -720,27 +720,53 @@ mod tests {
     use crate::proton::{MARKER, fakes};
     use crate::test_support::until;
 
-    /// An App on Linux whose own environment is `env`, asking `ge_proton` for GE-Proton's latest
-    /// release.
+    /// The config of an App on Linux whose own environment is `env`, asking `ge_proton` for
+    /// GE-Proton's latest release.
+    fn config_with(
+        dir: &Path,
+        env: Vec<(OsString, OsString)>,
+        ge_proton: Option<String>,
+    ) -> AppConfig {
+        AppConfig {
+            config_dir: dir.join("config"),
+            data_dir: dir.join("data"),
+            home: Some(dir.join("home")),
+            os: Os::Linux,
+            version: "0.5.5".into(),
+            manifest: Manifest::default(),
+            pinned_build: "10015727".into(),
+            env,
+            depot_downloader: None,
+            terminal: None,
+            umu_run: None,
+            ge_proton,
+            gamemoderun: None,
+        }
+    }
+
+    /// The App of [`config_with`].
     fn app_with(dir: &Path, env: Vec<(OsString, OsString)>, ge_proton: Option<String>) -> App {
         App::start(
-            AppConfig {
-                config_dir: dir.join("config"),
-                data_dir: dir.join("data"),
-                home: Some(dir.join("home")),
-                os: Os::Linux,
-                version: "0.5.5".into(),
-                manifest: Manifest::default(),
-                pinned_build: "10015727".into(),
-                env,
-                depot_downloader: None,
-                terminal: None,
-                umu_run: None,
-                ge_proton,
-                gamemoderun: None,
-            },
+            config_with(dir, env, ge_proton),
             tokio::runtime::Handle::current(),
         )
+    }
+
+    #[tokio::test]
+    async fn the_game_starts_under_gamemoderun_only_where_a_session_bus_is() {
+        // Launcher spec Amendment B, LB2: with no session bus, gamemoderun's preload has libdbus
+        // autolaunch dbus-launch, which it makes ask again, without end (Task 11's rehearsal:
+        // 51,262 of them, and no game).
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = config_with(dir.path(), Vec::new(), None);
+        cfg.gamemoderun = Some("/usr/bin/gamemoderun".into());
+        let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
+        assert_eq!(app.wrappers(), Vec::<OsString>::new());
+        drop(app);
+        let bus = ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+        cfg.env.push((bus.0.into(), bus.1.into()));
+        let app = App::start(cfg, tokio::runtime::Handle::current());
+        assert_eq!(app.wrappers(), [OsString::from("/usr/bin/gamemoderun")]);
     }
 
     /// An address nothing answers on: the connection is refused at once.
