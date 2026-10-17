@@ -37,15 +37,18 @@ fn image(vars: &[(OsString, OsString)]) -> Option<PathBuf> {
 }
 
 /// Whether `path` is in an AppImage's mount: the folder an image's runtime makes in the
-/// temporary folder, `.mount_` and a few letters of the image's name (`/tmp/.mount_Fenji_CAmBLK`).
+/// temporary folder, `.mount_` and a few letters of the image's name (`/tmp/.mount_Fenji_CAmBLK`),
+/// or, for an image run with `--appimage-extract-and-run`, `appimage_extracted_` and a hash.
 /// A launcher the updater restarted inherits the previous launcher's environment
 /// (`tauri::process::restart`), so its variables hold the previous image's folders too, behind
 /// its own; and that image stays mounted while the new launcher runs, since it holds the previous
-/// runtime's keep-alive pipe. A child that inherited them loaded the previous image's files.
+/// runtime's keep-alive pipe. A child that inherited them loaded the previous image's files. An
+/// extracted one's folder goes when the previous launcher ends, unless `NO_CLEANUP` keeps it.
 fn in_a_mount(path: &Path) -> bool {
-    path.ancestors()
-        .filter_map(Path::file_name)
-        .any(|name| name.as_encoded_bytes().starts_with(b".mount_"))
+    path.ancestors().filter_map(Path::file_name).any(|name| {
+        let name = name.as_encoded_bytes();
+        name.starts_with(b".mount_") || name.starts_with(b"appimage_extracted_")
+    })
 }
 
 /// `value` less the paths in it that are in `image` or in another image's mount, or `None` when
@@ -174,6 +177,8 @@ mod tests {
                 "PYTHONPATH",
                 &format!("$IMG/usr/share/pyshared/:{old}/usr/share/pyshared/:"),
             ),
+            // The previous AppRun's folder, which the restart kept (#407's review).
+            ("PWD", &format!("{old}/usr")),
         ]);
         assert_eq!(
             outside(v),
@@ -182,8 +187,23 @@ mod tests {
     }
 
     #[test]
+    fn a_launcher_the_updater_restarted_leaves_out_an_extracted_previous_image_too() {
+        // Run with `--appimage-extract-and-run` and kept with `NO_CLEANUP`, the previous image's
+        // folder outlives its launcher.
+        let old = "/tmp/appimage_extracted_0f3c9a1d2b4e";
+        let v = vars(&[
+            ("APPDIR", "$IMG"),
+            (
+                "LD_LIBRARY_PATH",
+                &format!("$IMG/usr/lib/:{old}/usr/lib/:/opt/lib"),
+            ),
+        ]);
+        assert_eq!(outside(v), vars(&[("LD_LIBRARY_PATH", "/opt/lib")]));
+    }
+
+    #[test]
     fn a_folder_whose_name_only_starts_with_an_extracted_images_isnt_in_it() {
-        // An image run extracted, `--appimage-extract-and-run`, has its folder elsewhere.
+        // An AppDir extracted by hand (`--appimage-extract`) is wherever the player put it.
         let v = vars(&[
             ("APPDIR", "/opt/Fenji.AppDir"),
             (
