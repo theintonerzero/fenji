@@ -33,7 +33,7 @@ Players need only the desktop launcher and the link you send them: the [README](
    | Linux (x86_64) | `fenji-server-<version>-x86_64-unknown-linux-musl.tar.gz` | `start-server.sh` |
    | Linux (ARM, 64-bit) | `fenji-server-<version>-aarch64-unknown-linux-musl.tar.gz` | `start-server.sh` |
 
-2. **Unpack it** in your home folder, or anywhere else on your computer's own disk. Not on a USB stick or another FAT or exFAT drive: those drives can't keep a folder private, and the server refuses to keep its key in a folder that other users can open. It unpacks into a folder named for its version, such as `fenji-server-0.5.3-x86_64-unknown-linux-musl`. Rename the folder with the start script in it to `fenji-server`: it's your server's folder from now on, and each update goes into it (section 5).
+2. **Unpack it** in your home folder, or anywhere else on your computer's own disk. Not on a USB stick or another FAT or exFAT drive: those drives can't keep a folder private, and the server refuses to keep its key in a folder that other users can open. It unpacks into a folder named for its version, such as `fenji-server-0.5.4-x86_64-unknown-linux-musl`. Rename the folder with the start script in it to `fenji-server`: it's your server's folder from now on, and each update goes into it (section 5).
 3. **Start it** with the start script in that folder:
    - **Windows:** double-click `start-server.bat`. The first time, SmartScreen says "Windows protected your PC", because the server isn't signed by Microsoft: choose More info, then Run anyway. When Windows asks whether to let `fenji-server.exe` through its firewall, allow it on private networks.
    - **macOS:** double-click `start-server.command`, which opens in Terminal. The first time, macOS says Apple can't check it, because the server isn't signed by Apple: close the message, open System Settings, Privacy & Security, and choose Open Anyway beside its name. macOS may then ask the same about `fenji-server` itself, and you allow it the same way. If macOS asks whether `fenji-server` may accept incoming network connections, allow it.
@@ -277,7 +277,7 @@ Some steps use `VERSION` and `TARGET`, which the first one sets in your shell, a
 Set `VERSION` to the latest release's number, without its `v`, and download that release's archive for your server's processor, with its checksums:
 
 ```sh
-VERSION=0.5.3
+VERSION=0.5.4
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
@@ -405,7 +405,7 @@ With a domain name, Caddy can serve the account API on the usual HTTPS port, wit
 3. Install Fenji's `Caddyfile` from the archive's `caddy` folder, put your name in place of `play.example.net` in it, and reload Caddy. In the folder you unpacked the archive in, with `VERSION` set as when you installed, to the version you unpacked:
 
    ```sh
-   VERSION=0.5.3
+   VERSION=0.5.4
    TARGET=$(uname -m)-unknown-linux-musl
    sudo install -m 644 fenji-server-$VERSION-$TARGET/caddy/Caddyfile /etc/caddy/Caddyfile
    sudo nano /etc/caddy/Caddyfile
@@ -507,7 +507,7 @@ The update goes into your server's folder, so that its settings, its data and ev
    ```
 
 3. Start the server with its start script.
-4. Check that it runs the new version: the console's status line shows its number, such as `v0.5.3`, and `maintenance` shows it's still on. Then type `maintenance off`.
+4. Check that it runs the new version: the console's status line shows its number, such as `v0.5.5`, and `maintenance` shows it's still on. Then type `maintenance off`.
 
 ### Another version
 
@@ -520,7 +520,7 @@ These steps are for Windows, for a server set up before v0.5.3, and for hosts wh
 **On a VPS.** Turn maintenance on, as above. Download the new version, as in section 4, with its number:
 
 ```sh
-VERSION=0.5.3
+VERSION=0.5.5
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
@@ -564,16 +564,16 @@ Then look around, and turn maintenance off, as above. From then on, `sudo fenji-
 1. In the console, type `maintenance on 15m Updating Fenji`, then `backup`, then `stop`.
 2. Download the new version's archive (section 2), and unpack it anywhere but your server's folder, such as your Downloads folder.
 3. Copy everything in the new version's folder into your server's folder, replacing the old files. The archive holds no `fenji.toml` and no `data` folder, so yours stay.
-   - On Linux and macOS, delete the old program first, then copy. On macOS, a program copied into the old one's file can be killed as it starts, as macOS remembers the old program's signature; on Linux, a copy can't replace a program something still runs ("Text file busy"). In these two lines, put the new version's folder in place of `~/Downloads/fenji-server-0.5.3-x86_64-unknown-linux-musl`, and your server's folder in place of `~/fenji-server`, if yours are elsewhere or named otherwise:
+   - On Linux and macOS, delete the old program first, then copy. On macOS, a program copied into the old one's file can be killed as it starts, as macOS remembers the old program's signature; on Linux, a copy can't replace a program something still runs ("Text file busy"). In these two lines, put the new version's folder in place of `~/Downloads/fenji-server-0.5.5-x86_64-unknown-linux-musl`, and your server's folder in place of `~/fenji-server`, if yours are elsewhere or named otherwise:
 
      ```sh
      rm ~/fenji-server/fenji-server
-     cp -R ~/Downloads/fenji-server-0.5.3-x86_64-unknown-linux-musl/. ~/fenji-server/
+     cp -R ~/Downloads/fenji-server-0.5.5-x86_64-unknown-linux-musl/. ~/fenji-server/
      ```
 
    - On Windows, copy the new folder's files into your server's folder in Explorer, and choose "Replace the files in the destination".
 4. Start the start script. Windows and macOS may ask again, as on the first start.
-5. Check that it runs the new version: the console's status line shows its number, such as `v0.5.3`, and `maintenance` shows it's still on. Then type `maintenance off`.
+5. Check that it runs the new version: the console's status line shows its number, such as `v0.5.5`, and `maintenance` shows it's still on. Then type `maintenance off`.
 
 ## 6. Backups and restoring
 
