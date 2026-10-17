@@ -382,6 +382,105 @@ impl Drop for Window {
     }
 }
 
+/// `fenji-server --config <config> <args>` full-screen in a terminal of 100 × 30 that it writes to
+/// without waiting: its stdout is an open of the terminal of its own, non-blocking, while its keys'
+/// reads wait as usual. Once the test stops the terminal's output, as a frozen link stops it
+/// ([`Stalled::stalls_after`]), the next frame fails with EAGAIN, which is neither a hang-up nor
+/// the end of its keys: the console ends as one that failed. Its stderr is a file of its own, for
+/// what it says then. Linux. Killed if the test ends first.
+#[cfg(target_os = "linux")]
+struct Stalled {
+    child: Child,
+    master: File,
+    /// The program's end of the terminal, which it reads its keys from: for the terminal's flow.
+    terminal: File,
+    out: Arc<Mutex<Vec<u8>>>,
+    said: tempfile::NamedTempFile,
+}
+
+#[cfg(target_os = "linux")]
+impl Stalled {
+    fn start(config: &Path, args: &[&str]) -> Stalled {
+        use rustix::fs::OFlags;
+        use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+        let master =
+            openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let name = ptsname(&master, Vec::new()).unwrap();
+        let open = |flags: OFlags| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags((OFlags::NOCTTY | flags).bits() as i32)
+                .open(OsStr::from_bytes(name.as_bytes()))
+                .unwrap()
+        };
+        let terminal = open(OFlags::empty());
+        let screen = open(OFlags::NONBLOCK);
+        let size = Winsize {
+            ws_row: 30,
+            ws_col: 100,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        rustix::termios::tcsetwinsize(&terminal, size).unwrap();
+        let said = tempfile::NamedTempFile::new().unwrap();
+        let child = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
+            .arg("--config")
+            .arg(config)
+            .args(args)
+            .env("TERM", "xterm-256color")
+            .stdin(terminal.try_clone().unwrap())
+            .stdout(screen)
+            .stderr(said.reopen().unwrap())
+            .spawn()
+            .unwrap();
+        let master = File::from(master);
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let mut reading = master.try_clone().unwrap();
+        let kept = Arc::clone(&out);
+        std::thread::spawn(move || {
+            let mut buf = [0; 65536];
+            while let Ok(n @ 1..) = reading.read(&mut buf) {
+                kept.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        });
+        Stalled {
+            child,
+            master,
+            terminal,
+            out,
+            said,
+        }
+    }
+
+    /// Once it has drawn `text`: the terminal takes no more output, and a key makes a frame due at
+    /// once, which fails.
+    fn stalls_after(&mut self, text: &str) {
+        let shown = || String::from_utf8_lossy(&self.out.lock().unwrap()).into_owned();
+        until(
+            || shown().contains(text),
+            || format!("{text:?} not drawn: {:?}", shown()),
+        );
+        rustix::termios::tcflow(&self.terminal, rustix::termios::Action::OOff).unwrap();
+        self.master.write_all(b"x").unwrap();
+    }
+
+    /// What it has said on its stderr.
+    fn said(&self) -> String {
+        String::from_utf8_lossy(&std::fs::read(self.said.path()).unwrap()).into_owned()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Stalled {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// Where `needle` last is in `bytes`.
 fn last(bytes: &[u8], needle: &[u8]) -> Option<usize> {
     bytes.windows(needle.len()).rposition(|w| w == needle)
@@ -1004,6 +1103,48 @@ fn an_attached_console_left_by_a_signal_gives_the_terminal_its_mode_back() {
     let status = exit_of(&mut console.child, || "still running after SIGTERM".into());
     assert_eq!(status.code(), Some(0), "{status}");
     assert!(console.cooked(), "the terminal is left raw");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_screen_console_that_fails_suggests_plain_lines_with_the_servers_config() {
+    // #359 (#404's review): as it closes, `run`'s full-screen console suggests plain lines, with
+    // the `--config` that `main` gives `run`. The server runs on, and SIGTERM stops it.
+    let dir = tempfile::tempdir().unwrap();
+    let config = window_config(dir.path());
+    let mut server = Stalled::start(&config, &["run"]);
+    server.stalls_after("online");
+    until(
+        || server.said().contains("gives the console as plain lines"),
+        || format!("no note: {:?}", server.said()),
+    );
+    let plain = format!(
+        "`fenji-server --config {} --plain` gives the console as plain lines",
+        config.display()
+    );
+    assert!(server.said().contains(&plain), "{}", server.said());
+    kill_process(Pid::from_child(&server.child), Signal::TERM).unwrap();
+    let status = exit_of(&mut server.child, || logs_of(dir.path()));
+    assert!(status.success(), "{status}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_attached_full_screen_console_that_fails_suggests_plain_lines_with_its_config() {
+    // #359 (#404's review): an attached full-screen console that fails suggests plain lines, with
+    // the `--config` that `main` gives it, and exits 1.
+    let dir = tempfile::tempdir().unwrap();
+    let server = Plain::start(dir.path());
+    server.running();
+    let mut console = Stalled::start(&server.config, &["console"]);
+    console.stalls_after("attached");
+    let status = exit_of(&mut console.child, || "the console runs on".into());
+    assert_eq!(status.code(), Some(1), "{status}");
+    let plain = format!(
+        "`fenji-server --config {} console --plain` gives the console as plain lines",
+        server.config.display()
+    );
+    assert!(console.said().contains(&plain), "{}", console.said());
 }
 
 #[cfg(target_os = "linux")]
