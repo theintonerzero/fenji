@@ -981,6 +981,67 @@ const FAR: Place = Place {
     yaw: 90.0,
 };
 
+#[tokio::test]
+async fn tp_across_scenes_loads_the_scene_then_makes_the_movers_actor_anew() {
+    // #281 (world.md 1.6, runs 054-t1 to 054-t3): the mover's client gets the 772 alone, and the
+    // console's `online` names the new scene; on its type 3, a 9 naming its own actor, then its 7
+    // and 8, which make that actor anew where the target stands; then each is told of the other.
+    let dir = tempfile::tempdir().unwrap();
+    let config = format!("{WORLD}[access]\nadmins = [\"AAA\"]\n");
+    let (s, _clock) = server(dir.path(), &config, GateLimits::default()).await;
+    let (mut a, lin) = in_lobby(&s, "aaa", "Lin").await;
+    select(&mut a, lin).await;
+    enter(&mut a, lin).await;
+    let (mut c, kai) = in_lobby(&s, "ccc", "Kai").await;
+    let elsewhere = Place { scene: 8, ..FAR };
+    assert!(
+        s.accounts()
+            .store()
+            .save_place(kai, &elsewhere)
+            .await
+            .unwrap()
+    );
+    select(&mut c, kai).await;
+    enter(&mut c, kai).await;
+    say(&mut a, &[Value::Int(0), string("!tp Kai"), Value::Nil]).await;
+    let at = [elsewhere.x, elsewhere.y, elsewhere.z, elsewhere.yaw];
+    let m = a.recv_message().await;
+    assert_eq!(m.ty, Stc::Script.to_u8(), "772 is a script message");
+    let mut v = pickle::decode(&m.body).unwrap();
+    assert_eq!(v.remove(0), Value::Int(world::LOAD_SCENE));
+    assert_eq!(v, load_scene(lin, 8, at));
+    assert_eq!(heard(&mut a).await, server_line("Lin is with Kai"));
+    let online = s.console().run_line("online").await;
+    let row = online
+        .lines
+        .iter()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .find(|r| r.first() == Some(&"aaa"))
+        .unwrap_or_else(|| panic!("{online:?}"));
+    assert_eq!(&row[..3], ["aaa", "Lin", "8"], "{online:?}");
+    // The scene has loaded: its own actor goes, then comes anew.
+    a.send_native(Cts::ClientEnter.to_u8(), &CLIENT_ENTER).await;
+    let nine = a.recv_message().await;
+    assert_eq!(
+        (nine.ty, nine.body),
+        (Stc::SyncLeave.to_u8(), world::sync_leave(&[lin]).to_vec())
+    );
+    let seven = a.recv_message().await;
+    assert_eq!(seven.ty, Stc::SyncEnter.to_u8());
+    assert_eq!(seven.body[..8], lin.to_le_bytes());
+    let eight = a.recv_message().await;
+    assert_eq!(
+        (eight.ty, eight.body),
+        (
+            Stc::SyncEnterFinish.to_u8(),
+            world::sync_enter_finish(lin).to_vec()
+        )
+    );
+    announced_at(&mut a, kai, [elsewhere.x, elsewhere.y, elsewhere.z]).await;
+    announced_at(&mut c, lin, [elsewhere.x, elsewhere.y, elsewhere.z]).await;
+    s.shutdown().await.unwrap();
+}
+
 /// The next message is a 6 announcing `pid` at `at`.
 async fn announced_at(bot: &mut Bot, pid: i64, at: [f64; 3]) {
     let six = bot.recv_message().await;
