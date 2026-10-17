@@ -589,6 +589,74 @@ mod tests {
     }
 
     #[test]
+    fn the_kept_bucket_refills_with_the_time_away() {
+        // #394: the bucket an account keeps refills while it's away, as staying would have: five
+        // lines, about three seconds at character select, then three pass and a fourth is too
+        // fast. Kept any shorter than the five seconds a burst takes to come back, it would be
+        // forgotten here, and the account would have five again.
+        let mut h = Harness::new();
+        h.enter(player(2, "Mai", at(1.0, 1.0)));
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        for _ in 0..5 {
+            h.push(say(1, ChatChannel::World, "hi"));
+        }
+        h.tick(50);
+        h.push(WorldIn::Leave { conn: 1 });
+        h.tick(50);
+        for _ in 0..58 {
+            h.tick(50);
+        }
+        h.enter(Player {
+            pid: 7,
+            look: look("Ren"),
+            ..player(1, "Lin", at(0.0, 0.0))
+        });
+        h.take(2);
+        for _ in 0..4 {
+            h.push(say(1, ChatChannel::World, "hi"));
+        }
+        h.tick(50);
+        let heard = h
+            .take(2)
+            .iter()
+            .filter(|m| matches!(m, WorldOut::Chat(ChatOut::Said { .. })))
+            .count();
+        assert_eq!(heard, 3);
+        assert_eq!(
+            h.take(1).last(),
+            Some(&WorldOut::ChatRefused(ChatRefusal::TooFast))
+        );
+    }
+
+    #[test]
+    fn reconnecting_brings_no_fresh_burst() {
+        // #394's other path: a newer connection replaces the older in the tick it joins, and its
+        // account's spent bucket comes with it.
+        let mut h = Harness::new();
+        h.enter(player(2, "Mai", at(1.0, 1.0)));
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        for _ in 0..5 {
+            h.push(say(1, ChatChannel::World, "hi"));
+        }
+        h.tick(1);
+        h.enter(Player {
+            conn: 3,
+            ..player(1, "Lin", at(0.0, 0.0))
+        });
+        h.take(2);
+        for _ in 0..5 {
+            h.push(say(3, ChatChannel::World, "hi"));
+        }
+        h.tick(1);
+        let heard = h
+            .take(2)
+            .iter()
+            .filter(|m| matches!(m, WorldOut::Chat(ChatOut::Said { .. })))
+            .count();
+        assert_eq!(heard, 0);
+    }
+
+    #[test]
     fn a_non_admins_bang_line_is_ordinary_chat() {
         let mut h = three();
         h.push(say(1, ChatChannel::Nearby, "!kick Mai"));

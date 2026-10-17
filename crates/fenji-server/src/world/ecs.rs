@@ -76,8 +76,8 @@ struct Greeted;
 #[derive(Component, Clone, Copy)]
 pub(super) struct Doomed(pub Option<KickReason>);
 
-/// A connection's allowance of messages to the world, a token bucket (#281). It starts full,
-/// unless its account left the game a moment ago ([`Allowances`]), each tick gives
+/// A connection's allowance of messages to the world, a token bucket (#281). It starts full (or,
+/// when its account left the game a moment ago, with what [`Allowances`] kept); each tick gives
 /// `max_inputs_per_tick` back, and it holds [`MAX_STALL`]'s worth of them, up to [`MAX_BURST`]
 /// ([`input_cap`]). Each message spends one, and one with none left is a flood, which is kicked.
 ///
@@ -621,8 +621,8 @@ pub(super) fn hide(world: &mut World, pid: ActorId) {
 }
 
 /// Takes `e` out of the game now: its viewers are told, its place is saved and kept for a while
-/// (`Left`), and so are its account's allowances (`Allowances`), its connection hears why when
-/// there is a reason, and the index forgets it.
+/// (`Left`), what its account has left of its allowances is kept as long (`Allowances`), its
+/// connection hears why when there is a reason, and the index forgets it.
 fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
     let (Some(actor), Some(here), Some(conn), Some(account)) = (
         world.get::<Actor>(e),
@@ -641,7 +641,7 @@ fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
     }
     save(world.resource::<Services>(), pid, at);
     let bucket = world.get::<Bucket>(e).copied();
-    let spent = bucket.zip(world.get::<Inputs>(e).copied());
+    let remaining = bucket.zip(world.get::<Inputs>(e).copied());
     let (now, tick) = (world.resource::<Now>().0, world.resource::<Ticks>().0);
     let keep = u64::try_from(super::KEEP_LEFT.as_millis()).unwrap_or(u64::MAX);
     let until = now.saturating_add(keep);
@@ -651,7 +651,7 @@ fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
     left.0.insert(pid, (at, until));
     let mut allowances = world.resource_mut::<Allowances>();
     allowances.0.retain(|_, kept| now < kept.until);
-    if let Some((bucket, inputs)) = spent {
+    if let Some((bucket, inputs)) = remaining {
         let kept = Kept {
             bucket,
             inputs,
@@ -1303,6 +1303,81 @@ mod tests {
         h.tick(50);
         assert_eq!(h.take(1), Vec::new(), "the whole allowance");
         assert_eq!(h.core.players(), 1);
+    }
+
+    #[test]
+    fn a_stall_while_away_gives_back_no_more_than_its_ticks() {
+        // Ruling R10, away: five seconds in a single tick give back that tick's limit, and the
+        // join's own tick its limit, as staying would have; not five seconds' worth.
+        let back = |n| {
+            let mut h = spent_and_away(1, 5_000);
+            h.join(player(1, "Lin", at(0.0, 0.0)));
+            h.push(WorldIn::Loaded { conn: 1 });
+            pulls(&mut h, 1, n);
+            h.tick(50);
+            h.take(1)
+                .into_iter()
+                .filter(|m| matches!(m, WorldOut::Kicked(_)))
+                .collect::<Vec<_>>()
+        };
+        // 8 kept, 8 for the stall's tick and 8 for the join's, less the load's one.
+        assert_eq!(back(23), Vec::new());
+        assert_eq!(back(24), vec![WorldOut::Kicked(KickReason::Flood)]);
+    }
+
+    #[test]
+    fn a_flood_kicked_account_that_reconnects_has_no_fresh_allowance() {
+        // #281's limit is for this client: it comes back with nothing left, and what the ticks
+        // since gave back.
+        let again = |n| {
+            let mut h = Harness::new();
+            h.enter(player(1, "Lin", at(0.0, 0.0)));
+            pulls(&mut h, 1, flood());
+            h.tick(50);
+            assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Flood)]);
+            h.join(Player {
+                conn: 2,
+                ..player(1, "Lin", at(0.0, 0.0))
+            });
+            h.push(WorldIn::Loaded { conn: 2 });
+            h.tick(50);
+            h.take(2);
+            pulls(&mut h, 2, n);
+            h.tick(50);
+            h.take(2)
+        };
+        assert_eq!(again(15), Vec::new());
+        assert_eq!(again(16), vec![WorldOut::Kicked(KickReason::Flood)]);
+    }
+
+    #[test]
+    fn a_kicked_account_that_comes_back_has_no_fresh_allowance() {
+        // An admin's kick, here the console's, keeps what the account had left, as any leave does.
+        let again = |n| {
+            let mut h = Harness::new();
+            h.enter(player(1, "Lin", at(0.0, 0.0)));
+            pulls(&mut h, 1, 800);
+            h.tick(50);
+            let (reply, _answer) = tokio::sync::oneshot::channel();
+            h.push(WorldIn::Console {
+                order: Command::Kick { name: "Lin".into() },
+                reply,
+            });
+            h.tick(50);
+            assert_eq!(h.take(1), vec![WorldOut::Kicked(KickReason::Kicked)]);
+            h.join(Player {
+                conn: 2,
+                ..player(1, "Lin", at(0.0, 0.0))
+            });
+            h.push(WorldIn::Loaded { conn: 2 });
+            h.tick(50);
+            h.take(2);
+            pulls(&mut h, 2, n);
+            h.tick(50);
+            h.take(2)
+        };
+        assert_eq!(again(23), Vec::new());
+        assert_eq!(again(24), vec![WorldOut::Kicked(KickReason::Flood)]);
     }
 
     #[test]
