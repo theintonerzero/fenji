@@ -95,9 +95,15 @@ pub struct Job {
     pub files: Option<Vec<String>>,
 }
 
-/// `path`, single-quoted for a POSIX shell.
+/// `path`, single-quoted for a POSIX shell, and for fish: each piece between its backslashes in
+/// quotes of its own, joined by `\\` outside them, since fish reads a backslash inside single
+/// quotes as an escape (#367). With no backslash, one piece: the plain single-quoted form.
 fn quoted(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+    path.to_string_lossy()
+        .split('\\')
+        .map(|piece| format!("'{}'", piece.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join("\\\\")
 }
 
 /// The command a player without the Steam app runs in their own terminal, on one line, their own
@@ -419,6 +425,45 @@ mod tests {
             RunState::NotOpened
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// #367: in fish, a backslash inside single quotes escapes the next quote, so a folder named with
+    /// a backslash ended the one-line command's quote early. Backslashes go outside the quotes now,
+    /// where sh, bash, zsh and fish all read `\\` and `\'` as themselves.
+    #[test]
+    fn a_path_with_a_backslash_is_quoted_so_fish_reads_it_as_posix_shells_do() {
+        assert_eq!(quoted(Path::new("/games/SoLO")), "'/games/SoLO'");
+        assert_eq!(quoted(Path::new("/g/it's")), r"'/g/it'\''s'");
+        assert_eq!(quoted(Path::new(r"/g/my\'game")), r"'/g/my'\\''\''game'");
+        assert_eq!(quoted(Path::new(r"/g/end\")), r"'/g/end'\\''");
+        for shell in ["sh", "bash", "zsh"] {
+            let Ok(probe) = std::process::Command::new(shell)
+                .arg("-c")
+                .arg("true")
+                .status()
+            else {
+                continue;
+            };
+            assert!(probe.success());
+            for path in [
+                "/games/Swords of Legends Online",
+                "/g/it's",
+                r"/g/my\'game",
+                r"/g/end\",
+                r"/g/a\b\\c",
+            ] {
+                let out = std::process::Command::new(shell)
+                    .arg("-c")
+                    .arg(format!("printf '%s' {}", quoted(Path::new(path))))
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    String::from_utf8_lossy(&out.stdout),
+                    path,
+                    "{shell}: {path}"
+                );
+            }
+        }
     }
 
     /// #367: a terminal that hands the script to a server of its own and then fails is told apart
