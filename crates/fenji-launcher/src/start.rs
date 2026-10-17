@@ -165,6 +165,21 @@ pub fn mark_finished(prefix: &Path) -> std::io::Result<()> {
     }
 }
 
+/// The mark naming the Proton that last set the prefix up.
+const SET_UP_WITH: &str = ".fenji-proton";
+
+/// The Proton that last set `prefix` up, as umu-run got it in `PROTONPATH` (empty for umu-run's
+/// own), or none for a prefix set up before the launcher kept it. A Proton that upgrades a prefix
+/// does it before the game starts, so a new one sets the prefix up again before the ticket.
+pub fn prefix_proton(prefix: &Path) -> Option<String> {
+    std::fs::read_to_string(prefix.join(SET_UP_WITH)).ok()
+}
+
+/// Notes the Proton that set `prefix` up, once `umu-run createprefix` has ended by itself.
+pub fn mark_proton(prefix: &Path, proton: &str) -> std::io::Result<()> {
+    std::fs::write(prefix.join(SET_UP_WITH), proton)
+}
+
 /// Runs [`prepare_spec`] and judges it by the prefix, whatever umu-run's exit code.
 fn prepare(platform: &Platform) -> anyhow::Result<()> {
     let (Some(spec), Platform::Linux { prefix, .. }) = (prepare_spec(platform), platform) else {
@@ -456,6 +471,28 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(p, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn a_prefix_remembers_the_proton_that_set_it_up() {
+        // Final review I4 (#430): a new Proton sets the prefix up again before the ticket.
+        let d = tempfile::tempdir().unwrap();
+        let prefix = d.path().join("prefix");
+        assert_eq!(prefix_proton(&prefix), None);
+        std::fs::create_dir_all(&prefix).unwrap();
+        assert_eq!(
+            prefix_proton(&prefix),
+            None,
+            "set up before the launcher kept it"
+        );
+        mark_proton(&prefix, "/data/proton/GE-Proton11-9").unwrap();
+        assert_eq!(
+            prefix_proton(&prefix).as_deref(),
+            Some("/data/proton/GE-Proton11-9")
+        );
+        // umu-run's own default, with no PROTONPATH.
+        mark_proton(&prefix, "").unwrap();
+        assert_eq!(prefix_proton(&prefix).as_deref(), Some(""));
     }
 
     #[cfg(unix)]

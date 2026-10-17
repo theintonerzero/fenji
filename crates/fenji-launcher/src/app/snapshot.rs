@@ -239,9 +239,17 @@ pub enum JobView {
 #[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub enum GameView {
     Idle,
-    Starting { first_start: bool },
-    Running { since_ms: i64 },
-    Ended { code: i32 },
+    /// `first_start`: Proton sets the Wine prefix up first, on the first start, or the first with
+    /// a new Proton (the final review of 0.5.5's Amendment B work, I4).
+    Starting {
+        first_start: bool,
+    },
+    Running {
+        since_ms: i64,
+    },
+    Ended {
+        code: i32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

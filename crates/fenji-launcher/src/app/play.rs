@@ -178,6 +178,14 @@ impl App {
         self.going_on()?;
         let proton = self.proton(&options).await;
         self.going_on()?;
+        // The Proton the prefix is set up with, as umu-run gets it: GE-Proton's build, the
+        // player's own, or none, umu-run's own.
+        let set_up_with = match &proton {
+            Some(home) => home.display().to_string(),
+            None => own_proton(&options, &cfg.env)
+                .map(|own| own.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
         let platform = start::linux_platform(
             UmuOptions {
                 umu_run: Some(umu_run),
@@ -190,8 +198,17 @@ impl App {
         )
         .map_err(|e| words::couldnt_launch(&format!("{e:#}")))?;
         let log = game_log(&cfg.data_dir).map_err(|e| words::couldnt_launch(&e.to_string()))?;
-        if !start::prefix_ready(&prefix) {
-            info!("making the Wine prefix");
+        // A prefix another Proton set up is set up again now, before the ticket: that Proton
+        // would upgrade it inside the game's own run, while the ticket ages (the final review, I4).
+        let set_up = !start::prefix_ready(&prefix)
+            || start::prefix_proton(&prefix).as_deref() != Some(set_up_with.as_str());
+        self.change(|st| {
+            if let GameView::Starting { first_start } = &mut st.game {
+                *first_start = set_up;
+            }
+        });
+        if set_up {
+            info!("setting the Wine prefix up");
             let mut spec =
                 start::prepare_spec(&platform).ok_or_else(|| words::PREFIX_FAILED.to_string())?;
             spec.env.extend(variables(&options));
@@ -210,7 +227,9 @@ impl App {
                     warn!(%status, "umu-run createprefix was stopped");
                 }
                 GroupEnd::Ended(_) => {
-                    if let Err(e) = start::mark_finished(&prefix) {
+                    if let Err(e) = start::mark_finished(&prefix)
+                        .and_then(|()| start::mark_proton(&prefix, &set_up_with))
+                    {
                         warn!(error = %e, "couldn't mark the prefix finished");
                     }
                 }
@@ -336,20 +355,18 @@ impl App {
             .collect()
     }
 
-    /// The Proton umu-run starts the game with (launcher spec Amendment B, LB1): the player's own
-    /// `PROTONPATH`, from the launch options or else the launcher's environment, which asks
-    /// nothing; else the latest GE-Proton, asked of GitHub before each start and fetched into the
-    /// data folder's `proton/` when it's newer, its download shown on PLAY; else the build there;
-    /// else none, umu-run's own default. Cancel start stops it at once.
+    /// The GE-Proton umu-run starts the game with (launcher spec Amendment B, LB1): none when the
+    /// player set `PROTONPATH`, in the launch options or the launcher's environment, which asks
+    /// nothing; else the latest, asked of GitHub before each start and fetched into the data
+    /// folder's `proton/` when it's newer, its download shown on PLAY; else the build there; else
+    /// none, umu-run's own default. Cancel start stops it at once.
     async fn proton(&self, options: &LaunchOptions) -> Option<PathBuf> {
         let cfg = &self.inner.cfg;
-        let from_options = options.env.iter().rev().find(|(k, _)| k == "PROTONPATH");
-        let own = match from_options {
-            Some((_, v)) => Some(v.into()),
-            None => env_var(&cfg.env, "PROTONPATH"),
-        };
-        if let Some(own) = own.filter(|own: &std::ffi::OsString| !own.is_empty()) {
-            return Some(PathBuf::from(own));
+        // The player's own reaches umu-run as it is, umu's own names (GE-Proton, UMU-Latest, a
+        // folder in compatibilitytools.d) too: never anchored to the launcher's folder (the final
+        // review, I2).
+        if own_proton(options, &cfg.env).is_some() {
+            return None;
         }
         let dir = cfg.data_dir.join("proton");
         let Some(api) = &cfg.ge_proton else {
@@ -572,14 +589,33 @@ fn end_notice(code: i32, lasted: Duration) -> Option<String> {
     }
 }
 
-/// The launch options' variables for the start, but `PROTONPATH`, which [`App::proton`] settles
-/// once for both runs.
+/// The launch options' variables for the start, `PROTONPATH` as typed among them: an empty one
+/// is none, and GE-Proton plays.
 fn variables(options: &LaunchOptions) -> impl Iterator<Item = (String, String)> + '_ {
     options
         .env
         .iter()
-        .filter(|(name, _)| name != "PROTONPATH")
+        .filter(|(name, value)| name != "PROTONPATH" || !value.is_empty())
         .cloned()
+}
+
+/// The player's own `PROTONPATH`, as umu-run gets it: the launch options', else the launcher's
+/// environment's. An empty one is none, and one in the options hides the environment's, as in a
+/// shell.
+fn own_proton(
+    options: &LaunchOptions,
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Option<std::ffi::OsString> {
+    let typed = options
+        .env
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "PROTONPATH");
+    let own = match typed {
+        Some((_, value)) => Some(value.into()),
+        None => env_var(env, "PROTONPATH"),
+    };
+    own.filter(|own: &std::ffi::OsString| !own.is_empty())
 }
 
 fn env_var(
@@ -762,10 +798,8 @@ mod tests {
         let fake = fakes::github("GE-Proton11-9", fakes::ge("GE-Proton11-9"), None).await;
         let own = vec![("PROTONPATH".into(), "/home/me/proton".into())];
         let app = app_with(dir.path(), own, Some(fake.api.clone()));
-        assert_eq!(
-            app.proton(&LaunchOptions::default()).await,
-            Some(PathBuf::from("/home/me/proton"))
-        );
+        // No GE-Proton: the environment's own reaches umu-run as it is (final review I2).
+        assert_eq!(app.proton(&LaunchOptions::default()).await, None);
         assert_eq!((fake.asked(), fake.hits()), (0, 0));
         // An empty one is none: the latest GE-Proton plays.
         let other = tempfile::tempdir().unwrap();
@@ -783,12 +817,20 @@ mod tests {
         let fake = fakes::github("GE-Proton11-9", fakes::ge("GE-Proton11-9"), None).await;
         let env = vec![("PROTONPATH".into(), "/from/the/environment".into())];
         let app = app_with(dir.path(), env, Some(fake.api.clone()));
-        let own = options::parse("PROTONPATH=/home/me/proton %command%").unwrap();
-        assert_eq!(
-            app.proton(&own).await,
-            Some(PathBuf::from("/home/me/proton"))
-        );
+        let own = options::parse("PROTONPATH=GE-Proton %command%").unwrap();
+        // No GE-Proton: the options' own reaches umu-run as typed (the final review, I2), before
+        // the environment's.
+        assert_eq!(app.proton(&own).await, None);
         assert_eq!((fake.asked(), fake.hits()), (0, 0));
+        let env = &app.inner.cfg.env;
+        assert_eq!(own_proton(&own, env), Some("GE-Proton".into()));
+        let mut vars: Vec<(String, String)> = variables(&own).collect();
+        vars.retain(|(name, _)| name == "PROTONPATH");
+        assert_eq!(vars, [("PROTONPATH".to_string(), "GE-Proton".to_string())]);
+        // An empty one in the options hides the environment's, as in a shell, and GE-Proton plays.
+        let empty = options::parse("PROTONPATH= %command%").unwrap();
+        assert_eq!(own_proton(&empty, env), None);
+        assert_eq!(variables(&empty).count(), 0);
     }
 
     #[tokio::test]
