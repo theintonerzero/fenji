@@ -25,7 +25,7 @@ use crate::tools;
 /// An end this soon after the start means the game couldn't start, whatever its code (spec §3.12;
 /// #332).
 const STARTUP: Duration = Duration::from_secs(15);
-const UMU_LAUNCHER: &str = "umu-launcher";
+pub(super) const UMU_LAUNCHER: &str = "umu-launcher";
 /// How long `umu-run createprefix` may take: a first one fetches umu's runtime, and Proton too when
 /// none is set, before it builds the prefix (#348). `words::PREFIX_TOO_LONG` says it.
 const PREFIX_LIMIT: Duration = Duration::from_secs(60 * 60);

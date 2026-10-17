@@ -664,11 +664,18 @@ impl App {
 
     pub(super) fn cancel_download(&self) {
         let run = self.change(|st| {
-            if !matches!(
-                st.client.job,
-                Some(JobView::Fetching { .. } | JobView::Downloading { .. })
-            ) {
-                return None;
+            match &st.client.job {
+                // Play's own fetch of umu-launcher, for a first start, waits on Cancel start's
+                // flag: cancelling it is cancelling the start (#367).
+                Some(JobView::Fetching { tool, .. })
+                    if tool == super::play::UMU_LAUNCHER
+                        && matches!(st.game, super::GameView::Starting { .. }) =>
+                {
+                    st.start_cancelled = true;
+                    return None;
+                }
+                Some(JobView::Fetching { .. } | JobView::Downloading { .. }) => {}
+                _ => return None,
             }
             st.client.cancelled = true;
             st.client.run.clone()
@@ -872,6 +879,25 @@ exit {code}"#,
 
     fn checked(level: LevelView) -> impl Fn(&super::super::Snapshot) -> bool {
         move |s| matches!(s.client.check, CheckView::Verified { level: l, .. } if l == level)
+    }
+
+    #[tokio::test]
+    async fn cancel_download_during_plays_own_fetch_cancels_the_start() {
+        // #367: the Game tab's Cancel download, while Play fetched umu-launcher for a first
+        // start, set the tab's own flag, which that fetch never looks at.
+        let t = Testbed::new(&[("a.bin", 10)]);
+        let app = t.app();
+        app.change(|st| {
+            st.game = super::super::GameView::Starting { first_start: true };
+            st.client.job = Some(JobView::Fetching {
+                tool: "umu-launcher".into(),
+                percent: None,
+            });
+        });
+        app.intent(Intent::CancelDownload).await.unwrap();
+        let st = app.inner.lock();
+        assert!(st.start_cancelled, "the start sees it as Cancel start");
+        assert!(!st.client.cancelled, "the tab had no download of its own");
     }
 
     #[tokio::test]
