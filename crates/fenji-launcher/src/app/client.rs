@@ -856,6 +856,7 @@ mod tests {
                 depot_downloader: None,
                 umu_run: None,
                 ge_proton: None,
+                gamemoderun: None,
             }
         }
 
