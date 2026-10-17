@@ -1050,6 +1050,12 @@ fn a_server_whose_terminal_hangs_up_with_sighup_ignored_runs_on_without_spinning
     assert!(used < 50, "{used} ticks in 2 s:\n{}", logs_of(dir.path()));
     let logs = logs_of(dir.path());
     assert!(logs.contains("the console's terminal has gone"), "{logs}");
+    // How to reach it, with the config it was started with (#359, Task 7's re-review).
+    let attach = format!(
+        "`fenji-server --config {} console` attaches to it",
+        config.display()
+    );
+    assert!(logs.contains(&attach), "{logs}");
     // It serves, and answers a console.
     let online = Command::new(env!("CARGO_BIN_EXE_fenji-server"))
         .arg("--config")
