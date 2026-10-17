@@ -5,4 +5,4 @@ export type SettingsView = { autoUpdate: boolean,
  * GameMode's switch, where GameMode is installed, and none where it isn't (launcher spec
  * Amendment B, LB2).
  */
-gamemode: boolean | null, umuRun: string | null, logFolder: string, };
+gamemode: boolean | null, launchOptions: string, umuRun: string | null, logFolder: string, };

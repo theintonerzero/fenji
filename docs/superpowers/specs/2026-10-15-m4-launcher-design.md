@@ -337,6 +337,8 @@ The owner, on 2026-10-17, after Amendment A's tasks were built: the latest GE-Pr
 - **The latest GE-Proton (LB1).** On Linux, unless the player set `PROTONPATH`, Play starts the game with the latest GE-Proton (GloriousEggroll's `proton-ge-custom`), the Proton family Fenji's client runs use (pinned there, the latest here). Since 10-10, GE-Proton uses NTSYNC where the kernel has it.
   - The launcher fetches it itself, as it fetches DepotDownloader and umu-launcher: from GE-Proton's latest GitHub release, checked against that release's own SHA-512 sum, into its data folder's `proton/`, and passes that folder to umu-run as `PROTONPATH`. A newer release replaces the one it has, which is removed once the new one is in place.
   - It asks GitHub for the latest release before each start. PLAY shows the fetch as it comes ("Getting GE-Proton 42%"), as it shows umu-launcher's. Offline, or when GitHub doesn't answer, the build it has plays; with none yet, umu-run's own default, as before.
+  - The Wine prefix remembers the Proton that set it up. A start with another Proton sets it up again before the ticket is taken, as a first start does, so Proton's upgrade of the prefix never ages the ticket inside the game's own run (the final review of this work, I4).
+  - A player's own `PROTONPATH`, from the launcher's environment or the launch options (LB3), reaches umu-run as it is, never anchored to the launcher's folder: umu-run's own names (`GE-Proton`, `UMU-Latest`, a folder in Steam's `compatibilitytools.d`) work as in umu-run (I2).
   - This replaces LA6 (Steam's Proton): every player on one runtime, the one the client runs test.
 - **GameMode (LB2).** When Feral GameMode's `gamemoderun` is on the `PATH`, Play starts the game under it: the CPU's performance governor, and the game's scheduling and I/O priority, while it runs. Settings has a GameMode switch, on by default, shown only when GameMode is installed.
 - **Launch options (LB3).** Settings has a Launch options field, as Steam's: `NAME=value … wrapper … %command% arguments…`.
@@ -344,6 +346,8 @@ The owner, on 2026-10-17, after Amendment A's tasks were built: the latest GE-Pr
   - Words of the form `NAME=value` before any other word set the start's environment: `PROTONPATH` among them, which is how a player sets their own Proton. The words before `%command%` wrap the start, outermost first (`mangohud`, `gamescope -f --`); the words after it are added to the game's arguments, after Fenji's own. Without `%command%`, the words are the game's added arguments, as in Steam.
   - The start's order: the player's wrappers, then `gamemoderun`, then `umu-run`.
   - The variables Fenji sets for the start can't be set there: `WINEPREFIX`, `GAMEID` and the login path's. A field that tries, an unclosed quote, or `%command%` twice is refused in words, and the field keeps the player's text.
+  - Nor can the game's own platform flags, anywhere in the field: `--gf-sdk` and the others its library reads (spike 0, 5.10), bare or with a value, and `AUTH_TYPE`, which choose its sign-in platform. Fenji starts the game without them (D1), and gate #11 keeps `--gf-sdk=mocked` from players (the final review, I3).
+  - `PROTONPATH` reaches umu-run as typed, with no shell to expand it: a full path from `/`, or a name umu-run looks up itself. One starting with `~`, holding a `$`, or relative is refused in words (I2).
   - Linux only, as Play is. Settings shows the field there only.
 
 | # | Ruling | Why | Cost if wrong |

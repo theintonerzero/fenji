@@ -275,6 +275,7 @@ pub struct SettingsView {
     /// GameMode's switch, where GameMode is installed, and none where it isn't (launcher spec
     /// Amendment B, LB2).
     pub gamemode: Option<bool>,
+    pub launch_options: String,
     pub umu_run: Option<String>,
     pub log_folder: String,
 }

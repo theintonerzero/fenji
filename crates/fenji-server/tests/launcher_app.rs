@@ -473,6 +473,15 @@ sleep "${FENJI_TEST_SLEEP:-1}"
 exit "${FENJI_TEST_EXIT:-0}"
 "#;
 
+/// A wrapper as launch options name one (`wrap --flag -- %command%`): it notes all it's given, then
+/// runs what follows its `--`, in its own place.
+const FAKE_WRAPPER: &str = r#"#!/bin/sh
+echo "$*" >> "$FENJI_TEST_RECORD.wrap"
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+"#;
+
 /// gamemoderun as Feral's is: it runs what it's given in its own place (exec). This one notes each
 /// command it's given first.
 const FAKE_GAMEMODERUN: &str = r#"#!/bin/sh
@@ -790,6 +799,56 @@ async fn play_starts_the_game_under_gamemode_when_its_installed_and_on() {
         }
         t.s.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn play_starts_the_game_as_its_launch_options_say() {
+    // Launcher spec Amendment B, LB3: the variables for making the prefix and for the game, the
+    // player's own Proton in GE-Proton's place, as typed (umu's own name here, never anchored to
+    // the launcher's folder: the final review, I2), the player's wrappers outside gamemoderun, and
+    // the added arguments after Fenji's own.
+    let t = PlayBed::with_gamemode().await;
+    let dir = t.record.parent().unwrap().to_path_buf();
+    let wrap = dir.join("wrap");
+    std::fs::write(&wrap, FAKE_WRAPPER).unwrap();
+    std::fs::set_permissions(&wrap, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let ge = t.cfg.data_dir.join("proton/GE-Proton11-9");
+    std::fs::create_dir_all(&ge).unwrap();
+    std::fs::write(ge.join("proton"), "#!/bin/sh\n").unwrap();
+    std::fs::write(ge.join(fenji_launcher::proton::MARKER), "done").unwrap();
+    let text = format!(
+        "FENJI_TEST_OPTION='a b' PROTONPATH=GE-Proton {} --flag -- %command% -extra 'two words'",
+        wrap.display()
+    );
+    t.app
+        .intent(Intent::SetLaunchOptions { text })
+        .await
+        .unwrap();
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+    let read = |what: &str| std::fs::read_to_string(t.record.with_extension(what)).unwrap();
+    for env in [
+        std::fs::read_to_string(&t.record).unwrap(),
+        read("prefix-env"),
+    ] {
+        let lines: Vec<&str> = env.lines().collect();
+        assert!(lines.contains(&"FENJI_TEST_OPTION=a b"), "{env}");
+        assert!(lines.contains(&"PROTONPATH=GE-Proton"), "{env}");
+    }
+    let umu_run = t.cfg.umu_run.as_ref().unwrap().display().to_string();
+    let gamemoderun = t.cfg.gamemoderun.as_ref().unwrap().display().to_string();
+    let game = format!(
+        "{}/bin64/gujianol.exe {} -extra two words",
+        t.client.display(),
+        fenji_launcher::launch::FS_ARG
+    );
+    assert_eq!(
+        read("wrap"),
+        format!("--flag -- {gamemoderun} {umu_run} {game}\n")
+    );
+    assert_eq!(read("gamemode"), format!("{umu_run} {game}\n"));
+    t.s.shutdown().await.unwrap();
 }
 
 #[tokio::test]

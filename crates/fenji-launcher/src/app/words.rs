@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use crate::api::ApiError;
+use crate::options::OptionsError;
 use crate::servers::AddError;
 
 /// An invite code with no server saved to redeem it on (plan LP7).
@@ -93,6 +94,26 @@ pub fn no_ticket(server: &str, why: &str) -> String {
 /// DepotDownloader ended with another status than 0.
 pub fn download_stopped(code: i32) -> String {
     format!("The download stopped (code {code}). Try again.")
+}
+
+/// Launch options that can't be used (launcher spec Amendment B, LB3).
+pub fn launch_options(e: &OptionsError) -> String {
+    match e {
+        OptionsError::Unclosed => {
+            "A quote in the launch options isn't closed: close it, or put a backslash before it."
+                .into()
+        }
+        OptionsError::CommandTwice => "The launch options have %command% twice: keep one.".into(),
+        OptionsError::Reserved(name) => {
+            format!("Fenji sets {name} itself: take it out of the launch options.")
+        }
+        OptionsError::ProtonPath => "PROTONPATH needs a full path from /, or a Proton's name: \
+             Fenji doesn't expand ~ or $HOME."
+            .into(),
+        OptionsError::PlatformFlag(name) => {
+            format!("Fenji starts the game without {name}: take it out of the launch options.")
+        }
+    }
 }
 
 /// A tool couldn't be fetched (launcher plan Task 3: the tool's error doesn't name it).
