@@ -581,8 +581,24 @@ impl App {
         tool: tools::Tool,
         name: &'static str,
     ) -> Result<PathBuf, String> {
+        tools::ensure(
+            &tool,
+            &self.inner.cfg.data_dir.join("tools"),
+            &self.fetching(name),
+        )
+        .await
+        .map_err(|e| words::tool_failed(name, &e.to_string()))
+    }
+
+    /// A fetch's progress, as the job `Fetching { tool: name }` shows it, at most every
+    /// [`PUBLISH_EVERY`]. With no job, it takes the slot: Play's GE-Proton shows only once a
+    /// download comes. Another job is left as it is.
+    pub(super) fn fetching(
+        &self,
+        name: &'static str,
+    ) -> impl Fn(u64, Option<u64>) + Send + Sync + '_ {
         let throttle = Throttle::new();
-        let progress = |done: u64, total: Option<u64>| {
+        move |done: u64, total: Option<u64>| {
             if !throttle.due() {
                 return;
             }
@@ -590,17 +606,19 @@ impl App {
                 .filter(|&t| t > 0)
                 .map(|t| (done as f64 * 100.0 / t as f64) as f32);
             self.change(|st| {
-                if matches!(&st.client.job, Some(JobView::Fetching { tool, .. }) if tool == name) {
+                let ours = match &st.client.job {
+                    None => true,
+                    Some(JobView::Fetching { tool, .. }) => tool == name,
+                    Some(_) => false,
+                };
+                if ours {
                     st.client.job = Some(JobView::Fetching {
                         tool: name.into(),
                         percent,
                     });
                 }
             });
-        };
-        tools::ensure(&tool, &self.inner.cfg.data_dir.join("tools"), &progress)
-            .await
-            .map_err(|e| words::tool_failed(name, &e.to_string()))
+        }
     }
 
     /// A fresh run folder: `<data dir>/depot/<unix ms>`. The runs before it go first (#348): one
@@ -668,10 +686,11 @@ impl App {
     pub(super) fn cancel_download(&self) {
         let run = self.change(|st| {
             match &st.client.job {
-                // Play's own fetch of umu-launcher, for a first start, waits on Cancel start's
-                // flag: cancelling it is cancelling the start (#367).
+                // Play's own fetches, umu-launcher's for a first start and GE-Proton's for any,
+                // wait on Cancel start's flag: cancelling one is cancelling the start (#367).
                 Some(JobView::Fetching { tool, .. })
-                    if tool == super::play::UMU_LAUNCHER
+                    if [super::play::UMU_LAUNCHER, super::play::GE_PROTON]
+                        .contains(&tool.as_str())
                         && matches!(st.game, super::GameView::Starting { .. }) =>
                 {
                     st.start_cancelled = true;
@@ -773,6 +792,7 @@ mod tests {
                 depot_downloader: None,
                 terminal: None,
                 umu_run: None,
+                ge_proton: None,
             }
         }
 
@@ -947,20 +967,29 @@ exit {code}"#,
     #[tokio::test]
     async fn cancel_download_during_plays_own_fetch_cancels_the_start() {
         // #367: the Game tab's Cancel download, while Play fetched umu-launcher for a first
-        // start, set the tab's own flag, which that fetch never looks at.
-        let t = Testbed::new(&[("a.bin", 10)]);
-        let app = t.app();
-        app.change(|st| {
-            st.game = super::super::GameView::Starting { first_start: true };
-            st.client.job = Some(JobView::Fetching {
-                tool: "umu-launcher".into(),
-                percent: None,
+        // start, set the tab's own flag, which that fetch never looks at. GE-Proton's fetch, at
+        // any start, is Play's too (launcher spec Amendment B, LB1).
+        for tool in ["umu-launcher", "GE-Proton"] {
+            let t = Testbed::new(&[("a.bin", 10)]);
+            let app = t.app();
+            app.change(|st| {
+                st.game = super::super::GameView::Starting { first_start: true };
+                st.client.job = Some(JobView::Fetching {
+                    tool: tool.into(),
+                    percent: None,
+                });
             });
-        });
-        app.intent(Intent::CancelDownload).await.unwrap();
-        let st = app.inner.lock();
-        assert!(st.start_cancelled, "the start sees it as Cancel start");
-        assert!(!st.client.cancelled, "the tab had no download of its own");
+            app.intent(Intent::CancelDownload).await.unwrap();
+            let st = app.inner.lock();
+            assert!(
+                st.start_cancelled,
+                "{tool}: the start sees it as Cancel start"
+            );
+            assert!(
+                !st.client.cancelled,
+                "{tool}: the tab had no download of its own"
+            );
+        }
     }
 
     #[tokio::test]

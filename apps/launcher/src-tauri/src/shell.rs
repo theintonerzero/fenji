@@ -205,6 +205,7 @@ fn config() -> Result<AppConfig, String> {
         depot_downloader: None,
         terminal: None,
         umu_run: None,
+        ge_proton: Some(fenji_launcher::proton::GE_RELEASES.into()),
     })
 }
 

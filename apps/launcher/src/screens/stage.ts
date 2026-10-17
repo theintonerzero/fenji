@@ -9,7 +9,7 @@ import type { Intent, ServerView, Snapshot } from "../types";
 import { button, setPlay } from "../ui/button";
 import { icons } from "../ui/icons";
 import { friends } from "../ui/people";
-import { clock, regionPart, stateLine, systemName } from "../words";
+import { clock, percent, regionPart, stateLine, systemName } from "../words";
 import { noticeSlot, renew } from "./parts";
 
 type Tone = "ok" | "warn" | "quiet" | "error";
@@ -123,6 +123,10 @@ function metaWords(variant: PlayVariant, s: Snapshot): string | null {
   switch (variant) {
     case "starting":
       if (s.job?.kind === "fetching") {
+        // GE-Proton comes again whenever there's a newer one; umu-launcher, once.
+        if (s.job.tool === "GE-Proton") {
+          return s.job.percent === null ? "Getting GE-Proton" : `Getting GE-Proton ${percent(s.job.percent)}`;
+        }
         return `Getting ${s.job.tool} (first start only)`;
       }
       return s.game.kind === "starting" && s.game.firstStart ? "Setting up Proton (first start only)" : null;

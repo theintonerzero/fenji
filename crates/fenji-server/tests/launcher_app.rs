@@ -37,6 +37,7 @@ fn config(dir: &Path) -> AppConfig {
         depot_downloader: None,
         terminal: None,
         umu_run: None,
+        ge_proton: None,
     }
 }
 
@@ -488,6 +489,11 @@ impl PlayBed {
         Self::build(Os::Linux, 1, 0, 0).await
     }
 
+    /// With these in the launcher's own environment, as a player's shell would set them.
+    async fn with_env(env: &[(&str, &str)]) -> PlayBed {
+        Self::build_with(Os::Linux, 1, 0, 0, env).await
+    }
+
     async fn with_sleep(secs: u32) -> PlayBed {
         Self::build(Os::Linux, secs, 0, 0).await
     }
@@ -507,6 +513,16 @@ impl PlayBed {
     }
 
     async fn build(os: Os, sleep: u32, exit: i32, prefix_sleep: u32) -> PlayBed {
+        Self::build_with(os, sleep, exit, prefix_sleep, &[]).await
+    }
+
+    async fn build_with(
+        os: Os,
+        sleep: u32,
+        exit: i32,
+        prefix_sleep: u32,
+        env: &[(&str, &str)],
+    ) -> PlayBed {
         let dir = tempfile::tempdir().unwrap();
         let (s, c) = server(dir.path(), "", GateLimits::default()).await;
         let code = InviteCode::generate().unwrap();
@@ -538,6 +554,8 @@ impl PlayBed {
                 prefix_sleep.to_string().into(),
             ),
         ]);
+        cfg.env
+            .extend(env.iter().map(|(k, v)| ((*k).into(), (*v).into())));
         let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
         app.intent(Intent::ChooseFolder {
             path: client.display().to_string(),
@@ -684,6 +702,35 @@ async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
         );
     }
     t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn play_starts_the_game_with_the_ge_proton_it_has_or_the_players_own() {
+    // Launcher spec Amendment B, LB1: umu-run gets the build in the data folder's proton/ as
+    // PROTONPATH, and a player's own PROTONPATH takes its place.
+    for own in [None, Some("/home/me/proton")] {
+        let t = match own {
+            None => PlayBed::new().await,
+            Some(path) => PlayBed::with_env(&[("PROTONPATH", path)]).await,
+        };
+        let home = t.cfg.data_dir.join("proton/GE-Proton11-9");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("proton"), "#!/bin/sh\n").unwrap();
+        std::fs::write(home.join(fenji_launcher::proton::MARKER), "done").unwrap();
+        t.signed_in().await;
+        t.app.intent(Intent::Play).await.unwrap();
+        until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+        let record = std::fs::read_to_string(&t.record).unwrap();
+        let expected = match own {
+            None => format!("PROTONPATH={}", home.display()),
+            Some(path) => format!("PROTONPATH={path}"),
+        };
+        assert!(
+            record.lines().any(|l| l == expected),
+            "{expected}: {record}"
+        );
+        t.s.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]

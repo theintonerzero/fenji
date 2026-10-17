@@ -5,6 +5,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -20,12 +21,15 @@ use crate::launch::base_spec;
 use crate::probe::{self, Incompatible, Status};
 use crate::settings::Os;
 use crate::start::{self, UmuOptions};
-use crate::tools;
+use crate::{proton, tools};
 
 /// An end this soon after the start means the game couldn't start, whatever its code (spec §3.12;
 /// #332).
 const STARTUP: Duration = Duration::from_secs(15);
 pub(super) const UMU_LAUNCHER: &str = "umu-launcher";
+/// The latest GE-Proton, which Play fetches before a start when a newer one is out (launcher spec
+/// Amendment B, LB1).
+pub(super) const GE_PROTON: &str = "GE-Proton";
 /// How long `umu-run createprefix` may take: a first one fetches umu's runtime, and Proton too when
 /// none is set, before it builds the prefix (#348). `words::PREFIX_TOO_LONG` says it.
 const PREFIX_LIMIT: Duration = Duration::from_secs(60 * 60);
@@ -160,15 +164,16 @@ impl App {
         let cfg = &self.inner.cfg;
         let umu_run = self.umu_run().await?;
         self.going_on()?;
-        let var = |name: &str| env_var(&cfg.env, name);
+        let proton = self.proton().await;
+        self.going_on()?;
         let platform = start::linux_platform(
             UmuOptions {
                 umu_run: Some(umu_run),
                 prefix: Some(prefix.clone()),
-                proton: umu_proton(var("PROTONPATH"), &self.inner.steam_roots),
+                proton,
             },
             &cfg.data_dir,
-            var("PATH").as_deref(),
+            env_var(&cfg.env, "PATH").as_deref(),
             Some(cfg.data_dir.clone()),
         )
         .map_err(|e| words::couldnt_launch(&format!("{e:#}")))?;
@@ -294,6 +299,30 @@ impl App {
             }
         });
         fetched
+    }
+
+    /// The Proton umu-run starts the game with (launcher spec Amendment B, LB1): the player's own
+    /// `PROTONPATH`, which asks nothing; else the latest GE-Proton, asked of GitHub before each
+    /// start and fetched into the data folder's `proton/` when it's newer, its download shown on
+    /// PLAY; else the build there; else none, umu-run's own default. Cancel start stops it at once.
+    async fn proton(&self) -> Option<PathBuf> {
+        let cfg = &self.inner.cfg;
+        if let Some(own) = env_var(&cfg.env, "PROTONPATH").filter(|own| !own.is_empty()) {
+            return Some(PathBuf::from(own));
+        }
+        let dir = cfg.data_dir.join("proton");
+        let Some(api) = &cfg.ge_proton else {
+            return proton::installed(&dir);
+        };
+        let app = self.clone();
+        let stop: proton::Stop = Arc::new(move || app.start_cancelled());
+        let found = proton::for_play(&dir, api, &self.fetching(GE_PROTON), &stop).await;
+        self.change(|st| {
+            if matches!(&st.client.job, Some(JobView::Fetching { tool, .. }) if tool == GE_PROTON) {
+                st.client.job = None;
+            }
+        });
+        found
     }
 
     /// The login path's pairs for one game token, taken with the session this launcher holds.
@@ -509,13 +538,6 @@ fn env_var(
     env.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
 }
 
-/// The Proton umu-run gets: the player's own `PROTONPATH`, or else the newest stable Proton Steam
-/// installed (launcher spec Amendment A, LA6; L22), or else none, and umu-run fetches its own.
-fn umu_proton(own: Option<std::ffi::OsString>, steam_roots: &[PathBuf]) -> Option<PathBuf> {
-    own.map(PathBuf::from)
-        .or_else(|| crate::steam::newest_proton(steam_roots))
-}
-
 /// The game's log, twice: for a child's stdout and its stderr.
 fn log_pair(log: &std::fs::File) -> std::io::Result<(std::fs::File, std::fs::File)> {
     Ok((log.try_clone()?, log.try_clone()?))
@@ -648,30 +670,105 @@ fn game_log(data_dir: &Path) -> std::io::Result<std::fs::File> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::ffi::OsString;
 
-    #[test]
-    fn umu_run_gets_the_players_own_proton_or_else_steams() {
-        let dir = tempfile::tempdir().unwrap();
-        let apps = dir.path().join("Steam/steamapps");
-        std::fs::create_dir_all(apps.join("common/Proton 9.0")).unwrap();
-        std::fs::write(apps.join("common/Proton 9.0/proton"), "").unwrap();
-        std::fs::write(
-            apps.join("appmanifest_2805730.acf"),
-            "\"AppState\" { \"installdir\" \"Proton 9.0\" }",
+    use super::super::AppConfig;
+    use super::*;
+    use crate::manifest::Manifest;
+    use crate::proton::{MARKER, fakes};
+    use crate::test_support::until;
+
+    /// An App on Linux whose own environment is `env`, asking `ge_proton` for GE-Proton's latest
+    /// release.
+    fn app_with(dir: &Path, env: Vec<(OsString, OsString)>, ge_proton: Option<String>) -> App {
+        App::start(
+            AppConfig {
+                config_dir: dir.join("config"),
+                data_dir: dir.join("data"),
+                home: Some(dir.join("home")),
+                os: Os::Linux,
+                version: "0.5.5".into(),
+                manifest: Manifest::default(),
+                pinned_build: "10015727".into(),
+                env,
+                depot_downloader: None,
+                terminal: None,
+                umu_run: None,
+                ge_proton,
+            },
+            tokio::runtime::Handle::current(),
         )
-        .unwrap();
-        let roots = [dir.path().join("Steam")];
-        assert_eq!(
-            umu_proton(Some("/opt/GE-Proton11-7".into()), &roots),
-            Some(PathBuf::from("/opt/GE-Proton11-7"))
-        );
-        assert_eq!(
-            umu_proton(None, &roots),
-            Some(apps.join("common/Proton 9.0"))
-        );
-        // No Proton anywhere: umu-run fetches its own.
-        assert_eq!(umu_proton(None, &[dir.path().join("no Steam")]), None);
+    }
+
+    /// An address nothing answers on: the connection is refused at once.
+    const NOWHERE: &str = "http://127.0.0.1:1/api";
+
+    #[tokio::test]
+    async fn a_players_own_protonpath_asks_github_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = fakes::github("GE-Proton11-9", fakes::ge("GE-Proton11-9"), None).await;
+        let own = vec![("PROTONPATH".into(), "/home/me/proton".into())];
+        let app = app_with(dir.path(), own, Some(fake.api.clone()));
+        assert_eq!(app.proton().await, Some(PathBuf::from("/home/me/proton")));
+        assert_eq!((fake.asked(), fake.hits()), (0, 0));
+        // An empty one is none: the latest GE-Proton plays.
+        let other = tempfile::tempdir().unwrap();
+        let empty = vec![("PROTONPATH".into(), "".into())];
+        let app = app_with(other.path(), empty, Some(fake.api.clone()));
+        let home = other.path().join("data/proton/GE-Proton11-9");
+        assert_eq!(app.proton().await, Some(home));
+        assert_eq!((fake.asked(), fake.hits()), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn play_gets_the_latest_ge_proton_into_its_data_folder_or_plays_the_one_it_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = fakes::github("GE-Proton11-9", fakes::ge("GE-Proton11-9"), None).await;
+        let app = app_with(dir.path(), Vec::new(), Some(fake.api.clone()));
+        let home = dir.path().join("data/proton/GE-Proton11-9");
+        assert_eq!(app.proton().await, Some(home.clone()));
+        assert!(home.join(MARKER).is_file());
+        assert_eq!((fake.asked(), fake.hits()), (1, 1));
+        assert!(app.snapshot().job.is_none(), "the fetch's job ends with it");
+        // Offline, the build it has plays; with none yet, umu-run's own default.
+        let offline = app_with(dir.path(), Vec::new(), Some(NOWHERE.into()));
+        assert_eq!(offline.proton().await, Some(home));
+        let empty = tempfile::tempdir().unwrap();
+        let none = app_with(empty.path(), Vec::new(), Some(NOWHERE.into()));
+        assert_eq!(none.proton().await, None);
+    }
+
+    #[tokio::test]
+    async fn ge_protons_download_shows_on_play_and_cancel_start_stops_it_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let protons = dir.path().join("data/proton");
+        let have = fakes::built(&protons, "GE-Proton10-34");
+        let zeros = format!("{}  GE-Proton11-9-x86_64.tar.gz", "0".repeat(128));
+        let stalled = Some(fakes::stalled().await);
+        let fake = fakes::github_at("GE-Proton11-9", Vec::new(), Some(zeros), stalled).await;
+        let app = app_with(dir.path(), Vec::new(), Some(fake.api.clone()));
+        app.change(|st| st.game = GameView::Starting { first_start: false });
+        let start = tokio::spawn({
+            let app = app.clone();
+            async move { app.proton().await }
+        });
+        // Its first kilobyte of a megabyte came, and then nothing.
+        until(&app, |s| {
+            matches!(&s.job, Some(JobView::Fetching { tool, percent: Some(_) }) if tool == GE_PROTON)
+        })
+        .await;
+        app.cancel_start();
+        let found = tokio::time::timeout(Duration::from_secs(5), start)
+            .await
+            .expect("Cancel start stops it at once")
+            .unwrap();
+        assert_eq!(found, Some(have));
+        assert!(app.snapshot().job.is_none());
+        let left: Vec<_> = std::fs::read_dir(&protons)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["GE-Proton10-34"], "nothing half-made is left");
     }
 
     #[test]

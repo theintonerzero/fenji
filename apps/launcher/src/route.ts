@@ -99,7 +99,8 @@ export function playLook(s: Snapshot): PlayLook {
     case "checking":
       return { kind: "kindle", task: "verifying", percent: s.job?.kind === "checking" ? s.job.percent : null };
     case "starting":
-      // The first start fetches umu-launcher: its download is the only progress a start has.
+      // A start's downloads are the only progress it has: umu-launcher's on the first start, and
+      // GE-Proton's whenever a newer one is out.
       return { kind: "kindle", task: "starting", percent: s.job?.kind === "fetching" ? s.job.percent : null };
     default:
       return { kind: "closed" };

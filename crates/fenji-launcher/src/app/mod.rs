@@ -53,6 +53,10 @@ pub struct AppConfig {
     pub terminal: Option<crate::depot::Terminal>,
     /// Used before the settings, `PATH` and fetching (tests).
     pub umu_run: Option<PathBuf>,
+    /// Where Play asks for GE-Proton's latest release before each start (launcher spec
+    /// Amendment B, LB1): GitHub's API, [`crate::proton::GE_RELEASES`], or a test's. None never
+    /// asks, and plays the build there (tests).
+    pub ge_proton: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -666,6 +670,7 @@ mod tests {
             depot_downloader: None,
             terminal: None,
             umu_run: None,
+            ge_proton: None,
         }
     }
 
