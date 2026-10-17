@@ -693,17 +693,23 @@ run "$D/update-server.sh" 1.2.13
 refused "a release with no signature is refused" "the release isn't signed"
 run "$D/update-server.sh" 1.2.14
 refused "a release signed with another key is refused" "isn't signed with the release key"
+says "saying a changed key means an update by hand once" "update by hand once" "$err"
+never "and its unverified program never ran" "fenji-server 1.2.14 "
 run "$D/update-server.sh" 1.2.15
 refused "sums changed after they were signed are refused" "isn't signed with the release key"
 FAKE_SSH_KEYGEN=missing run "$D/update-server.sh" 1.2.10
-refused "with no ssh-keygen, it refuses" "needs ssh-keygen, from OpenSSH 8 or later"
+refused "with no ssh-keygen, it refuses" "needs ssh-keygen, from OpenSSH 8.1 or later"
+same "before anything is downloaded" "$(fetched)" ""
 FAKE_SSH_KEYGEN=old run "$D/update-server.sh" 1.2.10
-refused "an ssh-keygen before OpenSSH 8 is refused" "it needs OpenSSH 8 or later"
+refused "an ssh-keygen before OpenSSH 8.1 is refused" "it needs OpenSSH 8.1 or later"
+says "saying what to do on RHEL 8" "RHEL 8" "$err"
+same "before anything is downloaded" "$(fetched)" ""
 # Its own line, without FENJI_RELEASE_KEY: none until the owner makes the key (HD5), and the run's
 # releases aren't signed with the real one.
 if [ -z "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$SCRIPT")" ]; then
   FENJI_RELEASE_KEY='' run "$D/update-server.sh" 1.2.10
   refused "a script that holds no release key refuses" "holds no release key"
+  same "before anything is downloaded" "$(fetched)" ""
 else
   FENJI_RELEASE_KEY='' run "$D/update-server.sh" 1.2.10
   refused "its own line refuses the run's key" "isn't signed with the release key"
@@ -1118,6 +1124,26 @@ run "$B/fenji-update"
 kept "a service another update holds is refused" "another update of this server is running"
 rmdir "$B/.fenji-update.lock"
 
+# The service checks a release's signature as a folder does, before anything is unpacked or run
+# (HD3); and as root, it takes FENJI_RELEASE_KEY only from a file that's root's and that only root
+# may write in.
+fresh
+service 1.2.3
+was=$(snapshot "$S")
+run "$B/fenji-update" 1.2.14
+kept "the service refuses a release signed with another key" "isn't signed with the release key"
+never "and its unverified program never ran" "fenji-server 1.2.14 "
+run "$B/fenji-update" 1.2.13
+kept "and one with no signature" "the release isn't signed"
+cp "$T/allowed_signers" "$T/open_signers"
+chmod g+w "$T/open_signers"
+FENJI_RELEASE_KEY=$T/open_signers run "$B/fenji-update" 1.2.10
+kept "a key file others may write is refused as root" "won't check a release as root"
+same "before anything is fetched" "$(fetched)" ""
+ln -s "$T/allowed_signers" "$T/linked_signers"
+FENJI_RELEASE_KEY=$T/linked_signers run "$B/fenji-update" 1.2.10
+kept "and so is a link" "won't check a release as root"
+
 # As root, it writes only in folders that are root's, and that only root may write in.
 fresh
 service 1.2.3
@@ -1231,7 +1257,7 @@ holds "and again" env FENJI_REPO="$K" "$REPO/scripts/set-release-key.sh" "$T/rel
 line=$(cat "$T/allowed_signers")
 same "deploy/allowed_signers holds the one line" "$(grep -v '^#' "$K/deploy/allowed_signers")" "$line"
 same "the script's RELEASE_KEY is it" "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$K/deploy/start/update-server.sh")" "$line"
-same "and the guide's" "$(grep -h '^fenji-release namespaces=' "$K/docs/hosting.md")" "$line"
+same "and the guide's, in both its sections" "$(grep -h '^fenji-release namespaces=' "$K/docs/hosting.md")" "$(printf '%s\n' "$line" "$line")"
 same "the script keeps its mode" "$(mode "$K/deploy/start/update-server.sh")" "$(mode "$SCRIPT")"
 printf 'ssh-rsa AAAAB3NzaC1yc2E rsa\n' > "$T/rsa.pub"
 if env FENJI_REPO="$K" "$REPO/scripts/set-release-key.sh" "$T/rsa.pub" > /dev/null 2>&1; then
@@ -1249,13 +1275,43 @@ SCRIPT=$K/deploy/start/update-server.sh folder "$D" 1.2.3
 was=$(snapshot "$D")
 FENJI_RELEASE_KEY='' run "$D/update-server.sh" 1.2.14
 refused "and refuses one signed with another key" "isn't signed with the release key"
+# --next (HD7): the script and the guide trust the new key, while deploy/allowed_signers keeps the
+# current key's line beside it, for the one release signed with the current key that brings it.
+"$REAL_SSH_KEYGEN" -q -t ed25519 -N '' -C next -f "$T/next-key"
+next=$(printf 'fenji-release namespaces="fenji-release" %s' "$(cut -d' ' -f1,2 "$T/next-key.pub")")
+holds "a next key goes in with --next" env FENJI_REPO="$K" "$REPO/scripts/set-release-key.sh" --next "$T/next-key.pub" > /dev/null
+holds "and again, once" env FENJI_REPO="$K" "$REPO/scripts/set-release-key.sh" --next "$T/next-key.pub" > /dev/null
+same "deploy/allowed_signers keeps the current line and adds the next" "$(grep -v '^#' "$K/deploy/allowed_signers")" \
+  "$(printf '%s\n' "$line" "$next")"
+same "the script trusts the next" "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$K/deploy/start/update-server.sh")" "$next"
+same "and so does the guide" "$(grep -h '^fenji-release namespaces=' "$K/docs/hosting.md" | sort -u)" "$next"
+holds "then the next key alone" env FENJI_REPO="$K" "$REPO/scripts/set-release-key.sh" "$T/next-key.pub" > /dev/null
+same "is deploy/allowed_signers's one line" "$(grep -v '^#' "$K/deploy/allowed_signers")" "$next"
+# Only an ed25519 key that ssh-keygen reads goes in: the line ends up in a shell script.
+printf "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5'\$(touch %s)'\n" "$T/pwned" > "$T/crafted.pub"
+printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\n' > "$T/short.pub"
+for f in crafted short; do
+  if env FENJI_REPO="$K" "$REPO/scripts/set-release-key.sh" "$T/$f.pub" > /dev/null 2>&1; then
+    bad "a $f key is refused"
+  else
+    ok "a $f key is refused"
+  fi
+done
+same "and the crafted one ran nothing" "$(find "$T" -maxdepth 1 -name pwned)" ""
+same "nor changed the script" "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$K/deploy/start/update-server.sh")" "$next"
 
 # One release key wherever it's written (HD8): deploy/allowed_signers, this script's RELEASE_KEY and
 # section 5 of the guide. None yet, until the owner makes the key (HD5).
+# During a rotation (HD7), deploy/allowed_signers also keeps the current key's line beside the one the
+# script trusts, so the script's line need only be one of its lines.
 key_lines() { grep -h '^fenji-release namespaces=' "$@" 2> /dev/null; }
-same "the script's release key is deploy/allowed_signers's" \
-  "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$SCRIPT")" "$(key_lines "$REPO/deploy/allowed_signers")"
-same "and so is the guide's" "$(key_lines "$REPO/docs/hosting.md")" "$(key_lines "$REPO/deploy/allowed_signers")"
+trusted=$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$SCRIPT")
+if [ -z "$trusted" ]; then
+  same "no key yet: deploy/allowed_signers holds none either" "$(key_lines "$REPO/deploy/allowed_signers")" ""
+else
+  holds "the script's release key is one deploy/allowed_signers holds" grep -qxF -- "$trusted" "$REPO/deploy/allowed_signers"
+fi
+same "and the guide's, wherever it shows it, is the script's" "$(key_lines "$REPO/docs/hosting.md" | sort -u)" "$trusted"
 
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"

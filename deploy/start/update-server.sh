@@ -28,7 +28,7 @@
 # (HD4).
 #
 # Releases come from https://github.com/theintonerzero/fenji/releases, or from FENJI_RELEASES, for a
-# fork. It needs curl, tar, ssh-keygen from OpenSSH 8 or later, and sha256sum or macOS's shasum;
+# fork. It needs curl, tar, ssh-keygen from OpenSSH 8.1 or later, and sha256sum or macOS's shasum;
 # for a service, systemctl, sudo and journalctl too, and timeout where there is one.
 set -eu
 # A cd to a relative path goes where it says, not to a folder an exported CDPATH names.
@@ -492,6 +492,32 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/fenji-update.XXXXXX") || fail "can't make a tem
 : > "$tmp/made"
 archive=fenji-server-$wanted-$target.tar.gz
 from=$releases/download/v$wanted
+# The release key's line (HD1, HD4), and an ssh-keygen that can check with it, before anything is
+# downloaded (HD3).
+if [ -n "${FENJI_RELEASE_KEY:-}" ]; then
+  allowed=$FENJI_RELEASE_KEY
+  # As root, only a key file that's root's and that only root may write in: a sudo rule that lets
+  # someone set root's environment mustn't let them name a key of their own.
+  if [ "$uid" = 0 ] && { [ -L "$allowed" ] || [ ! -f "$allowed" ] ||
+    [ -n "$(find "$allowed" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" ]; }; then
+    fail "won't check a release as root against $allowed: FENJI_RELEASE_KEY must name a file that's root's, and only root may write in. Nothing has changed"
+  fi
+else
+  [ -n "$RELEASE_KEY" ] ||
+    fail "this update script holds no release key, so it can't check a release; update by hand (docs/hosting.md, section 5). Nothing has changed"
+  allowed=$tmp/allowed_signers
+  printf '%s\n' "$RELEASE_KEY" > "$allowed"
+fi
+# A check with no signature at all: an ssh-keygen that can check answers that it can't parse one
+# (255); one from before OpenSSH 8.1 doesn't know -Y (1); none at all is 127.
+code=0
+probe=$(env -u SSH_AUTH_SOCK ssh-keygen -Y verify -f "$allowed" -I fenji-release -n fenji-release \
+  -s /dev/null < /dev/null 2>&1) || code=$?
+case $code:$probe in
+  127:*) fail "checking the release's signature needs ssh-keygen, from OpenSSH 8.1 or later: install OpenSSH, then try again. Nothing has changed" ;;
+  1:*"unknown option"* | 1:*"illegal option"* | 1:*"invalid option"*)
+    fail "this ssh-keygen can't check signatures: it needs OpenSSH 8.1 or later. On RHEL 8 and its rebuilds, which have 8.0, check the release on another machine and update by hand (docs/hosting.md, section 5). Nothing has changed" ;;
+esac
 say "Downloading $archive, with its release's SHA256SUMS."
 fetch "$from/$archive" "$tmp/$archive" ||
   fail "can't download $from/$archive: is $wanted a release, with a server for $target? Nothing has changed"
@@ -499,25 +525,12 @@ fetch "$from/SHA256SUMS" "$tmp/SHA256SUMS" || fail "can't download $from/SHA256S
 # The sums count only once their signature is the release key's (HD3).
 fetch "$from/SHA256SUMS.sig" "$tmp/SHA256SUMS.sig" ||
   fail "can't download $from/SHA256SUMS.sig: the release isn't signed, so it can't be trusted, and nothing has changed"
-if [ -n "${FENJI_RELEASE_KEY:-}" ]; then
-  allowed=$FENJI_RELEASE_KEY
-else
-  [ -n "$RELEASE_KEY" ] ||
-    fail "this update script holds no release key, so it can't check a release; update by hand (docs/hosting.md, section 5). Nothing has changed"
-  allowed=$tmp/allowed_signers
-  printf '%s\n' "$RELEASE_KEY" > "$allowed"
-fi
 # Only the line given, never an agent's key, and nothing to answer.
-if why=$(env -u SSH_AUTH_SOCK ssh-keygen -Y verify -f "$allowed" -I fenji-release -n fenji-release \
-  -s "$tmp/SHA256SUMS.sig" < "$tmp/SHA256SUMS" 2>&1); then
+if env -u SSH_AUTH_SOCK ssh-keygen -Y verify -f "$allowed" -I fenji-release -n fenji-release \
+  -s "$tmp/SHA256SUMS.sig" < "$tmp/SHA256SUMS" > /dev/null 2>&1; then
   say "Its SHA256SUMS is signed with the release key."
 else
-  case $?:$why in
-    127:*) fail "checking the release's signature needs ssh-keygen, from OpenSSH 8 or later: install OpenSSH, then try again. Nothing has changed" ;;
-    *"unknown option"* | *"illegal option"* | *"invalid option"*)
-      fail "this ssh-keygen can't check signatures: it needs OpenSSH 8 or later. Nothing has changed" ;;
-    *) fail "SHA256SUMS isn't signed with the release key, so this release can't be trusted, and nothing has changed" ;;
-  esac
+  fail "SHA256SUMS isn't signed with the release key, so this release can't be trusted, and nothing has changed. If Fenji's release key has changed since this script came, update by hand once (docs/hosting.md, section 5)"
 fi
 found=$(awk -v f="$archive" '$2 == f || $2 == "*" f { n++; s = $1 } END { print n + 0, s }' "$tmp/SHA256SUMS")
 case ${found%% *} in
