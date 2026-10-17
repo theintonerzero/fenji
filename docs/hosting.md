@@ -516,9 +516,16 @@ VERSION=0.5.3
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
+curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS.sig
+cat > allowed_signers <<'END'
+(Fenji's release key goes on this line once it's made, before v0.5.4 is released)
+END
+ssh-keygen -Y verify -f allowed_signers -I fenji-release -n fenji-release -s SHA256SUMS.sig < SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 ```
+
+From v0.5.4 on, each release's `SHA256SUMS` is signed with Fenji's release key, whose public half is the line in `allowed_signers` above, as the update script carries it. `ssh-keygen` checks the signature, and says `Good "fenji-release" signature`, before `sha256sum` trusts a sum: a release someone else changed, sums and all, fails there. It needs OpenSSH 8 or later, which Ubuntu, Debian and macOS have had since 2019 or 2020. Releases before v0.5.4 have no signature.
 
 Back up the database, stop the server, put the new program, its services and its update script in place, and start it:
 
