@@ -30,6 +30,39 @@ pub fn outside(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(OsS
         .collect()
 }
 
+/// How the launcher starts itself again after an update inside an AppImage (#413): the image the
+/// updater replaced, with the environment as it is outside the old image ([`outside`]), from the
+/// folder the player started it in (the runtime's `OWD`, else their home). So the new launcher
+/// loads none of the old image's libraries and doesn't hold its mount as its working folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restart {
+    pub program: PathBuf,
+    pub env: Vec<(OsString, OsString)>,
+    pub dir: PathBuf,
+}
+
+/// [`Restart`] for `vars`, or `None` outside an AppImage, or for an image named by a relative path:
+/// Tauri's own restart, then.
+pub fn restart(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Option<Restart> {
+    let vars: Vec<_> = vars.into_iter().collect();
+    image(&vars)?;
+    let absolute = |name: &str| {
+        vars.iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| PathBuf::from(v))
+            .filter(|p| p.is_absolute())
+    };
+    let program = absolute("APPIMAGE")?;
+    let dir = absolute("OWD")
+        .or_else(|| absolute("HOME"))
+        .unwrap_or_else(|| PathBuf::from("/"));
+    Some(Restart {
+        program,
+        env: outside(vars),
+        dir,
+    })
+}
+
 fn image(vars: &[(OsString, OsString)]) -> Option<PathBuf> {
     let (_, dir) = vars.iter().find(|(k, _)| k == "APPDIR")?;
     let dir = Path::new(dir);
@@ -107,6 +140,42 @@ mod tests {
             .iter()
             .map(|(k, v)| (OsString::from(k), OsString::from(v.replace("$IMG", IMAGE))))
             .collect()
+    }
+
+    #[test]
+    fn a_restart_runs_the_image_outside_its_own_environment_from_where_the_player_started_it() {
+        // #413: the updater's restart passed on the old image's environment and folder, so the
+        // new launcher loaded the old image's libraries and kept its mount busy.
+        let old = "/tmp/.mount_Fenji_CAmBLK";
+        let v = vars(&[
+            ("APPDIR", "$IMG"),
+            ("APPIMAGE", "/home/p/Fenji.AppImage"),
+            ("OWD", "/home/p/Downloads"),
+            (
+                "LD_LIBRARY_PATH",
+                &format!("$IMG/usr/lib/:{old}/usr/lib/:/opt/lib"),
+            ),
+            ("PWD", "$IMG/usr"),
+            ("HOME", "/home/p"),
+        ]);
+        let plan = restart(v).unwrap();
+        assert_eq!(plan.program, PathBuf::from("/home/p/Fenji.AppImage"));
+        assert_eq!(plan.dir, PathBuf::from("/home/p/Downloads"));
+        assert_eq!(
+            plan.env,
+            vars(&[("LD_LIBRARY_PATH", "/opt/lib"), ("HOME", "/home/p")])
+        );
+        // No folder the player started it in: their home, not the image's.
+        let v = vars(&[
+            ("APPDIR", "$IMG"),
+            ("APPIMAGE", "/x/F.AppImage"),
+            ("HOME", "/home/p"),
+        ]);
+        assert_eq!(restart(v).unwrap().dir, PathBuf::from("/home/p"));
+        // Not in an image: Tauri's own restart.
+        assert!(restart(vars(&[("HOME", "/home/p")])).is_none());
+        let v = vars(&[("APPDIR", "$IMG"), ("APPIMAGE", "relative.AppImage")]);
+        assert!(restart(v).is_none(), "an image named by a relative path");
     }
 
     #[test]

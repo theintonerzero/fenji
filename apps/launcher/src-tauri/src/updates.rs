@@ -241,7 +241,7 @@ impl Updates {
             return Err(INSTALL_FAILED.into());
         }
         tracing::info!(version = %update.version, "the launcher update is installed; restarting");
-        app.restart()
+        restart(app)
     }
 
     /// "Later": not now (see [`State::dismissed`]).
@@ -290,6 +290,43 @@ fn newer(current: &str, offered: &str) -> bool {
         (Ok(current), Ok(offered)) => offered > current,
         _ => false,
     }
+}
+
+/// Starts the updated launcher. Inside an AppImage on Linux, Fenji does it itself, outside the old
+/// image's environment and folder ([`fenji_launcher::appimage::restart`]; #413), on the main
+/// thread as Tauri's own restart does there: Tauri's passed the old image's folders on, so the new
+/// launcher loaded the old image's libraries and kept its mount busy. Elsewhere, or if that fails,
+/// Tauri's restart.
+fn restart(app: &AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if let Some(plan) = fenji_launcher::appimage::restart(std::env::vars_os()) {
+        let handle = app.clone();
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+        let scheduled = app.run_on_main_thread(move || {
+            // Tauri's own restart from here lets the event loop exit first, and the single-instance
+            // plugin gives up its name then; the new launcher would otherwise find it held, hand
+            // over to this one, and quit.
+            tauri_plugin_single_instance::destroy(&handle);
+            handle.cleanup_before_exit();
+            let spawned = std::process::Command::new(&plan.program)
+                .args(&args)
+                .env_clear()
+                .envs(plan.env)
+                .current_dir(&plan.dir)
+                .spawn();
+            match spawned {
+                Ok(_) => std::process::exit(0),
+                Err(e) => {
+                    tracing::warn!(error = %e, "couldn't start the updated launcher outside its image");
+                    handle.restart()
+                }
+            }
+        });
+        if scheduled.is_ok() {
+            return Ok(());
+        }
+    }
+    app.restart()
 }
 
 #[cfg(test)]
