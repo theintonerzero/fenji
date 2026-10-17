@@ -8,6 +8,12 @@
 # shasum. Runs on Linux and macOS (bash 3.2).
 #   scripts/test-update-server.sh
 # With TEST_SH set (TEST_SH=dash, say), the script runs in that shell rather than its #!'s.
+#
+# What the harness can't model: one OS user plays every part. The stand-in sudo keeps the test's own
+# uid, and only id -u says another; staging folders are always fresh; and there's no second uid, nor
+# anyone racing the script. So three of the review's mutants survive it, each checked by hand
+# instead: a umask of 022 for 077, a copy into a path that's there, and a staging folder that isn't
+# 0711 (which a real sudo -u fenji needs, as the systemd container's run showed).
 set -uo pipefail
 export LC_ALL=C
 unset CDPATH
@@ -187,17 +193,24 @@ case "$*" in
   *) exec "$REAL_UNAME" "$@" ;;
 esac
 EOF
-# find, but with root's files the uid FAKE_ROOT_UID's, when that's set: the test's own user plays
-# root, whose files the script running "as root" finds to be its own.
+# find, but where FAKE_ROOT_UID is set, root's files are both root's own and that uid's: the test's
+# own user plays root, whose files the script running "as root" finds to be its own, while the real
+# root's folders above the test's, / and /tmp, stay root's. A folder FAKE_NOT_ROOTS names, a start
+# path of find's, is another user's: its owner doesn't play root.
 cat > "$T/bin/find" <<'EOF'
 #!/bin/sh
-if [ -n "${FAKE_ROOT_UID:-}" ]; then
+if [ -n "${FAKE_ROOT_UID:-}" ] && [ "${1-}" != "${FAKE_NOT_ROOTS:-}" ]; then
   n=$#
-  prev=
+  user=
   for a in "$@"; do
-    if [ "$prev" = -user ] && [ "$a" = 0 ]; then a=$FAKE_ROOT_UID; fi
-    set -- "$@" "$a"
-    prev=$a
+    if [ -n "$user" ]; then
+      user=
+      if [ "$a" = 0 ]; then set -- "$@" '(' -user 0 -o -user "$FAKE_ROOT_UID" ')'; else set -- "$@" -user "$a"; fi
+    elif [ "$a" = -user ]; then
+      user=yes
+    else
+      set -- "$@" "$a"
+    fi
   done
   shift "$n"
 fi
@@ -366,7 +379,7 @@ service() {
 fresh() {
   export FAKE_LATEST=1.3.0 FAKE_UNIT='' FAKE_UNIT_USER=fenji FAKE_UNIT_CONFIG='' FAKE_UNIT_FRAGMENT=''
   export FAKE_UNIT_WORKDIR='' FAKE_START='' FAKE_STOP='' FAKE_BACKUP='' FAKE_UID='' FAKE_ROOT_UID=''
-  export FAKE_MV_FAIL='' FAKE_UNAME_S=Linux FAKE_UNAME_M=x86_64
+  export FAKE_MV_FAIL='' FAKE_NOT_ROOTS='' FAKE_UNAME_S=Linux FAKE_UNAME_M=x86_64
   export FAKE_BACKUP_TO=data/backups/fenji-20261017-101500.db
   echo inactive > "$T/state/active"
   rm -f -- "$FAKE_RUNNING"
@@ -769,6 +782,14 @@ was=$(snapshot "$D")
 export FAKE_UID=0 FAKE_ROOT_UID=$uid
 run "$D/update-server.sh"
 refused "and in one with a subfolder everyone may write in" "won't write as root in $D/caddy,"
+fresh
+folder "$D" 1.2.3
+chmod o+w "$T/home with space"
+was=$(snapshot "$D")
+export FAKE_UID=0 FAKE_ROOT_UID=$uid
+run "$D/update-server.sh"
+refused "and in one whose parent everyone may write in" "won't write as root in $D: $T/home with space, above it,"
+chmod o-w "$T/home with space"
 
 # Each system's archive.
 fresh
@@ -1037,6 +1058,46 @@ was=$(snapshot "$S")
 run "$B/fenji-update"
 kept "a units' folder everyone may write in is refused" "won't write as root in $S/etc/systemd/system,"
 never "with no backup" "backup"
+
+# And every folder above one root writes in must be root's, and either writable by root alone or
+# sticky, as /tmp is: otherwise someone else could move the folder aside, and put theirs in its place.
+fresh
+service 1.2.3
+chmod o+w "$S/usr/local"
+was=$(snapshot "$S")
+run "$B/fenji-update"
+kept "a program's folder whose parent everyone may write in is refused" "won't write as root in $B: $S/usr/local, above it,"
+says "saying how to make it safe" "sudo chmod go-w $S/usr/local" "$err"
+same "before anything is fetched" "$(fetched)" ""
+fresh
+service 1.2.3
+chmod g+w "$S/etc/systemd"
+was=$(snapshot "$S")
+run "$B/fenji-update"
+kept "a units' folder whose parent its group may write in is refused" \
+  "won't write as root in $S/etc/systemd/system: $S/etc/systemd, above it,"
+never "with no backup" "backup"
+fresh
+service 1.2.3
+chmod 1777 "$S/usr/local"
+run "$B/fenji-update"
+exits "a program's folder whose parent is root's and sticky, as /tmp is, is fine" 0
+same "and it updates" "$(version "$B/fenji-server")" "fenji-server 1.3.0"
+fresh
+service 1.2.3
+chmod 1777 "$S/usr/local"
+export FAKE_NOT_ROOTS=$S/usr/local
+was=$(snapshot "$S")
+run "$B/fenji-update"
+kept "but a sticky parent that's another user's is refused" "won't write as root in $B: $S/usr/local, above it,"
+export FAKE_NOT_ROOTS=''
+# A units' folder that's gone, where systemd loaded the unit from, is no folder to write in.
+fresh
+service 1.2.3
+export FAKE_UNIT_FRAGMENT=$S/etc/gone/fenji.service
+was=$(snapshot "$S")
+run "$B/fenji-update"
+kept "a units' folder that's gone is refused" "won't write as root in $S/etc/gone, which is missing"
 
 # A stop that fails: the service starts again, nothing has changed, and the update says so.
 fresh

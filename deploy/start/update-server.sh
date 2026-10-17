@@ -16,7 +16,8 @@
 # A service's units are replaced only when the service is Fenji's own unit, which runs the
 # archive's fenji.service's ExecStart as its User, and then only Fenji's three units, by name, as
 # root's files with root's modes. As root, it writes only in folders that are root's and that only
-# root may write in. It runs no fenji-server as root to check it: in a service, as the service's
+# root may write in, below folders that are root's too, all the way up, each writable by root alone
+# or sticky. It runs no fenji-server as root to check it: in a service, as the service's
 # user, or as nobody for a service that runs as root, whose new server's console it does ask as
 # root, once systemd has started that server as root; in a folder, as the folder's owner.
 #
@@ -142,20 +143,41 @@ sum256() {
   fi
 }
 
-# root_alone DIR: whether DIR is a folder that's root's, and that only root may write in.
-root_alone() {
-  [ -d "$1" ] && [ -z "$(find "$1" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" ]
+# unsafe_for_root DIR: the first folder that makes DIR unsafe for root to write in, from DIR, a full
+# path with its links resolved, up to /; nothing if there's none. DIR must be root's, and only root
+# may write in it. Each folder above it must be root's, and either only root may write in it or
+# it's sticky, as /tmp is: anyone else who may write in a folder could rename DIR, or a folder on
+# the way to it, aside, and put their own in its place, between the checks and the writes.
+unsafe_for_root() {
+  case $1 in /*) ;; *) printf '%s\n' "$1"; return 0 ;; esac
+  if [ ! -d "$1" ] || [ -n "$(find "$1" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" ]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  up=$1
+  while [ "$up" != / ]; do
+    up=${up%/*}
+    [ -n "$up" ] || up=/
+    if [ -n "$(find "$up" -prune \( ! -user 0 -o \( \( -perm -020 -o -perm -002 \) ! -perm -1000 \) \) -print)" ]; then
+      printf '%s\n' "$up"
+      return 0
+    fi
+  done
 }
 
-# guard DIR: as root, refuses to write in DIR unless it's root's and only root may write in it, so
-# that nobody else can put a link, or another program, where root writes.
+# guard DIR: as root, refuses to write in DIR unless it, and every folder above it, is safe for
+# that (unsafe_for_root), so that nobody else can put a link, or another program, where root writes.
 guard() {
   [ "$uid" = 0 ] || return 0
-  root_alone "$1" && return 0
+  culprit=$(unsafe_for_root "$1")
+  [ -n "$culprit" ] || return 0
   # ls shows owner and mode on Linux and macOS alike, the mode with an SELinux or ACL mark at its end.
   # shellcheck disable=SC2012
-  is=$(ls -ld -- "$1" 2> /dev/null | awk '{ m = $1; sub(/[.+@]$/, "", m); print $3 "'"'"'s, with mode " m }')
-  fail "won't write as root in $1, which is ${is:-missing}: a folder root writes in must be root's, and only root may write in it. Make it so (sudo chown root $1 && sudo chmod go-w $1), or update by hand (docs/hosting.md, section 5)"
+  is=$(ls -ld -- "$culprit" 2> /dev/null | awk '{ m = $1; sub(/[.+@]$/, "", m); print $3 "'"'"'s, with mode " m }')
+  if [ "$culprit" = "$1" ]; then
+    fail "won't write as root in $1, which is ${is:-missing}: a folder root writes in must be root's, and only root may write in it. Make it so (sudo chown root $1 && sudo chmod go-w $1), or update by hand (docs/hosting.md, section 5)"
+  fi
+  fail "won't write as root in $1: $culprit, above it, is ${is:-missing}, so someone else could move $1 aside and put their own in its place. Each folder above one root writes in must be root's, and either only root may write in it or it's sticky, as /tmp is. Make it so (sudo chown root $culprit && sudo chmod go-w $culprit), or update by hand (docs/hosting.md, section 5)"
 }
 
 # writes DIR: refuses a folder DIR this user can't write in, before anything changes.
@@ -512,7 +534,12 @@ if [ "$service" = no ]; then
   done < "$tmp/files"
 else
   # The archive's units replace the installed ones only if the service is Fenji's own unit: it runs
-  # the archive's fenji.service's ExecStart, as its User. A host's own unit stays as it is.
+  # the archive's fenji.service's ExecStart, as its User. A host's own unit stays as it is. This
+  # compares systemd's rendering of ExecStart, the argv[] systemctl show joins with spaces, with the
+  # archive's unit's text, which holds because systemd shows the reference unit's ExecStart, one
+  # line of plain words, word for word. A fenji.service whose ExecStart systemd shows otherwise (with
+  # quotes, specifiers or a line continued) would quietly stop getting its units updated: safe, but
+  # this would need to follow.
   ours=no
   if [ -f "$new/systemd/fenji.service" ]; then
     want_exec=$(unit_value ExecStart "$new/systemd/fenji.service")
