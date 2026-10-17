@@ -49,8 +49,6 @@ pub struct AppConfig {
     pub env: Vec<(OsString, OsString)>,
     /// Used instead of fetching (tests; players who have their own).
     pub depot_downloader: Option<PathBuf>,
-    /// Used instead of finding one (tests).
-    pub terminal: Option<crate::depot::Terminal>,
     /// Used before the settings, `PATH` and fetching (tests).
     pub umu_run: Option<PathBuf>,
 }
@@ -159,6 +157,9 @@ impl App {
     /// `rt`.
     pub fn start(cfg: AppConfig, rt: tokio::runtime::Handle) -> App {
         let (settings, problem) = Settings::load_or_reset(&cfg.config_dir);
+        // A download an earlier launcher left running, crashed or killed, ends: hidden, it had no
+        // window to close (the final review of #429, I3).
+        crate::depot::end_left(&cfg.data_dir.join("depot"));
         // A game an earlier launcher started may still run (#348).
         let left = play::GameMark::left_running(&cfg.data_dir);
         let state = State {
@@ -664,7 +665,6 @@ mod tests {
             pinned_build: "10015727".into(),
             env: Vec::new(),
             depot_downloader: None,
-            terminal: None,
             umu_run: None,
         }
     }

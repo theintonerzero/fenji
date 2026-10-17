@@ -30,7 +30,9 @@ test.each([
   ["client-setup", "Set up the game", "quiet"],
   ["client-repair", "1 file needs repair", "warn"],
   ["client-downloading", "Downloading 42%", "quiet"],
-  ["client-waiting-for-steam", "Downloading", "quiet"],
+  // A sign-in waits on the player (the final review, I6).
+  ["client-waiting-for-steam", "Sign in to Steam", "warn"],
+  ["client-scan-code", "Sign in to Steam", "warn"],
   ["client-fetching", "Downloading", "quiet"],
   ["play-checking", "Verifying", "quiet"],
 ])("the Game chip on %s reads %s", (file, label, tone) => {

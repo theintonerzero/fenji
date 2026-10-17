@@ -16,6 +16,8 @@ These requests carry nothing about you or your accounts, though like any request
 
 **Finding a copy Steam installed reads only your computer.** To offer a copy of the game Steam already installed, the launcher reads Steam's list of your libraries (`libraryfolders.vdf`) and the game's install record (`appmanifest_1418100.acf`), on Linux and Windows. On Windows it also reads where Steam is installed from the registry (`SteamPath`). It reads nothing else of Steam's, sends nothing, and never writes into a Steam library.
 
+**DepotDownloader's output stays on your computer.** When you download or repair your game client through Steam, the launcher runs DepotDownloader in the background and reads, of what it prints, only three things: the sign-in code it draws, its progress, and its end. The code is drawn again in the launcher, never decoded, kept or logged; every other line, your Steam account name among them, is dropped unread. A password sign-in is the command the launcher shows, which you run in your own terminal: DepotDownloader asks for your password there, and the launcher reads nothing of it.
+
 **A server's region is its host's choice.** `fenji-server init`, or a first run, guesses the region from the computer's own timezone, through the time zone files on that computer, and asks no one. A host who keeps it, or sets one, publishes it with the server's name and its other facts, to anyone who can reach the server's account API, and launchers show it to players.
 
 **The launcher's log stays on your computer.** It notes what the launcher did, such as the servers you added and the account names you signed in with, but never a password, token or ticket (`launcher.<date>.log`, kept seven days). It also keeps what the game printed the last time it started (`game.log`). Both are in the launcher's data folder (`~/.local/share/fenji-launcher/logs` on Linux), which Settings opens with its Logs link. Nothing sends them anywhere.
@@ -56,7 +58,7 @@ Joining a Fenji server means trusting the person who runs it. The game client ob
 
 ## What Fenji never handles
 
-- **Your Steam or Gameforge password.** You type those only into the services' own pages, or into DepotDownloader, which talks to Steam directly.
+- **Your Steam or Gameforge password.** You type those only into the services' own pages, or into DepotDownloader, which talks to Steam directly. Signing in by code, you scan it with the Steam Mobile App, which approves the sign-in with Steam: the launcher only draws the code DepotDownloader made.
 - **Payment details.** Fenji's software has no payment features.
 
 ## What the game client sends

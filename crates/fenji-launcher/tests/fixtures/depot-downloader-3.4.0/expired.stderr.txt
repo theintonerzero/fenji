@@ -1,0 +1,1 @@
+Failed to authenticate with Steam: Exception of type 'SteamKit2.AsyncJobFailedException' was thrown.
