@@ -554,8 +554,9 @@ for at, binary, rename, rename_t, die_t in plan:
         with open(f"{d}/out/log-{rename}.log", "a") as fh:
             fh.write(rename_t)
         continue
-    if binary == "@fork":  # [at, "@fork", comm, live, die_t]: a client whose copy lives `live` s
-        procs.append(subprocess.Popen([f"{d}/bin/gujianol.exe", f"{d}/fork.py", rename, str(rename_t), str(t0 + die_t)]))
+    if binary == "@fork":  # [at, "@fork", "MODE COMM", live, die_t]: a client that forks a copy (fork.py)
+        procs.append(subprocess.Popen([f"{d}/bin/gujianol.exe", f"{d}/fork.py", *rename.split(), str(rename_t),
+                                       str(t0 + die_t)]))
         continue
     if binary == "@when":  # [at, "@when", path, name, die_t]: once path exists, start name
         deadline = time.time() + 15
@@ -567,19 +568,40 @@ for at, binary, rename, rename_t, die_t in plan:
 for q in procs:
     q.wait()
 """
-# A client that forks a copy of itself 0.3 s in, as Wine's spawn_process does (it forks twice, and
-# the middle copy, still carrying the client's command line, ends at once; a big client's copy lives
-# long enough to be seen, run 054-b1). The copy takes the forking thread's name, or keeps the
-# client's ("-"), lives `live` seconds and ends; the client reaps it.
+# A client that forks a copy of itself 0.3 s in, as Wine's spawn_process does (it forks twice; a big
+# client's copies live long enough to be seen, run 054-b1). By MODE, the copy:
+#   copy    takes the forking thread's name COMM, or keeps the client's ("-"), lives LIVE seconds
+#           and ends, and the client reaps it;
+#   zombie  as copy, but ends at once and is reaped LIVE seconds later: a zombie has no memory, so
+#           no command line, as a big copy has while its exit frees its copy of the client's memory;
+#   exec    runs the wine64 stand-in 0.2 s in, which takes the name COMM LIVE seconds later ("-":
+#           never), as Wine's new process runs its program and is renamed;
+#   again   runs the client's own program again at once, with the client's command line, and that
+#           lives LIVE seconds: a start in a single fork (posix_spawn's).
 _FORK = """import ctypes, os, sys, time
-comm, live, die_at = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+mode, comm, live, die_at = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
+if os.environ.get("FORK_AGAIN"):  # the client's program, run again by its copy
+    time.sleep(live)
+    sys.exit()
+d = os.path.dirname(os.path.abspath(sys.argv[0]))
 time.sleep(0.3)
 pid = os.fork()
 if pid == 0:
+    if mode == "exec":
+        time.sleep(0.2)
+        os.execv(f"{d}/bin/wine64", [f"{d}/bin/wine64", f"{d}/proc.py", comm, str(time.time() + live), str(die_at)])
+    if mode == "again":
+        os.environ["FORK_AGAIN"] = "1"
+        with open("/proc/self/cmdline", "rb") as fh:
+            argv = fh.read().split(b"\\0")[:-1]
+        os.execv(argv[0], argv)
     if comm != "-":
         ctypes.CDLL(None).prctl(15, comm.encode(), 0, 0, 0)
-    time.sleep(live)
+    if mode == "copy":
+        time.sleep(live)
     os._exit(0)
+if mode == "zombie":
+    time.sleep(live)
 os.waitpid(pid, 0)
 if die_at > time.time():
     time.sleep(die_at - time.time())
@@ -673,6 +695,17 @@ class RenameWholeLoop(WholeLoop):  # issue #142
         self.assertEqual(rc, 0)
 
 
+@contextlib.contextmanager
+def fork_grace(seconds):
+    """How long a copy of a client may stay one, shortened for a test."""
+    saved = wd.FORK_GRACE
+    wd.FORK_GRACE = seconds
+    try:
+        yield
+    finally:
+        wd.FORK_GRACE = saved
+
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")
 class ForkWholeLoop(WholeLoop):  # run 054-b1: a client's copy, taken for client 2
 
@@ -680,20 +713,54 @@ class ForkWholeLoop(WholeLoop):  # run 054-b1: a client's copy, taken for client
         # As in 054-b1, named by the thread that forked it; and, from the main thread, the client's.
         for comm in ("vx_initialize", "-"):
             with self.subTest(comm=comm):
-                rc, trig = self.watch([[0.0, "@fork", comm, 0.6, 2.0]], logs=[CLIENT + "\n"])
+                rc, trig = self.watch([[0.0, "@fork", f"copy {comm}", 0.6, 2.0]], logs=[CLIENT + "\n"])
                 self.assertEqual(rc, 0, trig)
                 self.assertIn("client 1 detected", self.watchdog_log)
+                self.assertIn("a copy, ended: not a client", self.watchdog_log)
                 self.assertNotIn("client 2", self.watchdog_log)
 
+    def test_a_copy_seen_once_its_memory_is_gone_is_not_a_client(self):
+        # A big copy's exit frees its copy of the client's memory for about as long as its fork took
+        # (6 GB: 85-94 ms on Linux 7.2), with no command line left, its name kept and its parent
+        # alive. A zombie that kept the client's name stands in for it.
+        rc, trig = self.watch([[0.0, "@fork", "zombie -", 1.0, 2.5]], logs=[CLIENT + "\n"])
+        self.assertEqual(rc, 0, trig)
+        self.assertIn("a copy, ended: not a client", self.watchdog_log)
+        self.assertNotIn("client 2", self.watchdog_log)
+
+    def test_a_copy_that_ended_is_not_a_client_once_its_grace_is_over(self):
+        # The client runs on past the copy's grace, as it does in a run.
+        with fork_grace(1.0):
+            rc, trig = self.watch([[0.0, "@fork", "copy -", 0.3, 2.5]], logs=[CLIENT + "\n"])
+        self.assertEqual(rc, 0, trig)
+        self.assertIn("a copy, ended: not a client", self.watchdog_log)
+        self.assertNotIn("client 2", self.watchdog_log)
+
     def test_a_copy_that_lives_on_as_the_client_is_a_client(self):
-        saved = wd.FORK_GRACE
-        wd.FORK_GRACE = 0.3
-        try:
-            rc, _ = self.watch([[0.0, "@fork", "-", 2.0, 3.0]], logs=[CLIENT + "\n"])
-        finally:
-            wd.FORK_GRACE = saved
+        with fork_grace(0.3):
+            rc, _ = self.watch([[0.0, "@fork", "copy -", 2.0, 3.0]], logs=[CLIENT + "\n"])
+        self.assertEqual(rc, 4)
+        self.assertIn("client 2 detected (still a copy after 0.3 s)", self.watchdog_log)
+
+    def test_a_copy_that_runs_another_program_is_not_a_client(self):
+        rc, trig = self.watch([[0.0, "@fork", "exec -", 0.0, 2.5]], logs=[CLIENT + "\n"])
+        self.assertEqual(rc, 0, trig)
+        self.assertNotIn("client 2", self.watchdog_log)
+
+    def test_a_copy_that_runs_a_program_is_named_by_it_with_no_grace(self):
+        # Renamed the client 1 s after it runs its program, well within the grace: it is client 2
+        # then, held to a log of its own.
+        rc, _ = self.watch([[0.0, "@fork", "exec gujianol.exe", 1.0, 2.5]], logs=[CLIENT + "\n"])
+        self.assertEqual(rc, 4)
+        self.assertIn("client 2 detected after a rename", self.watchdog_log)
+
+    def test_a_process_that_runs_the_client_again_is_a_client_at_once(self):
+        # A start in a single fork, with the client's own command line: once it has run the client,
+        # it is one, though it carries its parent's command line, and though it ends within the grace.
+        rc, _ = self.watch([[0.0, "@fork", "again -", 1.0, 2.5]], logs=[CLIENT + "\n"])
         self.assertEqual(rc, 4)
         self.assertIn("client 2 detected", self.watchdog_log)
+        self.assertNotIn("a copy, ended", self.watchdog_log)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")

@@ -35,11 +35,18 @@ beyond stat() and a SHA-256 for identification.
 Clients: every gujianol.exe in the namespace is a client, named at first sight or later (#142);
 each poll reads again the name of every live process not yet known as one. Clients are numbered
 by their start, and client n's log is the n-th --log. A client beyond the logs given has no log of
-its own: exit 4. A process that carries its parent's command line is a copy of the parent that
-hasn't run a program of its own yet, the first step of Wine's process start (ntdll's spawn_process
-forks twice, the middle copy ending at once; a big client's copy can live long enough to be seen,
-run 054-b1): it is named a client only if it is still one FORK_GRACE seconds after it was first
-seen. It runs no Windows code, and the signs never wait on a name.
+its own: exit 4. Copies: a process named the client that has run no program since its fork (the
+kernel's PF_FORKNOEXEC, in /proc/PID/stat) is a copy of its parent, not a client yet. Wine's
+process start makes them (ntdll's spawn_process forks twice), and a big client's copies last long
+enough to be seen (run 054-b1): the middle one while it forks the new process, and about as long
+again while its exit frees its copy of the client's memory, with no command line left; the new
+process until it runs its program. A copy that runs a program is named by that program from then
+on, as any process is, with no grace; so is a process started in a single fork (posix_spawn's),
+though its command line is its parent's. A copy still one, and still named the client, FORK_GRACE
+seconds after it was first seen is a client; one that ends sooner, or with the sandbox, is none,
+and no log answers for it: it ran only its parent's program, with its parent's open files, stderr
+among them, so what it wrote is in its parent's log. Copies delay no sign: S1, S3 and S4 read no
+process names, and S2 measures from the earliest client, which comes before any copy of it.
 
 Signs (any one triggers):
   S1 a *.sys under S that isn't in the baseline, or a baseline one whose identity changed: a regular
@@ -177,9 +184,13 @@ TMPFS_SUBS = ("/tmp", "/dev/shm", "/run", "/var", "/etc", HOST_HOME)
 TMPFS_SHALLOW = ("/",)
 # Seconds the client may run before the log must have shown its creation (review M3).
 CLIENT_LOG_GRACE = 20.0
-# Seconds a copy of a client (a process carrying its parent's command line) may live before it is
-# named a client itself: Wine's middle copy ends as soon as it has forked the new process.
+# Seconds a copy of a client (a process named the client that has run no program since its fork) may
+# stay one before it is named a client itself: Wine's middle copy ends once it has forked the new
+# process, and its exit frees its copy of the client's memory in about the time that fork took.
 FORK_GRACE = 3.0
+# /proc/PID/stat's flags, field 9: PF_FORKNOEXEC, which the kernel sets at fork and clears when the
+# process runs a program (an execve, once it has replaced the process's memory).
+PF_FORKNOEXEC = 0x40
 DRIVER_TYPES = {1, 2}  # SERVICE_KERNEL_DRIVER, SERVICE_FILE_SYSTEM_DRIVER
 USER_MODE_TYPES = {0x10, 0x20}  # SERVICE_WIN32_OWN_PROCESS, SERVICE_WIN32_SHARE_PROCESS
 SERVICE_INTERACTIVE_PROCESS = 0x100  # may be added to a user-mode type
@@ -458,8 +469,8 @@ def proc_info(pid):
     except OSError:
         return None
     fields = stat[stat.rfind(")") + 2:].split()
-    return {"pid": pid, "state": fields[0], "ppid": int(fields[1]), "start": int(fields[19]),
-            "comm": comm, "argv": argv}
+    return {"pid": pid, "state": fields[0], "ppid": int(fields[1]), "flags": int(fields[6]),
+            "start": int(fields[19]), "comm": comm, "argv": argv}
 
 
 def is_named(info, name):
@@ -1072,7 +1083,7 @@ def watch(a, log, stream):
     init = None
     seen = {}
     clients = {}  # pid -> {"start": clock ticks, "found": monotonic time first seen}; never removed
-    copies = {}  # pid -> (start, monotonic time first seen): a client's copy, not named yet
+    copies = {}  # pid -> (start, monotonic time first seen): a copy of a client, not judged yet
     notes_seen = set()
     polls = 0
     tmpfs_warned = False
@@ -1156,11 +1167,10 @@ def watch(a, log, stream):
             info = seen[p]
             if not is_named(info, CLIENT):
                 continue
-            parent = proc_info(info["ppid"])
-            if parent and parent["start"] <= info["start"] and parent["argv"] == info["argv"]:
+            if info["flags"] & PF_FORKNOEXEC:
                 copies[p] = (info["start"], time.monotonic())
-                log(f"pid {p} carries its parent {info['ppid']}'s command line: a copy, named a client "
-                    f"only if it is still one in {FORK_GRACE:g} s")
+                log(f"pid {p} has run no program since its fork: a copy of pid {info['ppid']}, a client only "
+                    f"if it runs the client or is still a copy in {FORK_GRACE:g} s")
                 continue
             new_client(p, info["start"], "")
         for p, info in seen.items():
@@ -1172,16 +1182,23 @@ def watch(a, log, stream):
                 del copies[p]
                 log(f"pid {p}, a copy, ended: not a client")
                 continue
-            if time.monotonic() - since < FORK_GRACE:
+            latest = proc_info(p)
+            if not latest:
+                continue  # gone since this poll's listing: the next poll finds it ended
+            if latest["start"] != start:
+                del copies[p]  # its pid is another process's now
+                continue
+            ran = not latest["flags"] & PF_FORKNOEXEC
+            if not ran and time.monotonic() - since < FORK_GRACE:
                 continue
             del copies[p]
-            now = proc_info(p)
-            if not now or now["start"] != start:
-                continue
-            # Later renames go through track_clients, as for any process not named the client.
-            seen[p].update(comm=now["comm"], argv=now["argv"])
-            if is_named(now, CLIENT):
-                new_client(p, start, f" (a copy still one after {FORK_GRACE:g} s)")
+            # From now on its name is read again at every poll (track_clients), as any process's is.
+            seen[p].update(comm=latest["comm"], argv=latest["argv"])
+            if is_named(latest, CLIENT):
+                how = " (a copy that ran the client)" if ran else f" (still a copy after {FORK_GRACE:g} s)"
+                new_client(p, start, how)
+            elif ran:
+                log(f"pid {p}, a copy, ran a program: named by it from now on, comm {latest['comm']!r}")
         found, hits = track_clients(seen, {p: c["start"] for p, c in clients.items()}, proc_info)
         for start, p in found:
             new_client(p, start, " after a rename")
