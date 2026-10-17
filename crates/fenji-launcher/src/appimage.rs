@@ -15,10 +15,10 @@ const OWN: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 const FIXED: [&str; 1] = ["GTK_THEME"];
 
 /// `vars` as they would be outside the AppImage their `APPDIR` names: without [`OWN`] and
-/// [`FIXED`], and without the image's folders in any list of paths, where an empty element goes
-/// too (AppRun leaves one, the current folder, where the value was empty). A variable left with
-/// nothing goes. Without an `APPDIR`, or with one that isn't an absolute folder below the root,
-/// `vars` stay as they are.
+/// [`FIXED`], and without the image's folders, or any other image's mount ([`in_a_mount`]), in
+/// any list of paths, where an empty element goes too (AppRun leaves one, the current folder,
+/// where the value was empty). A variable left with nothing goes. Without an `APPDIR`, or with one
+/// that isn't an absolute folder below the root, `vars` stay as they are.
 pub fn outside(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
     let vars: Vec<_> = vars.into_iter().collect();
     let Some(image) = image(&vars) else {
@@ -36,16 +36,32 @@ fn image(vars: &[(OsString, OsString)]) -> Option<PathBuf> {
     (dir.is_absolute() && dir.parent().is_some()).then(|| dir.to_path_buf())
 }
 
-/// `value` less the paths in it that are in `image`, or `None` when nothing else is left. A value
-/// with none stays as it is, byte for byte.
+/// Whether `path` is in an AppImage's mount: the folder an image's runtime makes in the
+/// temporary folder, `.mount_` and a few letters of the image's name (`/tmp/.mount_Fenji_CAmBLK`),
+/// or, for an image run with `--appimage-extract-and-run`, `appimage_extracted_` and a hash.
+/// A launcher the updater restarted inherits the previous launcher's environment
+/// (`tauri::process::restart`), so its variables hold the previous image's folders too, behind
+/// its own; and that image stays mounted while the new launcher runs, since it holds the previous
+/// runtime's keep-alive pipe. A child that inherited them loaded the previous image's files. An
+/// extracted one's folder goes when the previous launcher ends, unless `NO_CLEANUP` keeps it.
+fn in_a_mount(path: &Path) -> bool {
+    path.ancestors().filter_map(Path::file_name).any(|name| {
+        let name = name.as_encoded_bytes();
+        name.starts_with(b".mount_") || name.starts_with(b"appimage_extracted_")
+    })
+}
+
+/// `value` less the paths in it that are in `image` or in another image's mount, or `None` when
+/// nothing else is left. A value with none stays as it is, byte for byte.
 fn without(image: &Path, value: OsString) -> Option<OsString> {
     let paths: Vec<PathBuf> = std::env::split_paths(&value).collect();
-    if !paths.iter().any(|p| p.starts_with(image)) {
+    let imaged = |p: &PathBuf| p.starts_with(image) || in_a_mount(p);
+    if !paths.iter().any(imaged) {
         return Some(value);
     }
     let kept: Vec<PathBuf> = paths
         .into_iter()
-        .filter(|p| !p.as_os_str().is_empty() && !p.starts_with(image))
+        .filter(|p| !p.as_os_str().is_empty() && !imaged(p))
         .collect();
     if kept.is_empty() {
         return None;
@@ -113,7 +129,7 @@ mod tests {
             ("ARGV0", "./Fenji.AppImage"),
             ("OWD", "/home/p"),
             ("HOME", "/home/p"),
-            // A folder whose name only starts with the image's isn't in it.
+            // Another image's mount, whose name only starts with this one's, goes too.
             (
                 "PATH",
                 "$IMG/usr/bin/:$IMG/usr/sbin/:$IMG/bin/:/tmp/.mount_FenjiAb12x/bin:/usr/bin",
@@ -136,9 +152,71 @@ mod tests {
             outside(v),
             vars(&[
                 ("HOME", "/home/p"),
-                ("PATH", "/tmp/.mount_FenjiAb12x/bin:/usr/bin"),
+                ("PATH", "/usr/bin"),
                 ("XDG_DATA_DIRS", "/usr/share:/usr/local/share"),
                 ("LS_COLORS", "di=01;34:ln=01;36:"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_launcher_the_updater_restarted_leaves_out_the_previous_images_folders_too() {
+        // The updater restarts the launcher with its own environment (`tauri::process::restart`),
+        // so the new image's AppRun puts its folders in front of the previous image's, which stays
+        // mounted while the new launcher runs: umu-run then loaded the previous image's libcrypto,
+        // older than the system's Python needs, and the game couldn't start (v0.5.3).
+        let old = "/tmp/.mount_Fenji_CAmBLK";
+        let v = vars(&[
+            ("APPDIR", "$IMG"),
+            (
+                "LD_LIBRARY_PATH",
+                &format!("$IMG/usr/lib/:$IMG/lib64/:{old}/usr/lib/:{old}/lib64/:/opt/lib"),
+            ),
+            ("PATH", &format!("$IMG/usr/bin/:{old}/usr/bin/:/usr/bin")),
+            (
+                "PYTHONPATH",
+                &format!("$IMG/usr/share/pyshared/:{old}/usr/share/pyshared/:"),
+            ),
+            // The previous AppRun's folder, which the restart kept (#407's review).
+            ("PWD", &format!("{old}/usr")),
+        ]);
+        assert_eq!(
+            outside(v),
+            vars(&[("LD_LIBRARY_PATH", "/opt/lib"), ("PATH", "/usr/bin")])
+        );
+    }
+
+    #[test]
+    fn a_launcher_the_updater_restarted_leaves_out_an_extracted_previous_image_too() {
+        // Run with `--appimage-extract-and-run` and kept with `NO_CLEANUP`, the previous image's
+        // folder outlives its launcher.
+        let old = "/tmp/appimage_extracted_0f3c9a1d2b4e";
+        let v = vars(&[
+            ("APPDIR", "$IMG"),
+            (
+                "LD_LIBRARY_PATH",
+                &format!("$IMG/usr/lib/:{old}/usr/lib/:/opt/lib"),
+            ),
+        ]);
+        assert_eq!(outside(v), vars(&[("LD_LIBRARY_PATH", "/opt/lib")]));
+    }
+
+    #[test]
+    fn a_folder_whose_name_only_starts_with_an_extracted_images_isnt_in_it() {
+        // An AppDir extracted by hand (`--appimage-extract`) is wherever the player put it.
+        let v = vars(&[
+            ("APPDIR", "/opt/Fenji.AppDir"),
+            (
+                "PATH",
+                "/opt/Fenji.AppDir/usr/bin:/opt/Fenji.AppDirX/bin:/usr/bin",
+            ),
+            ("XDG_DATA_DIRS", "/usr/share/.mounted:/usr/share"),
+        ]);
+        assert_eq!(
+            outside(v),
+            vars(&[
+                ("PATH", "/opt/Fenji.AppDirX/bin:/usr/bin"),
+                ("XDG_DATA_DIRS", "/usr/share/.mounted:/usr/share"),
             ])
         );
     }
