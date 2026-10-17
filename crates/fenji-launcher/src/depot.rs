@@ -161,11 +161,16 @@ pub struct DepotRun {
     /// How long the terminal has to start the script before the run is [`RunState::Lost`].
     pub start_limit: Duration,
     started: Instant,
-    /// The terminal's own process, once it has ended: whether it succeeded. One that fails before
-    /// the script starts opened nothing; one that succeeds may have handed the script to a server
-    /// of its own, as `gnome-terminal` does, so only the start limit can tell.
-    terminal: Arc<Mutex<Option<bool>>>,
+    /// The terminal's own process, once it has ended: whether it succeeded, and when. One that
+    /// fails before the script starts opened nothing; one that succeeds may have handed the script
+    /// to a server of its own, as `gnome-terminal` does, so only the start limit can tell; and one
+    /// that fails may have handed it on first, so the script has [`HANDED_ON`] to show (#367).
+    terminal: Arc<Mutex<Option<(bool, Instant)>>>,
 }
+
+/// How long after its terminal failed a run waits for the script before it says the terminal
+/// opened nothing (#367).
+const HANDED_ON: Duration = Duration::from_secs(2);
 
 impl DepotRun {
     /// Writes the script (and a repair's file list) into a fresh `run_dir`, then opens the
@@ -210,7 +215,7 @@ impl DepotRun {
             let ok = child.wait().is_ok_and(|status| status.success());
             *ended
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ok);
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((ok, Instant::now()));
         });
         Ok(DepotRun {
             run_dir: run_dir.to_path_buf(),
@@ -243,7 +248,9 @@ impl DepotRun {
                 .terminal
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if terminal == Some(false) {
+            if let Some((false, at)) = terminal
+                && at.elapsed() >= HANDED_ON
+            {
                 return RunState::NotOpened;
             }
             return if self.started.elapsed() > self.start_limit {
@@ -412,6 +419,41 @@ mod tests {
             RunState::NotOpened
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// #367: a terminal that hands the script to a server of its own and then fails is told apart
+    /// from one that opened nothing: the run waits a moment for the script first.
+    #[test]
+    fn a_terminal_that_hands_the_script_on_then_fails_isnt_one_that_opened_nothing() {
+        let _spawn = spawning();
+        let dir = tempfile::tempdir().unwrap();
+        let term = Terminal {
+            program: script(
+                dir.path(),
+                "term",
+                r#"(sleep 0.5; setsid "$@" </dev/null >/dev/null 2>&1) & exit 1"#,
+            ),
+            before: vec![],
+        };
+        let job = Job {
+            dd: script(dir.path(), "dd", "exit 0"),
+            folder: dir.path().join("game"),
+            files: None,
+        };
+        let run = DepotRun::start(&term, &job, &dir.path().join("run"), []).unwrap();
+        drop(_spawn);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let end = loop {
+            let s = run.state();
+            assert_ne!(s, RunState::NotOpened, "the script was on its way");
+            if matches!(s, RunState::Ended { .. } | RunState::Lost)
+                || std::time::Instant::now() > until
+            {
+                break s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert_eq!(end, RunState::Ended { code: 0 });
     }
 
     /// #329: the terminal, and DepotDownloader in it, start outside the AppImage.
