@@ -274,33 +274,23 @@ jobs:
   # whatever its workflow says. tauri-cli is installed fresh, with no cache any run could have
   # written, before the key is in any environment; only the signing step holds it.
   sign:
-    # Behind the owner's approval of the release environment: everything the release attaches is
-    # made, summed and signed here, where the keys are (the hosting spec's Amendment D, HD2).
-    name: Sign the launcher's bundles and the release's sums
+    name: Sign the launcher's bundles
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [build, launcher]
+    needs: launcher
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
     steps:
-      # The whole history, for the changelog's section in latest.json's notes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - name: Install the toolchain, tauri-cli and git-cliff, at the pinned versions, with no cache
+      - name: Install the toolchain and tauri-cli, at the pinned versions, with no cache
         run: |
           rustup set profile minimal
           rustup toolchain install
           source scripts/versions.env
           cargo install --locked tauri-cli --version "$TAURI_CLI_VERSION"
-          cargo install --locked git-cliff --version "$GIT_CLIFF_VERSION"
           cargo tauri --version
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: fenji-server-*
-          path: dist
-          merge-multiple: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: fenji-launcher-*
@@ -321,12 +311,90 @@ jobs:
             [[ -s $f.sig ]] || { echo "::error::$f has no signature."; exit 1; }
           done
           ls -l
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: launcher-signatures
+          path: launcher/*.sig
+          if-no-files-found: error
+
+  notes:
+    # The updater's latest.json, whose notes are the tag's changelog section. git-cliff is built and
+    # run here, in a job that holds no secret, rather than beside a key (the hosting spec's
+    # Amendment D, HD2).
+    name: Write the updater's latest.json
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [launcher, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # The whole history, for the changelog's section.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install git-cliff, at the pinned version
+        run: |
+          source scripts/versions.env
+          cargo install --locked git-cliff --version "$GIT_CLIFF_VERSION"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-launcher-*
+          path: launcher
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: launcher-signatures
+          path: launcher
       - name: Write the updater's latest.json
         run: |
           git cliff --latest --strip all > "$RUNNER_TEMP/notes.md"
           scripts/launcher-latest-json.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/notes.md" launcher
           cat launcher/latest.json
-          mv -- launcher/* dist/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: latest-json
+          path: launcher/latest.json
+          if-no-files-found: error
+
+  sums:
+    # Behind the owner's approval of the release environment, as sign is, in a job that builds and
+    # installs nothing, so no third-party code runs beside the release's SSH key (the hosting spec's
+    # Amendment D, HD2): SHA256SUMS over every file the release attaches, signed as SHA256SUMS.sig.
+    name: Sum the release's files and sign the sums
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [build, launcher, sign, notes]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-server-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-launcher-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: launcher-signatures
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: latest-json
+          path: dist
+      - name: The update script trusts a key the sums are signed with
+        run: |
+          trusted=$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" deploy/start/update-server.sh)
+          if [[ -z $trusted ]] || ! grep -qxF -- "$trusted" deploy/allowed_signers; then
+            echo "::error::The update script's RELEASE_KEY isn't a line of deploy/allowed_signers: scripts/set-release-key.sh puts the release key in (Amendment D, HD5)."
+            exit 1
+          fi
       - name: Write SHA256SUMS, sign it with the release's SSH key, and check the signature
         env:
           SSH_SIGNING_PRIVATE_KEY: ${{ secrets.SSH_SIGNING_PRIVATE_KEY }}
@@ -340,13 +408,13 @@ jobs:
   publish:
     name: Attach to the draft release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [sign]
+    needs: [sums]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write # makes the draft release and uploads its files
     steps:
-      # What the sign job made: the archives, the bundles and their signatures, latest.json,
+      # What the sums job put together: the archives, the bundles and their signatures, latest.json,
       # SHA256SUMS and SHA256SUMS.sig.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:

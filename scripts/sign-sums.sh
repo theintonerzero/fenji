@@ -11,13 +11,15 @@ umask 077
 
 fail() {
   echo "::error::$1" >&2
-  rm -f -- "${dir:-.}/SHA256SUMS.sig"
+  [ -z "${dir:-}" ] || rm -f -- "$dir/SHA256SUMS.sig"
   exit 1
 }
 
 [ $# -eq 2 ] || { echo "usage: SSH_SIGNING_PRIVATE_KEY=... $0 DIR ALLOWED" >&2; exit 2; }
-dir=$1
-allowed=$(cd "$(dirname -- "$2")" && pwd)/$(basename -- "$2")
+# Both as full paths, so that fail's clean-up and the check find them from inside DIR.
+dir=$(cd -- "$1" && pwd) || fail "there's no folder $1 to sum"
+[ -f "$2" ] || fail "there's no $2 to check the signature against"
+allowed=$(cd -- "$(dirname -- "$2")" && pwd)/$(basename -- "$2")
 [ -n "${SSH_SIGNING_PRIVATE_KEY:-}" ] ||
   fail "the release environment has no SSH_SIGNING_PRIVATE_KEY, so the sums can't be signed"
 grep -q '^fenji-release ' "$allowed" ||
@@ -31,6 +33,7 @@ sha256sum -- "${files[@]}" > SHA256SUMS
 key=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/release-key.XXXXXX")
 trap 'rm -f -- "$key"' EXIT
 printf '%s\n' "$SSH_SIGNING_PRIVATE_KEY" > "$key"
+unset SSH_SIGNING_PRIVATE_KEY
 # Only the key given, never an agent's, and nothing to answer: no prompt can wait on anyone.
 env -u SSH_AUTH_SOCK ssh-keygen -q -Y sign -f "$key" -n fenji-release SHA256SUMS < /dev/null ||
   fail "ssh-keygen couldn't sign SHA256SUMS with SSH_SIGNING_PRIVATE_KEY"

@@ -59,5 +59,17 @@ refused() {
 refused "another key is refused" "isn't the release key's private half" "$T/wrong" "$T/allowed" "$T/other"
 refused "no secret is refused" "no SSH_SIGNING_PRIVATE_KEY" "$T/nokey" "$T/allowed"
 refused "a file with no key's line is refused" "holds no release key's line" "$T/noline" "$T/none" "$T/key"
+refused "a line file that isn't there is refused" "no $T/missing" "$T/nofile" "$T/missing" "$T/key"
+# From a relative folder, as the workflow names dist: a signature that doesn't verify goes too.
+rm -rf -- "$T/rel"
+mkdir -p "$T/rel/dist"
+printf 'a\n' > "$T/rel/dist/a.tar.gz"
+if (cd "$T/rel" && SSH_SIGNING_PRIVATE_KEY=$(cat "$T/other") "$REPO/scripts/sign-sums.sh" dist "$T/allowed") > "$T/out" 2>&1; then
+  bad "another key is refused from a relative folder: it succeeded"
+elif [ -e "$T/rel/dist/SHA256SUMS.sig" ]; then
+  bad "another key is refused from a relative folder: its signature stayed"
+else
+  ok "another key is refused from a relative folder, and its signature goes"
+fi
 
 if [ "$failed" = 0 ]; then echo "all passed"; else exit 1; fi
