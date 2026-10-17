@@ -446,7 +446,7 @@ play.example.net {
 
 Read the new release's notes first, for what changed. Updating replaces the program; your settings and data stay as they are.
 
-On Linux and macOS, the server's update script updates it in one command. It downloads the latest release for your system and checks it against the release's checksums. Then it backs up the database, and puts the new program in place, keeping the old one beside it as `fenji-server.previous`. It never touches your settings, `fenji.toml`, your data folder, your own drop-in files for the services, or Caddy's settings. Each step prints a line, and the last one says which versions it updated from and to. If something goes wrong before the new program is in place, it says why, and your server stays as it was.
+On Linux and macOS, the server's update script updates it in one command. It downloads the latest release for your system and checks it against the release's checksums. Then it backs up the database, and puts the new program in place, keeping the old one beside it as `fenji-server.previous`. It never touches your settings, `fenji.toml`, your data folder, your own drop-in files for the services, or Caddy's settings in `/etc/caddy`. In your server's folder on your own computer, it does replace the archive's other files, as the steps by hand do: the start script, the update script itself, the texts, and the copies in its `systemd` and `caddy` folders. Each step prints a line, and the last one says which versions it updated from and to. If something goes wrong before the new program is in place, it says why, and your server stays as it was.
 
 The script trusts a release as the steps by hand do: it downloads over HTTPS from Fenji's releases on GitHub, and checks the archive against that release's `SHA256SUMS`. That shows the download arrived whole, though not who made it.
 
@@ -466,7 +466,9 @@ Then update:
 sudo fenji-update
 ```
 
-It backs up the database through the console while the server still runs. Then it stops the service, puts the new program and services in place, and starts it again. Stopping lets every player go and saves where each one stood, as the console's `stop` does, and takes 30 seconds at most. The script then waits up to 30 seconds for the server to answer. If the server doesn't come up, the script shows the end of its log, and how to go back: put `fenji-server.previous` back, and restore the backup it made (section 6).
+It backs up the database through the console while the server still runs. Then it stops the service, puts the new program and services in place, and starts it again. Stopping lets every player go and saves where each one stood, as the console's `stop` does, and takes 30 seconds at most. A service that wasn't running stays stopped, and the script says how to start it. The script then waits up to 30 seconds for the server to answer. If the server doesn't come up, the script shows the end of its log, and how to go back: put back `fenji-server.previous` and the services it replaced (`fenji.service.previous`, `fenji-backup.service.previous` and `fenji-backup.timer.previous`), then restore the backup it made (section 6).
+
+The script installs the new version's services only when the fenji service is the one section 4 installs, running the program and settings that the new `fenji.service` names, as the `fenji` user. A service of your own stays as it is, the script says so, and only the program is updated. As root, the script writes only in folders that are root's and that only root may write in, as `/usr/local/bin` and `/etc/systemd/system` are; it refuses any other, saying how to make it so.
 
 Check that maintenance is still on, which lasts through restarts:
 
