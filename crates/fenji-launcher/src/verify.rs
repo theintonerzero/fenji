@@ -145,7 +145,10 @@ pub fn verify_with(
         bytes_total: m.entries.iter().map(|e| e.size).sum(),
         ..Progress::default()
     });
-    // The lock is released before `progress` runs.
+    // The count's lock is released before `progress` runs, so the hashing threads don't wait on
+    // it; the reports go one at a time, each newer than the last, so progress never goes back,
+    // whichever thread reports first.
+    let reported = Mutex::new(0usize);
     let tick = |size: u64| {
         let now = {
             let mut p = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -153,7 +156,11 @@ pub fn verify_with(
             p.bytes_done += size;
             *p
         };
-        progress(now);
+        let mut last = reported.lock().unwrap_or_else(|e| e.into_inner());
+        if now.files_done > *last {
+            *last = now.files_done;
+            progress(now);
+        }
     };
     let stopped = || stop.load(Ordering::Relaxed);
     let mut report = Report::default();
