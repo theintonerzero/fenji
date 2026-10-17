@@ -107,6 +107,12 @@ pub fn launch_options(e: &OptionsError) -> String {
         OptionsError::Reserved(name) => {
             format!("Fenji sets {name} itself: take it out of the launch options.")
         }
+        OptionsError::ProtonPath => "PROTONPATH needs a full path from /, or a Proton's name: \
+             Fenji doesn't expand ~ or $HOME."
+            .into(),
+        OptionsError::PlatformFlag(name) => {
+            format!("Fenji starts the game without {name}: take it out of the launch options.")
+        }
     }
 }
 

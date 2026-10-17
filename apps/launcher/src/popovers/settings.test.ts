@@ -82,6 +82,32 @@ test("launch options: sent as typed, a refusal in words under the field, which k
   ]);
 });
 
+test("launch options: a snapshot that comes before the model's answer keeps the player's text", async () => {
+  // The final review, I1: the model notes a refusal as its notice, and that snapshot can reach the
+  // view before the refusal itself does.
+  const s = golden("settings");
+  const refusal = "The launch options have %command% twice: keep one.";
+  const { root, content } = mountPopover(settingsPopover, s, () => refusal);
+  const input = root.querySelector<HTMLInputElement>("#settings-launch-options")!;
+  input.value = "%command% -x %command%";
+  input.dispatchEvent(new Event("change"));
+  content.update({ ...s, notice: { text: refusal, error: true } });
+  expect(input.value).toBe("%command% -x %command%");
+  await settle();
+  expect(input.value).toBe("%command% -x %command%");
+  expect(root.querySelector(`#${input.id}-error`)!.textContent).toBe(refusal);
+  // A later change, accepted, lets the model's text show again.
+  const { root: other, content: again } = mountPopover(settingsPopover, s, () => null);
+  const field = other.querySelector<HTMLInputElement>("#settings-launch-options")!;
+  field.value = "  mangohud %command% ";
+  field.dispatchEvent(new Event("change"));
+  again.update(s);
+  expect(field.value).toBe("  mangohud %command% ");
+  await settle();
+  again.update({ ...s, settings: { ...s.settings, launchOptions: "mangohud %command%" } });
+  expect(field.value).toBe("mangohud %command%");
+});
+
 test("GameMode's switch shows on Linux where GameMode is installed, and follows the model", () => {
   const s = golden("settings");
   const { root, sent, content } = mountPopover(settingsPopover, s);

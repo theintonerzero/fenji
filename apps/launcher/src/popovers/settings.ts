@@ -57,13 +57,23 @@ export function settingsPopover(ctx: Ctx): PopoverContent {
     onchange: () => void sendOptions(),
   });
   const options = field("Launch options", optionsInput);
-  let optionsRefused = false;
+  // The player's text, from the moment it's sent until the model takes it: a snapshot can come
+  // before the model's answer (the refusal's own notice does), and mustn't put the old text back
+  // (the final review, I1).
+  let optionsHeld: string | null = null;
   const sendOptions = async (): Promise<void> => {
-    const refusal = await ctx.send({ type: "setLaunchOptions", text: optionsInput.value });
-    optionsRefused = refusal !== null;
+    const typed = optionsInput.value;
+    optionsHeld = typed;
+    const refusal = await ctx.send({ type: "setLaunchOptions", text: typed });
+    if (optionsHeld !== typed) {
+      // A newer change answers for the field.
+      return;
+    }
     if (refusal === null) {
+      optionsHeld = null;
       options.setError(null);
     } else {
+      optionsInput.value = typed;
       refused(ctx, null, refusal, (words) => options.setError(words));
     }
   };
@@ -144,7 +154,7 @@ export function settingsPopover(ctx: Ctx): PopoverContent {
       if (s.settings.gamemode !== null && gamemode.checked !== s.settings.gamemode) {
         gamemode.checked = s.settings.gamemode;
       }
-      if (document.activeElement !== optionsInput && !optionsRefused) {
+      if (document.activeElement !== optionsInput && optionsHeld === null) {
         optionsInput.value = s.settings.launchOptions;
       }
       if (document.activeElement !== umu) {

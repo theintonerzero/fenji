@@ -25,6 +25,14 @@ pub enum OptionsError {
     /// A variable Fenji sets for the start, by the name the options gave it.
     #[error("{0} is Fenji's own")]
     Reserved(String),
+    /// A `PROTONPATH` umu-run couldn't use as typed: one starting with `~`, holding a `$`, or a
+    /// relative path (the final review, I2).
+    #[error("PROTONPATH isn't a full path or a Proton's name")]
+    ProtonPath,
+    /// One of the game's own platform flags, or `AUTH_TYPE`, which choose its sign-in platform:
+    /// never for players (D1; gate #11; the final review, I3).
+    #[error("{0} chooses the game's platform")]
+    PlatformFlag(String),
 }
 
 /// Where Steam's form puts the start.
@@ -119,17 +127,56 @@ fn reserved(name: &str) -> bool {
         || name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("gj_"))
 }
 
+/// The game's own flags for its sign-in platform (spike 0, 5.10 and 8.4), never for players: Fenji
+/// starts the game without them (D1; gate #11). Its library reads a bare one too.
+const PLATFORM_FLAGS: [&str; 8] = [
+    "--gf-sdk",
+    "--gf-appid",
+    "--steam-appid",
+    "--gf-region",
+    "--mocked-appid",
+    "--mocked-region",
+    "--mailru-appid",
+    "--gf-sgs-enabled",
+];
+
+/// Whether umu-run can use a `PROTONPATH` as typed, with no shell to expand it: none, a full path,
+/// or a name it looks up itself (its own, such as `GE-Proton`, or a folder in Steam's
+/// `compatibilitytools.d`). A relative path would be the game's folder's.
+fn usable_proton(value: &str) -> bool {
+    let full = value.starts_with('/');
+    let name = !value.contains('/') && !value.starts_with('~');
+    value.is_empty() || (!value.contains('$') && (full || name))
+}
+
 /// Launch options from the player's text.
 pub fn parse(text: &str) -> Result<LaunchOptions, OptionsError> {
     let words = split(text)?;
+    // Anywhere: a wrapper could pass one on.
+    for word in &words {
+        let word = joined(word).to_ascii_lowercase();
+        let flag = PLATFORM_FLAGS.iter().find(|flag| {
+            word.strip_prefix(**flag)
+                .is_some_and(|after| after.is_empty() || after.starts_with('='))
+        });
+        if let Some(flag) = flag {
+            return Err(OptionsError::PlatformFlag((*flag).into()));
+        }
+    }
     let mut env = Vec::new();
     let mut rest = words.as_slice();
     while let Some((first, more)) = rest.split_first() {
         let Some((name, value)) = assignment(first) else {
             break;
         };
+        if name.eq_ignore_ascii_case("AUTH_TYPE") {
+            return Err(OptionsError::PlatformFlag("AUTH_TYPE".into()));
+        }
         if reserved(&name) {
             return Err(OptionsError::Reserved(name));
+        }
+        if name == "PROTONPATH" && !usable_proton(&value) {
+            return Err(OptionsError::ProtonPath);
         }
         env.push((name, value));
         rest = more;
@@ -293,5 +340,60 @@ mod tests {
         // A player's own Proton is theirs to name.
         let o = parse("PROTONPATH=/home/me/proton %command%").unwrap();
         assert_eq!(o.env, env(&[("PROTONPATH", "/home/me/proton")]));
+    }
+
+    #[test]
+    fn a_protonpath_umu_run_can_use_is_taken_and_one_it_cant_refused() {
+        // The final review, I2: it reaches umu-run as typed, never through a shell, so ~ and
+        // $HOME stay as they are, and a relative path would be the game's folder's.
+        for value in [
+            "/home/me/proton",
+            "GE-Proton",
+            "UMU-Latest",
+            "GE-Proton9-27",
+            "",
+        ] {
+            let o = parse(&format!("PROTONPATH={value} %command%")).unwrap();
+            assert_eq!(o.env, env(&[("PROTONPATH", value)]), "{value}");
+        }
+        for text in [
+            "PROTONPATH=~/.steam/root/compatibilitytools.d/GE-Proton9-27 %command%",
+            "PROTONPATH='~/proton'",
+            "PROTONPATH=$HOME/proton %command%",
+            "PROTONPATH=/home/$USER/proton",
+            "PROTONPATH=compatibilitytools.d/GE-Proton9-27",
+            "PROTONPATH=./proton",
+        ] {
+            assert_eq!(parse(text), Err(OptionsError::ProtonPath), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_games_platform_flags_never_reach_it() {
+        // The final review, I3: D1, and gate #11's --gf-sdk=mocked never for players. The client's
+        // own flags (spike 0, 5.10 and 8.4): a bare one, or one with its value, anywhere, since a
+        // wrapper could pass it on; AUTH_TYPE chooses Epic's.
+        for (text, flag) in [
+            ("%command% --gf-sdk=mocked", "--gf-sdk"),
+            ("%command% --GF-SDK=steam", "--gf-sdk"),
+            ("%command% --gf-sdk", "--gf-sdk"),
+            ("-dx11 --steam-appid=1418100", "--steam-appid"),
+            ("gamescope --gf-region=EU -- %command%", "--gf-region"),
+            ("%command% --gf-appid=1 --mocked-appid=2", "--gf-appid"),
+            ("%command% --mocked-region=x", "--mocked-region"),
+            ("%command% --mailru-appid=x", "--mailru-appid"),
+            ("%command% --gf-sgs-enabled", "--gf-sgs-enabled"),
+            ("AUTH_TYPE=exchangecode %command%", "AUTH_TYPE"),
+            ("auth_type=exchangecode", "AUTH_TYPE"),
+        ] {
+            assert_eq!(
+                parse(text),
+                Err(OptionsError::PlatformFlag(flag.into())),
+                "{text}"
+            );
+        }
+        // Their look-alikes aren't theirs.
+        let o = parse("%command% --gf-sdkx --gf -gf-sdk=mocked").unwrap();
+        assert_eq!(o.args, words(&["--gf-sdkx", "--gf", "-gf-sdk=mocked"]));
     }
 }

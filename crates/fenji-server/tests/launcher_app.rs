@@ -804,8 +804,9 @@ async fn play_starts_the_game_under_gamemode_when_its_installed_and_on() {
 #[tokio::test]
 async fn play_starts_the_game_as_its_launch_options_say() {
     // Launcher spec Amendment B, LB3: the variables for making the prefix and for the game, the
-    // player's own Proton in GE-Proton's place, the player's wrappers outside gamemoderun, and the
-    // added arguments after Fenji's own.
+    // player's own Proton in GE-Proton's place, as typed (umu's own name here, never anchored to
+    // the launcher's folder: the final review, I2), the player's wrappers outside gamemoderun, and
+    // the added arguments after Fenji's own.
     let t = PlayBed::with_gamemode().await;
     let dir = t.record.parent().unwrap().to_path_buf();
     let wrap = dir.join("wrap");
@@ -816,7 +817,7 @@ async fn play_starts_the_game_as_its_launch_options_say() {
     std::fs::write(ge.join("proton"), "#!/bin/sh\n").unwrap();
     std::fs::write(ge.join(fenji_launcher::proton::MARKER), "done").unwrap();
     let text = format!(
-        "FENJI_TEST_OPTION='a b' PROTONPATH=/home/me/proton {} --flag -- %command% -extra 'two words'",
+        "FENJI_TEST_OPTION='a b' PROTONPATH=GE-Proton {} --flag -- %command% -extra 'two words'",
         wrap.display()
     );
     t.app
@@ -833,7 +834,7 @@ async fn play_starts_the_game_as_its_launch_options_say() {
     ] {
         let lines: Vec<&str> = env.lines().collect();
         assert!(lines.contains(&"FENJI_TEST_OPTION=a b"), "{env}");
-        assert!(lines.contains(&"PROTONPATH=/home/me/proton"), "{env}");
+        assert!(lines.contains(&"PROTONPATH=GE-Proton"), "{env}");
     }
     let umu_run = t.cfg.umu_run.as_ref().unwrap().display().to_string();
     let gamemoderun = t.cfg.gamemoderun.as_ref().unwrap().display().to_string();

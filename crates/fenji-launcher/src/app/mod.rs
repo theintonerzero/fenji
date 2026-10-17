@@ -1077,6 +1077,14 @@ mod tests {
                 "WINEPREFIX=/tmp/p %command%",
                 "Fenji sets WINEPREFIX itself: take it out of the launch options.",
             ),
+            (
+                "PROTONPATH=~/proton %command%",
+                "PROTONPATH needs a full path from /, or a Proton's name: Fenji doesn't expand ~ or $HOME.",
+            ),
+            (
+                "%command% --gf-sdk=mocked",
+                "Fenji starts the game without --gf-sdk: take it out of the launch options.",
+            ),
         ] {
             let refused = app
                 .intent(Intent::SetLaunchOptions { text: text.into() })
