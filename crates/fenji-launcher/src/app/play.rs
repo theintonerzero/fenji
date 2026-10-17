@@ -165,7 +165,7 @@ impl App {
             UmuOptions {
                 umu_run: Some(umu_run),
                 prefix: Some(prefix.clone()),
-                proton: var("PROTONPATH").map(PathBuf::from),
+                proton: umu_proton(var("PROTONPATH"), &self.inner.steam_roots),
             },
             &cfg.data_dir,
             var("PATH").as_deref(),
@@ -509,6 +509,13 @@ fn env_var(
     env.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
 }
 
+/// The Proton umu-run gets: the player's own `PROTONPATH`, or else the newest stable Proton Steam
+/// installed (launcher spec Amendment A, LA6; L22), or else none, and umu-run fetches its own.
+fn umu_proton(own: Option<std::ffi::OsString>, steam_roots: &[PathBuf]) -> Option<PathBuf> {
+    own.map(PathBuf::from)
+        .or_else(|| crate::steam::newest_proton(steam_roots))
+}
+
 /// The game's log, twice: for a child's stdout and its stderr.
 fn log_pair(log: &std::fs::File) -> std::io::Result<(std::fs::File, std::fs::File)> {
     Ok((log.try_clone()?, log.try_clone()?))
@@ -642,6 +649,30 @@ fn game_log(data_dir: &Path) -> std::io::Result<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn umu_run_gets_the_players_own_proton_or_else_steams() {
+        let dir = tempfile::tempdir().unwrap();
+        let apps = dir.path().join("Steam/steamapps");
+        std::fs::create_dir_all(apps.join("common/Proton 9.0")).unwrap();
+        std::fs::write(apps.join("common/Proton 9.0/proton"), "").unwrap();
+        std::fs::write(
+            apps.join("appmanifest_2805730.acf"),
+            "\"AppState\" { \"installdir\" \"Proton 9.0\" }",
+        )
+        .unwrap();
+        let roots = [dir.path().join("Steam")];
+        assert_eq!(
+            umu_proton(Some("/opt/GE-Proton11-7".into()), &roots),
+            Some(PathBuf::from("/opt/GE-Proton11-7"))
+        );
+        assert_eq!(
+            umu_proton(None, &roots),
+            Some(apps.join("common/Proton 9.0"))
+        );
+        // No Proton anywhere: umu-run fetches its own.
+        assert_eq!(umu_proton(None, &[dir.path().join("no Steam")]), None);
+    }
 
     #[test]
     fn a_game_that_ends_at_once_couldnt_start_whatever_its_code() {
