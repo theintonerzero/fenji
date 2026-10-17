@@ -157,7 +157,7 @@ What Fenji puts in the player's own blob, in index order. Types and defaults are
 | 128 | `prop_sys_result_show_equip_head` | `bool` | `false` | the model reads the result flags | **Inferred** |
 | 177 | `prop_sys_player_voice_result` | `int` | the stored voice, when there is one | the model's `SetVoiceIndex` | **Inferred** |
 | 214 | `prop_sys_avatar_feature` | `int` | the base face | the model | **Inferred** |
-| 215 | `prop_sys_avatar_feature_face` | `str` | the face string, when there is one | the model | **Inferred** |
+| 215 | `prop_sys_avatar_feature_face` | `str` | the face string, when there is one in the shape Fenji checks (lobby.md 5.11) | the model, whose `set_face` is native | **Inferred** |
 | 222 | `prop_sys_equips` | `table` | the creation outfit (§9), pickled: slot → item id | the model | **Inferred** |
 | 300 | `prop_num_cur_hp_rat` | `num` | 1.0 | `GetHPRat` (5.6) | **Inferred** |
 | 304 | `prop_num_result_hp_max` | `int` | `FULL_HEALTH`, 1000 | `GetHPMax`, `OnHPChanged` (5.6) | **Inferred** |
@@ -255,7 +255,7 @@ The item ids are documented interoperability data, by the owner's decision of 20
 | 392 (0xFF) | closes the connection with the reason `client-exit` | the client quits on it (10.1). Closed without it, the client took the close for a lost connection: its login screen, then the login error (#382) |
 | type 4 | 330 (no arguments), and the connection goes back to the lobby | the client returns to its select screen on the same connection (1.5; #282) |
 
-**Golden vector** of a type-7 body, for the character M3's run created (Lin, vocation 7, skeleton 3, level 37, portrait `169 << 16`, voice 3, base face 1, outfit 2), with a short face string `v:5;` in place of its real one, pid 258, the default start (scene 5, `2366, −71735, 64854, 345`), a speed of 100 and full health. It is 141 bytes: the 14-byte header, then the entries of §5's table in index order.
+**Golden vector** of a type-7 body, for the character M3's run created (Lin, vocation 7, skeleton 3, level 37, portrait `169 << 16`, voice 3, base face 1, outfit 2), with the shortest face Fenji's check takes, `v:5;2:0,0,0;3:0,0,0,0,0;4:0` (lobby.md 5.11), in place of its real one, pid 258, the default start (scene 5, `2366, −71735, 64854, 345`), a speed of 100 and full health. It is 164 bytes: the 14-byte header, then the entries of §5's table in index order.
 
 ```
 02 01 00 00 00 00 00 00 01 ff 70 11 01 00
@@ -265,7 +265,7 @@ The item ids are documented interoperability data, by the owner's decision of 20
 69 50 00 00 a9 00
 6d 10   80 10
 b1 30 03   d6 30 01
-d7 90 04 76 3a 35 3b 00
+d7 90 1b 76 3a 35 3b 32 3a 30 2c 30 2c 30 3b 33 3a 30 2c 30 2c 30 2c 30 2c 30 3b 34 3a 30 00
 de c0 2a 01 0b 00 00 00 00 03 02 05 13 0a 00 06 03 03 05 15 0a 00 06
          03 05 05 19 0a 00 06 03 06 05 1b 0a 00 06 03 0b 05 d0 00 00 05 00
 2c 71 00 00 00 00 00 00 f0 3f   30 41 e8 03

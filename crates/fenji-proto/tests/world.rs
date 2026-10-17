@@ -42,7 +42,7 @@ const V7: &str = "
     69 50 00 00 a9 00
     6d 10   80 10
     b1 30 03   d6 30 01
-    d7 90 04 76 3a 35 3b 00
+    d7 90 1b 76 3a 35 3b 32 3a 30 2c 30 2c 30 3b 33 3a 30 2c 30 2c 30 2c 30 2c 30 3b 34 3a 30 00
     de c0 2a 01 0b 00 00 00 00 03 02 05 13 0a 00 06 03 03 05 15 0a 00 06
              03 05 05 19 0a 00 06 03 06 05 1b 0a 00 06 03 0b 05 d0 00 00 05 00
     2c 71 00 00 00 00 00 00 f0 3f   30 41 e8 03
@@ -217,7 +217,7 @@ fn lin_look() -> Appearance {
     Appearance {
         voice: Some(3),
         base_face: 1,
-        face: Some("v:5;".into()),
+        face: Some("v:5;2:0,0,0;3:0,0,0,0,0;4:0".into()),
         equips_id: 2,
         portrait: 169 << 16,
     }
@@ -241,7 +241,7 @@ fn sync_enter_player_is_byte_for_byte() {
     let look = lin_look();
     let got = world::sync_enter_player(&lin(&look));
     assert_eq!(got, unhex(V7));
-    assert_eq!(got.len(), 141);
+    assert_eq!(got.len(), 164);
 }
 
 fn indexes(body: &[u8]) -> Vec<u16> {
@@ -327,7 +327,7 @@ fn decode_blob_reads_back_v7() {
         (128, BlobValue::Bool(false)),
         (177, BlobValue::Int(3)),
         (214, BlobValue::Int(1)),
-        (215, BlobValue::Str(b"v:5;".to_vec())),
+        (215, BlobValue::Str(b"v:5;2:0,0,0;3:0,0,0,0,0;4:0".to_vec())),
         (
             222,
             BlobValue::Pickled(vec![outfit(&[
@@ -346,6 +346,41 @@ fn decode_blob_reads_back_v7() {
     ];
     assert_eq!(world::FULL_HEALTH, 1000);
     assert_eq!(world::decode_blob(&v7[14..]).unwrap(), want);
+}
+
+#[test]
+fn a_face_out_of_the_validators_shape_goes_to_no_one() {
+    // #391: in the world, a client hands another player's face straight to native code, without
+    // the shared validator it runs on the select screen (lobby.md 5.11).
+    for bad in [
+        "v:5;",
+        "v:5;2:1,2,3;3:1,2,3,4,5;4:1,2,3,4",
+        "v:5;2:1,2,3;3:1,2,3,4,5;4:7,2,3,4;7:1,1|512,1",
+    ] {
+        let look = Appearance {
+            face: Some(bad.into()),
+            ..lin_look()
+        };
+        let v7 = world::sync_enter_player(&lin(&look));
+        let entries = world::decode_blob(&v7[14..]).unwrap();
+        assert!(entries.iter().all(|(index, _)| *index != 215), "{bad}");
+    }
+    // A fox's ears and tail go out for a Fox Mage alone: the check takes the actor's vocation.
+    let fox = "v:5;2:1,2,3;3:1,2,3,4,5;4:7,2,3,4;7:1,1|300,502";
+    let look = Appearance {
+        face: Some(fox.into()),
+        ..lin_look()
+    };
+    let sent = |vocation| {
+        let v7 = world::sync_enter_player(&PlayerActor {
+            vocation,
+            ..lin(&look)
+        });
+        let entries = world::decode_blob(&v7[14..]).unwrap();
+        entries.iter().any(|(index, _)| *index == 215)
+    };
+    assert!(sent(7), "a Fox Mage's");
+    assert!(!sent(0), "a Spearmaster's");
 }
 
 #[test]

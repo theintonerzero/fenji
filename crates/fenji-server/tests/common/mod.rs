@@ -116,7 +116,7 @@ pub fn request(name: &str, vocation: i64, skeleton: i64) -> Vec<Value> {
             (s("prop_sys_avatar_feature"), Value::Int(2)),
             (
                 s("prop_sys_avatar_feature_face"),
-                s("v:5;2:1,2,3;3:1,2,3,4,5;4:1,2,3,4"),
+                s("v:5;2:1,2,3;3:1,2,3,4,5;4:7,2,3,4"),
             ),
             (s("prop_sys_player_tattoo_pos"), Value::Int(0)),
             (s("prop_sys_player_birthday"), Value::Int(0)),

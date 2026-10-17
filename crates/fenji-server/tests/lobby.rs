@@ -407,8 +407,22 @@ async fn a_client_that_stops_reading_is_closed() {
     let t = ticket(&s, "aaa").await;
     let mut a = Bot::connect(s.login_addr, payload(&t, "aaa", false)).await;
     a.expect_work().await;
-    // Nine characters with the largest face make each list about 40 KB.
-    let face = Value::Str(format!("v:5;{}", "1".repeat(4000)).into_bytes());
+    // Nine characters with a face near the widest the check takes (#391) make each
+    // list about 36 KB: every section at its widest, in ten-digit values.
+    let big = "2147483647";
+    let sliders = format!("{}0,0,2147483647,1073741823", format!("{big},").repeat(61));
+    let body = [big; 256].join(",");
+    let face = format!(
+        "v:5;1:{sliders};2:65543,{big},{big};3:{big},{big},{big},{big},{big};\
+         4:31,{big},{big},{big},{big},{big};5:{body};6:{big}"
+    );
+    assert!(fenji_proto::face::valid(&face, 0), "in the client's shape");
+    assert!(
+        (3_500..=lobby::FACE_MAX).contains(&face.len()),
+        "{}",
+        face.len()
+    );
+    let face = Value::Str(face.into_bytes());
     for name in [
         "Ana", "Bea", "Cid", "Dax", "Eli", "Fay", "Gus", "Hal", "Ivy",
     ] {

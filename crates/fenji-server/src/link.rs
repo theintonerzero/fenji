@@ -1733,7 +1733,7 @@ mod tests {
         let appearance = Appearance {
             voice: Some(2),
             base_face: 2,
-            face: Some("v:5;".into()),
+            face: Some("v:5;2:0,0,0;3:0,0,0,0,0;4:0".into()),
             equips_id: 1,
             portrait: 3 << 16,
         };

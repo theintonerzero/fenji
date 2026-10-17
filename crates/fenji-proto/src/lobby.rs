@@ -6,6 +6,7 @@
 use std::ops::RangeInclusive;
 
 use crate::Result;
+use crate::face;
 use crate::packet::script_body;
 use crate::pickle::{Table, Value};
 
@@ -334,7 +335,9 @@ impl Actor {
             ),
             (s("prop_sys_equips"), Value::Table(self.outfit())),
         ];
-        if let Some(f) = &self.appearance.face {
+        // Only a face in the shape the client's shared validator writes (#391): one stored
+        // before Fenji checked it goes to no one, and the select screen shows the default face.
+        if let Some(f) = (self.appearance.face.as_ref()).filter(|f| face::valid(f, self.vocation)) {
             hash.push((s("prop_sys_avatar_feature_face"), s(f)));
         }
         hash.extend(

@@ -4,6 +4,7 @@ pub mod chat;
 pub mod client;
 pub mod codec;
 mod error;
+pub mod face;
 pub mod frame;
 pub mod handshake;
 pub mod header;
