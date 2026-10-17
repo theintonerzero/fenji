@@ -25,6 +25,10 @@ pub struct Settings {
     /// GameMode while the game runs, where it's installed (launcher spec Amendment B, LB2).
     #[serde(default = "yes")]
     pub gamemode: bool,
+    /// The player's launch options, as Steam's, kept only when they read
+    /// ([`crate::options::parse`]; launcher spec Amendment B, LB3).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub launch_options: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub umu_run: Option<PathBuf>,
     /// Where Start download saves the game, when the player changed it ("Change" beside the
@@ -57,6 +61,7 @@ impl Default for Settings {
             client: None,
             auto_update: true,
             gamemode: true,
+            launch_options: String::new(),
             umu_run: None,
             download_folder: None,
             update_seen: None,

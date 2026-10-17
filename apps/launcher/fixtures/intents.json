@@ -24,6 +24,7 @@
   { "type": "dismissNotice", "text": "The download was cancelled." },
   { "type": "setAutoUpdate", "on": false },
   { "type": "setGameMode", "on": false },
+  { "type": "setLaunchOptions", "text": "PROTON_LOG=1 mangohud %command% -dx11" },
   { "type": "setUmuRun", "path": "/home/player/.local/bin/umu-run" },
   { "type": "setUmuRun", "path": null },
   { "type": "pickFolder", "purpose": "game" },

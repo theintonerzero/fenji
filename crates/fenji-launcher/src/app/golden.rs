@@ -146,6 +146,7 @@ fn base() -> Snapshot {
             auto_update: true,
             // GameMode installed, as on most gaming Linux desktops, and on, as by default.
             gamemode: Some(true),
+            launch_options: String::new(),
             umu_run: None,
             log_folder: "/home/player/.local/share/fenji-launcher/logs".into(),
         },

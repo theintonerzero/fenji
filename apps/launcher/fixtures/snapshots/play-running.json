@@ -72,6 +72,7 @@
   "settings": {
     "autoUpdate": true,
     "gamemode": true,
+    "launchOptions": "",
     "umuRun": null,
     "logFolder": "/home/player/.local/share/fenji-launcher/logs"
   },
