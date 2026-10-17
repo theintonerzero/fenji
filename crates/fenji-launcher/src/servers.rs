@@ -63,6 +63,9 @@ pub enum AddError {
     Empty,
     #[error("That isn't an invite link or an address.")]
     Unreadable,
+    /// A space typed within the address, which no address holds (#367).
+    #[error("That address has a space in it: take it out, or paste the link again.")]
+    Spaced,
     #[error("Plain http:// works only on this computer.")]
     Insecure,
 }
@@ -94,7 +97,12 @@ fn address(text: &str) -> Result<Added, AddError> {
     // `unwrapped` leaves a space only where it was typed within a line, and an address never holds
     // one: refused here, before the scheme in front makes it a URL.
     if text.contains(char::is_whitespace) {
-        return Err(AddError::Unreadable);
+        // One that looks like an address, with a dot or a colon, hears where it went wrong (#367).
+        return Err(if text.contains(['.', ':']) {
+            AddError::Spaced
+        } else {
+            AddError::Unreadable
+        });
     }
     let full = if text.starts_with("https://") || text.starts_with("http://") {
         text.to_string()
@@ -196,10 +204,10 @@ mod tests {
             parse_added("ABCD-EFGH-\n   JKMN-PQRS").unwrap(),
             Added::Code(c) if c.display() == "ABCD-EFGH-JKMN-PQRS"
         ));
-        // Spaces in what isn't a link stay a mistake, not a host name.
+        // Spaces in what isn't a link stay a mistake, not a host name, and say so (#367).
         assert!(matches!(
             parse_added("play example.net"),
-            Err(AddError::Unreadable)
+            Err(AddError::Spaced)
         ));
         // Nor in a link's host, within one line (#359): only a line break is a wrap there.
         for typed in [
@@ -207,10 +215,14 @@ mod tests {
             "https://play example.net/#invite=ABCD-EFGH-JKMN-PQRS",
         ] {
             assert!(
-                matches!(parse_added(typed), Err(AddError::Unreadable)),
+                matches!(parse_added(typed), Err(AddError::Spaced)),
                 "{typed}"
             );
         }
+        assert_eq!(
+            AddError::Spaced.to_string(),
+            "That address has a space in it: take it out, or paste the link again."
+        );
     }
 
     #[test]
