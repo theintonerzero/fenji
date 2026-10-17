@@ -8,19 +8,19 @@
 | Build ID | 10015727 |
 | Main executable | `bin64/gujianol.exe`, 54,029,984 bytes, SHA-256 `3fdc6394de85c1224b91312d62bf2e57251625b49e8d0f3960accf8dfe5f0678`, FileVersion 2.1.19.42851 (ProductVersion `42851-5993a494`) |
 | Files | 210 files in 9 directories, 107,996,004,001 bytes: exactly the `SizeOnDisk` recorded in Steam's `appmanifest_1418100.acf`. Steam's cached depot manifest (`<Steam root>/depotcache/1418101_5002037851744157048.manifest`) is the canonical file list; the pinned copy matches it file for file (names and sizes; checked 2026-10-11) |
-| Recorded | 2026-10-11, from the owner's Steam install on the Fedora box (download finished 2026-10-11 19:32:45 AEDT) |
+| Recorded | 2026-10-11, from the owner's Steam install on the Fedora box (download finished 2026-10-11 08:32:45 UTC) |
 
 The pinned copy lives in `$FENJI_CLIENT_PATH` (default `~/fenji-client`). It is a reflink (copy-on-write) copy of the owner's Steam install, made outside the Steam library, so the sandbox can bind it and Steam never writes to it. See `docs/re/README.md` for how to make your own, and compare your `bin64/gujianol.exe` with the SHA-256 above.
 
 ## Run-time artefacts removed
 
-The owner launched the game once through Steam right after the download (2026-10-11): Proton set up its prefix from 19:32:45 AEDT, and the game's last writes came at 19:33:36 (`docs/re/spike-0.md` §7). That run left four files and three empty directories in the install, all created by it rather than shipped: none of them is in the depot manifest. The files' sizes add up to the 8,357 bytes by which the install exceeded the recorded `SizeOnDisk`. They were deleted from the pinned copy only; the Steam install is unchanged.
+The owner launched the game once through Steam right after the download (2026-10-11): Proton set up its prefix from 08:32:45 UTC, and the game's last writes came at 08:33:36 (`docs/re/spike-0.md` §7). That run left four files and three empty directories in the install, all created by it rather than shipped: none of them is in the depot manifest. The files' sizes add up to the 8,357 bytes by which the install exceeded the recorded `SizeOnDisk`. They were deleted from the pinned copy only; the Steam install is unchanged.
 
-| File | Bytes | Written |
+| File | Bytes | Written (UTC) |
 |---|---|---|
-| `bin64/gujianol.log` | 3,421 | 19:33:36 |
-| `bin64/Log_gujianol.htm` | 3,914 | 19:33:06 |
-| `settings/GameSetting.dat` | 1,019 | 19:33:10 |
-| `settings/PanelPositionSetings.dat` | 3 | 19:33:36 |
+| `bin64/gujianol.log` | 3,421 | 08:33:36 |
+| `bin64/Log_gujianol.htm` | 3,914 | 08:33:06 |
+| `settings/GameSetting.dat` | 1,019 | 08:33:10 |
+| `settings/PanelPositionSetings.dat` | 3 | 08:33:36 |
 
 The run also created the empty directories `settings/`, `ExportFace/` and `ExportPrefab/`, which were removed as well. The client recreates them on its first run.

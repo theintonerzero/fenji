@@ -8,7 +8,7 @@ use super::intent::Intent;
 use super::snapshot::*;
 use crate::verify::Problem;
 
-// The boards' clock: 2026-10-15 in Melbourne (AEDT, UTC+11), in Unix milliseconds.
+// The boards' clock: 2026-10-15, from 09:14 UTC, in Unix milliseconds.
 /// 20:14, when the boards were drawn: the last answer, and "last checked".
 const NOW: i64 = 1_792_055_640_000;
 /// 20:10: the last check of the files.
