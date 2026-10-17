@@ -521,6 +521,7 @@ impl State {
             address: saved.shown_address(),
             pinned: saved.pin.is_some(),
             host: info.and_then(|i| i.host.clone()),
+            region: info.and_then(|i| i.region.clone()),
             status: status.map_or(StatusView::Unknown, status_view),
             players: info
                 .filter(|_| answering)

@@ -391,6 +391,49 @@ fn an_existing_config_at_the_default_path_is_used_as_it_is() {
 }
 
 #[test]
+fn a_first_run_writes_the_timezones_country_and_a_start_hints_only_where_none_is_set() {
+    // Amendment C, HC2 and HC3, through the binary: the template a first run writes holds the
+    // country of TZ's zone, and a start of a file without a region says where the line would go,
+    // unless its host set it blank. tzdata's tables must be where the guess reads them.
+    let tables = ["zone.tab", "iso3166.tab"].map(|t| Path::new("/usr/share/zoneinfo").join(t));
+    if !cfg!(unix) || !tables.iter().all(|t| t.is_file()) {
+        eprintln!("skipped: no tzdata tables in /usr/share/zoneinfo");
+        return;
+    }
+    let env: Vec<(&str, &str)> = ANY_PORT
+        .into_iter()
+        .chain([("TZ", "Europe/Berlin")])
+        .collect();
+    const HINT: &str = "set [server] region = \"Germany\" in fenji.toml";
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = Running::start_with(dir.path(), &[], &env);
+    first.wait_for("Fenji is running");
+    first.stop();
+    let written = std::fs::read_to_string(dir.path().join("fenji.toml")).unwrap();
+    assert!(
+        written
+            .lines()
+            .any(|l| l.starts_with("region = \"Germany\"")),
+        "{written}"
+    );
+    assert!(
+        !first.said().contains(HINT),
+        "its file has one:\n{}",
+        first.said()
+    );
+    for (line, hinted) in [("", true), ("region = \"\"\n", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = format!("[server]\nname = \"F\"\n{line}[store]\npath = \"f.db\"\n");
+        std::fs::write(dir.path().join("fenji.toml"), config).unwrap();
+        let mut server = Running::start_with(dir.path(), &[], &env);
+        server.wait_for("Fenji is running");
+        server.stop();
+        let said = server.said();
+        assert_eq!(said.contains(HINT), hinted, "{line:?}:\n{said}");
+    }
+}
+
+#[test]
 fn run_with_a_config_path_that_is_missing_says_how_to_write_one_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let mut server = Running::start(dir.path(), &["--config", "missing.toml", "run"]);

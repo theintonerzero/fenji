@@ -14,4 +14,8 @@ address: string,
 /**
  * Whether its own key is pinned (hosting spec §3.10).
  */
-pinned: boolean, host: string | null, status: StatusView, players: PlayersView | null, motd: string, pingMs: number | null, lastSeenMs: number | null, version: string | null, source: string | null, username: string | null, signedIn: boolean, };
+pinned: boolean, host: string | null, 
+/**
+ * Where the server is, when its host set it (hosting spec Amendment C, HC5).
+ */
+region: string | null, status: StatusView, players: PlayersView | null, motd: string, pingMs: number | null, lastSeenMs: number | null, version: string | null, source: string | null, username: string | null, signedIn: boolean, };

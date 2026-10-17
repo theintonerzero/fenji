@@ -151,7 +151,7 @@
   box-shadow: inset 0 0 0 1px var(--ember-500);
 }
 
-/* A seal's tip: its name, then its players or its state. */
+/* A seal's tip: its name, then its players or its state, and its region. */
 .tip {
   position: absolute;
   left: 66px;
@@ -433,12 +433,24 @@
 }
 
 .state-live {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 9px;
 }
 
+/* A flex item drops the space at its start, so the ping and the region keep their " · " with
+   pre. */
 .ping {
+  white-space: pre;
+}
+
+/* The region, a host's text, gives way first: one too long for the line ends in an ellipsis
+   rather than pushing the facts before it onto more lines. */
+.region {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: pre;
 }
 

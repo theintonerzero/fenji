@@ -214,6 +214,7 @@ On Linux, for example, an invite for a week:
 `fenji.toml` holds the server's settings, and `fenji.example.toml` beside it describes every one. A change takes effect when the server restarts. The ones a host changes most:
 - `name`: your server's name, which the game and launchers show (at most 32 characters, and no colons);
 - `host`: your name, which launchers show as "hosted by";
+- `region`: where your server is, such as `"Germany"`, which launchers show after its ping (at most 32 characters). A first run guesses it from your computer's timezone; on a VPS, which usually runs on UTC, set it yourself. To show none, set `region = ""`: the server then stops suggesting one as it starts;
 - `motd`: the message of the day, unless the console sets one;
 - `max_players`: how many players can be online at once: 20 unless you change it, and at most 200, since a crowd of more would be sent more of each other's moves at once than a player's connection holds. Fenji is built and measured for 20;
 - `admins`: accounts that are admins whatever the console's `op` and `deop` say.
@@ -318,6 +319,8 @@ path = "/var/lib/fenji/fenji.db"
 - `name`, in `[server]`, is your server's name, which the game and launchers show.
 - `public_host`, in `[server]`, is your VPS's public address, or a domain name that points at it. Delete the `#` at the start of its line. Invite links then carry it.
 - `path`, in `[store]`, puts the database in the service's data folder.
+
+While you're there, you can set `region`, in `[server]`: where your server is, such as `"Germany"`, which launchers show after its ping. A VPS usually runs on UTC, so `init` can't guess it. Delete the `#` at the start of its line, and put your country in.
 
 In nano, Ctrl-O then Enter saves the file, and Ctrl-X leaves.
 

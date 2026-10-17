@@ -218,6 +218,16 @@ fn own_key_proxies() -> String {
     )
 }
 
+/// What a start says when `cfg` has no region and this computer's timezone names one, `guess`
+/// (M4 hosting spec Amendment C, HC3): the host's file is theirs, so the server only says where
+/// the line would go. A blank region is the host's choice of none, and gets no hint.
+fn region_hint(cfg: &Config, guess: Option<String>) -> Option<String> {
+    let guess = guess.filter(|_| cfg.server.region.is_none() && !cfg.server.region_blank)?;
+    Some(format!(
+        "To show players where this server is, set [server] region = \"{guess}\" in fenji.toml."
+    ))
+}
+
 /// The server link a start shows beside "Fenji is running" under `tls = "self"` (M4 hosting spec
 /// §3.10), for players who already have an account: the first of `bases` (`invite::bases`), the
 /// one address set for links or the machine's first, and that `link` shows the rest. None without
@@ -331,6 +341,7 @@ pub async fn start(
         server_id: cfg.server.id,
         source: cfg.server.source_url.clone(),
         host: cfg.server.host.clone(),
+        region: cfg.server.region.clone(),
     };
     let online = Arc::new(Online::new(limits.max_players));
     let console = ConsoleService::new(Parts {
@@ -475,6 +486,9 @@ pub async fn run(
     };
     let stop = signalled();
     tracing::info!(gate = %server.login_addr, api = %server.api_addr, "Fenji is running");
+    if let Some(hint) = region_hint(&cfg, crate::region::guess()) {
+        tracing::info!("{hint}");
+    }
     let bases = crate::invite::bases(&cfg, server.pin().as_deref(), server.api_addr.port());
     if let Some(link) = running_link(&cfg, &bases) {
         tracing::info!("{link}");
@@ -767,6 +781,30 @@ mod tests {
     use crate::world::{KickReason, Location, Look, Player, Pos, WorldOut};
 
     const NOW: i64 = 1_800_000_000_000;
+
+    #[test]
+    fn a_start_hints_at_the_region_only_where_none_is_set() {
+        // Amendment C, HC3: the host's file is theirs; the start only says where the line goes.
+        let cfg = |extra: &str| {
+            Config::parse(&format!("[server]\nname = \"F\"\n{extra}"), Path::new("/")).unwrap()
+        };
+        assert_eq!(
+            region_hint(&cfg(""), Some("Germany".into())).as_deref(),
+            Some(
+                "To show players where this server is, set [server] region = \"Germany\" in fenji.toml."
+            )
+        );
+        assert_eq!(region_hint(&cfg(""), None), None);
+        assert_eq!(
+            region_hint(&cfg("region = \"Berlin\"\n"), Some("Germany".into())),
+            None
+        );
+        assert_eq!(
+            region_hint(&cfg("region = \"\"\n"), Some("Germany".into())),
+            None,
+            "a blank region is the host's choice of none"
+        );
+    }
 
     const AT: Location = Location {
         scene: 5,

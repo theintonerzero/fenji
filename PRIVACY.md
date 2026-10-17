@@ -16,6 +16,8 @@ These requests carry nothing about you or your accounts, though like any request
 
 **Finding a copy Steam installed reads only your computer.** To offer a copy of the game Steam already installed, the launcher reads Steam's list of your libraries (`libraryfolders.vdf`) and the game's install record (`appmanifest_1418100.acf`), on Linux and Windows. On Windows it also reads where Steam is installed from the registry (`SteamPath`). It reads nothing else of Steam's, sends nothing, and never writes into a Steam library.
 
+**A server's region is its host's choice.** `fenji-server init`, or a first run, guesses the region from the computer's own timezone, through the time zone files on that computer, and asks no one. A host who keeps it, or sets one, publishes it with the server's name and its other facts, to anyone who can reach the server's account API, and launchers show it to players.
+
 **The launcher's log stays on your computer.** It notes what the launcher did, such as the servers you added and the account names you signed in with, but never a password, token or ticket (`launcher.<date>.log`, kept seven days). It also keeps what the game printed the last time it started (`game.log`). Both are in the launcher's data folder (`~/.local/share/fenji-launcher/logs` on Linux), which Settings opens with its Logs link. Nothing sends them anywhere.
 
 On Linux the launcher starts the client through [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher), which has network habits of its own:

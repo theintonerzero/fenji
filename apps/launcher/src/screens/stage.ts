@@ -9,7 +9,7 @@ import type { Intent, ServerView, Snapshot } from "../types";
 import { button, setPlay } from "../ui/button";
 import { icons } from "../ui/icons";
 import { friends } from "../ui/people";
-import { clock, stateLine, systemName } from "../words";
+import { clock, regionPart, stateLine, systemName } from "../words";
 import { noticeSlot, renew } from "./parts";
 
 type Tone = "ok" | "warn" | "quiet" | "error";
@@ -159,7 +159,10 @@ export function stage(root: HTMLElement, ctx: Ctx): Screen {
   // is beside it, out of the live region.
   const live = h("span", { class: "state-live", role: "status" });
   const ping = h("span", { class: "ping", "aria-hidden": "true" });
-  const state = h("p", { class: "state", id: stateId }, live, ping);
+  // Where the server is closes the line (hosting spec Amendment C, HC5). It rarely changes, so
+  // it's read with the line, outside the live region.
+  const region = h("span", { class: "region" });
+  const state = h("p", { class: "state", id: stateId }, live, ping, region);
   const host = h("p", { class: "host", hidden: true });
   const playButton = button.play(() => void ctx.send({ type: "play" }));
   playButton.setAttribute("aria-describedby", stateId);
@@ -211,6 +214,10 @@ export function stage(root: HTMLElement, ctx: Ctx): Screen {
       const pinged = look.kind === "lit" && v.status.kind === "online" && v.pingMs !== null ? ` · ${v.pingMs} ms` : "";
       if (ping.textContent !== pinged) {
         ping.textContent = pinged;
+      }
+      const place = regionPart(v);
+      if (region.textContent !== place) {
+        region.textContent = place;
       }
 
       const words = hostLine(variant, v);

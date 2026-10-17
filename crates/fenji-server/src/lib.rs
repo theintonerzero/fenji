@@ -16,6 +16,7 @@ pub mod listen;
 pub mod lobby;
 pub mod lock;
 pub mod online;
+pub mod region;
 pub mod server;
 pub mod status;
 pub mod text;

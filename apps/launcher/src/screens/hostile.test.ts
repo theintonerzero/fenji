@@ -1,6 +1,6 @@
 // The launcher plan's Review Focus 2 over every screen, popover and dialog (the redesign's Task 7):
-// what a server sends (its name, host, notice, version and maintenance message, the players in its
-// lobby, and the words a notice carries) shows as text, and no element is made from it.
+// what a server sends (its name, host, region, notice, version and maintenance message, the players
+// in its lobby, and the words a notice carries) shows as text, and no element is made from it.
 import { expect, test } from "vitest";
 
 import type { Ctx, PopoverContent } from "../app";
@@ -25,6 +25,7 @@ function hostile(s: Snapshot): Snapshot {
   for (const v of s.servers) {
     v.name = HOSTILE;
     v.host = HOSTILE;
+    v.region = HOSTILE;
     v.motd = HOSTILE;
     v.version = HOSTILE;
     if (v.username !== null) {
