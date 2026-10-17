@@ -143,12 +143,18 @@ sum256() {
   fi
 }
 
+# quoted TEXT: TEXT as one shell word in single quotes, any single quote in it escaped, so that a
+# command a host pastes stays on the path it names.
+quoted() { printf "'%s'" "$(printf '%s\n' "$1" | sed "s/'/'\\\\''/g")"; }
+
 # unsafe_for_root DIR: the first folder that makes DIR unsafe for root to write in, from DIR, a full
 # path with its links resolved, up to /; nothing if there's none. DIR must be root's, and only root
 # may write in it. Each folder above it must be root's, and either only root may write in it or
 # it's sticky, as /tmp is: anyone else who may write in a folder could rename DIR, or a folder on
 # the way to it, aside, and put their own in its place, between the checks and the writes.
 unsafe_for_root() {
+  # The walk up ends at /, so it needs a full path: taking the last part off a relative one would
+  # never get there. Every caller passes a path pwd -P made, or one below it; any other is unsafe.
   case $1 in /*) ;; *) printf '%s\n' "$1"; return 0 ;; esac
   if [ ! -d "$1" ] || [ -n "$(find "$1" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" ]; then
     printf '%s\n' "$1"
@@ -167,6 +173,9 @@ unsafe_for_root() {
 
 # guard DIR: as root, refuses to write in DIR unless it, and every folder above it, is safe for
 # that (unsafe_for_root), so that nobody else can put a link, or another program, where root writes.
+# The advice fits what's wrong: DIR itself, or a folder above it that's root's, can be made safe
+# where it is; a folder above that isn't root's, such as a home folder, must stay its user's, so
+# the server's files move, or a folder's server goes to that user.
 guard() {
   [ "$uid" = 0 ] || return 0
   culprit=$(unsafe_for_root "$1")
@@ -175,9 +184,18 @@ guard() {
   # shellcheck disable=SC2012
   is=$(ls -ld -- "$culprit" 2> /dev/null | awk '{ m = $1; sub(/[.+@]$/, "", m); print $3 "'"'"'s, with mode " m }')
   if [ "$culprit" = "$1" ]; then
-    fail "won't write as root in $1, which is ${is:-missing}: a folder root writes in must be root's, and only root may write in it. Make it so (sudo chown root $1 && sudo chmod go-w $1), or update by hand (docs/hosting.md, section 5)"
+    fail "won't write as root in $1, which is ${is:-missing}: a folder root writes in must be root's, and only root may write in it. Make it so (sudo chown root $(quoted "$1") && sudo chmod go-w $(quoted "$1")), or update by hand (docs/hosting.md, section 5)"
   fi
-  fail "won't write as root in $1: $culprit, above it, is ${is:-missing}, so someone else could move $1 aside and put their own in its place. Each folder above one root writes in must be root's, and either only root may write in it or it's sticky, as /tmp is. Make it so (sudo chown root $culprit && sudo chmod go-w $culprit), or update by hand (docs/hosting.md, section 5)"
+  why="won't write as root in $1: $culprit, above it, is ${is:-missing}, so someone else could move $1 aside and put their own in its place. Each folder above one root writes in must be root's, and either only root may write in it or it's sticky, as /tmp is."
+  if [ -z "$(find "$culprit" -prune ! -user 0 -print)" ]; then
+    fail "$why Make it writable by root alone (sudo chmod go-w $(quoted "$culprit")), or update by hand (docs/hosting.md, section 5)"
+  fi
+  if [ "$service" = yes ]; then
+    fail "$why Keep the service's program and units in folders that are root's all the way up to /, as /usr/local/bin and /etc/systemd/system are, or update by hand (docs/hosting.md, section 5)"
+  fi
+  # shellcheck disable=SC2012
+  whose=$(ls -ld -- "$culprit" | awk '{ print $3 }')
+  fail "$why Move the server's folder into one that's root's all the way up to /, or give it to $whose (sudo chown -R $(quoted "$whose") $(quoted "$here")) and run this as $whose, without sudo"
 }
 
 # writes DIR: refuses a folder DIR this user can't write in, before anything changes.
@@ -251,8 +269,10 @@ as_server() {
 go_back() {
   printf 'To go back to %s, stop it, and put the previous program back' "$current"
   if [ -n "$replaced" ]; then printf ', and the previous units'; fi
-  printf ':\n  sudo systemctl stop fenji\n  sudo mv %s.previous %s\n' "$prog" "$prog"
-  for u in $replaced; do printf '  sudo mv %s/%s.previous %s/%s\n' "$unitdir" "$u" "$unitdir" "$u"; done
+  printf ':\n  sudo systemctl stop fenji\n  sudo mv %s %s\n' "$(quoted "$prog.previous")" "$(quoted "$prog")"
+  for u in $replaced; do
+    printf '  sudo mv %s %s\n' "$(quoted "$unitdir/$u.previous")" "$(quoted "$unitdir/$u")"
+  done
   if [ -n "$replaced" ]; then printf '  sudo systemctl daemon-reload\n'; fi
   printf 'Then restore the backup made before this update, as docs/hosting.md section 6 says:\n'
   printf '  %s\n' "${backup:-(none was made)}"
@@ -367,7 +387,7 @@ fi
 uid=$(id -u)
 running=no checker='' rundir=/
 if [ "$service" = yes ]; then
-  [ "$uid" = 0 ] || fail "the fenji service runs $prog, and updating it takes root: run sudo $self"
+  [ "$uid" = 0 ] || fail "the fenji service runs $prog, and updating it takes root: run sudo $(quoted "$self")"
   guard "$here"
   # Who runs the programs' --version, never root: the service's user, or nobody for a service
   # that runs as root.
@@ -395,7 +415,7 @@ else
   # A VPS's fenji-update, run without sudo, may find no service: systemd answers only root where
   # there's no D-Bus.
   if [ ! -f "$here/$start" ] && [ "$uid" != 0 ]; then
-    fail "$here has no $start, so it isn't a server's folder: to update the fenji service on a VPS, run it as root: sudo $self; on your own computer, run the update script in your server's folder (docs/hosting.md, section 5)"
+    fail "$here has no $start, so it isn't a server's folder: to update the fenji service on a VPS, run it as root: sudo $(quoted "$self"); on your own computer, run the update script in your server's folder (docs/hosting.md, section 5)"
   elif [ ! -f "$here/$start" ]; then
     fail "$here has no $start, so it isn't a server's folder, and no fenji service runs its fenji-server: update it by hand (docs/hosting.md, section 5)"
   fi
@@ -447,7 +467,7 @@ writes "$here"
 lock=$here/.fenji-update.lock
 if ! mkdir -- "$lock" 2> /dev/null; then
   if [ -d "$lock" ]; then
-    fail "another update of this server is running, or one was cut short: if none is running, remove $lock, and run this again"
+    fail "another update of this server is running, or one was cut short: if none is running, remove its lock (rmdir $(quoted "$lock")), and run this again"
   fi
   fail "can't make $lock, so nothing has changed"
 fi
@@ -609,7 +629,7 @@ if [ "$service" = no ]; then
     swap "$pstage/$f" "$here/$f" || left="$left $f"
   done < "$tmp/files"
   if [ -n "$left" ]; then
-    fail "fenji-server $wanted is in place, but these files of its archive couldn't replace the old ones:$left. Go back to $current (mv $prog.previous $prog) and run this again"
+    fail "fenji-server $wanted is in place, but these files of its archive couldn't replace the old ones:$left. Go back to $current (mv $(quoted "$prog.previous") $(quoted "$prog")) and run this again"
   fi
   say "Replaced the archive's other files: $(listed)."
   say "Updated from $current to $wanted. Start the server with ./$start."

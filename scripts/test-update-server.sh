@@ -679,7 +679,7 @@ mkdir "$D/.fenji-update.lock"
 was=$(snapshot "$D")
 run "$D/update-server.sh"
 refused "a folder another update holds is refused" "another update of this server is running"
-says "saying how to lift a lock left by one cut short" "remove $D/.fenji-update.lock" "$err"
+says "saying how to lift a lock left by one cut short, the path quoted" "rmdir '$D/.fenji-update.lock'" "$err"
 never "before anything is downloaded" "$FAKE_RELEASES/download/"
 rmdir "$D/.fenji-update.lock"
 was=$(snapshot "$D")
@@ -699,7 +699,7 @@ export FAKE_MV_FAIL=README.txt
 run "$D/update-server.sh"
 exits "a file that can't replace its old one fails the update" 1
 says "naming it" "couldn't replace the old ones: README.txt" "$err"
-says "and how to go back" "Go back to 1.2.3 (mv $D/fenji-server.previous $D/fenji-server)" "$err"
+says "and how to go back, the paths quoted" "Go back to 1.2.3 (mv '$D/fenji-server.previous' '$D/fenji-server')" "$err"
 same "the new program is in place" "$(version "$D/fenji-server")" "fenji-server 1.3.0"
 same "with nothing left under a temporary name" "$(find "$D" -name '.*' -print)" ""
 
@@ -758,7 +758,7 @@ run "$D/update-server.sh"
 refused "a folder without its start script, and no service, is refused" "has no start-server.sh"
 same "before anything is fetched" "$(fetched)" ""
 # As fenji-update on a VPS, run without sudo where systemd won't answer this user (no D-Bus).
-says "saying that a VPS's service takes sudo" "run it as root: sudo $D/update-server.sh" "$err"
+says "saying that a VPS's service takes sudo, the path quoted" "run it as root: sudo '$D/update-server.sh'" "$err"
 
 # Root in a folder that's root's: allowed, if only root may write in it and its subfolders.
 fresh
@@ -774,7 +774,17 @@ was=$(snapshot "$D")
 export FAKE_UID=0 FAKE_ROOT_UID=$uid
 run "$D/update-server.sh"
 refused "root is refused in a folder of root's that its group may write in" "won't write as root in $D,"
-says "saying how to make it safe" "sudo chmod go-w $D" "$err"
+says "saying how to make it safe, the path quoted" "sudo chown root '$D' && sudo chmod go-w '$D'" "$err"
+# A path with a single quote in it is quoted so that a pasted command stays on it.
+fresh
+Q="$T/it's here/fenji-server"
+folder "$Q" 1.2.3
+chmod g+w "$Q"
+export FAKE_UID=0 FAKE_ROOT_UID=$uid
+run "$Q/update-server.sh"
+exits "root is refused in a folder with a quote in its path that its group may write in" 1
+says "with the quote escaped in the advice" \
+  "sudo chown root '$T/it'\\''s here/fenji-server' && sudo chmod go-w '$T/it'\\''s here/fenji-server'" "$err"
 fresh
 folder "$D" 1.2.3
 chmod o+w "$D/caddy"
@@ -789,7 +799,20 @@ was=$(snapshot "$D")
 export FAKE_UID=0 FAKE_ROOT_UID=$uid
 run "$D/update-server.sh"
 refused "and in one whose parent everyone may write in" "won't write as root in $D: $T/home with space, above it,"
+says "saying to make that parent, which is root's, writable by root alone" "sudo chmod go-w '$T/home with space'" "$err"
+unsaid "and not to give it to root, which it is already" "sudo chown root '$T/home with space'" "$err"
 chmod o-w "$T/home with space"
+# A parent that isn't root's, as a home folder isn't: giving it to root would break it, so the
+# advice is to move the server's folder, or give it to that folder's user and run this as them.
+fresh
+folder "$D" 1.2.3
+was=$(snapshot "$D")
+export FAKE_UID=0 FAKE_ROOT_UID=$uid FAKE_NOT_ROOTS="$T/home with space"
+run "$D/update-server.sh"
+refused "and in one whose parent isn't root's" "won't write as root in $D: $T/home with space, above it, is $me's"
+says "saying to move it, or give it to the parent's user" \
+  "give it to $me (sudo chown -R '$me' '$D') and run this as $me, without sudo" "$err"
+unsaid "and never to give that parent to root" "sudo chown root '$T/home with space'" "$err"
 
 # Each system's archive.
 fresh
@@ -942,9 +965,9 @@ exits "a service that doesn't come up fails the update" 1
 says "saying so" "didn't come up" "$err"
 says "with the journal's last lines" "the stand-in server won't start" "$err"
 asked "for the fenji service" "journalctl -u fenji"
-says "and how to go back: the previous program" "sudo mv $B/fenji-server.previous $B/fenji-server" "$err"
+says "and how to go back: the previous program, the paths quoted" "sudo mv '$B/fenji-server.previous' '$B/fenji-server'" "$err"
 for u in $UNITS; do
-  says "the previous $u" "sudo mv $S/etc/systemd/system/$u.previous $S/etc/systemd/system/$u" "$err"
+  says "the previous $u" "sudo mv '$S/etc/systemd/system/$u.previous' '$S/etc/systemd/system/$u'" "$err"
 done
 says "systemd reloaded" "sudo systemctl daemon-reload" "$err"
 says "and the backup" "/var/lib/fenji/backups/fenji-20261017-101500.db" "$err"
@@ -1067,8 +1090,15 @@ chmod o+w "$S/usr/local"
 was=$(snapshot "$S")
 run "$B/fenji-update"
 kept "a program's folder whose parent everyone may write in is refused" "won't write as root in $B: $S/usr/local, above it,"
-says "saying how to make it safe" "sudo chmod go-w $S/usr/local" "$err"
+says "saying to make that parent, which is root's, writable by root alone" "sudo chmod go-w '$S/usr/local'" "$err"
+unsaid "and not to give it to root, which it is already" "sudo chown root '$S/usr/local'" "$err"
 same "before anything is fetched" "$(fetched)" ""
+fresh
+service 1.2.3
+chmod o+w "$S/usr"
+was=$(snapshot "$S")
+run "$B/fenji-update"
+kept "a program's folder with a folder two above it everyone may write in is refused" "won't write as root in $B: $S/usr, above it,"
 fresh
 service 1.2.3
 chmod g+w "$S/etc/systemd"
@@ -1090,6 +1120,9 @@ export FAKE_NOT_ROOTS=$S/usr/local
 was=$(snapshot "$S")
 run "$B/fenji-update"
 kept "but a sticky parent that's another user's is refused" "won't write as root in $B: $S/usr/local, above it,"
+says "saying to keep the service's files in folders that are root's all the way up" \
+  "Keep the service's program and units in folders that are root's all the way up to /" "$err"
+unsaid "and never to give that parent to root" "sudo chown root '$S/usr/local'" "$err"
 export FAKE_NOT_ROOTS=''
 # A units' folder that's gone, where systemd loaded the unit from, is no folder to write in.
 fresh
