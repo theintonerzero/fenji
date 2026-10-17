@@ -15,6 +15,17 @@ use crate::{Error, Result};
 
 /// `PROTOS2C_ACTOR_LOAD_SCENE` (`scene_manager.luac` `0.56`; world.md §2).
 pub const LOAD_SCENE: i64 = 772;
+/// `PROTOS2C_ACTOR_LOGOUT`, with no arguments: the answer to type 4 (`SCENE.RequestLogout`, back
+/// to character select). Its handler (`scene_manager.luac`'s stub for 330) turns sends back on and
+/// fires `SCENE.EVENT_LOGOUT`, on which UIMain takes the client back to its select screen on the
+/// same connection (world.md 1.5; #282).
+pub const ACTOR_LOGOUT: i64 = 330;
+
+/// 330: back to the select screen (world.md 1.5).
+pub fn actor_logout() -> Vec<u8> {
+    script_body(ACTOR_LOGOUT, &[]).expect("an id that may be sent, with no arguments")
+}
+
 /// The scripts' property-schema constant, which 772's handler compares with its fifth value
 /// (world.md 2.2; a mismatch only logs).
 pub const PROPS_VERSION: i64 = 4_706_187_382_722_034_291;

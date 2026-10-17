@@ -1,9 +1,9 @@
 // The rail (R2): Fenji's seal, then each saved server as a square ink seal with its state in a 3 px
 // bar beneath: jade online, amber in maintenance, faint offline or not yet known, cinnabar where this
 // launcher can't play. The active seal is ember-edged, and + adds a server. A seal's tip shows its
-// name and players on hover or focus. The arrow keys move along the rail. A seal's menu (a right
-// click, the context-menu key or Shift+F10) has the server's source code and Remove, and Delete asks
-// to remove it.
+// name, its players or its state, and its region, on hover or focus. The arrow keys move along the
+// rail. A seal's menu (a right click, the context-menu key or Shift+F10) has the server's source
+// code and Remove, and Delete asks to remove it.
 import type { Ctx } from "../app";
 import { h } from "../dom";
 import type { ServerView, Snapshot } from "../types";
@@ -201,12 +201,16 @@ export function rail(ctx: Ctx): Rail {
       return;
     }
     shown = key;
-    // A probe draws the seals again every 15–30 s: the one that had focus keeps it.
-    const focused = (document.activeElement as HTMLElement | null)?.closest?.("[data-server]")?.getAttribute("data-server");
+    // A probe draws the seals again every 15–30 s: the one that had focus keeps it. Its server
+    // removed, focus goes to the seal now in its place, the last one, or + (#376).
+    const had = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>("[data-server]") ?? null;
+    const at = had === null ? -1 : [...list.querySelectorAll("[data-server]")].indexOf(had);
     hideTip();
     list.replaceChildren(...s.servers.map((v) => seal(v, v.id === s.active)));
-    if (focused !== null && focused !== undefined) {
-      list.querySelector<HTMLElement>(`[data-server="${focused}"]`)?.focus();
+    if (had !== null) {
+      const seals = [...list.querySelectorAll<HTMLElement>("[data-server]")];
+      const same = seals.find((b) => b.dataset.server === had.dataset.server);
+      (same ?? seals[Math.min(at, seals.length - 1)] ?? add).focus();
     }
   }
 

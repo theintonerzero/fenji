@@ -21,7 +21,7 @@ test("each server is a seal with its state in a bar, the active one marked, then
   expect(seals.map((s) => s.dataset.bar)).toEqual(["ok", "warn", "off"]);
   expect(seals.map((s) => s.getAttribute("aria-current"))).toEqual(["true", null, null]);
   expect(seals.map((s) => s.getAttribute("aria-label"))).toEqual([
-    "Moonward, 3/10 players",
+    "Moonward, 3/10 players · Germany",
     "Jade Hall, Maintenance",
     "Ember Peak, Offline",
   ]);
@@ -50,13 +50,34 @@ test("the arrow keys move along the rail, + included, and a seal's tip shows its
   seals[0]!.focus();
   const tip = part.el.querySelector(".tip")!;
   expect(tip.hasAttribute("hidden")).toBe(false);
-  expect(tip.textContent).toBe("Moonward3/10 players");
+  expect(tip.textContent).toBe("Moonward3/10 players · Germany");
   key(seals[0]!, "ArrowDown");
   expect(document.activeElement).toBe(seals[1]);
   key(seals[1]!, "End");
   expect(document.activeElement?.getAttribute("aria-label")).toBe("Add a server");
   key(document.activeElement!, "Home");
   expect(document.activeElement).toBe(seals[0]);
+});
+
+test("a seal's tip and label end with its region in maintenance and offline too (hosting spec Amendment C, HC5)", () => {
+  const { ctx } = recording();
+  const part = rail(ctx);
+  document.body.replaceChildren(part.el);
+  const s = golden("servers");
+  s.servers[1]!.region = "Canada";
+  s.servers[2]!.region = "Britain (UK)";
+  part.update(s, false);
+  const seals = [...part.el.querySelectorAll<HTMLButtonElement>("button.seal[data-server]")];
+  expect(seals.map((seal) => seal.getAttribute("aria-label"))).toEqual([
+    "Moonward, 3/10 players · Germany",
+    "Jade Hall, Maintenance · Canada",
+    "Ember Peak, Offline · Britain (UK)",
+  ]);
+  const tip = part.el.querySelector(".tip")!;
+  seals[1]!.focus();
+  expect(tip.textContent).toBe("Jade HallMaintenance · Canada");
+  seals[2]!.focus();
+  expect(tip.textContent).toBe("Ember PeakOffline · Britain (UK)");
 });
 
 test("a seal's menu has its source code and Remove, from the keyboard too; Delete asks to remove", () => {
@@ -98,4 +119,25 @@ test("a seal's menu stays open while a probe redraws the rail, which catches up 
   key(document.activeElement!, "Escape");
   expect(part.el.querySelector('[role="menu"]')).toBeNull();
   expect(part.el.querySelector<HTMLElement>('button[data-server="3"]')!.dataset.bar).toBe("ok");
+});
+
+test("when the focused seal's server is removed, focus goes to the next seal, then the last, then + (#376)", () => {
+  const { part } = mounted();
+  const sealFor = (id: number) => part.el.querySelector<HTMLButtonElement>(`button[data-server="${id}"]`)!;
+  const without = (ids: number[]) => {
+    const s = golden("servers");
+    s.servers = s.servers.filter((v) => !ids.includes(v.id));
+    s.active = s.servers[0]?.id ?? null;
+    return s;
+  };
+  sealFor(1).focus();
+  part.update(without([1]), false);
+  expect(document.activeElement).toBe(sealFor(2));
+  // The last seal's server: the one before it.
+  sealFor(3).focus();
+  part.update(without([1, 3]), false);
+  expect(document.activeElement).toBe(sealFor(2));
+  // The only one: +.
+  part.update(without([1, 2, 3]), false);
+  expect(document.activeElement).toBe(part.el.querySelector('button[aria-label="Add a server"]'));
 });

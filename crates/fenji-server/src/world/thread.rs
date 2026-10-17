@@ -68,6 +68,12 @@ impl WorldHandle {
         self.0.send(msg).is_ok()
     }
 
+    /// True once the world has stopped and takes nothing more, as at the server's stop or after
+    /// a tick that panicked (Ruling R9): [`WorldHandle::send`] then fails.
+    pub fn is_closed(&self) -> bool {
+        self.0.is_closed()
+    }
+
     /// A handle whose other end the caller holds, in a running world's place (tests).
     #[cfg(test)]
     pub(crate) fn fake() -> (Self, mpsc::UnboundedReceiver<WorldIn>) {

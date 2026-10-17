@@ -1,6 +1,7 @@
 // A centred dialog (R7: Add a server, a changed key, Remove): 500 px over a scrim on the stage,
 // role="dialog" with aria-modal, Escape to close, focus kept inside while it's open and given back
-// when it closes. Actions sit bottom right: the secondary first, then the one primary.
+// when it closes, or to the dialog it closes onto. Actions sit bottom right: the secondary first,
+// then the one primary.
 import { h, type Child } from "../dom";
 
 export interface DialogParts {
@@ -80,7 +81,14 @@ export function dialog(parts: DialogParts): Dialog {
     el,
     close() {
       el.remove();
-      if (returnTo?.isConnected) {
+      // Closed onto another open dialog, as Add can be onto a changed key's: that one keeps
+      // focus, never this one's opener behind it (#376).
+      const under = [...document.querySelectorAll<HTMLElement>('.dialog[aria-modal="true"]')].at(-1);
+      if (under !== undefined) {
+        if (!under.contains(document.activeElement)) {
+          firstFocusable(under).focus();
+        }
+      } else if (returnTo?.isConnected) {
         returnTo.focus();
       }
     },

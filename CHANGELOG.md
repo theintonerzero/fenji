@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-10-17
+
+### Added
+
+- **deploy:** An update script for hosts (#393)
+- **server:** A server's region, guessed from its timezone, in the launcher (#398)
+
+### Changed
+
+- **deps:** The launcher's updater without its zip feature (#397)
+
+### Fixed
+
+- **launcher:** The redesign's deferred minors (#384)
+- **launcher:** The view fills its window, whatever its size in pixels (#385)
+- **server:** A client that quits gets client-exit, and quits (#387)
+- **server:** The world review's minors, from #377 (#381)
+- **server:** Back to character select goes back to the lobby (#388)
+- **server:** Back to character select brings no fresh allowances (#399)
+
+### Documentation
+
+- **deploy:** An update script for hosts, the hosting spec's Amendment B (#386)
+- **docs:** 0.5.3 is what's ready; the work that needs the owner is 0.5.4 (#390)
+- **docs:** Tracked files keep no trace of where the owner lives (#401)
+- **deploy:** A server's region, the hosting spec's Amendment C (#396)
+
 ## [0.5.2] - 2026-10-16
 
 ### Added

@@ -222,7 +222,7 @@ impl App {
                         .settings
                         .active
                         .ok_or_else(|| refused(words::NEED_LINK))?;
-                    st.pending_invite = Some((id, code));
+                    st.pending_invites.insert(id, code);
                     Ok(())
                 });
             }
@@ -243,14 +243,9 @@ impl App {
                         invite,
                     });
                 }
-                AddOutcome::New(_) => {
+                AddOutcome::New(_) | AddOutcome::Known(_) => {
                     if let Some(code) = invite {
-                        st.pending_invite = Some((id, code));
-                    }
-                }
-                AddOutcome::Known(_) => {
-                    if let Some(code) = invite {
-                        st.pending_invite = Some((id, code));
+                        st.pending_invites.insert(id, code);
                     }
                 }
             }
@@ -272,9 +267,7 @@ impl App {
             }
             info!(server = id, "removed a server");
             st.transient.remove(&id);
-            if st.pending_invite.as_ref().is_some_and(|(p, _)| *p == id) {
-                st.pending_invite = None;
-            }
+            st.pending_invites.remove(&id);
             if st.key_change.as_ref().is_some_and(|k| k.id == id) {
                 st.key_change = None;
             }
@@ -339,20 +332,17 @@ impl App {
     ) -> Result<(), IntentError> {
         let (id, code, api) = {
             let mut st = self.inner.lock();
-            let (id, code) = match code {
-                Some(text) => {
-                    let code = InviteCode::parse(&text).ok_or_else(|| refused(words::BAD_CODE))?;
-                    let id = st
-                        .pending_invite
-                        .as_ref()
-                        .map(|(id, _)| *id)
-                        .or(st.settings.active)
-                        .ok_or_else(|| refused(words::NEED_LINK))?;
-                    (id, code)
-                }
+            // On the active server, whose Join this is: a typed code, or the invite waiting there.
+            let id = st
+                .settings
+                .active
+                .ok_or_else(|| refused(words::NEED_LINK))?;
+            let code = match code {
+                Some(text) => InviteCode::parse(&text).ok_or_else(|| refused(words::BAD_CODE))?,
                 None => st
-                    .pending_invite
-                    .clone()
+                    .pending_invites
+                    .get(&id)
+                    .cloned()
                     .ok_or_else(|| refused(words::NEED_LINK))?,
             };
             if st.key_change.as_ref().is_some_and(|k| k.id == id) {
@@ -374,8 +364,8 @@ impl App {
         // The invite is spent and the account exists, whatever the sign-in says. Only that
         // invite: one pasted while it ran still waits.
         self.change(|st| {
-            if st.pending_invite.as_ref() == Some(&(id, code)) {
-                st.pending_invite = None;
+            if st.pending_invites.get(&id) == Some(&code) {
+                st.pending_invites.remove(&id);
             }
             if let Some(saved) = st.settings.server_mut(id) {
                 saved.username = Some(username.clone());
@@ -406,11 +396,7 @@ impl App {
                 Some(Err(e)) => return Err(st.refusal(id, &e, Some(&username))),
                 None => return Err(refused(words::NO_SERVER)),
             };
-            let waiting = st
-                .pending_invite
-                .as_ref()
-                .filter(|(p, _)| *p == id)
-                .map(|(_, code)| code.clone());
+            let waiting = st.pending_invites.get(&id).cloned();
             (id, api, waiting)
         };
         self.session_on(id, api, username, password, remember, waiting)
@@ -469,9 +455,9 @@ impl App {
             resume = std::mem::replace(&mut st.need_sign_in, false);
             // Signed in with an account they had: the invite waiting there isn't needed.
             if let Some(code) = waiting
-                && st.pending_invite == Some((id, code))
+                && st.pending_invites.get(&id) == Some(&code)
             {
-                st.pending_invite = None;
+                st.pending_invites.remove(&id);
             }
             self.save(st);
             None
@@ -521,7 +507,7 @@ impl App {
                 };
             }
             if let Some(code) = change.invite {
-                st.pending_invite = Some((id, code));
+                st.pending_invites.insert(id, code);
             }
             self.save(st);
             true

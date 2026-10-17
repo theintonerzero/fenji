@@ -405,9 +405,15 @@ impl App {
         if folder.trim().is_empty() {
             return Err(refused(words::NO_FOLDER));
         }
-        // Steam looks after its libraries (Amendment A, LA2).
-        if crate::steam::in_library(Path::new(&folder), &self.inner.steam_roots) {
-            return Err(refused(words::IN_STEAM_LIBRARY));
+        // Steam looks after its libraries (Amendment A, LA2). Settings refuses such a folder too,
+        // but one it took before 0.5.3 may be saved (#376).
+        let roots = &self.inner.steam_roots;
+        if crate::steam::in_library(Path::new(&folder), roots) {
+            return Err(refused(if crate::steam::find(roots).is_some() {
+                words::IN_STEAM_LIBRARY
+            } else {
+                words::IN_STEAM_LIBRARY_NO_COPY
+            }));
         }
         self.start_download(PathBuf::from(folder), None)
     }
@@ -1169,6 +1175,56 @@ exit {code}"#,
         let s = until(&app, checked(LevelView::Quick)).await;
         assert!(s.client.in_steam);
         assert_eq!(s.client.folder.as_deref(), game.to_str());
+    }
+
+    #[tokio::test]
+    async fn settings_refuses_a_download_folder_in_a_steam_library() {
+        // #376 (the redesign's final review, Minor 16): Settings took a download folder inside a
+        // Steam library, which only Download refused, later, in words that didn't say where to
+        // change it, and offered Steam's copy where Steam had none.
+        let t = Testbed::new(&[("bin64/a.dll", 10), ("data/c.pak", 100)]);
+        let game = steam_install(&t, "10015727");
+        let app = t.app();
+        let before = app.snapshot().client.default_folder;
+        let into = game.with_file_name("Another Copy").display().to_string();
+        assert_eq!(
+            app.intent(Intent::SetDownloadFolder { path: into.clone() })
+                .await
+                .unwrap_err()
+                .to_string(),
+            words::STEAM_FOLDER_IN_SETTINGS
+        );
+        assert_eq!(app.snapshot().client.default_folder, before);
+        assert_eq!(
+            app.snapshot().notice.map(|n| n.text).as_deref(),
+            Some(words::STEAM_FOLDER_IN_SETTINGS)
+        );
+        // A download folder Settings took before 0.5.3: Download names Settings, and Steam's copy.
+        assert_eq!(
+            app.intent(Intent::Download {
+                folder: into.clone()
+            })
+            .await
+            .unwrap_err()
+            .to_string(),
+            words::IN_STEAM_LIBRARY
+        );
+        // Where Steam has no copy, Download doesn't offer one.
+        std::fs::remove_file(
+            game.parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("appmanifest_1418100.acf"),
+        )
+        .unwrap();
+        assert_eq!(
+            app.intent(Intent::Download { folder: into })
+                .await
+                .unwrap_err()
+                .to_string(),
+            words::IN_STEAM_LIBRARY_NO_COPY
+        );
     }
 
     #[tokio::test]

@@ -95,6 +95,20 @@ fn names_follow_the_western_rule() {
 }
 
 #[test]
+fn no_name_can_start_with_the_locale_strings_unpickle_prefix() {
+    // A name is a `locale_str`, whose setter, on every client that sees the player, unpickles the
+    // rest of a value that starts with `$locale$` (world.md 4.10; #281): a name that could spell it
+    // would hand those clients bytes of the player's choosing. The rule has no `$`.
+    for bad in ["$locale$ab", "$locale$", "$Lin"] {
+        assert_eq!(
+            CreateRequest::parse(&request(bad, 0, 1)).unwrap_err(),
+            Refusal::NameChars,
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
 fn vocation_and_skeleton_must_match_the_western_screen() {
     for (v, sk) in [(0, 1), (0, 2), (5, 2), (6, 1), (7, 3), (9, 3)] {
         assert!(

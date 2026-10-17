@@ -111,6 +111,17 @@ impl Online {
         }
     }
 
+    /// Notes that connection `conn` is back in the lobby, as back to character select leaves the
+    /// world (#282). Only while `conn` is still the account's connection.
+    pub fn in_lobby(&self, account: i64, conn: u64) {
+        let mut inner = self.lock();
+        if let Some(place) = inner.accounts.get_mut(&account)
+            && place.conn == conn
+        {
+            place.playing = None;
+        }
+    }
+
     /// Tells the account's connection, in the lobby or in the world, to close because the host
     /// banned the account (M4 hosting spec §8, HA5), and frees its place at once, as a newer login
     /// takes a replaced one's. The console's `ban` calls it after storing the ban and before it
@@ -287,5 +298,21 @@ mod tests {
         assert!(o.ban(1));
         o.playing(1, 1, lin(5));
         assert_eq!(o.list(), []);
+    }
+
+    #[test]
+    fn back_to_character_select_is_the_lobby_again() {
+        // #282: a character that goes back to character select is listed in the lobby, on the
+        // same connection; an older connection's word comes too late to count.
+        let o = Online::new(4);
+        let (mai, _rm) = joined(o.join(2, "mai", 2_000));
+        o.playing(2, mai, lin(5));
+        o.in_lobby(2, mai);
+        assert_eq!(o.list(), [connected(2, "mai", 2_000, None)]);
+        o.playing(2, mai, lin(5));
+        let (newer, _rn) = joined(o.join(2, "mai", 3_000));
+        o.playing(2, newer, lin(7));
+        o.in_lobby(2, mai);
+        assert_eq!(o.list()[0].playing, Some(lin(7)));
     }
 }

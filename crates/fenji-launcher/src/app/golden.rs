@@ -8,7 +8,7 @@ use super::intent::Intent;
 use super::snapshot::*;
 use crate::verify::Problem;
 
-// The boards' clock: 2026-10-15 in Melbourne (AEDT, UTC+11), in Unix milliseconds.
+// The boards' clock: 2026-10-15, from 09:14 UTC, in Unix milliseconds.
 /// 20:14, when the boards were drawn: the last answer, and "last checked".
 const NOW: i64 = 1_792_055_640_000;
 /// 20:10: the last check of the files.
@@ -43,6 +43,7 @@ fn moonward() -> ServerView {
         address: "moonward.example.net".into(),
         pinned: false,
         host: Some("Wen".into()),
+        region: Some("Germany".into()),
         status: StatusView::Online,
         players: Some(PlayersView { online: 3, max: 10 }),
         motd: MOTD.into(),
@@ -62,6 +63,7 @@ fn jade_hall() -> ServerView {
         address: "jadehall.example.org".into(),
         pinned: false,
         host: Some("Mei".into()),
+        region: None,
         status: StatusView::Maintenance {
             message: "moving the server to a new machine. Back around 21:00.".into(),
             until: Some(BACK),
@@ -85,6 +87,7 @@ fn ember_peak() -> ServerView {
         address: "203.0.113.24:7801".into(),
         pinned: true,
         host: None,
+        region: None,
         status: StatusView::Offline,
         players: None,
         motd: String::new(),

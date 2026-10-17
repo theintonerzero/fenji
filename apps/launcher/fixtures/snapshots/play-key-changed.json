@@ -13,6 +13,7 @@
       "address": "moonward.example.net",
       "pinned": true,
       "host": "Wen",
+      "region": "Germany",
       "status": {
         "kind": "keyChanged"
       },

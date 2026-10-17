@@ -3,7 +3,7 @@
 //! connection to the link on 10 (world.md §1). Close reasons use the client's own keys where it has
 //! one (docs/protocol/packets/lobby.md §9, world.md §10). The ticket is never logged, and the auth
 //! payload's machine bytes and fingerprint are dropped here, never stored.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -38,6 +38,10 @@ pub const DUPLICATE_LOGIN: &str = "error duplicate-login";
 /// The client's key for a server that is stopping: its text says the server is unavailable for now
 /// (lobby.md 9.3; world.md 10.3).
 pub const SERVER_STOPPING: &str = "error server-not-running";
+/// The client's own reason for a client that is quitting (392): on it, the client's net-status timer
+/// quits the game, where a close without it, or with any other, shows the login error (world.md
+/// 10.1; #382).
+pub const CLIENT_EXIT: &str = "client-exit";
 /// The client's key for an admin's kick: its text says the player is offline and may log in again,
 /// accusing them of nothing, unlike `error kick-by-gm` (world.md 10.2–10.3).
 pub const KICKED: &str = "error kick-by-user";
@@ -536,7 +540,8 @@ async fn lobby_loop(
                     tracing::info!(%peer, account = %account.username, "left");
                     return Ok(());
                 }
-                for event in server.receive(&buf[..n])? {
+                let mut events: VecDeque<Event> = server.receive(&buf[..n])?.into();
+                while let Some(event) = events.pop_front() {
                     let m = match event {
                         Event::Message(m) => m,
                         // The client's ping display reads only what a server time sync sets: its
@@ -562,7 +567,14 @@ async fn lobby_loop(
                         }
                         Step::Enter(pid) => match entry(gate, account, pid).await {
                             Entry::Play(c) => {
-                                return link::play(sock, peer, gate, server, account, conn, c, replaced).await;
+                                match link::play(sock, peer, gate, server, account, conn, c, replaced).await? {
+                                    link::Ended::Closed => return Ok(()),
+                                    // Back to character select: the lobby carries on (#282). What
+                                    // was left of this read came while the client waited for 772,
+                                    // and goes unhandled; what came after type 4 in the world's
+                                    // last read is the lobby's (#388's review).
+                                    link::Ended::Lobby(after) => events = after.into(),
+                                }
                             }
                             Entry::Banned => {
                                 tracing::info!(%peer, account = %account.username, "banned: not entering the world");
@@ -578,7 +590,7 @@ async fn lobby_loop(
                         },
                         Step::Leave => {
                             tracing::info!(%peer, account = %account.username, "left (the client is quitting)");
-                            return Ok(());
+                            return close_with(sock, peer, gate, server, CLIENT_EXIT).await;
                         }
                         Step::AccountGone => {
                             tracing::info!(%peer, account = %account.username, "the account was deleted: closing");
@@ -672,7 +684,8 @@ enum Step {
     Replies(Vec<Vec<u8>>),
     /// Enter the world as this pid (10, `SELECT_ACTOR`), if it is the account's.
     Enter(i64),
-    /// The client is quitting (392, `CLIENT_EXIT`): close the connection.
+    /// The client is quitting (392, `CLIENT_EXIT`): close the connection with its own reason,
+    /// `client-exit`, so that it quits (#382).
     Leave,
     /// The account was deleted since the login (`fenji-server account delete`): close with the
     /// client's own auth-failed reason.

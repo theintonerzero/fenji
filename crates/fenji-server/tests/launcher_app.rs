@@ -223,6 +223,30 @@ async fn every_server_in_the_rail_is_probed_with_no_servers_tab() {
 }
 
 #[tokio::test]
+async fn a_servers_region_reaches_the_view_and_stays_while_it_is_offline() {
+    // Hosting spec Amendment C, HC5: the view shows the region its server's facts carry, and
+    // offline, the one its last answer had.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _c) = server(dir.path(), "region = \"Germany\"\n", GateLimits::default()).await;
+    let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+    app.intent(Intent::AddServer {
+        text: format!("http://{}", s.api_addr),
+    })
+    .await
+    .unwrap();
+    let snap = until(&app, |s| matches!(s.servers[0].status, StatusView::Online)).await;
+    assert_eq!(snap.servers[0].region.as_deref(), Some("Germany"));
+    s.shutdown().await.unwrap();
+    app.intent(Intent::Refresh).await.unwrap();
+    let snap = until(&app, |s| matches!(s.servers[0].status, StatusView::Offline)).await;
+    assert_eq!(
+        snap.servers[0].region.as_deref(),
+        Some("Germany"),
+        "its last answer's"
+    );
+}
+
+#[tokio::test]
 async fn maintenance_and_a_ban_reach_the_player_in_words() {
     let dir = tempfile::tempdir().unwrap();
     let (s, _c) = server(dir.path(), "", GateLimits::default()).await;

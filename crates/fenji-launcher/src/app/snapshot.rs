@@ -53,6 +53,8 @@ pub struct ServerView {
     /// Whether its own key is pinned (hosting spec §3.10).
     pub pinned: bool,
     pub host: Option<String>,
+    /// Where the server is, when its host set it (hosting spec Amendment C, HC5).
+    pub region: Option<String>,
     pub status: StatusView,
     pub players: Option<PlayersView>,
     pub motd: String,

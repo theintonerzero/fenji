@@ -214,6 +214,7 @@ On Linux, for example, an invite for a week:
 `fenji.toml` holds the server's settings, and `fenji.example.toml` beside it describes every one. A change takes effect when the server restarts. The ones a host changes most:
 - `name`: your server's name, which the game and launchers show (at most 32 characters, and no colons);
 - `host`: your name, which launchers show as "hosted by";
+- `region`: where your server is, such as `"Germany"`, which launchers show after its ping (at most 32 characters). A first run guesses it from your computer's timezone; on a VPS, which usually runs on UTC, set it yourself. To show none, set `region = ""`: the server then stops suggesting one as it starts;
 - `motd`: the message of the day, unless the console sets one;
 - `max_players`: how many players can be online at once: 20 unless you change it, and at most 200, since a crowd of more would be sent more of each other's moves at once than a player's connection holds. Fenji is built and measured for 20;
 - `admins`: accounts that are admins whatever the console's `op` and `deop` say.
@@ -276,18 +277,19 @@ Some steps use `VERSION` and `TARGET`, which the first one sets in your shell, a
 Set `VERSION` to the latest release's number, without its `v`, and download that release's archive for your server's processor, with its checksums:
 
 ```sh
-VERSION=0.5.2
+VERSION=0.5.3
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 
-The last command should print the archive's name and `OK`. Then install the program, and make the user it runs as, `fenji`, which owns the server's data and nothing else:
+The last command should print the archive's name and `OK`. Then install the program and its update script, `fenji-update`, which updates the server later (section 5). Make the user the server runs as, `fenji`, which owns the server's data and nothing else:
 
 ```sh
 tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 sudo install -m 755 fenji-server-$VERSION-$TARGET/fenji-server /usr/local/bin/fenji-server
+sudo install -m 755 fenji-server-$VERSION-$TARGET/update-server.sh /usr/local/bin/fenji-update
 sudo useradd --system --user-group --home-dir /var/lib/fenji --shell /usr/sbin/nologin fenji
 ```
 
@@ -317,6 +319,8 @@ path = "/var/lib/fenji/fenji.db"
 - `name`, in `[server]`, is your server's name, which the game and launchers show.
 - `public_host`, in `[server]`, is your VPS's public address, or a domain name that points at it. Delete the `#` at the start of its line. Invite links then carry it.
 - `path`, in `[store]`, puts the database in the service's data folder.
+
+While you're there, you can set `region`, in `[server]`: where your server is, such as `"Germany"`, which launchers show after its ping. A VPS usually runs on UTC, so `init` can't guess it. Delete the `#` at the start of its line, and put your country in.
 
 In nano, Ctrl-O then Enter saves the file, and Ctrl-X leaves.
 
@@ -396,7 +400,7 @@ With a domain name, Caddy can serve the account API on the usual HTTPS port, wit
 3. Install Fenji's `Caddyfile` from the archive's `caddy` folder, put your name in place of `play.example.net` in it, and reload Caddy. In the folder you unpacked the archive in:
 
    ```sh
-   VERSION=0.5.2
+   VERSION=0.5.3
    TARGET=$(uname -m)-unknown-linux-musl
    sudo install -m 644 fenji-server-$VERSION-$TARGET/caddy/Caddyfile /etc/caddy/Caddyfile
    sudo nano /etc/caddy/Caddyfile
@@ -445,6 +449,12 @@ play.example.net {
 
 Read the new release's notes first, for what changed. Updating replaces the program; your settings and data stay as they are.
 
+On Linux and macOS, the server's update script updates it in one command. It downloads the latest release for your system and checks it against the release's checksums. Then it backs up the database, and puts the new program in place, keeping the old one beside it as `fenji-server.previous`. It never touches your settings, `fenji.toml`, your data folder, your own drop-in files for the services, or Caddy's settings in `/etc/caddy`. In your server's folder on your own computer, it does replace the archive's other files, as the steps by hand do: the start script, the update script itself, the texts, and the copies in its `systemd` and `caddy` folders. Each step prints a line, and the last one says which versions it updated from and to. If something goes wrong before the new program is in place, it says why, and your server stays as it was.
+
+The script trusts a release as the steps by hand do: it downloads over HTTPS from Fenji's releases on GitHub, and checks the archive against that release's `SHA256SUMS`. That shows the download arrived whole, though not who made it.
+
+The script came with v0.5.3: a server set up before then updates by hand once (below), which brings it. Windows has no script yet, and updates by hand.
+
 ### On a VPS
 
 Turn maintenance on, so that players can't sign in while you update, and those in the game read why:
@@ -453,7 +463,53 @@ Turn maintenance on, so that players can't sign in while you update, and those i
 sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run "maintenance on 15m Updating Fenji"
 ```
 
-Download the new version, as in section 4, with its number:
+Then update:
+
+```sh
+sudo fenji-update
+```
+
+It backs up the database through the console while the server still runs. Then it stops the service, puts the new program and services in place, and starts it again. Stopping lets every player go and saves where each one stood, as the console's `stop` does, and takes 30 seconds at most. A service that wasn't running stays stopped, and the script says how to start it. The script then waits up to 30 seconds for the server to answer. If the server doesn't come up, the script shows the end of its log, and how to go back: put back `fenji-server.previous` and the services it replaced (`fenji.service.previous`, `fenji-backup.service.previous` and `fenji-backup.timer.previous`), then restore the backup it made (section 6).
+
+The script installs the new version's services only when the fenji service is the one section 4 installs, running the program and settings that the new `fenji.service` names, as the `fenji` user. A service of your own stays as it is, the script says so, and only the program is updated. As root, the script writes only in folders that are root's and that only root may write in, inside folders that are root's too, all the way up to `/`, as `/usr/local/bin` and `/etc/systemd/system` are. It refuses any other, saying how to make it so.
+
+Check that maintenance is still on, which lasts through restarts:
+
+```sh
+sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run maintenance
+```
+
+Admins can sign in during maintenance, so sign in with your own account and look around. Then open the server again:
+
+```sh
+sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run "maintenance off"
+```
+
+The new version's services replace the ones installed. A change of your own to a service belongs in a drop-in file, as the container fix in section 7 makes, which an update leaves alone.
+
+### On your own computer
+
+The update goes into your server's folder, so that its settings, its data and every path stay as they are, a scheduled backup's included (section 6).
+
+1. In the console, type `maintenance on 15m Updating Fenji`, then `stop`. The script won't update a server that's running, as it couldn't start it again in its window.
+2. Open a terminal in your server's folder. On Linux, open it as for the start script (section 2). On macOS, open Terminal, type `cd` and a space, drag your server's folder onto the window, and press Enter. Then run the update script:
+
+   ```sh
+   ./update-server.sh
+   ```
+
+3. Start the server with its start script.
+4. Check that it runs the new version: the console's status line shows its number, such as `v0.5.3`, and `maintenance` shows it's still on. Then type `maintenance off`.
+
+### Another version
+
+`sudo fenji-update 0.5.3`, or `./update-server.sh 0.5.3`, updates to that version rather than the latest. A version older than the one you run is refused, as the database may have moved on since: the way back is to restore a backup made with that version, with that version's program (section 6). The version you run already changes nothing.
+
+### By hand
+
+These steps are for Windows, for a server set up before v0.5.3, and for hosts who'd rather update by hand.
+
+**On a VPS.** Turn maintenance on, as above. Download the new version, as in section 4, with its number:
 
 ```sh
 VERSION=0.5.3
@@ -464,21 +520,21 @@ sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 ```
 
-Stop the server, put the new program and its services in place, and start it:
+Back up the database, stop the server, put the new program, its services and its update script in place, and start it:
 
 ```sh
+sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run backup
 sudo systemctl stop fenji
 sudo install -m 755 fenji-server-$VERSION-$TARGET/fenji-server /usr/local/bin/fenji-server
 sudo install -m 644 -t /etc/systemd/system fenji-server-$VERSION-$TARGET/systemd/*
+sudo install -m 755 fenji-server-$VERSION-$TARGET/update-server.sh /usr/local/bin/fenji-update
 sudo systemctl daemon-reload
 sudo systemctl start fenji
 ```
 
-The new version's services replace the ones installed. A change of your own to a service belongs in a drop-in file, as the container fix in section 7 makes, which an update leaves alone.
+As with the script, the new version's services replace the ones installed, and your drop-in files stay. `systemctl stop` stops the server as the console's `stop` does, letting every player go and saving where each one stood, and returns once it has stopped. That takes 30 seconds at most, and the service gives it 35. Only closing the database can take longer, since it waits for what still uses it, such as a backup begun in the console: one still running at 35 seconds is cut short, and never passes for a backup (section 6).
 
-`systemctl stop` stops the server as the console's `stop` does, letting every player go and saving where each one stood, and returns once it has stopped. That takes 30 seconds at most, and the service gives it 35.
-
-Check that it runs the new version, still in maintenance, which lasts through restarts:
+Check that it runs the new version, still in maintenance:
 
 ```sh
 systemctl is-active fenji
@@ -486,15 +542,9 @@ fenji-server --version
 sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run maintenance
 ```
 
-Admins can sign in during maintenance, so sign in with your own account and look around. Then open the server again:
+Then look around, and turn maintenance off, as above. From then on, `sudo fenji-update` updates the server.
 
-```sh
-sudo -u fenji fenji-server --config /etc/fenji/fenji.toml console --run "maintenance off"
-```
-
-### On your own computer
-
-The update goes into your server's folder, so that its settings, its data and every path stay as they are, a scheduled backup's included (section 6).
+**On your own computer.** The update goes into your server's folder, as with the script.
 
 1. In the console, type `maintenance on 15m Updating Fenji`, then `backup`, then `stop`.
 2. Download the new version's archive (section 2), and unpack it anywhere but your server's folder, such as your Downloads folder.
