@@ -13,6 +13,12 @@ ignore = [
     # Unmaintained, not a vulnerability: a build-time macro crate under glib-macros 0.18, in the
     # gtk-rs 0.18 stack that Tauri's Linux webview (wry, muda) builds on. Nothing newer exists for it.
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: build-time only, under gtk-rs 0.18, which Tauri's Linux webview needs" },
+    # Unmaintained, not vulnerabilities: zbus 6.0.0 folded these three crates into itself. zbus 5
+    # comes with tauri-plugin-opener and tauri-plugin-single-instance (D-Bus on Linux), whose
+    # latest Tauri 2 releases still need zbus ^5.9 (#439). Out when they move to zbus 6.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: folded into zbus 6; zbus 5 comes with Tauri 2's opener and single-instance plugins" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: folded into zbus 6; zbus 5 comes with Tauri 2's opener and single-instance plugins" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: folded into zbus 6; zbus 5 comes with Tauri 2's opener and single-instance plugins" },
 ]
 
 [licenses]
