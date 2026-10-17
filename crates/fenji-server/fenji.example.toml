@@ -25,8 +25,8 @@ motd = ""                       # a notice launchers show players: plain text, a
 # host = "Your name"            # who hosts this server, as players' launchers show it ("hosted by");
 #                               # plain text, at most 32 characters
 # region = "Your country"       # where this server is, as players' launchers show it; plain text,
-#                               # at most 32 characters. A first run guesses it from this
-#                               # computer's timezone
+#                               # at most 32 characters, or "" for none. A first run guesses it
+#                               # from this computer's timezone
 # source_url = "https://example.net/my-fenji"   # where players get the source of the Fenji you
 #                                               # run (the AGPL's §13): set it if you change Fenji;
 #                                               # unset, Fenji's own at this version's tag

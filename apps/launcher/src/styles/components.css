@@ -440,17 +440,18 @@
 }
 
 /* A flex item drops the space at its start, so the ping and the region keep their " · " with
-   pre. The region, a host's text, gives way first: one too long for the line ends in an ellipsis
-   rather than pushing the facts before it onto more lines. */
-.ping,
-.region {
+   pre. */
+.ping {
   white-space: pre;
 }
 
+/* The region, a host's text, gives way first: one too long for the line ends in an ellipsis
+   rather than pushing the facts before it onto more lines. */
 .region {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: pre;
 }
 
 .bang {
