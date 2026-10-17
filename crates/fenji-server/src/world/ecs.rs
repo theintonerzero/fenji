@@ -77,9 +77,9 @@ struct Greeted;
 pub(super) struct Doomed(pub Option<KickReason>);
 
 /// A connection's allowance of messages to the world, a token bucket (#281). It starts full,
-/// each tick gives `max_inputs_per_tick` back, and it holds [`MAX_STALL`]'s worth of them, up to
-/// [`MAX_BURST`] ([`input_cap`]). Each message spends one, and one with none left is a flood,
-/// which is kicked.
+/// unless its account left the game a moment ago ([`Allowances`]), each tick gives
+/// `max_inputs_per_tick` back, and it holds [`MAX_STALL`]'s worth of them, up to [`MAX_BURST`]
+/// ([`input_cap`]). Each message spends one, and one with none left is a flood, which is kicked.
 ///
 /// So a client is held to the limit over time, while what it sent during a stall, which arrives
 /// at once, passes within the cap: a stall of the player's network, which the world never sees,
@@ -107,6 +107,10 @@ impl Inputs {
 /// The tick's time, in milliseconds of a monotonic clock.
 #[derive(Resource, Default)]
 pub(super) struct Now(pub u64);
+
+/// How many ticks have begun.
+#[derive(Resource, Default)]
+struct Ticks(u64);
 
 #[derive(Resource, Default)]
 struct Inbox(Vec<WorldIn>);
@@ -167,6 +171,24 @@ struct NextSave(Option<u64>);
 #[derive(Resource, Default)]
 struct Left(HashMap<ActorId, (Location, u64)>);
 
+/// What the accounts that left the game a moment ago had left of their chat [`Bucket`] and their
+/// [`Inputs`], kept for [`KEEP_LEFT`] as [`Left`] keeps places, but by account: a client that
+/// goes back to character select, or reconnects, comes back with them, whichever character it
+/// chooses, rather than with a fresh burst of each every time (#394).
+///
+/// [`KEEP_LEFT`]: super::KEEP_LEFT
+#[derive(Resource, Default)]
+struct Allowances(HashMap<i64, Kept>);
+
+/// An account's allowances as it left the game, in [`Allowances`].
+struct Kept {
+    bucket: Bucket,
+    inputs: Inputs,
+    /// The tick it left in: each tick since gives its [`Inputs`] back, as staying would have.
+    tick: u64,
+    until: u64,
+}
+
 /// The world: its ECS, and the phases a tick runs.
 pub struct WorldCore {
     world: World,
@@ -204,11 +226,13 @@ impl WorldCore {
         world.insert_resource(NextSave::default());
         world.insert_resource(rules);
         world.insert_resource(Now::default());
+        world.insert_resource(Ticks::default());
         world.insert_resource(Inbox::default());
         world.insert_resource(Index::default());
         world.insert_resource(Pending::default());
         world.insert_resource(Services(services));
         world.insert_resource(Left::default());
+        world.insert_resource(Allowances::default());
         world.insert_resource(Names {
             out: names,
             changed: false,
@@ -235,6 +259,7 @@ impl WorldCore {
     /// returns how long each phase took.
     pub fn step(&mut self, now_ms: u64, inputs: Vec<WorldIn>) -> Vec<(&'static str, Duration)> {
         self.world.resource_mut::<Now>().0 = now_ms;
+        self.world.resource_mut::<Ticks>().0 += 1;
         self.world.resource_mut::<Inbox>().0 = inputs;
         let phases = self
             .phases
@@ -420,8 +445,9 @@ fn counted(world: &mut World, conn: ConnId) -> Option<Entity> {
 /// A character enters. An account already in the game is replaced. A character that was in the
 /// game a moment ago, on the connection this replaces or one that left within [`KEEP_LEFT`],
 /// enters where it stood: the store's copy, which the login read, may be older, since saves are
-/// written off the tick (#222). Likewise, an `op` or a `deop` since the account last joined
-/// stands over the flag its link read ([`AdminChanges`]).
+/// written off the tick (#222). Its account brings back the allowances it had then, whichever
+/// character it chose ([`allowances`]). Likewise, an `op` or a `deop` since the account last
+/// joined stands over the flag its link read ([`AdminChanges`]).
 ///
 /// [`KEEP_LEFT`]: super::KEEP_LEFT
 fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
@@ -450,7 +476,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
         _ => player.at,
     };
     let name = name_key(&player.look.name);
-    let allowance = Inputs(input_cap(world.resource::<Rules>()));
+    let (bucket, allowance) = allowances(world, player.account, now);
     let e = world
         .spawn((
             Conn {
@@ -469,7 +495,7 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
             Stage::Loading,
             Sight::default(),
             Gait::new(now),
-            Bucket::new(now),
+            bucket,
             allowance,
         ))
         .id();
@@ -487,6 +513,27 @@ fn join(world: &mut World, player: Player, out: mpsc::Sender<WorldOut>) {
             at,
         },
     );
+}
+
+/// The chat [`Bucket`] and [`Inputs`] a character of `account` enters with at `now`: full ones,
+/// unless the account left the game within [`KEEP_LEFT`] ([`Allowances`]). Then it has what it
+/// kept, and its [`Inputs`] get the limit back for each tick since, as staying would have given
+/// it; the bucket refills with time as it is.
+///
+/// [`KEEP_LEFT`]: super::KEEP_LEFT
+fn allowances(world: &mut World, account: i64, now: u64) -> (Bucket, Inputs) {
+    let rules = world.resource::<Rules>();
+    let (per_tick, cap) = (rules.max_inputs_per_tick, input_cap(rules));
+    let tick = world.resource::<Ticks>().0;
+    match world.resource_mut::<Allowances>().0.remove(&account) {
+        Some(kept) if now < kept.until => {
+            let missed = usize::try_from(tick.saturating_sub(kept.tick)).unwrap_or(usize::MAX);
+            let back = per_tick.saturating_mul(missed);
+            let inputs = kept.inputs.0.saturating_add(back).min(cap);
+            (kept.bucket, Inputs(inputs))
+        }
+        _ => (Bucket::new(now), Inputs(cap)),
+    }
 }
 
 /// The client has loaded its scene: it gets its own actor, then, the first time, the MOTD if there
@@ -574,7 +621,8 @@ pub(super) fn hide(world: &mut World, pid: ActorId) {
 }
 
 /// Takes `e` out of the game now: its viewers are told, its place is saved and kept for a while
-/// (`Left`), its connection hears why when there is a reason, and the index forgets it.
+/// (`Left`), and so are its account's allowances (`Allowances`), its connection hears why when
+/// there is a reason, and the index forgets it.
 fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
     let (Some(actor), Some(here), Some(conn), Some(account)) = (
         world.get::<Actor>(e),
@@ -592,12 +640,26 @@ fn remove(world: &mut World, e: Entity, reason: Option<KickReason>) {
         let _ = conn.out.try_send(WorldOut::Kicked(reason));
     }
     save(world.resource::<Services>(), pid, at);
-    let now = world.resource::<Now>().0;
+    let bucket = world.get::<Bucket>(e).copied();
+    let spent = bucket.zip(world.get::<Inputs>(e).copied());
+    let (now, tick) = (world.resource::<Now>().0, world.resource::<Ticks>().0);
     let keep = u64::try_from(super::KEEP_LEFT.as_millis()).unwrap_or(u64::MAX);
+    let until = now.saturating_add(keep);
     let mut left = world.resource_mut::<Left>();
     // Those kept long enough are forgotten as others leave, so the map holds only the last minute.
     left.0.retain(|_, (_, until)| now < *until);
-    left.0.insert(pid, (at, now.saturating_add(keep)));
+    left.0.insert(pid, (at, until));
+    let mut allowances = world.resource_mut::<Allowances>();
+    allowances.0.retain(|_, kept| now < kept.until);
+    if let Some((bucket, inputs)) = spent {
+        let kept = Kept {
+            bucket,
+            inputs,
+            tick,
+            until,
+        };
+        allowances.0.insert(account_id, kept);
+    }
     world.despawn(e);
     let mut index = world.resource_mut::<Index>();
     unindex(&mut index.conns, &conn_id, e);
@@ -1130,6 +1192,117 @@ mod tests {
         h.tick(600_000);
         assert_eq!(h.take(1), Vec::new(), "within five seconds' worth");
         assert_eq!(h.take(2), vec![WorldOut::Kicked(KickReason::Flood)]);
+    }
+
+    #[test]
+    fn going_back_to_character_select_or_reconnecting_brings_no_fresh_allowance() {
+        // #394: each join spawned a full allowance, so a client that went back to character
+        // select and chose again, or reconnected, could flood again at once. The account keeps
+        // what it had left, whichever character it comes back as.
+        //
+        // `again` spends the whole allowance, comes back on `conn` as another of the account's
+        // characters, and sends `n` messages the tick after: what it was sent then. On connection
+        // 1 it goes back to character select, leaving the world and joining it again; on another,
+        // a newer connection replaces it.
+        let again = |conn, n| {
+            let mut h = Harness::new();
+            h.enter(player(1, "Lin", at(0.0, 0.0)));
+            pulls(&mut h, 1, 800);
+            h.tick(50);
+            if conn == 1 {
+                h.push(WorldIn::Leave { conn });
+                h.tick(50);
+            }
+            h.join(Player {
+                conn,
+                pid: 7,
+                look: look("Mai"),
+                ..player(1, "Lin", at(0.0, 0.0))
+            });
+            h.push(WorldIn::Loaded { conn });
+            h.tick(50);
+            h.take(conn);
+            pulls(&mut h, conn, n);
+            h.tick(50);
+            h.take(conn)
+        };
+        let flood = vec![WorldOut::Kicked(KickReason::Flood)];
+        // Back to select: it left with that tick's 8, and the tick it comes back in gives 8 more,
+        // as staying would have. The load spends one, and the next tick gives 8: 23.
+        assert_eq!(again(1, 23), Vec::new(), "back to select");
+        assert_eq!(again(1, 24), flood, "back to select");
+        // A newer connection replaces it in the tick it joins: 8, less the load's one, and 8.
+        assert_eq!(again(2, 15), Vec::new(), "a reconnect");
+        assert_eq!(again(2, 16), flood, "a reconnect");
+    }
+
+    /// A world where Lin spent the whole allowance and left; its clock has gone on `away` ms in
+    /// `ticks` more ticks.
+    fn spent_and_away(ticks: u64, away: u64) -> Harness {
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        pulls(&mut h, 1, 800);
+        h.tick(50);
+        h.push(WorldIn::Leave { conn: 1 });
+        h.tick(50);
+        for _ in 0..ticks {
+            h.tick(away / ticks);
+        }
+        h
+    }
+
+    #[test]
+    fn each_tick_away_gives_the_allowance_back_as_staying_would() {
+        // #394: an account that comes back has what it kept, and the limit for each tick it was
+        // away, so a player who spent a burst and comes back five seconds later has it all, and
+        // never more: the load and `n` messages in the tick it comes back in.
+        let back = |n| {
+            let mut h = spent_and_away(100, 5_000);
+            h.join(player(1, "Lin", at(0.0, 0.0)));
+            h.push(WorldIn::Loaded { conn: 1 });
+            pulls(&mut h, 1, n);
+            h.tick(50);
+            h.take(1)
+                .into_iter()
+                .filter(|m| matches!(m, WorldOut::Kicked(_)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(back(799), Vec::new(), "the whole allowance");
+        assert_eq!(back(800), vec![WorldOut::Kicked(KickReason::Flood)]);
+    }
+
+    #[test]
+    fn what_those_who_left_had_is_forgotten_once_keep_left_has_passed() {
+        // Each leave forgets the places and allowances kept long enough, so the world holds only
+        // the last minute's.
+        let mut h = Harness::new();
+        h.enter(player(1, "Lin", at(0.0, 0.0)));
+        h.enter(player(2, "Mai", at(50_000.0, 0.0)));
+        h.push(WorldIn::Leave { conn: 1 });
+        h.tick(50);
+        h.tick(60_001);
+        h.push(WorldIn::Leave { conn: 2 });
+        h.tick(50);
+        let world = &h.core.world;
+        let places: Vec<_> = world.resource::<Left>().0.keys().copied().collect();
+        let accounts: Vec<_> = world.resource::<Allowances>().0.keys().copied().collect();
+        assert_eq!(places, vec![2]);
+        assert_eq!(accounts, vec![2]);
+    }
+
+    #[test]
+    fn an_account_away_longer_than_keep_left_comes_back_with_full_allowances() {
+        // However few ticks ran meanwhile, as when the world itself stalled: past KEEP_LEFT, the
+        // account starts afresh, as a new one does.
+        let mut h = spent_and_away(1, 60_001);
+        h.join(player(1, "Lin", at(0.0, 0.0)));
+        h.push(WorldIn::Loaded { conn: 1 });
+        h.tick(50);
+        h.take(1);
+        pulls(&mut h, 1, 800);
+        h.tick(50);
+        assert_eq!(h.take(1), Vec::new(), "the whole allowance");
+        assert_eq!(h.core.players(), 1);
     }
 
     #[test]

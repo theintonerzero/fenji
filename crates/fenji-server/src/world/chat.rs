@@ -560,6 +560,35 @@ mod tests {
     }
 
     #[test]
+    fn going_back_to_character_select_brings_no_fresh_burst() {
+        // #394: each join spawned a full bucket, so four rounds of six lines, with back to
+        // character select between them, put 20 lines in front of another player at once. The
+        // account keeps its bucket, whichever character it comes back as: five, as staying would.
+        let mut h = Harness::new();
+        h.enter(player(2, "Mai", at(1.0, 1.0)));
+        let mut heard = 0;
+        for round in 0..4 {
+            h.enter(Player {
+                pid: 10 + round,
+                look: look(&format!("Lin{round}")),
+                ..player(1, "Lin", at(0.0, 0.0))
+            });
+            for _ in 0..6 {
+                h.push(say(1, ChatChannel::World, "hi"));
+            }
+            h.tick(1);
+            h.push(WorldIn::Leave { conn: 1 });
+            h.tick(1);
+            heard += h
+                .take(2)
+                .iter()
+                .filter(|m| matches!(m, WorldOut::Chat(ChatOut::Said { .. })))
+                .count();
+        }
+        assert_eq!(heard, 5);
+    }
+
+    #[test]
     fn a_non_admins_bang_line_is_ordinary_chat() {
         let mut h = three();
         h.push(say(1, ChatChannel::Nearby, "!kick Mai"));

@@ -160,10 +160,11 @@ pub enum KickReason {
 pub enum WorldIn {
     /// A character enters. The world answers on `out`, first with [`WorldOut::LoadScene`]: at
     /// `player.at`, or where the character stood if it left a moment ago (`KEEP_LEFT`). An
-    /// account already in the world is replaced, its older connection let go with
-    /// [`KickReason::Replaced`]. A pid outside 1 to [`MAX_PLAYER_ID`] gets no actor, only
-    /// [`KickReason::Kicked`], and a join that reaches the world after its shutdown tick hears
-    /// [`KickReason::Shutdown`].
+    /// account that left a moment ago comes back with the chat and input allowances it had then,
+    /// whichever character it chose (#394). An account already in the world is replaced, its
+    /// older connection let go with [`KickReason::Replaced`]. A pid outside 1 to
+    /// [`MAX_PLAYER_ID`] gets no actor, only [`KickReason::Kicked`], and a join that reaches the
+    /// world after its shutdown tick hears [`KickReason::Shutdown`].
     Join {
         player: Player,
         out: mpsc::Sender<WorldOut>,
