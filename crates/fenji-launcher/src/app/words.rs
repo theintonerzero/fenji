@@ -34,6 +34,8 @@ pub const RUNNING: &str = "The game is already running.";
 pub const WHILE_PLAYING: &str = "Not while the game is running.";
 /// Play when the quick check finds files to repair.
 pub const NEEDS_REPAIR: &str = "Some game files need repair. Open Game.";
+/// Another game folder chosen while Play checked the last (#367).
+pub const FOLDER_CHANGED: &str = "The game folder changed while Play checked it. Press Play again.";
 /// `umu-run createprefix` didn't make the Wine prefix.
 pub const PREFIX_FAILED: &str = "Proton couldn't set up the game. See the logs.";
 /// `umu-run createprefix` ran past its limit, `play::PREFIX_LIMIT` (#348).

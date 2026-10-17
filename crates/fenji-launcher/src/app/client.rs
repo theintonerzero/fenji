@@ -265,14 +265,15 @@ impl App {
         });
     }
 
-    /// Checks the saved folder now, as a job, and gives back what the check found: `None` when
-    /// it was stopped or failed (its notice says which).
+    /// Checks the saved folder now, as a job, and gives back what the check found and the folder
+    /// it checked: `None` when it was stopped or failed (its notice says which).
     pub(super) async fn check_here(
         &self,
         level: LevelView,
-    ) -> Result<Option<CheckView>, IntentError> {
+    ) -> Result<Option<(CheckView, PathBuf)>, IntentError> {
         let job = self.change(|st| self.begin_check(st, level))?;
-        Ok(self.run_check_here(job).await)
+        let folder = job.folder.clone();
+        Ok(self.run_check_here(job).await.map(|found| (found, folder)))
     }
 
     /// Runs the check on a blocking thread, publishing its progress, then its result: the files
