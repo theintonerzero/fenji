@@ -38,6 +38,7 @@ fn config(dir: &Path) -> AppConfig {
         terminal: None,
         umu_run: None,
         ge_proton: None,
+        gamemoderun: None,
     }
 }
 
@@ -472,6 +473,13 @@ sleep "${FENJI_TEST_SLEEP:-1}"
 exit "${FENJI_TEST_EXIT:-0}"
 "#;
 
+/// gamemoderun as Feral's is: it runs what it's given in its own place (exec). This one notes each
+/// command it's given first.
+const FAKE_GAMEMODERUN: &str = r#"#!/bin/sh
+echo "$*" >> "$FENJI_TEST_RECORD.gamemode"
+exec "$@"
+"#;
+
 /// A server with an invite, a client folder (`bin64/` with two small files) and its manifest, the
 /// fake umu-run, and an App that plays with them, its folder chosen and checked.
 struct PlayBed {
@@ -492,7 +500,12 @@ impl PlayBed {
 
     /// With these in the launcher's own environment, as a player's shell would set them.
     async fn with_env(env: &[(&str, &str)]) -> PlayBed {
-        Self::build_with(Os::Linux, 1, 0, 0, env).await
+        Self::build_with(Os::Linux, 1, 0, 0, env, false).await
+    }
+
+    /// With GameMode installed: a fake gamemoderun, as the shell would find it.
+    async fn with_gamemode() -> PlayBed {
+        Self::build_with(Os::Linux, 1, 0, 0, &[], true).await
     }
 
     async fn with_sleep(secs: u32) -> PlayBed {
@@ -514,7 +527,7 @@ impl PlayBed {
     }
 
     async fn build(os: Os, sleep: u32, exit: i32, prefix_sleep: u32) -> PlayBed {
-        Self::build_with(os, sleep, exit, prefix_sleep, &[]).await
+        Self::build_with(os, sleep, exit, prefix_sleep, &[], false).await
     }
 
     async fn build_with(
@@ -523,6 +536,7 @@ impl PlayBed {
         exit: i32,
         prefix_sleep: u32,
         env: &[(&str, &str)],
+        gamemode: bool,
     ) -> PlayBed {
         let dir = tempfile::tempdir().unwrap();
         let (s, c) = server(dir.path(), "", GateLimits::default()).await;
@@ -557,6 +571,13 @@ impl PlayBed {
         ]);
         cfg.env
             .extend(env.iter().map(|(k, v)| ((*k).into(), (*v).into())));
+        if gamemode {
+            let gamemoderun = dir.path().join("gamemoderun");
+            std::fs::write(&gamemoderun, FAKE_GAMEMODERUN).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&gamemoderun, std::fs::Permissions::from_mode(0o755)).unwrap();
+            cfg.gamemoderun = Some(gamemoderun);
+        }
         let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
         app.intent(Intent::ChooseFolder {
             path: client.display().to_string(),
@@ -731,6 +752,42 @@ async fn play_starts_the_game_with_the_ge_proton_it_has_or_the_players_own() {
             record.lines().any(|l| l == expected),
             "{expected}: {record}"
         );
+        t.s.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn play_starts_the_game_under_gamemode_when_its_installed_and_on() {
+    // Launcher spec Amendment B, LB2: the game, and only the game, under gamemoderun and outside
+    // umu-run; making the prefix isn't the game. The switch turns it off.
+    for on in [true, false] {
+        let t = PlayBed::with_gamemode().await;
+        if !on {
+            t.app
+                .intent(Intent::SetGameMode { on: false })
+                .await
+                .unwrap();
+        }
+        t.signed_in().await;
+        t.app.intent(Intent::Play).await.unwrap();
+        until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+        assert!(t.record.is_file(), "the game ran");
+        let wrapped = std::fs::read_to_string(t.record.with_extension("gamemode"));
+        if on {
+            let wrapped = wrapped.unwrap();
+            let umu_run = t.cfg.umu_run.as_ref().unwrap().display().to_string();
+            let lines: Vec<&str> = wrapped.lines().collect();
+            assert_eq!(lines.len(), 1, "the game alone: {wrapped}");
+            assert!(
+                lines[0].starts_with(&format!("{umu_run} ")) && lines[0].contains("gujianol.exe"),
+                "{wrapped}"
+            );
+        } else {
+            assert!(
+                wrapped.is_err(),
+                "with the switch off, no gamemoderun: {wrapped:?}"
+            );
+        }
         t.s.shutdown().await.unwrap();
     }
 }

@@ -217,6 +217,11 @@ fn passed_on(name: &OsStr) -> bool {
     !secret && !login
 }
 
+/// Feral GameMode's `gamemoderun` on `path`, when it's installed (launcher spec Amendment B, LB2).
+pub fn gamemoderun(path: Option<&OsStr>) -> Option<PathBuf> {
+    on_path(OsStr::new("gamemoderun"), path)
+}
+
 /// The process for `spec`: its program, arguments and folder, and an environment of `parent`'s
 /// variables less [`SECRET_ENV`], `gj_*` and an AppImage's ([`appimage::outside`]), then the
 /// spec's own.
@@ -224,7 +229,25 @@ pub fn command(
     spec: &LaunchSpec,
     parent: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Command {
-    let mut cmd = Command::new(&spec.program);
+    command_under(spec, &[], parent)
+}
+
+/// [`command`], started through `wrappers`, outermost first: the first is the program, and the
+/// rest are its arguments before `spec`'s program and arguments (the player's own wrappers, then
+/// `gamemoderun`; launcher spec Amendment B, LB2 and LB3). The environment and folder are `spec`'s.
+pub fn command_under(
+    spec: &LaunchSpec,
+    wrappers: &[OsString],
+    parent: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Command {
+    let mut cmd = match wrappers.split_first() {
+        Some((first, rest)) => {
+            let mut cmd = Command::new(first);
+            cmd.args(rest).arg(&spec.program);
+            cmd
+        }
+        None => Command::new(&spec.program),
+    };
     cmd.args(&spec.args)
         .env_clear()
         .envs(appimage::outside(
@@ -470,6 +493,64 @@ mod tests {
         // umu-run's own default, with no PROTONPATH.
         mark_proton(&prefix, "").unwrap();
         assert_eq!(prefix_proton(&prefix).as_deref(), Some(""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gamemoderun_is_found_on_path_only_as_an_executable() {
+        // Launcher spec Amendment B, LB2: GameMode is there when its gamemoderun is.
+        let d = tempfile::tempdir().unwrap();
+        let (plain, good) = (d.path().join("plain"), d.path().join("good"));
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        script(&plain.join("gamemoderun"), 0o644);
+        script(&good.join("gamemoderun"), 0o755);
+        let path = std::env::join_paths([plain.clone(), good.clone()]).unwrap();
+        assert_eq!(gamemoderun(Some(&path)), Some(good.join("gamemoderun")));
+        assert_eq!(gamemoderun(Some(plain.as_os_str())), None);
+        assert_eq!(gamemoderun(None), None);
+    }
+
+    #[test]
+    fn a_command_under_wrappers_runs_them_outermost_first_with_the_specs_environment() {
+        // Launcher spec Amendment B, LB2 and LB3: the player's wrappers, then gamemoderun, then
+        // the spec's program, with the environment and folder the spec alone would have.
+        let spec = LaunchSpec {
+            program: "/opt/umu/umu-run".into(),
+            args: vec!["game.exe".into(), "-fs".into()],
+            env: vec![("GAMEID".into(), "umu-1418100".into())],
+            cwd: "/games/bin64".into(),
+        };
+        let parent = || {
+            [("PATH", "/usr/bin"), ("FENJI_PASSWORD", "a long password")]
+                .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+        };
+        let wrappers = ["mangohud", "/usr/bin/gamemoderun"].map(OsString::from);
+        let under = command_under(&spec, &wrappers, parent());
+        let plain = command(&spec, parent());
+        assert_eq!(under.get_program(), "mangohud");
+        let args: Vec<&OsStr> = under.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "/usr/bin/gamemoderun",
+                "/opt/umu/umu-run",
+                "game.exe",
+                "-fs"
+            ]
+        );
+        let envs = |c: &Command| -> Vec<(OsString, Option<OsString>)> {
+            c.get_envs()
+                .map(|(k, v)| (k.to_owned(), v.map(OsStr::to_owned)))
+                .collect()
+        };
+        assert_eq!(envs(&under), envs(&plain));
+        assert_eq!(under.get_current_dir(), plain.get_current_dir());
+        // With none, the spec's own command.
+        let none = command_under(&spec, &[], parent());
+        assert_eq!(none.get_program(), plain.get_program());
+        assert!(none.get_args().eq(plain.get_args()));
+        assert_eq!(envs(&none), envs(&plain));
     }
 
     #[cfg(unix)]

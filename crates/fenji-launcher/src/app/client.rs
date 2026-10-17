@@ -793,6 +793,7 @@ mod tests {
                 terminal: None,
                 umu_run: None,
                 ge_proton: None,
+                gamemoderun: None,
             }
         }
 

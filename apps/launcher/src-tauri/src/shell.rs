@@ -67,6 +67,7 @@ pub fn route(intent: &Intent) -> Route {
         | Intent::CancelStart
         | Intent::DismissNotice { .. }
         | Intent::SetAutoUpdate { .. }
+        | Intent::SetGameMode { .. }
         | Intent::SetUmuRun { .. }
         | Intent::SetDownloadFolder { .. } => Route::Model,
     }
@@ -206,6 +207,7 @@ fn config() -> Result<AppConfig, String> {
         terminal: None,
         umu_run: None,
         ge_proton: Some(fenji_launcher::proton::GE_RELEASES.into()),
+        gamemoderun: fenji_launcher::start::gamemoderun(std::env::var_os("PATH").as_deref()),
     })
 }
 

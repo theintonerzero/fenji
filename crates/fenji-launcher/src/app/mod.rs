@@ -57,6 +57,10 @@ pub struct AppConfig {
     /// Amendment B, LB1): GitHub's API, [`crate::proton::GE_RELEASES`], or a test's. None never
     /// asks, and plays the build there (tests).
     pub ge_proton: Option<String>,
+    /// Feral GameMode's `gamemoderun`, where it's installed: the shell finds it on the launcher's
+    /// `PATH` ([`crate::start::gamemoderun`]), and tests give a fake. With none, Settings shows no
+    /// GameMode switch and the game starts without it (launcher spec Amendment B, LB2).
+    pub gamemoderun: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -317,6 +321,13 @@ impl App {
                 });
                 Ok(())
             }
+            Intent::SetGameMode { on } => {
+                self.change(|st| {
+                    st.settings.gamemode = on;
+                    self.save(st);
+                });
+                Ok(())
+            }
             Intent::SetUmuRun { path } => {
                 self.change(|st| {
                     st.settings.umu_run = path.filter(|p| !p.trim().is_empty()).map(PathBuf::from);
@@ -508,6 +519,7 @@ impl State {
             },
             settings: SettingsView {
                 auto_update: self.settings.auto_update,
+                gamemode: cfg.gamemoderun.is_some().then_some(self.settings.gamemode),
                 umu_run: self
                     .settings
                     .umu_run
@@ -671,6 +683,7 @@ mod tests {
             terminal: None,
             umu_run: None,
             ge_proton: None,
+            gamemoderun: None,
         }
     }
 
@@ -989,6 +1002,37 @@ mod tests {
         assert!(
             saved.contains("\"auto_update\": false") && saved.contains("umu-run"),
             "{saved}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gamemodes_switch_shows_only_where_its_installed_and_is_saved() {
+        // Launcher spec Amendment B, LB2: on by default, shown only with GameMode installed.
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        assert_eq!(
+            app.snapshot().settings.gamemode,
+            None,
+            "no GameMode, no switch"
+        );
+        drop(app);
+        let mut cfg = config(dir.path());
+        cfg.gamemoderun = Some("/usr/bin/gamemoderun".into());
+        let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
+        assert_eq!(
+            app.snapshot().settings.gamemode,
+            Some(true),
+            "on by default"
+        );
+        app.intent(Intent::SetGameMode { on: false }).await.unwrap();
+        assert_eq!(app.snapshot().settings.gamemode, Some(false));
+        assert_eq!(app.snapshot().notice, None);
+        drop(app);
+        let again = App::start(cfg, tokio::runtime::Handle::current());
+        assert_eq!(
+            again.snapshot().settings.gamemode,
+            Some(false),
+            "it's saved"
         );
     }
 

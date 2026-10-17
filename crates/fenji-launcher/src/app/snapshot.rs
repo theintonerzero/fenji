@@ -272,6 +272,9 @@ pub struct UpdateView {
 #[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct SettingsView {
     pub auto_update: bool,
+    /// GameMode's switch, where GameMode is installed, and none where it isn't (launcher spec
+    /// Amendment B, LB2).
+    pub gamemode: Option<bool>,
     pub umu_run: Option<String>,
     pub log_folder: String,
 }

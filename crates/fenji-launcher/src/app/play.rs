@@ -234,7 +234,11 @@ impl App {
             .ok_or_else(|| words::START_CANCELLED.to_string())??;
         let mut spec = base_spec(&client, &platform);
         spec.env.extend(pairs);
-        let mut cmd = tokio::process::Command::from(start::command(&spec, cfg.env.clone()));
+        let mut cmd = tokio::process::Command::from(start::command_under(
+            &spec,
+            &self.wrappers(),
+            cfg.env.clone(),
+        ));
         drop(spec);
         let err = log.try_clone().map_err(|e| e.to_string())?;
         cmd.stdin(Stdio::null())
@@ -318,6 +322,16 @@ impl App {
             }
         });
         fetched
+    }
+
+    /// What the game starts under, outermost first, umu-run inside them all (launcher spec
+    /// Amendment B, LB2): GameMode's `gamemoderun`, where it's installed and its switch is on.
+    /// `gamemoderun` runs what it's given in its own place, so the game's process is the one
+    /// started, as without it.
+    fn wrappers(&self) -> Vec<std::ffi::OsString> {
+        let on = self.inner.lock().settings.gamemode;
+        let gamemode = self.inner.cfg.gamemoderun.iter().filter(|_| on);
+        gamemode.map(|p| p.clone().into_os_string()).collect()
     }
 
     /// The GE-Proton umu-run starts the game with (launcher spec Amendment B, LB1): none when the
@@ -723,6 +737,7 @@ mod tests {
                 terminal: None,
                 umu_run: None,
                 ge_proton,
+                gamemoderun: None,
             },
             tokio::runtime::Handle::current(),
         )
