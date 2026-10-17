@@ -157,7 +157,7 @@ same "it prints the archive's path" "$out" "$T/out/$L.tar.gz"
 # second download (#359).
 # Every file deploy/systemd holds, in byte order: the archive is compared with that listing (#367).
 UNITS=()
-for path in "$REPO"/deploy/systemd/*; do [ -f "$path" ] && UNITS+=("${path##*/}"); done
+for path in "$REPO"/deploy/systemd/*; do UNITS+=("${path##*/}"); done
 same "deploy/systemd holds the service, the backup and its timer" "$(printf '%s\n' "${UNITS[@]}")" \
   "$(printf '%s\n' fenji-backup.service fenji-backup.timer fenji.service)"
 DEPLOY=(systemd/ "${UNITS[@]/#/systemd/}" caddy/ caddy/Caddyfile)

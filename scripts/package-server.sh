@@ -142,8 +142,9 @@ case $target in
     chmod 0755 "$dir/systemd" "$dir/caddy"
     files+=(systemd)
     # Every unit deploy/systemd holds, in byte order (LC_ALL=C), so none can be left out (#367).
+    # Anything but a file there, such as a drop-in folder, is a decision this loop can't make.
     for path in "$root"/deploy/systemd/*; do
-      [ -f "$path" ] || continue
+      [ -f "$path" ] && [ ! -L "$path" ] || fail "$path isn't a plain file: decide how the archive packs it"
       unit=${path##*/}
       cp -- "$path" "$dir/systemd/"
       chmod 0644 "$dir/systemd/$unit"

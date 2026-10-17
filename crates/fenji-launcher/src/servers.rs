@@ -209,8 +209,10 @@ mod tests {
             parse_added("play example.net"),
             Err(AddError::Spaced)
         ));
-        // Nor in a link's host, within one line (#359): only a line break is a wrap there.
+        // Nor in a link's host, within one line (#359): only a line break is a wrap there. A port
+        // after a space is the same mistake.
         for typed in [
+            "localhost :7801",
             "https://play example.net",
             "https://play example.net/#invite=ABCD-EFGH-JKMN-PQRS",
         ] {
