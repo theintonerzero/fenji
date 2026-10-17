@@ -29,6 +29,12 @@ Fenji @VERSION@: a private server for Swords of Legends Online
    back when Gameforge distributed it. Fenji doesn't include the game or any
    of its files.
 
+6. To update the server on Linux or macOS, stop it (type stop in its
+   console), then run ./update-server.sh in a terminal in this folder. It
+   downloads the latest release, checks it, backs up the database and puts
+   the new version in place, keeping your settings and data. On Windows,
+   follow the hosting guide's section 5 to update by hand.
+
 fenji.example.toml describes every setting. Fenji is free software: LICENSE
 is its licence, the GNU Affero General Public License, version 3 or later,
 and SOURCE.txt says where this version's source code is.

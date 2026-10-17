@@ -117,6 +117,11 @@ jobs:
           # what this system's own tools find in it: GNU tar, bsdtar on macOS, 7-Zip on Windows.
           name=fenji-server-$version-$TARGET
           files=("$exe" "$script" fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)
+          # A Linux or macOS archive also carries the update script (the hosting spec's Amendment B).
+          case $TARGET in
+            *-windows-*) ;;
+            *) files+=(update-server.sh) ;;
+          esac
           # A Linux archive also carries the VPS's units and its Caddyfile (#359).
           case $TARGET in
             *-linux-*)

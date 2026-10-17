@@ -156,11 +156,13 @@ same "it prints the archive's path" "$out" "$T/out/$L.tar.gz"
 # A Linux archive also carries deploy/systemd's units and deploy/caddy's Caddyfile, so a VPS needs no
 # second download (#359).
 DEPLOY=(systemd/ systemd/fenji.service systemd/fenji-backup.service systemd/fenji-backup.timer caddy/ caddy/Caddyfile)
-same "the Linux tarball holds one folder: the server, start-server.sh, the texts and the VPS's units" \
+same "the Linux tarball holds one folder: the server, start-server.sh, update-server.sh, the texts and the VPS's units" \
   "$(tar -tzf "$T/out/$L.tar.gz")" \
-  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt "${DEPLOY[@]}")"
-same "the folders, the server and start-server.sh are 0755, the texts and units 0644" "$(modes "$T/out/$L.tar.gz")" "$(printf '%s\n' \
-  "drwxr-xr-x $L/" "-rwxr-xr-x $L/fenji-server" "-rwxr-xr-x $L/start-server.sh" "-rw-r--r-- $L/fenji.example.toml" \
+  "$(entries "$L" fenji-server start-server.sh update-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt \
+    THIRD-PARTY-NOTICES.txt "${DEPLOY[@]}")"
+same "the folders, the server and the two scripts are 0755, the texts and units 0644" "$(modes "$T/out/$L.tar.gz")" "$(printf '%s\n' \
+  "drwxr-xr-x $L/" "-rwxr-xr-x $L/fenji-server" "-rwxr-xr-x $L/start-server.sh" "-rwxr-xr-x $L/update-server.sh" \
+  "-rw-r--r-- $L/fenji.example.toml" \
   "-rw-r--r-- $L/README.txt" "-rw-r--r-- $L/LICENSE" "-rw-r--r-- $L/SOURCE.txt" "-rw-r--r-- $L/THIRD-PARTY-NOTICES.txt" \
   "drwxr-xr-x $L/systemd/" "-rw-r--r-- $L/systemd/fenji.service" "-rw-r--r-- $L/systemd/fenji-backup.service" \
   "-rw-r--r-- $L/systemd/fenji-backup.timer" "drwxr-xr-x $L/caddy/" "-rw-r--r-- $L/caddy/Caddyfile")"
@@ -178,6 +180,8 @@ tar -xzf "$T/out/$L.tar.gz" -C "$T/linux"
 X=$T/linux/$L
 holds "the server is the binary given" cmp -s "$X/fenji-server" "$T/in/with space/fake"
 holds "start-server.sh is deploy/start's" cmp -s "$X/start-server.sh" "$REPO/deploy/start/start-server.sh"
+# The update script (the hosting spec's Amendment B, HB1), in the Linux and macOS archives.
+holds "update-server.sh is deploy/start's" cmp -s "$X/update-server.sh" "$REPO/deploy/start/update-server.sh"
 holds "fenji.example.toml is the server's" cmp -s "$X/fenji.example.toml" "$REPO/crates/fenji-server/fenji.example.toml"
 holds "LICENSE is the repository's" cmp -s "$X/LICENSE" "$REPO/LICENSE"
 for unit in fenji.service fenji-backup.service fenji-backup.timer; do
@@ -207,6 +211,8 @@ same "it prints the zip's path" "$out" "$T/out/$W.zip"
 same "the Windows zip holds one folder: the server, start-server.bat and the texts" \
   "$(unzip -Z1 "$T/out/$W.zip")" \
   "$(entries "$W" fenji-server.exe start-server.bat fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)"
+same "the Windows zip has no update-server.sh: Windows hosts update by hand (Amendment B, HB1)" \
+  "$(unzip -Z1 "$T/out/$W.zip" | grep -c update-server)" 0
 unzip -p "$T/out/$W.zip" "$W/fenji-server.exe" > "$T/exe"
 holds "fenji-server.exe is the binary given" cmp -s "$T/exe" "$T/in/with space/fake"
 unzip -p "$T/out/$W.zip" "$W/start-server.bat" > "$T/bat"
@@ -237,13 +243,16 @@ same "the old zip is replaced" "$(unzip -Z1 "$T/out/$W.zip")" \
 M=fenji-server-$v-aarch64-apple-darwin
 pack "$v" aarch64-apple-darwin
 packs "a macOS target packs"
-same "the macOS tarball holds one folder: the server, start-server.command and the texts" \
+same "the macOS tarball holds one folder: the server, start-server.command, update-server.sh and the texts" \
   "$(tar -tzf "$T/out/$M.tar.gz")" \
-  "$(entries "$M" fenji-server start-server.command fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt)"
-same "start-server.command is 0755" "$(modes "$T/out/$M.tar.gz" | grep start-server)" "-rwxr-xr-x $M/start-server.command"
+  "$(entries "$M" fenji-server start-server.command update-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt \
+    THIRD-PARTY-NOTICES.txt)"
+same "start-server.command and update-server.sh are 0755" "$(modes "$T/out/$M.tar.gz" | grep -e start-server -e update-server)" \
+  "$(printf '%s\n' "-rwxr-xr-x $M/start-server.command" "-rwxr-xr-x $M/update-server.sh")"
 mkdir "$T/mac"
 tar -xzf "$T/out/$M.tar.gz" -C "$T/mac"
 holds "start-server.command is deploy/start's" cmp -s "$T/mac/$M/start-server.command" "$REPO/deploy/start/start-server.command"
+holds "the macOS update-server.sh is deploy/start's" cmp -s "$T/mac/$M/update-server.sh" "$REPO/deploy/start/update-server.sh"
 holds "a macOS build's notices are cargo about's, without musl's" cmp -s "$T/mac/$M/THIRD-PARTY-NOTICES.txt" "$T/notices"
 same "cargo about is asked for the macOS target's crates" "$(sed -n '/^--target$/{n;p;}' "$T/cargo-args.about")" aarch64-apple-darwin
 
@@ -303,8 +312,8 @@ rm -rf "$T/out"
 pack "$v" x86_64-unknown-linux-musl
 packs "a Linux target that links fenji-oodle packs"
 same "its tarball adds fenji-oodle's COPYING and NOTICE" "$(tar -tzf "$T/out/$L.tar.gz")" \
-  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt \
-    "${DEPLOY[@]}" fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)"
+  "$(entries "$L" fenji-server start-server.sh update-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt \
+    THIRD-PARTY-NOTICES.txt "${DEPLOY[@]}" fenji-oodle/ fenji-oodle/COPYING fenji-oodle/NOTICE)"
 same "fenji-oodle's folder is 0755 and its texts 0644" "$(modes "$T/out/$L.tar.gz" | grep fenji-oodle)" "$(printf '%s\n' \
   "drwxr-xr-x $L/fenji-oodle/" "-rw-r--r-- $L/fenji-oodle/COPYING" "-rw-r--r-- $L/fenji-oodle/NOTICE")"
 mkdir "$T/gpl"
@@ -321,7 +330,8 @@ export FAKE_OODLE=prefix
 pack "$v" x86_64-unknown-linux-musl
 packs "a build with a crate named like fenji-oodle packs"
 same "a crate whose name only starts with fenji-oodle brings no GPL texts" "$(tar -tzf "$T/out/$L.tar.gz")" \
-  "$(entries "$L" fenji-server start-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt THIRD-PARTY-NOTICES.txt "${DEPLOY[@]}")"
+  "$(entries "$L" fenji-server start-server.sh update-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt \
+    THIRD-PARTY-NOTICES.txt "${DEPLOY[@]}")"
 unset FAKE_OODLE
 
 # The archive is staged in a folder beside it, so that its last move is a rename on one file

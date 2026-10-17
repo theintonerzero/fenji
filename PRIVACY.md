@@ -10,6 +10,8 @@ Fenji's own software sends nothing about you to the project or to anyone else. I
 - **Its updates.** When it starts, the launcher asks GitHub for the latest release's `latest.json`, to see whether there's a newer launcher, and it asks again when you press "Check now" in Settings. With "Update automatically" off, it asks only when you press that. A newer launcher downloads from the same release, and installs only if Fenji's release key signed it.
 - **Two tools, once, on Linux.** The first time it needs them, the launcher downloads DepotDownloader and umu-launcher from their GitHub releases, at pinned versions that it checks by SHA-256. A `umu-run` on your `PATH` is used instead of a download.
 
+A server's update script talks to GitHub too, when its host runs it: `update-server.sh`, or `fenji-update` on a VPS, asks where Fenji's latest release is, and downloads that release's server archive and `SHA256SUMS`. The server itself never does: it has no update check.
+
 These requests carry nothing about you or your accounts, though like any request they show GitHub your IP address. The game client is another matter (below).
 
 **Finding a copy Steam installed reads only your computer.** To offer a copy of the game Steam already installed, the launcher reads Steam's list of your libraries (`libraryfolders.vdf`) and the game's install record (`appmanifest_1418100.acf`), on Linux and Windows. On Windows it also reads where Steam is installed from the registry (`SteamPath`). It reads nothing else of Steam's, sends nothing, and never writes into a Steam library.
