@@ -165,7 +165,7 @@ Commands work in any case. `help` lists them, and `help <command>` shows one's u
 | `online`, or `list` | Who is connected: the account, the character it plays or `lobby`, the scene, and since when. Never an address. |
 | `announce <text>`, or `say <text>` | Shows the text to everyone in the game, on the marquee: at most 140 characters, without backslashes or words in square brackets, which the game would read as links or sounds. |
 | `kick <name>` | Lets the player go, with the kick reason. They can come back: `ban` keeps an account out. |
-| `tp <name> <name>` | Takes the first player to the second, in the same scene. |
+| `tp <name> <name>` | Takes the first player to the second, in any scene. |
 | `motd` | Shows the message of the day. |
 | `motd <text>` | Sets the message of the day, at once: plain text of at most 200 characters, which launchers show players as your notice, and which each player gets once in the game's chat when their character has loaded into the world. It's kept in the database, over `motd` in `fenji.toml`. |
 | `motd off` | Drops the message the console set, so that `motd` in `fenji.toml` is the message of the day again: none, unless you wrote one there. |

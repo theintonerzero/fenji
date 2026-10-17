@@ -509,7 +509,7 @@ fn masked(body: &[u8], machine: fn(usize) -> bool) -> String {
 /// `now_ms`, or `None` for what isn't sent: what names `own` itself (world.md 14.11: a 9 naming it
 /// would make the client's own player leave, and a 6 would queue its own id; 16.8: a 13 would place
 /// the player's own actor; interest leaves a viewer out of its own view, so this guards against a
-/// bug in the world), and a move whose detail isn't [`world::MoveDetail::LEN`] bytes, which only a
+/// bug in the world), but `SelfReenter`'s 9, which is meant to (1.6), and a move whose detail isn't [`world::MoveDetail::LEN`] bytes, which only a
 /// bug in the world makes. `play` closes on a kick before it gets here.
 fn encode(
     server: &mut Server,
@@ -542,6 +542,27 @@ fn encode(
             // with it (world.md 6.5).
             tracing::debug!(pid, speed, "the player's own actor: 7 and 8");
             Ok(Some(enter_and_finish(server, pid, &look, pos, speed)?))
+        }
+        WorldOut::SelfReenter {
+            pid,
+            look,
+            pos,
+            speed,
+        } => {
+            tracing::debug!(
+                pid,
+                speed,
+                "the player's own actor anew, in another scene: 9, 7 and 8"
+            );
+            // The one 9 that names the player's own actor (world.md 14.11): its client destroys
+            // the actor it kept through the load, and the 7 makes it anew where it stands now.
+            let mut out = server.send(
+                Stc::SyncLeave.to_u8(),
+                &world::sync_leave(&[pid]),
+                &StoredCodec,
+            )?;
+            out.extend(enter_and_finish(server, pid, &look, pos, speed)?);
+            Ok(Some(out))
         }
         WorldOut::Announce { pid, pos } => {
             if pid == own {
@@ -1991,6 +2012,40 @@ mod tests {
             let mut want = 300i64.to_le_bytes().to_vec();
             want.extend(far.to_le_bytes());
             assert_eq!(got[0].body, want);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn the_players_own_actor_anew_is_a_9_naming_it_then_7_and_8() {
+        // Run 054-t1: after a teleport's load, a 7 alone left the client's actor where it stood,
+        // in the old scene's coordinates. A 9 naming it first has the client make it anew.
+        linked(|mut l| async move {
+            let (look, _) = mai();
+            l.out
+                .send(WorldOut::SelfReenter {
+                    pid: 258,
+                    look,
+                    pos: AT,
+                    speed: 100,
+                })
+                .await
+                .unwrap();
+            let got = l.messages(3).await;
+            assert_eq!(got.len(), 3, "{got:?}");
+            assert_eq!(
+                (got[0].ty, &got[0].body[..]),
+                (Stc::SyncLeave.to_u8(), &258i64.to_le_bytes()[..])
+            );
+            assert_eq!(got[1].ty, Stc::SyncEnter.to_u8());
+            assert_eq!(got[1].body[..8], 258i64.to_le_bytes());
+            assert_eq!(
+                (got[2].ty, &got[2].body[..]),
+                (
+                    Stc::SyncEnterFinish.to_u8(),
+                    &world::sync_enter_finish(258)[..]
+                )
+            );
         })
         .await;
     }
