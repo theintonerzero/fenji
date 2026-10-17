@@ -54,7 +54,9 @@ pub const MAX_BURST: usize = 2_000;
 
 /// How long the world keeps where a character left. Its save is written off the tick, so a login
 /// that reads the store before it lands would come back at an older place (#222); a minute is far
-/// longer than a save takes.
+/// longer than a save takes. It keeps the account's chat and input allowances as long, which is
+/// longer than either takes to fill again, so a client gains nothing by going back to character
+/// select, or by reconnecting, to start them afresh (#394).
 pub const KEEP_LEFT: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl Rules {
