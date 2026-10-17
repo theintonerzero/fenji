@@ -770,9 +770,12 @@ pub fn load_or_first_run(path: Option<&Path>) -> anyhow::Result<Loaded> {
         return Config::load(path).map(Loaded::Existing);
     }
     if given {
+        // Quoted where the shell needs it, and run as the same user when sudo ran this as another
+        // (#359).
         bail!(
-            "there's no config at {0}; write one with `fenji-server --config {0} init`",
-            path.display()
+            "there's no config at {}; write one with `{}`",
+            path.display(),
+            crate::cli::command_line(Some(path), "init")
         );
     }
     init(path)?;
@@ -934,6 +937,18 @@ mod tests {
             "{text}"
         );
         assert!(!path.exists(), "nothing is written for an explicit path");
+    }
+
+    #[test]
+    fn the_init_hint_runs_as_it_is_copied_with_a_space_in_the_path() {
+        // #359 (#404's review): the hint was written out by hand, its path unquoted, so a path
+        // with a space gave a command that wrote somewhere else, or failed.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my fenji").join("fenji.toml");
+        let e = load_or_first_run(Some(&path)).unwrap_err();
+        let text = format!("{e:#}");
+        let init = format!("`fenji-server --config '{}' init`", path.display());
+        assert!(text.ends_with(&init), "{text}");
     }
 
     #[test]
