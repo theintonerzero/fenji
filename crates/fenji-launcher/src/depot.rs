@@ -482,6 +482,8 @@ mod tests {
         assert_eq!(quoted(Path::new("/g/it's")), r"'/g/it'\''s'");
         assert_eq!(quoted(Path::new(r"/g/my\'game")), r"'/g/my'\\''\''game'");
         assert_eq!(quoted(Path::new(r"/g/end\")), r"'/g/end'\\''");
+        // The shells it starts would hold another test's fresh script open (ETXTBSY).
+        let _spawn = spawning();
         for shell in ["sh", "bash", "zsh"] {
             let Ok(probe) = std::process::Command::new(shell)
                 .arg("-c")
@@ -572,7 +574,7 @@ mod tests {
         );
     }
 
-    use super::reading_tests::{code, drawn};
+    use super::reading_tests::{CANCEL, EXPIRED, EXPIRED_ERRORS, REPAIRED, SIGN_IN, code, drawn};
 
     /// A fake DepotDownloader 3.4.0: it notes its arguments, one a line, and whether its input
     /// was closed, in `dir/args`, then does `body`.
@@ -655,6 +657,61 @@ mod tests {
             wait_child(&run, |s| matches!(s, RunState::Ended { .. })),
             RunState::Ended { code: 0 }
         );
+    }
+
+    /// A fake DepotDownloader's lines that play `output` back a line at a time, pausing after each
+    /// empty line and before its end so each code is seen, then write `errors` to its error output
+    /// and exit with `exit`, or with none wait to be stopped.
+    fn playing(dir: &Path, output: &str, errors: &str, exit: Option<i32>) -> String {
+        let (out, err) = (dir.join("output"), dir.join("errors"));
+        std::fs::write(&out, output).unwrap();
+        std::fs::write(&err, errors).unwrap();
+        let end = exit.map_or("sleep 30".into(), |code| format!("exit {code}"));
+        format!(
+            "while IFS= read -r line; do printf '%s\\n' \"$line\"; [ -n \"$line\" ] || sleep 0.3; done < '{}'\nsleep 0.3\ncat '{}' >&2\n{end}",
+            out.display(),
+            err.display()
+        )
+    }
+
+    #[test]
+    fn depot_downloaders_own_output_takes_a_hidden_run_from_its_codes_to_its_end() {
+        // Task 11's rehearsal, played back (tests/fixtures/depot-downloader-3.4.0).
+        let start = |output: &str, errors: &str, exit: Option<i32>| {
+            let dir = tempfile::tempdir().unwrap();
+            let run = {
+                let _spawn = spawning();
+                let dd = fake_dd(dir.path(), &playing(dir.path(), output, errors, exit));
+                start_child(&dd, &dir.path().join("SoLO"), None, &dir.path().join("run"))
+            };
+            (dir, run)
+        };
+        let ended = |run: &ChildRun| wait_child(run, |s| matches!(s, RunState::Ended { .. }));
+        let codes = [code(37, 1), code(37, 2), code(37, 3)];
+        // Scanned: the code, then the download, then exit 0.
+        let (_dir, run) = start(SIGN_IN, "", Some(0));
+        let first = sign_in(&codes[0]);
+        assert_eq!(wait_child(&run, |s| *s == first), first);
+        assert_eq!(
+            wait_child(&run, |s| matches!(s, RunState::Running { .. })),
+            RunState::Running {
+                percent: 100.0,
+                file: REPAIRED.into()
+            }
+        );
+        assert_eq!(ended(&run), RunState::Ended { code: 0 });
+        // Nobody scans: each new code in turn, DepotDownloader's error, then exit 1.
+        let (_dir, run) = start(EXPIRED, EXPIRED_ERRORS, Some(1));
+        for code in &codes {
+            let shown = sign_in(code);
+            assert_eq!(wait_child(&run, |s| *s == shown), shown);
+        }
+        assert_eq!(ended(&run), RunState::Ended { code: 1 });
+        // Cancelled while the code waits.
+        let (_dir, run) = start(CANCEL, "", None);
+        assert_eq!(wait_child(&run, |s| *s == first), first);
+        run.cancel().unwrap();
+        assert!(matches!(ended(&run), RunState::Ended { .. }));
     }
 
     /// #329: DepotDownloader starts outside the AppImage, as the terminal's script did.
@@ -875,9 +932,50 @@ pub(crate) mod reading_tests {
             .collect()
     }
 
+    /// DepotDownloader 3.4.0's own output, from Task 11's rehearsal (#428): what identifies the
+    /// account replaced, and each code `code(37, n)` (tests/fixtures/depot-downloader-3.4.0).
+    pub(crate) const SIGN_IN: &str =
+        include_str!("../tests/fixtures/depot-downloader-3.4.0/sign-in.txt");
+    pub(crate) const EXPIRED: &str =
+        include_str!("../tests/fixtures/depot-downloader-3.4.0/expired.txt");
+    pub(crate) const EXPIRED_ERRORS: &str =
+        include_str!("../tests/fixtures/depot-downloader-3.4.0/expired.stderr.txt");
+    pub(crate) const CANCEL: &str =
+        include_str!("../tests/fixtures/depot-downloader-3.4.0/cancel.txt");
+
+    /// Where the rehearsal's one file was, as the fixtures name it.
+    pub(crate) const REPAIRED: &str = "/home/player/Games/SoLO/bin64/loader.ini";
+
     fn read(lines: &[String]) -> Vec<Event> {
         let mut reader = Reader::default();
         lines.iter().filter_map(|line| reader.line(line)).collect()
+    }
+
+    fn lines(output: &str) -> Vec<String> {
+        output.lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn depot_downloaders_own_sign_in_is_read_as_its_code_then_its_progress() {
+        // Task 11's rehearsal: the code, scanned, then a repair of one file.
+        assert_eq!(
+            read(&lines(SIGN_IN)),
+            vec![
+                Event::Code(squares(&code(37, 1))),
+                Event::Progress(100.0, REPAIRED.into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn depot_downloaders_own_new_codes_are_read_in_turn_and_its_failure_is_nothing() {
+        // Task 11's rehearsal: nobody scans, a new code twice, then the end; and a cancel.
+        let codes: Vec<Event> = (1..=3)
+            .map(|n| Event::Code(squares(&code(37, n))))
+            .collect();
+        assert_eq!(read(&lines(EXPIRED)), codes);
+        assert_eq!(read(&lines(EXPIRED_ERRORS)), vec![]);
+        assert_eq!(read(&lines(CANCEL)), codes[..1]);
     }
 
     fn text(lines: &[&str]) -> Vec<String> {

@@ -733,7 +733,8 @@ mod tests {
             code: i32,
         },
         Hangs,
-        /// Draws a sign-in code as DepotDownloader 3.4.0 does, holds it a while for the player
+        /// Signs in as DepotDownloader 3.4.0 did in Task 11's rehearsal, its own lines up to its
+        /// download (`depot::reading_tests::SIGN_IN`), holding the code a while for the player
         /// to scan, then writes the files as `WritesFiles` with code 0.
         DrawsCode,
         /// Ignores `SIGTERM`, notes its pid in `dd-pid`, and waits.
@@ -741,7 +742,8 @@ mod tests {
         IgnoresTerm,
     }
 
-    /// The Steam account the fake DepotDownloader signs in to, by the code it draws.
+    /// The Steam account the fake DepotDownloader signs in to, by the code it draws: the one the
+    /// rehearsal's fixtures name in the account's place.
     const ACCOUNT: &str = "lin_yue_on_steam";
 
     /// Every event any thread logs from the first call on, at every level, as text: the test
@@ -775,9 +777,9 @@ mod tests {
         &LOG
     }
 
-    /// The code the fake DepotDownloader draws.
+    /// The code the fake DepotDownloader draws: the rehearsal's, as its fixture has it.
     fn drawn_code() -> Vec<Vec<bool>> {
-        crate::depot::reading_tests::code(29, 3)
+        crate::depot::reading_tests::code(37, 1)
     }
 
     /// A small build in a temp folder: its files in `pristine` (the fake DepotDownloader's
@@ -889,16 +891,24 @@ exit {code}"#,
                 FakeDd::DrawsCode => unreachable!("drawn as WritesFiles above"),
             };
             let body = if draws {
-                let code: String = crate::depot::reading_tests::drawn(&drawn_code())
+                // Up to its code, then from its sign-in, where it names the account
+                // (Steam3Session.cs), to its download, which the files' own lines take over.
+                let lines: Vec<&str> = crate::depot::reading_tests::SIGN_IN.lines().collect();
+                let signed_in = lines
                     .iter()
-                    .map(|row| format!("printf '%s\\n' '{row}'\n"))
-                    .collect();
-                // Signed in, DepotDownloader 3.4.0 names the account (Steam3Session.cs).
+                    .position(|l| l.starts_with("Success!"))
+                    .unwrap();
+                let download = lines
+                    .iter()
+                    .position(|l| l.starts_with("Pre-allocating"))
+                    .unwrap();
+                let (code, steam) = (self.root.join("dd-code"), self.root.join("dd-steam"));
+                std::fs::write(&code, lines[..signed_in].join("\n") + "\n").unwrap();
+                std::fs::write(&steam, lines[signed_in..download].join("\n") + "\n").unwrap();
                 format!(
-                    "echo 'Logging in with QR code...'\necho '{}'\n{code}sleep 1.5\n\
-                     echo 'Success! Next time you can login with -username {ACCOUNT} \
-                     -remember-password instead of -qr.'\n{body}",
-                    crate::depot::QR_HEADER
+                    "cat '{}'\nsleep 1.5\ncat '{}'\n{body}",
+                    code.display(),
+                    steam.display()
                 )
             } else {
                 body
@@ -1086,7 +1096,7 @@ exit {code}"#,
             .iter()
             .map(|&d| if d { '1' } else { '0' })
             .collect();
-        assert_eq!(code, CodeView { size: 29, dark });
+        assert_eq!(code, CodeView { size: 37, dark });
         assert!(waiting_for_steam);
         let s = until(&app, checked(LevelView::Full)).await;
         assert_eq!(s.client.folder.as_deref(), Some(folder.to_str().unwrap()));
@@ -1140,11 +1150,21 @@ exit {code}"#,
             logs.contains("DepotDownloader finished"),
             "the log was caught"
         );
+        // Nor its other lines, the rehearsal's own: the licences, the CellID, the request code.
+        let others = [
+            "licenses for account",
+            "CellID",
+            "request code",
+            "Got depot key",
+        ];
         for text in shown.iter().chain([&settings, &logs]) {
             assert!(
                 !text.contains(ACCOUNT) && !text.contains('█'),
                 "DepotDownloader's output got out: {text}"
             );
+            for other in others {
+                assert!(!text.contains(other), "{other} got out: {text}");
+            }
         }
         assert!(!logs.contains(&dark), "the code reached the log");
     }
