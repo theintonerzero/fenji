@@ -35,7 +35,11 @@ beyond stat() and a SHA-256 for identification.
 Clients: every gujianol.exe in the namespace is a client, named at first sight or later (#142);
 each poll reads again the name of every live process not yet known as one. Clients are numbered
 by their start, and client n's log is the n-th --log. A client beyond the logs given has no log of
-its own: exit 4.
+its own: exit 4. A process that carries its parent's command line is a copy of the parent that
+hasn't run a program of its own yet, the first step of Wine's process start (ntdll's spawn_process
+forks twice, the middle copy ending at once; a big client's copy can live long enough to be seen,
+run 054-b1): it is named a client only if it is still one FORK_GRACE seconds after it was first
+seen. It runs no Windows code, and the signs never wait on a name.
 
 Signs (any one triggers):
   S1 a *.sys under S that isn't in the baseline, or a baseline one whose identity changed: a regular
@@ -173,6 +177,9 @@ TMPFS_SUBS = ("/tmp", "/dev/shm", "/run", "/var", "/etc", HOST_HOME)
 TMPFS_SHALLOW = ("/",)
 # Seconds the client may run before the log must have shown its creation (review M3).
 CLIENT_LOG_GRACE = 20.0
+# Seconds a copy of a client (a process carrying its parent's command line) may live before it is
+# named a client itself: Wine's middle copy ends as soon as it has forked the new process.
+FORK_GRACE = 3.0
 DRIVER_TYPES = {1, 2}  # SERVICE_KERNEL_DRIVER, SERVICE_FILE_SYSTEM_DRIVER
 USER_MODE_TYPES = {0x10, 0x20}  # SERVICE_WIN32_OWN_PROCESS, SERVICE_WIN32_SHARE_PROCESS
 SERVICE_INTERACTIVE_PROCESS = 0x100  # may be added to a user-mode type
@@ -1065,6 +1072,7 @@ def watch(a, log, stream):
     init = None
     seen = {}
     clients = {}  # pid -> {"start": clock ticks, "found": monotonic time first seen}; never removed
+    copies = {}  # pid -> (start, monotonic time first seen): a client's copy, not named yet
     notes_seen = set()
     polls = 0
     tmpfs_warned = False
@@ -1133,6 +1141,7 @@ def watch(a, log, stream):
         if not init:
             return out
         cur = set(descendants(init))
+        fresh = []
         for p in cur:
             if p not in seen:
                 info = proc_info(p)
@@ -1142,12 +1151,37 @@ def watch(a, log, stream):
                 seen[p] = info
                 log(f"proc + pid {p} ppid {info['ppid']} start {info['start']} comm {info['comm']!r} "
                     f"argv {info['argv'][:4]!r}")
-                if is_named(info, CLIENT):
-                    new_client(p, info["start"], "")
+                fresh.append(p)
+        for p in sorted(fresh, key=lambda q: seen[q]["start"]):
+            info = seen[p]
+            if not is_named(info, CLIENT):
+                continue
+            parent = proc_info(info["ppid"])
+            if parent and parent["start"] <= info["start"] and parent["argv"] == info["argv"]:
+                copies[p] = (info["start"], time.monotonic())
+                log(f"pid {p} carries its parent {info['ppid']}'s command line: a copy, named a client "
+                    f"only if it is still one in {FORK_GRACE:g} s")
+                continue
+            new_client(p, info["start"], "")
         for p, info in seen.items():
             if info.get("alive") and p not in cur:
                 info["alive"] = False
                 log(f"proc - pid {p} comm {info['comm']!r}")
+        for p, (start, since) in list(copies.items()):
+            if not seen[p].get("alive"):
+                del copies[p]
+                log(f"pid {p}, a copy, ended: not a client")
+                continue
+            if time.monotonic() - since < FORK_GRACE:
+                continue
+            del copies[p]
+            now = proc_info(p)
+            if not now or now["start"] != start:
+                continue
+            # Later renames go through track_clients, as for any process not named the client.
+            seen[p].update(comm=now["comm"], argv=now["argv"])
+            if is_named(now, CLIENT):
+                new_client(p, start, f" (a copy still one after {FORK_GRACE:g} s)")
         found, hits = track_clients(seen, {p: c["start"] for p, c in clients.items()}, proc_info)
         for start, p in found:
             new_client(p, start, " after a rename")

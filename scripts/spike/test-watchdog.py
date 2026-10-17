@@ -554,6 +554,9 @@ for at, binary, rename, rename_t, die_t in plan:
         with open(f"{d}/out/log-{rename}.log", "a") as fh:
             fh.write(rename_t)
         continue
+    if binary == "@fork":  # [at, "@fork", comm, live, die_t]: a client whose copy lives `live` s
+        procs.append(subprocess.Popen([f"{d}/bin/gujianol.exe", f"{d}/fork.py", rename, str(rename_t), str(t0 + die_t)]))
+        continue
     if binary == "@when":  # [at, "@when", path, name, die_t]: once path exists, start name
         deadline = time.time() + 15
         while not os.path.exists(rename) and time.time() < deadline:
@@ -563,6 +566,23 @@ for at, binary, rename, rename_t, die_t in plan:
     procs.append(subprocess.Popen([f"{d}/bin/{binary}", f"{d}/proc.py", rename, str(t0 + rename_t), str(t0 + die_t)]))
 for q in procs:
     q.wait()
+"""
+# A client that forks a copy of itself 0.3 s in, as Wine's spawn_process does (it forks twice, and
+# the middle copy, still carrying the client's command line, ends at once; a big client's copy lives
+# long enough to be seen, run 054-b1). The copy takes the forking thread's name, or keeps the
+# client's ("-"), lives `live` seconds and ends; the client reaps it.
+_FORK = """import ctypes, os, sys, time
+comm, live, die_at = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+time.sleep(0.3)
+pid = os.fork()
+if pid == 0:
+    if comm != "-":
+        ctypes.CDLL(None).prctl(15, comm.encode(), 0, 0, 0)
+    time.sleep(live)
+    os._exit(0)
+os.waitpid(pid, 0)
+if die_at > time.time():
+    time.sleep(die_at - time.time())
 """
 _OUTER = """import subprocess, sys
 subprocess.Popen([f"{sys.argv[1]}/bin/bwrap", f"{sys.argv[1]}/init.py"] + sys.argv[1:]).wait()
@@ -585,7 +605,8 @@ class WholeLoop(unittest.TestCase):
             (d / "bin").mkdir()
             for name in ("bwrap", "wine64", "gujianol.exe", "winedevice.exe"):
                 (d / "bin" / name).symlink_to(sys.executable)
-            for name, text in (("proc.py", _PROC), ("init.py", _INIT), ("outer.py", outer_script)):
+            for name, text in (("proc.py", _PROC), ("init.py", _INIT), ("outer.py", outer_script),
+                               ("fork.py", _FORK)):
                 (d / name).write_text(text)
             out = d / "out"
             (out / "root").mkdir(parents=True)
@@ -650,6 +671,29 @@ class RenameWholeLoop(WholeLoop):  # issue #142
         rc, _ = self.watch([[0.0, "winedevice.exe", "-", 0, 2.0],
                             [0.4, "wine64", "gujianol.exe", 0.8, 2.5]], logs=[CLIENT + "\n"])
         self.assertEqual(rc, 0)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")
+class ForkWholeLoop(WholeLoop):  # run 054-b1: a client's copy, taken for client 2
+
+    def test_a_copy_of_the_client_that_ends_soon_is_not_a_client(self):
+        # As in 054-b1, named by the thread that forked it; and, from the main thread, the client's.
+        for comm in ("vx_initialize", "-"):
+            with self.subTest(comm=comm):
+                rc, trig = self.watch([[0.0, "@fork", comm, 0.6, 2.0]], logs=[CLIENT + "\n"])
+                self.assertEqual(rc, 0, trig)
+                self.assertIn("client 1 detected", self.watchdog_log)
+                self.assertNotIn("client 2", self.watchdog_log)
+
+    def test_a_copy_that_lives_on_as_the_client_is_a_client(self):
+        saved = wd.FORK_GRACE
+        wd.FORK_GRACE = 0.3
+        try:
+            rc, _ = self.watch([[0.0, "@fork", "-", 2.0, 3.0]], logs=[CLIENT + "\n"])
+        finally:
+            wd.FORK_GRACE = saved
+        self.assertEqual(rc, 4)
+        self.assertIn("client 2 detected", self.watchdog_log)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc and prctl")
