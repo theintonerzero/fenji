@@ -565,8 +565,11 @@ impl App {
         match &self.inner.cfg.depot_downloader {
             Some(dd) => Ok(dd.clone()),
             None => {
-                self.fetch_tool(tools::depot_downloader(), DEPOT_DOWNLOADER)
-                    .await
+                let dd = self
+                    .fetch_tool(tools::depot_downloader(), DEPOT_DOWNLOADER)
+                    .await?;
+                self.change(|st| st.depot_downloader = Some(dd.clone()));
+                Ok(dd)
             }
         }
     }
@@ -1099,6 +1102,37 @@ exit {code}"#,
         .await
         .unwrap();
         until(&app, checked(LevelView::Quick)).await;
+    }
+
+    #[tokio::test]
+    async fn depot_downloaders_place_is_looked_up_at_start_not_on_each_change() {
+        // #367: every snapshot, under the state lock, read the tools folder for it.
+        let t = Testbed::new(&[("a.bin", 10)]);
+        let app = t.app();
+        assert!(app.snapshot().client.manual.unwrap().get.is_some());
+        // Installed behind the launcher's back, as a fetch would leave it.
+        let tool = crate::tools::depot_downloader();
+        let home = t
+            .root
+            .join("data/tools")
+            .join(format!("{}-{}", tool.name, tool.version));
+        std::fs::create_dir_all(&home).unwrap();
+        let digest: String = tool.sha256.iter().map(|b| format!("{b:02x}")).collect();
+        std::fs::write(home.join(".sha256"), digest).unwrap();
+        let program = home.join(&tool.member);
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        app.intent(Intent::ChooseFolder {
+            path: t.good.display().to_string(),
+        })
+        .await
+        .unwrap();
+        assert!(
+            app.snapshot().client.manual.unwrap().get.is_some(),
+            "a change reads no folder"
+        );
+        // The next launcher finds it.
+        assert_eq!(t.app().snapshot().client.manual.unwrap().get, None);
     }
 
     #[tokio::test]
