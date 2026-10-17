@@ -178,10 +178,10 @@ jobs:
           cargo about --version
       - name: Each release target's notices
         run: |
-          # The server's targets: the `- target:` lines of release.yml's build job, not another job's.
-          targets=$(sed -n '/^  build:$/,/^  [a-z]/s/^ *- target: *//p' .github/workflows/release.yml)
-          if [ -z "$targets" ]; then
-            echo "No targets in the matrix of release.yml's build job" >&2
+          # The server's targets: the TARGET lines of release.yml's server jobs, one job each.
+          targets=$(sed -n 's/^      TARGET: *\([a-z0-9_-]*\)$/\1/p' .github/workflows/release.yml)
+          if [ "$(printf '%s\n' "$targets" | grep -c .)" != "$(grep -c '^  server-[a-z0-9_-]*:$' .github/workflows/release.yml)" ]; then
+            echo "Not one TARGET for each of release.yml's server jobs: $targets" >&2
             exit 1
           fi
           : > "$RUNNER_TEMP/stand-in"

@@ -43,41 +43,24 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
-    name: ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # CI's notices job reads the server's targets from this job's `- target:` lines.
-        include:
-          - target: x86_64-unknown-linux-musl
-            runner: ubuntu-24.04
-          - target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
-          - target: x86_64-pc-windows-msvc
-            runner: windows-2025
-          - target: aarch64-apple-darwin
-            runner: macos-15
-    runs-on: ${{ matrix.runner }}
+  # A job of its own for each server target, rather than a matrix: each job reports its archive, as
+  # "SHA-256 file name", in its own output, report. Any job of the run can replace an artifact, but
+  # none can set another job's outputs, and the legs of a matrix would share theirs: so the jobs
+  # that sign take an archive only when it's the one its own job reported
+  # (scripts/check-release-files.sh; the hosting spec's Amendment D, HD2). The jobs share their
+  # steps (server-steps); CI's notices job reads the targets from their TARGET lines.
+  server-x86_64-linux:
+    name: x86_64-unknown-linux-musl
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
-    # Each leg reports its archive, as "SHA-256 file name", under its target. Any job of the run can
-    # replace an artifact, but none can set another job's outputs, so the jobs that sign take an
-    # archive only when it's the one reported here (scripts/check-release-files.sh; the hosting
-    # spec's Amendment D, HD2). A leg sends no empty output, so each target's is its own leg's.
     outputs:
-      x86_64-unknown-linux-musl: ${{ steps.pack.outputs.x86_64-unknown-linux-musl }}
-      aarch64-unknown-linux-musl: ${{ steps.pack.outputs.aarch64-unknown-linux-musl }}
-      x86_64-pc-windows-msvc: ${{ steps.pack.outputs.x86_64-pc-windows-msvc }}
-      aarch64-apple-darwin: ${{ steps.pack.outputs.aarch64-apple-darwin }}
-    defaults:
+      report: ${{ steps.pack.outputs.report }}
+    defaults: &bash
       run:
         shell: bash
     env:
-      TARGET: ${{ matrix.target }}
-      # The C runtime linked in, so the server runs on a Windows without the Visual C++
-      # Redistributable.
-      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
-    steps:
+      TARGET: x86_64-unknown-linux-musl
+    steps: &server-steps
       # Windows runners check out with CR LF line ends, and the build embeds files: the example
       # config, and the database's migrations, whose checksums a database is checked against. With
       # the repository's LF everywhere, every system builds from the same bytes, and a data folder
@@ -163,46 +146,64 @@ jobs:
           fi
           echo "$archive holds:"
           echo "$got"
-          # The archive, as this job's output for its target (outputs, above).
+          # The archive, as this job's report (above).
           if command -v sha256sum > /dev/null; then sum=$(sha256sum -b "$archive"); else sum=$(shasum -a 256 -b "$archive"); fi
-          echo "$TARGET=${sum%% *} ${archive##*/}" | tee -a "$GITHUB_OUTPUT"
+          echo "report=${sum%% *} ${archive##*/}" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fenji-server-${{ matrix.target }}
+          name: fenji-server-${{ env.TARGET }}
           path: dist/
           if-no-files-found: error
 
-  launcher:
-    name: launcher (${{ matrix.bundle }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The triple is the bundle's Rust target, which its third-party notices are for.
-          - bundle: appimage
-            runner: ubuntu-24.04
-            triple: x86_64-unknown-linux-gnu
-          - bundle: nsis
-            runner: windows-2025
-            triple: x86_64-pc-windows-msvc
-          - bundle: app
-            runner: macos-15
-            triple: aarch64-apple-darwin
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    # Each leg reports its bundle, as "SHA-256 file name", under the bundle's name, as the build job
-    # reports its archives.
+  server-aarch64-linux:
+    name: aarch64-unknown-linux-musl
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
     outputs:
-      appimage: ${{ steps.collect.outputs.appimage }}
-      nsis: ${{ steps.collect.outputs.nsis }}
-      app: ${{ steps.collect.outputs.app }}
-    defaults:
-      run:
-        shell: bash
+      report: ${{ steps.pack.outputs.report }}
+    defaults: *bash
     env:
-      BUNDLE: ${{ matrix.bundle }}
-      TRIPLE: ${{ matrix.triple }}
-    steps:
+      TARGET: aarch64-unknown-linux-musl
+    steps: *server-steps
+
+  server-x86_64-windows:
+    name: x86_64-pc-windows-msvc
+    runs-on: windows-2025
+    timeout-minutes: 45
+    outputs:
+      report: ${{ steps.pack.outputs.report }}
+    defaults: *bash
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      # The C runtime linked in, so the server runs on a Windows without the Visual C++
+      # Redistributable.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+    steps: *server-steps
+
+  server-aarch64-macos:
+    name: aarch64-apple-darwin
+    runs-on: macos-15
+    timeout-minutes: 45
+    outputs:
+      report: ${{ steps.pack.outputs.report }}
+    defaults: *bash
+    env:
+      TARGET: aarch64-apple-darwin
+    steps: *server-steps
+
+  # A job of its own for each launcher bundle, reporting it as the server jobs report their
+  # archives. TRIPLE is the bundle's Rust target, which its third-party notices are for.
+  launcher-appimage:
+    name: launcher (appimage)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      report: ${{ steps.collect.outputs.report }}
+    defaults: *bash
+    env:
+      BUNDLE: appimage
+      TRIPLE: x86_64-unknown-linux-gnu
+    steps: &launcher-steps
       - name: Check out with the repository's line ends
         run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -227,7 +228,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/launcher/src-tauri
-          key: ${{ matrix.bundle }}
+          key: ${{ env.BUNDLE }}
       - name: pnpm, tauri-cli and cargo-about, at the versions scripts/versions.env pins
         run: |
           source scripts/versions.env
@@ -287,14 +288,38 @@ jobs:
           fi
           cp -- "${found[0]}" "$out/"
           ls -l "$out"
-          # The bundle, as this job's output for its kind (outputs, above).
+          # The bundle, as this job's report (above).
           if command -v sha256sum > /dev/null; then sum=$(sha256sum -b "${found[0]}"); else sum=$(shasum -a 256 -b "${found[0]}"); fi
-          echo "$BUNDLE=${sum%% *} ${found[0]##*/}" | tee -a "$GITHUB_OUTPUT"
+          echo "report=${sum%% *} ${found[0]##*/}" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fenji-launcher-${{ matrix.bundle }}
+          name: fenji-launcher-${{ env.BUNDLE }}
           path: dist-launcher/
           if-no-files-found: error
+
+  launcher-nsis:
+    name: launcher (nsis)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    outputs:
+      report: ${{ steps.collect.outputs.report }}
+    defaults: *bash
+    env:
+      BUNDLE: nsis
+      TRIPLE: x86_64-pc-windows-msvc
+    steps: *launcher-steps
+
+  launcher-app:
+    name: launcher (app)
+    runs-on: macos-15
+    timeout-minutes: 60
+    outputs:
+      report: ${{ steps.collect.outputs.report }}
+    defaults: *bash
+    env:
+      BUNDLE: app
+      TRIPLE: aarch64-apple-darwin
+    steps: *launcher-steps
 
   # The launcher's updater key signs a tag's bundles here, and only here: its secrets live in the
   # release environment, whose deployment rule admits v* tags alone, so a branch's run can't read
@@ -304,7 +329,7 @@ jobs:
   sign:
     name: Sign the launcher's bundles
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: launcher
+    needs: [launcher-appimage, launcher-nsis, launcher-app]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
@@ -328,9 +353,12 @@ jobs:
         with:
           pattern: fenji-launcher-*
           path: artifacts
-      - name: Take only the bundles the launcher job reported
+      - name: Take only the bundles their own jobs reported
         env:
-          LAUNCHER: ${{ toJSON(needs.launcher.outputs) }}
+          LAUNCHER: >-
+            {"appimage": ${{ toJSON(needs.launcher-appimage.outputs.report) }},
+            "nsis": ${{ toJSON(needs.launcher-nsis.outputs.report) }},
+            "app": ${{ toJSON(needs.launcher-app.outputs.report) }}}
         run: scripts/check-release-files.sh "${GITHUB_REF_NAME#v}" artifacts launcher
       - name: Sign each bundle with the release key
         id: sign
@@ -371,7 +399,7 @@ jobs:
     # over them all as SHA256SUMS.sig.
     name: Check the release's files, sum them, and sign the sums
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [build, launcher, sign]
+    needs: [server-x86_64-linux, server-aarch64-linux, server-x86_64-windows, server-aarch64-macos, launcher-appimage, launcher-nsis, launcher-app, sign]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
@@ -391,8 +419,15 @@ jobs:
           path: artifacts/launcher-signatures
       - name: Take only the files their own jobs reported
         env:
-          BUILD: ${{ toJSON(needs.build.outputs) }}
-          LAUNCHER: ${{ toJSON(needs.launcher.outputs) }}
+          BUILD: >-
+            {"x86_64-unknown-linux-musl": ${{ toJSON(needs.server-x86_64-linux.outputs.report) }},
+            "aarch64-unknown-linux-musl": ${{ toJSON(needs.server-aarch64-linux.outputs.report) }},
+            "x86_64-pc-windows-msvc": ${{ toJSON(needs.server-x86_64-windows.outputs.report) }},
+            "aarch64-apple-darwin": ${{ toJSON(needs.server-aarch64-macos.outputs.report) }}}
+          LAUNCHER: >-
+            {"appimage": ${{ toJSON(needs.launcher-appimage.outputs.report) }},
+            "nsis": ${{ toJSON(needs.launcher-nsis.outputs.report) }},
+            "app": ${{ toJSON(needs.launcher-app.outputs.report) }}}
           SIGNED: ${{ toJSON(needs.sign.outputs) }}
         run: scripts/check-release-files.sh "${GITHUB_REF_NAME#v}" artifacts dist
       - name: Write the updater's latest.json, its notes the tag's changelog section
@@ -422,7 +457,7 @@ jobs:
     # change that breaks a job's report fails here rather than on a tag. Nothing is signed.
     name: Check the files against their jobs' reports
     if: github.event_name != 'push'
-    needs: [build, launcher]
+    needs: [server-x86_64-linux, server-aarch64-linux, server-x86_64-windows, server-aarch64-macos, launcher-appimage, launcher-nsis, launcher-app]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -435,8 +470,15 @@ jobs:
           path: artifacts
       - name: Take only the files their own jobs reported
         env:
-          BUILD: ${{ toJSON(needs.build.outputs) }}
-          LAUNCHER: ${{ toJSON(needs.launcher.outputs) }}
+          BUILD: >-
+            {"x86_64-unknown-linux-musl": ${{ toJSON(needs.server-x86_64-linux.outputs.report) }},
+            "aarch64-unknown-linux-musl": ${{ toJSON(needs.server-aarch64-linux.outputs.report) }},
+            "x86_64-pc-windows-msvc": ${{ toJSON(needs.server-x86_64-windows.outputs.report) }},
+            "aarch64-apple-darwin": ${{ toJSON(needs.server-aarch64-macos.outputs.report) }}}
+          LAUNCHER: >-
+            {"appimage": ${{ toJSON(needs.launcher-appimage.outputs.report) }},
+            "nsis": ${{ toJSON(needs.launcher-nsis.outputs.report) }},
+            "app": ${{ toJSON(needs.launcher-app.outputs.report) }}}
         run: |
           version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
           scripts/check-release-files.sh "$version" artifacts dist

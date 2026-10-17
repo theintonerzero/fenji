@@ -116,7 +116,7 @@ LAUNCHER=$(printf '%s' "$LAUNCHER" | jq -c '.nsis += "\nfenji-server-1.2.3-x86_6
 refused "a report with more than one line in it is refused" "not as a SHA-256 and a file name"
 artifacts "$T/in"
 LAUNCHER=$(printf '%s' "$LAUNCHER" | jq -c '.deb = .app')
-refused "a bundle the launcher job doesn't make is refused" "a bundle it doesn't make"
+refused "a bundle Fenji doesn't make is refused" "a bundle Fenji doesn't make"
 artifacts "$T/in"
 LAUNCHER=$(printf '%s' "$LAUNCHER" | jq -c '.app = (.app | sub(" .*"; " Fenji.dmg"))')
 refused "a bundle of the wrong kind is refused" "isn't that kind of bundle"

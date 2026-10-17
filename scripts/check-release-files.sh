@@ -5,14 +5,15 @@
 #   BUILD=JSON LAUNCHER=JSON [SIGNED=JSON] scripts/check-release-files.sh VERSION IN OUT
 #
 # Any job of a run can replace another job's artifact, or add one of its own, but only a job sets
-# its own outputs. So each job that makes a release file reports it among its outputs, as
-# "SHA-256 NAME", and the workflow passes those outputs here as JSON (toJSON(needs.JOB.outputs)):
-#   - BUILD, the build job's: a key for each server target T, for the archive
-#     fenji-server-VERSION-T.tar.gz (.zip on Windows), in the artifact fenji-server-T;
-#   - LAUNCHER, the launcher job's: appimage, nsis and app, for the *.AppImage, the *-setup.exe and
-#     the *.app.tar.gz, each in the artifact fenji-launcher-KEY;
-#   - SIGNED, the sign job's: the same keys as LAUNCHER, for each bundle's updater signature,
-#     BUNDLE.sig, all in the artifact launcher-signatures.
+# its own outputs. So each job that makes a release file reports it in its own output, as
+# "SHA-256 NAME" (a job for each target and bundle: a matrix's legs would share their outputs), and
+# the workflow passes the reports here as JSON objects, keyed by what each job makes:
+#   - BUILD: each server job's, under its target T, for the archive fenji-server-VERSION-T.tar.gz
+#     (.zip on Windows), in the artifact fenji-server-T;
+#   - LAUNCHER: each launcher job's, under appimage, nsis and app, for the *.AppImage, the
+#     *-setup.exe and the *.app.tar.gz, each in the artifact fenji-launcher-KEY;
+#   - SIGNED: the sign job's outputs, under the same keys as LAUNCHER, for each bundle's updater
+#     signature, BUNDLE.sig, all in the artifact launcher-signatures.
 # Those that are set say what IN must hold. IN holds each artifact in a folder of its name, as
 # download-artifact leaves them without merge-multiple; it must hold exactly the folders reported,
 # and each folder exactly the regular files reported in it, with those names and sums. Then every
@@ -94,7 +95,7 @@ if [ -n "${BUILD:-}" ]; then
   while read -r target sum name; do
     case $target in *-windows-*) ext=zip ;; *) ext=tar.gz ;; esac
     [ "$name" = "fenji-server-$version-$target.$ext" ] ||
-      fail "the build job's $target reports $name, not fenji-server-$version-$target.$ext"
+      fail "the $target server job reports $name, not fenji-server-$version-$target.$ext"
     echo "fenji-server-$target $name $sum" >> "$work/manifest"
   done < "$work/build"
 fi
@@ -103,8 +104,8 @@ if [ -n "${LAUNCHER:-}" ]; then
   while read -r bundle sum name; do
     case $bundle:$name in
       appimage:*.AppImage | nsis:*-setup.exe | app:*.app.tar.gz) ;;
-      appimage:* | nsis:* | app:*) fail "the launcher job's $bundle reports $name, which isn't that kind of bundle" ;;
-      *) fail "the launcher job reports $bundle, a bundle it doesn't make" ;;
+      appimage:* | nsis:* | app:*) fail "the $bundle launcher job reports $name, which isn't that kind of bundle" ;;
+      *) fail "LAUNCHER reports $bundle, a bundle Fenji doesn't make" ;;
     esac
     echo "fenji-launcher-$bundle $name $sum" >> "$work/manifest"
   done < "$work/launcher"
@@ -112,7 +113,7 @@ fi
 if [ -n "${SIGNED:-}" ]; then
   reported SIGNED "$SIGNED" > "$work/signed"
   [ "$(cut -d' ' -f1 "$work/signed" | sort)" = "$(cut -d' ' -f1 "$work/launcher" | sort)" ] ||
-    fail "the sign job reports signatures for other bundles than the launcher job made"
+    fail "the sign job reports signatures for other bundles than the launcher jobs made"
   while read -r bundle sum name; do
     bundled=$(awk -v b="$bundle" '$1 == b { print $3 }' "$work/launcher")
     [ "$name" = "$bundled.sig" ] || fail "the sign job's $bundle reports $name, not $bundled.sig"
