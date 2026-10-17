@@ -459,7 +459,7 @@ On Linux and macOS, the server's update script updates it in one command. It dow
 The script trusts a release only once its `SHA256SUMS` is signed with Fenji's release key, whose public half it carries. It downloads over HTTPS from Fenji's releases on GitHub, checks the signature with `ssh-keygen`, then checks the archive against `SHA256SUMS`. A release that isn't signed, or is signed with another key, is refused, and nothing changes.
 - **Older servers:** the script that came with a server set up before v0.5.4 has no signature check. It installs v0.5.4 as before, and from then on every release is checked.
 - **OpenSSH:** the check needs OpenSSH 8.1 or later. On RHEL 8 and its rebuilds, which have 8.0, check the release on another machine, then update by hand (below).
-- **Forks:** `FENJI_RELEASES` names a fork's releases (`https://github.com/<owner>/<repo>/releases`), and `FENJI_RELEASE_KEY` a file holding that fork's allowed-signers line. As root, that file must be root's, and only root may write in it.
+- **Forks:** `FENJI_RELEASES` names a fork's releases (`https://github.com/<owner>/<repo>/releases`), and `FENJI_RELEASE_KEY` a file holding that fork's allowed-signers line. As root, that file must be root's, only root may write in it, and it must be in folders only root may write in, as `/etc/fenji` is.
 
 The script came with v0.5.3: a server set up before then updates by hand once (below), which brings it. Windows has no script yet, and updates by hand.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Writes SHA256SUMS over every file in DIR, signs it with the release's SSH key as
 # SHA256SUMS.sig, and checks that signature against ALLOWED, the repository's allowed-signers line
-# (the hosting spec's Amendment D, HD2). The release workflow's sign job runs it, behind the owner's
+# (the hosting spec's Amendment D, HD2). The release workflow's sums job runs it, behind the owner's
 # approval: a secret that isn't that key's private half, or a repository that holds no key's line
 # yet (HD5), fails the release here, before anything is published.
 #   SSH_SIGNING_PRIVATE_KEY=<the private key's text> scripts/sign-sums.sh DIR ALLOWED
