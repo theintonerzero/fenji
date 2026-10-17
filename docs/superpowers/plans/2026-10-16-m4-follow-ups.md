@@ -30,14 +30,14 @@ The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-1
 
 - **0.5.1:** T1, T2 and T3, what M4's acceptance session will touch first.
 - **0.5.2:** T4 to T7, robustness, tests, docs and tooling, and T10, a copy Steam installed.
-- **0.5.3:** what the owner's own server on v0.5.2 showed (#382, quitting from the world; #383, the launcher's window), the deferred minors (#376, #378), T8's back to character select (#282) and T9's name check, both static and tested, and T14, the update script.
+- **0.5.3:** what the owner's own server on v0.5.2 showed (#382, quitting from the world; #383, the launcher's window), the deferred minors (#376, #378), T8's back to character select (#282) and T9's name check, both static and tested, T14, the update script, T15, a server's region, and #394, a player's allowances kept across going back to character select.
 - **0.5.4:**
   - T11 to T13, DepotDownloader inside the launcher, whose rehearsal needs the owner's Steam account and phone;
   - T8's and T9's client runs: back to character select and quitting, checked with the client, then `!tp` across scenes;
-  - T9's face string, validated as the client's shared validator does;
+  - T9's face string in the shape the client's shared validator writes (#391); the validator's rules that need the game's design tables come with M5's #180;
   - the patcher (#336), whose design waits for the owner.
 
-  The ruling of 2026-10-17, while the owner was away: release what's ready, rather than hold the fixes the owner's acceptance session needs behind the work that needs the owner.
+  The ruling of 2026-10-17, while the owner was away: release what's ready, rather than hold the fixes the owner's acceptance session needs behind the work that needs the owner. By the same ruling, T15 and #394 joined 0.5.3 once both were reviewed, before it was cut: the release waits for the owner's `sign` approval in any case.
 
 Each release follows `docs/development.md`'s steps, and the owner approves its `sign` job.
 
@@ -151,6 +151,11 @@ Find what the client expects after type 4 in the world, answer it, and return th
 - `scripts/package-server.sh` packs it into the Linux and macOS archives, and `scripts/test-package-server.sh` checks it's there.
 - `scripts/test-update-server.sh` (HB10), run in CI beside the other script tests.
 - `docs/hosting.md`: section 4 installs it as `/usr/local/bin/fenji-update`, and section 5 leads with it, keeping the manual steps. `deploy/archive/README.txt` names it.
+
+### Task 15 (inline): a server's region (hosting spec Amendment C, HC1–HC7)
+- The server: `[server] region`; the guess from the timezone for `init` and the first run, and the start's hint; `GET /api/v1/server`'s `region`.
+- The launcher: the region in the state line and the seal's tip, designed with `impeccable` from DESIGN.md; the model's `ServerView` carries it.
+- `docs/hosting.md` and PRIVACY.md, as HC6 says.
 
 ## Review Focus
 1. **Nothing a player or a host does in the acceptance session should get worse.** A fix that changes a flow a host or player sees has its write-up line updated in the same PR.
