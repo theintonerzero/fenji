@@ -160,6 +160,26 @@ test("a change while the view fetches again isn't lost either: it fetches until 
   expect(state(root)).toBe(state(offline));
 });
 
+test("a view whose every fetch races a change stops asking after eight more (#367)", async () => {
+  let fetches = 0;
+  let pushed: ((s: Snapshot) => void) | null = null;
+  const root = document.createElement("div");
+  document.body.replaceChildren(root);
+  await mount(root, {
+    snapshot: async () => {
+      fetches += 1;
+      pushed!(golden("play-maintenance"));
+      return golden("play-ready");
+    },
+    onSnapshot: async (cb) => {
+      pushed = cb;
+      return () => {};
+    },
+    send: async () => null,
+  });
+  expect(fetches).toBe(9);
+});
+
 /** The servers golden with Jade Hall (2) active, and Play's sign-in waiting there. */
 function waitingOnJadeHall(): Snapshot {
   const s = golden("servers");

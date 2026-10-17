@@ -289,6 +289,34 @@ mod tests {
     }
 
     #[test]
+    fn a_report_that_comes_late_never_takes_the_progress_back() {
+        // #417's review: a report made after the count's lock could come after a newer one. A
+        // callback that dawdles on the first file's report shows it at once.
+        let dir = tempfile::tempdir().unwrap();
+        let m = folder_with(
+            dir.path(),
+            &[("a.bin", 10), ("b.bin", 20), ("c.bin", 30), ("d.bin", 40)],
+        );
+        let seen = std::sync::Mutex::new(Vec::new());
+        verify_with(
+            dir.path(),
+            &m,
+            Level::Full,
+            &|p| {
+                if p.files_done == 1 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                seen.lock().unwrap().push(p.files_done);
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let seen = seen.into_inner().unwrap();
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+        assert_eq!(seen.last(), Some(&4));
+    }
+
+    #[test]
     fn a_full_check_reports_each_file_and_ends_at_one_hundred_percent() {
         let dir = tempfile::tempdir().unwrap();
         let m = folder_with(

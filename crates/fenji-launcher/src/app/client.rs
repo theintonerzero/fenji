@@ -115,8 +115,8 @@ fn free(st: &State) -> Result<(), IntentError> {
     }
 }
 
-/// The game's folder stays as it is while the game starts or runs: Play reads it again after the
-/// prefix and the ticket, and the game runs from it (#348). A check, which only reads, may run.
+/// The game's folder stays as it is while the game starts or runs: the start launches the folder
+/// Play's check passed (#367), and the game runs from it (#348). A check, which only reads, may run.
 fn not_playing(st: &State) -> Result<(), IntentError> {
     if super::play::playing(st) {
         return Err(refused(words::WHILE_PLAYING));
@@ -882,6 +882,66 @@ exit {code}"#,
 
     fn checked(level: LevelView) -> impl Fn(&super::super::Snapshot) -> bool {
         move |s| matches!(s.client.check, CheckView::Verified { level: l, .. } if l == level)
+    }
+
+    #[tokio::test]
+    async fn a_fetch_that_finds_depot_downloader_installed_puts_it_in_the_snapshot() {
+        // #417's review: the place a fetch finds is the snapshot's from then on, with no restart.
+        let t = Testbed::new(&[("a.bin", 10)]);
+        let mut cfg = t.config(Os::Linux);
+        let tool = crate::tools::depot_downloader();
+        let home = t
+            .root
+            .join("data/tools")
+            .join(format!("{}-{}", tool.name, tool.version));
+        {
+            let _spawn = spawning();
+            cfg.terminal = Some(Terminal {
+                program: script(
+                    &t.root,
+                    "term",
+                    r#"setsid "$@" </dev/null >/dev/null 2>&1 &"#,
+                ),
+                before: vec![],
+            });
+        }
+        let app = App::start(cfg, tokio::runtime::Handle::current());
+        assert!(app.snapshot().client.manual.unwrap().get.is_some());
+        {
+            let _spawn = spawning();
+            std::fs::create_dir_all(&home).unwrap();
+            let digest: String = tool.sha256.iter().map(|b| format!("{b:02x}")).collect();
+            std::fs::write(home.join(".sha256"), digest).unwrap();
+            let program = home.join(&tool.member);
+            std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        app.intent(Intent::Download {
+            folder: t.root.join("f").display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, |s| {
+            s.client.manual.as_ref().is_some_and(|m| m.get.is_none())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn cancel_download_of_umu_launchers_fetch_while_no_game_starts_is_the_tabs_own() {
+        // The other half of #367's guard: with no start, the tab's cancel is the tab's.
+        let t = Testbed::new(&[("a.bin", 10)]);
+        let app = t.app();
+        app.change(|st| {
+            st.client.job = Some(JobView::Fetching {
+                tool: "umu-launcher".into(),
+                percent: None,
+            });
+        });
+        app.intent(Intent::CancelDownload).await.unwrap();
+        let st = app.inner.lock();
+        assert!(st.client.cancelled, "the tab's own cancel");
+        assert!(!st.start_cancelled, "no start to cancel");
     }
 
     #[tokio::test]
