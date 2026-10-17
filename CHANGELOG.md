@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-10-17
+
+### Added
+
+- **proto:** Only a face in the shape the client's own validator writes (#402)
+- **launcher:** The top bar shows the Fenji a server runs (#409)
+- **server:** !tp across scenes, the mover's own actor made anew after the load (#416)
+- **server:** A corrected mover stops for the players who see it (#415)
+- **deploy:** Signed server releases (#421)
+
+### Fixed
+
+- **server:** The server's tests build for Windows again (#405)
+- **server:** Hosting's last minors, the commands to copy keep --config (#404)
+- **launcher:** After it updates itself, the game starts as after a fresh start (#407)
+- **tools:** A client's copy during Wine's process start isn't a client (#412)
+- **launcher:** #367's launcher minors (#417)
+- **launcher:** After an update, the launcher restarts outside the old image (#419)
+- **deploy:** #367's packaging and guide minors (#420)
+
+### Documentation
+
+- **docs:** 0.5.4 folds in everything M0 to M4 left open but the gates (#410)
+- **proto:** Back to character select and quitting, with the client (#414)
+- **docs:** Signed server releases, the hosting spec's Amendment D (#418)
+- **docs:** 0.5.4's client runs are done, and DepotDownloader moves to 0.5.5 (#423)
+- **proto:** The MOTD shows its brackets, and the marquee its entities (#422)
+
 ## [0.5.3] - 2026-10-17
 
 ### Added
