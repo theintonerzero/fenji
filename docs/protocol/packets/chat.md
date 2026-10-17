@@ -114,7 +114,6 @@ Task 16's runs (2026-10-15) ran two clients at once as Task 13's and Task 15's d
 - **Out of view** (t16-c2, 374 m apart in scene 3006): Mai's nearby line reached Mai alone, and the world found Lin from a whisper to `lin@Unknown`.
 - **Scene 3006** loaded and stood both players at the game's own arrival points: Lin on the bridge at the Fox Mage's born point in Snowing Blossom Paradise, Mai at Lianbi Hall.
 - **422** (4.2): 282 in t16-c1's five minutes: 33 from each client on entering, then about six per client for each line it showed. Fenji answered none, and nothing either player saw changed.
-- **A `!tp` across scenes** (the follow-ups' runs 054-t1 to 054-t3, [`world.md`](world.md) 1.6, §13): the mover's client loads the other scene on a 772, then makes its own actor anew on a 9 naming it, and its 7 and 8, which Fenji sends on the type 3; it stands at the target's place, and each client shows the other. The refusal (#280) is lifted.
 - **No chat error** in either client's log in any run: only the listener errors on entering that [`world.md`](world.md) §13 lists, and Mai's cooldown sweep.
 
 **Inferred:**
@@ -123,6 +122,9 @@ Task 16's runs (2026-10-15) ran two clients at once as Task 13's and Task 15's d
 
 **Unknown:**
 - **Where a far 20 starts.** No run sent a 20 between t16-c1's 1.9 m and t16-c3's 374 m, so the 200 m line itself wasn't tried.
+
+**The follow-ups' runs** (2026-10-17, for 0.5.4; [`world.md`](world.md) §13), two clients as Task 16's ran:
+- **A `!tp` across scenes** (054-t1 to 054-t3; [`world.md`](world.md) 1.6). The mover's client loads the other scene on a 772. On its type 3, Fenji sends a 9 naming the client's own actor, then its 7 and 8, and the client makes the actor anew. The mover stands at the target's place, "S Lin is with Mai" shows in its chat box, and each client shows the other. The refusal (#280) is lifted.
 
 ## Evidence index
 

@@ -509,7 +509,7 @@ fn masked(body: &[u8], machine: fn(usize) -> bool) -> String {
 /// `now_ms`, or `None` for what isn't sent: what names `own` itself (world.md 14.11: a 9 naming it
 /// would make the client's own player leave, and a 6 would queue its own id; 16.8: a 13 would place
 /// the player's own actor; interest leaves a viewer out of its own view, so this guards against a
-/// bug in the world), and a move whose detail isn't [`world::MoveDetail::LEN`] bytes, which only a
+/// bug in the world), but `SelfReenter`'s 9, which is meant to (1.6), and a move whose detail isn't [`world::MoveDetail::LEN`] bytes, which only a
 /// bug in the world makes. `play` closes on a kick before it gets here.
 fn encode(
     server: &mut Server,
@@ -532,7 +532,6 @@ fn encode(
             let body = world::load_scene(pid, at.scene, [p.x, p.y, p.z, p.yaw]);
             Ok(Some(gate::script_out(server, &body)?))
         }
-
         WorldOut::SelfEnter {
             pid,
             look,

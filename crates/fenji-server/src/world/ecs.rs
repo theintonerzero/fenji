@@ -66,8 +66,9 @@ pub(super) enum Stage {
     InWorld,
 }
 
-/// Its own actor has entered once, and it has had the MOTD if there was one: a later load, as a
-/// teleport to another scene brings, doesn't greet it again.
+/// Its own actor has entered once, and it has had the MOTD if there was one. A later load, which
+/// only a teleport to another scene brings, doesn't greet it again, and finds its client still
+/// holding its own actor, which `SelfReenter` has it make anew (world.md 1.6).
 #[derive(Component)]
 struct Greeted;
 
