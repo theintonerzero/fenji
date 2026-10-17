@@ -129,6 +129,37 @@ test("a change while the view fetches its first snapshot isn't lost: it listens 
   expect(root.querySelector(".state")!.textContent).toMatch(/^Maintenance/);
 });
 
+test("a change while the view fetches again isn't lost either: it fetches until one comes through quiet (#367)", async () => {
+  let fetches = 0;
+  let pushed: ((s: Snapshot) => void) | null = null;
+  const root = document.createElement("div");
+  document.body.replaceChildren(root);
+  await mount(root, {
+    snapshot: async () => {
+      fetches += 1;
+      // Maintenance begins during the first fetch, and the server goes offline during the second.
+      if (fetches === 1) {
+        pushed!(golden("play-maintenance"));
+        return golden("play-ready");
+      }
+      if (fetches === 2) {
+        pushed!(golden("play-offline"));
+        return golden("play-maintenance");
+      }
+      return golden("play-offline");
+    },
+    onSnapshot: async (cb) => {
+      pushed = cb;
+      return () => {};
+    },
+    send: async () => null,
+  });
+  expect(fetches).toBe(3);
+  const { root: offline } = await mounted(golden("play-offline"));
+  const state = (r: HTMLElement) => r.querySelector(".state")!.textContent;
+  expect(state(root)).toBe(state(offline));
+});
+
 /** The servers golden with Jade Hall (2) active, and Play's sign-in waiting there. */
 function waitingOnJadeHall(): Snapshot {
   const s = golden("servers");
