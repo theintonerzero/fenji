@@ -13,6 +13,7 @@ clap.workspace = true
 fenji-auth.workspace = true
 # Without its `tui` feature: the text checks the server and the host console use.
 fenji-console.workspace = true
+flate2.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
@@ -32,6 +33,9 @@ axum.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true
 tokio-rustls.workspace = true
+# Every thread's log, as text, for the test that no snapshot or log line holds a code line or the
+# Steam account's name (#429).
+tracing-subscriber.workspace = true
 ts-rs.workspace = true
 
 [lints]

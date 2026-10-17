@@ -35,8 +35,9 @@ fn config(dir: &Path) -> AppConfig {
         pinned_build: "10015727".into(),
         env: vec![("PATH".into(), std::env::var_os("PATH").unwrap_or_default())],
         depot_downloader: None,
-        terminal: None,
         umu_run: None,
+        ge_proton: None,
+        gamemoderun: None,
     }
 }
 
@@ -451,10 +452,11 @@ async fn unticking_remember_forgets_a_server_saved_in_an_earlier_run_too() {
 
 /// umu-run as Play uses it: `createprefix` makes the prefix's two marks, then, if the test says,
 /// waits on "Proton" as umu-run 1.4.4 does: Proton in a session of its own, which here ignores
-/// SIGTERM and has a child of its own, SIGTERM forwarded to it, and a wait while it lives. The game
-/// records its environment, waits, and ends as the test says.
+/// SIGTERM and has a child of its own, SIGTERM forwarded to it, and a wait while it lives. Both runs
+/// record their environment; the game then waits, and ends as the test says.
 const FAKE_UMU_RUN: &str = r#"#!/bin/sh
 if [ "$1" = createprefix ]; then
+  env > "$FENJI_TEST_RECORD.prefix-env"
   mkdir -p "$WINEPREFIX/drive_c/windows" && : > "$WINEPREFIX/system.reg"
   if [ "${FENJI_TEST_PREFIX_SLEEP:-0}" != 0 ]; then
     setsid sh -c 'trap "" TERM; sleep "$0" & echo $! > "$1"; wait' \
@@ -468,6 +470,22 @@ fi
 env > "$FENJI_TEST_RECORD"
 sleep "${FENJI_TEST_SLEEP:-1}"
 exit "${FENJI_TEST_EXIT:-0}"
+"#;
+
+/// A wrapper as launch options name one (`wrap --flag -- %command%`): it notes all it's given, then
+/// runs what follows its `--`, in its own place.
+const FAKE_WRAPPER: &str = r#"#!/bin/sh
+echo "$*" >> "$FENJI_TEST_RECORD.wrap"
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+"#;
+
+/// gamemoderun as Feral's is: it runs what it's given in its own place (exec). This one notes each
+/// command it's given first.
+const FAKE_GAMEMODERUN: &str = r#"#!/bin/sh
+echo "$*" >> "$FENJI_TEST_RECORD.gamemode"
+exec "$@"
 "#;
 
 /// A server with an invite, a client folder (`bin64/` with two small files) and its manifest, the
@@ -486,6 +504,23 @@ struct PlayBed {
 impl PlayBed {
     async fn new() -> PlayBed {
         Self::build(Os::Linux, 1, 0, 0).await
+    }
+
+    /// With these in the launcher's own environment, as a player's shell would set them.
+    async fn with_env(env: &[(&str, &str)]) -> PlayBed {
+        Self::build_with(Os::Linux, 1, 0, 0, env, false).await
+    }
+
+    /// With GameMode installed: a fake gamemoderun, as the shell would find it, and a session bus
+    /// to reach its daemon by, as a player's desktop has.
+    async fn with_gamemode() -> PlayBed {
+        let bus = ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+        Self::build_with(Os::Linux, 1, 0, 0, &[bus], true).await
+    }
+
+    /// With GameMode installed but no session bus, as under `run-bare.sh`.
+    async fn with_gamemode_but_no_session_bus() -> PlayBed {
+        Self::build_with(Os::Linux, 1, 0, 0, &[], true).await
     }
 
     async fn with_sleep(secs: u32) -> PlayBed {
@@ -507,6 +542,17 @@ impl PlayBed {
     }
 
     async fn build(os: Os, sleep: u32, exit: i32, prefix_sleep: u32) -> PlayBed {
+        Self::build_with(os, sleep, exit, prefix_sleep, &[], false).await
+    }
+
+    async fn build_with(
+        os: Os,
+        sleep: u32,
+        exit: i32,
+        prefix_sleep: u32,
+        env: &[(&str, &str)],
+        gamemode: bool,
+    ) -> PlayBed {
         let dir = tempfile::tempdir().unwrap();
         let (s, c) = server(dir.path(), "", GateLimits::default()).await;
         let code = InviteCode::generate().unwrap();
@@ -538,6 +584,15 @@ impl PlayBed {
                 prefix_sleep.to_string().into(),
             ),
         ]);
+        cfg.env
+            .extend(env.iter().map(|(k, v)| ((*k).into(), (*v).into())));
+        if gamemode {
+            let gamemoderun = dir.path().join("gamemoderun");
+            std::fs::write(&gamemoderun, FAKE_GAMEMODERUN).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&gamemoderun, std::fs::Permissions::from_mode(0o755)).unwrap();
+            cfg.gamemoderun = Some(gamemoderun);
+        }
         let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
         app.intent(Intent::ChooseFolder {
             path: client.display().to_string(),
@@ -683,6 +738,179 @@ async fn play_takes_a_ticket_and_the_ticket_reaches_only_the_client() {
             "a secret leaked: {text}"
         );
     }
+    t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn play_starts_the_game_with_the_ge_proton_it_has_or_the_players_own() {
+    // Launcher spec Amendment B, LB1: umu-run gets the build in the data folder's proton/ as
+    // PROTONPATH, and a player's own PROTONPATH takes its place as it is: umu's own names (the
+    // final review, I2) too, never anchored to the launcher's folder.
+    for own in [None, Some("/home/me/proton"), Some("GE-Proton")] {
+        let t = match own {
+            None => PlayBed::new().await,
+            Some(path) => PlayBed::with_env(&[("PROTONPATH", path)]).await,
+        };
+        let home = t.cfg.data_dir.join("proton/GE-Proton11-9");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("proton"), "#!/bin/sh\n").unwrap();
+        std::fs::write(home.join(fenji_launcher::proton::MARKER), "done").unwrap();
+        t.signed_in().await;
+        t.app.intent(Intent::Play).await.unwrap();
+        until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+        let record = std::fs::read_to_string(&t.record).unwrap();
+        let expected = match own {
+            None => format!("PROTONPATH={}", home.display()),
+            Some(path) => format!("PROTONPATH={path}"),
+        };
+        assert!(
+            record.lines().any(|l| l == expected),
+            "{expected}: {record}"
+        );
+        t.s.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn play_starts_the_game_under_gamemode_when_its_installed_and_on() {
+    // Launcher spec Amendment B, LB2: the game, and only the game, under gamemoderun and outside
+    // umu-run; making the prefix isn't the game. The switch turns it off.
+    for on in [true, false] {
+        let t = PlayBed::with_gamemode().await;
+        if !on {
+            t.app
+                .intent(Intent::SetGameMode { on: false })
+                .await
+                .unwrap();
+        }
+        t.signed_in().await;
+        t.app.intent(Intent::Play).await.unwrap();
+        until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+        assert!(t.record.is_file(), "the game ran");
+        let wrapped = std::fs::read_to_string(t.record.with_extension("gamemode"));
+        if on {
+            let wrapped = wrapped.unwrap();
+            let umu_run = t.cfg.umu_run.as_ref().unwrap().display().to_string();
+            let lines: Vec<&str> = wrapped.lines().collect();
+            assert_eq!(lines.len(), 1, "the game alone: {wrapped}");
+            assert!(
+                lines[0].starts_with(&format!("{umu_run} ")) && lines[0].contains("gujianol.exe"),
+                "{wrapped}"
+            );
+        } else {
+            assert!(
+                wrapped.is_err(),
+                "with the switch off, no gamemoderun: {wrapped:?}"
+            );
+        }
+        t.s.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn play_starts_the_game_as_its_launch_options_say() {
+    // Launcher spec Amendment B, LB3: the variables for making the prefix and for the game, the
+    // player's own Proton in GE-Proton's place, as typed (umu's own name here, never anchored to
+    // the launcher's folder: the final review, I2), the player's wrappers outside gamemoderun, and
+    // the added arguments after Fenji's own.
+    let t = PlayBed::with_gamemode().await;
+    let dir = t.record.parent().unwrap().to_path_buf();
+    let wrap = dir.join("wrap");
+    std::fs::write(&wrap, FAKE_WRAPPER).unwrap();
+    std::fs::set_permissions(&wrap, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let ge = t.cfg.data_dir.join("proton/GE-Proton11-9");
+    std::fs::create_dir_all(&ge).unwrap();
+    std::fs::write(ge.join("proton"), "#!/bin/sh\n").unwrap();
+    std::fs::write(ge.join(fenji_launcher::proton::MARKER), "done").unwrap();
+    let text = format!(
+        "FENJI_TEST_OPTION='a b' PROTONPATH=GE-Proton {} --flag -- %command% -extra 'two words'",
+        wrap.display()
+    );
+    t.app
+        .intent(Intent::SetLaunchOptions { text })
+        .await
+        .unwrap();
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+    let read = |what: &str| std::fs::read_to_string(t.record.with_extension(what)).unwrap();
+    for env in [
+        std::fs::read_to_string(&t.record).unwrap(),
+        read("prefix-env"),
+    ] {
+        let lines: Vec<&str> = env.lines().collect();
+        assert!(lines.contains(&"FENJI_TEST_OPTION=a b"), "{env}");
+        assert!(lines.contains(&"PROTONPATH=GE-Proton"), "{env}");
+    }
+    let umu_run = t.cfg.umu_run.as_ref().unwrap().display().to_string();
+    let gamemoderun = t.cfg.gamemoderun.as_ref().unwrap().display().to_string();
+    let game = format!(
+        "{}/bin64/gujianol.exe {} -extra two words",
+        t.client.display(),
+        fenji_launcher::launch::FS_ARG
+    );
+    assert_eq!(
+        read("wrap"),
+        format!("--flag -- {gamemoderun} {umu_run} {game}\n")
+    );
+    assert_eq!(read("gamemode"), format!("{umu_run} {game}\n"));
+    t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn play_starts_the_game_without_gamemode_where_no_session_bus_is() {
+    // Launcher spec Amendment B, LB2: with no session bus, gamemoderun kept the game from starting
+    // (Task 11's rehearsal); the game starts without it, and Settings has no switch.
+    let t = PlayBed::with_gamemode_but_no_session_bus().await;
+    assert_eq!(t.app.snapshot().settings.gamemode, None);
+    t.signed_in().await;
+    t.app.intent(Intent::Play).await.unwrap();
+    until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+    assert!(t.record.is_file(), "the game ran");
+    let wrapped = std::fs::read_to_string(t.record.with_extension("gamemode"));
+    assert!(wrapped.is_err(), "no gamemoderun: {wrapped:?}");
+    t.s.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_new_proton_sets_the_prefix_up_again_before_the_game() {
+    // The final review, I4 (#430): the prefix remembers the Proton that set it up, and a new one
+    // sets it up again before the ticket is taken, not inside the game's own run.
+    let t = PlayBed::new().await;
+    let protons = t.cfg.data_dir.join("proton");
+    let build = |name: &str| {
+        let home = protons.join(name);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("proton"), "#!/bin/sh\n").unwrap();
+        std::fs::write(home.join(fenji_launcher::proton::MARKER), "done").unwrap();
+        home
+    };
+    let prefix_env = t.record.with_extension("prefix-env");
+    let set_up_with = |home: &std::path::Path| {
+        let env = std::fs::read_to_string(&prefix_env).expect("the prefix was set up");
+        let line = format!("PROTONPATH={}", home.display());
+        assert!(env.lines().any(|l| l == line), "{line}: {env}");
+    };
+    t.signed_in().await;
+    let play = || async {
+        t.app.intent(Intent::Play).await.unwrap();
+        until(&t.app, |s| matches!(s.game, GameView::Running { .. })).await;
+        until(&t.app, |s| matches!(s.game, GameView::Ended { code: 0 })).await;
+    };
+    let first = build("GE-Proton11-9");
+    play().await;
+    set_up_with(&first);
+    std::fs::remove_file(&prefix_env).unwrap();
+    // The same Proton: nothing sets the prefix up again.
+    play().await;
+    assert!(!prefix_env.exists(), "the same Proton set it up");
+    // A newer one sets it up again first.
+    let newer = build("GE-Proton11-10");
+    play().await;
+    set_up_with(&newer);
+    let record = std::fs::read_to_string(&t.record).unwrap();
+    let line = format!("PROTONPATH={}", newer.display());
+    assert!(record.lines().any(|l| l == line), "{line}: {record}");
     t.s.shutdown().await.unwrap();
 }
 

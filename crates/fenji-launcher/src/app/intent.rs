@@ -88,6 +88,12 @@ pub enum Intent {
     SetAutoUpdate {
         on: bool,
     },
+    SetGameMode {
+        on: bool,
+    },
+    SetLaunchOptions {
+        text: String,
+    },
     SetUmuRun {
         path: Option<String>,
     },
@@ -157,6 +163,8 @@ pub fn name(i: &Intent) -> &'static str {
         Intent::CancelStart => "cancelStart",
         Intent::DismissNotice { .. } => "dismissNotice",
         Intent::SetAutoUpdate { .. } => "setAutoUpdate",
+        Intent::SetGameMode { .. } => "setGameMode",
+        Intent::SetLaunchOptions { .. } => "setLaunchOptions",
         Intent::SetUmuRun { .. } => "setUmuRun",
         Intent::PickFolder { .. } => "pickFolder",
         Intent::OpenUrl { .. } => "openUrl",
@@ -196,6 +204,8 @@ pub const ALL: &[&str] = &[
     "cancelStart",
     "dismissNotice",
     "setAutoUpdate",
+    "setGameMode",
+    "setLaunchOptions",
     "setUmuRun",
     "pickFolder",
     "openUrl",

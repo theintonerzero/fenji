@@ -22,6 +22,13 @@ pub struct Settings {
     pub client: Option<PathBuf>,
     #[serde(default = "yes")]
     pub auto_update: bool,
+    /// GameMode while the game runs, where it's installed (launcher spec Amendment B, LB2).
+    #[serde(default = "yes")]
+    pub gamemode: bool,
+    /// The player's launch options, as Steam's, kept only when they read
+    /// ([`crate::options::parse`]; launcher spec Amendment B, LB3).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub launch_options: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub umu_run: Option<PathBuf>,
     /// Where Start download saves the game, when the player changed it ("Change" beside the
@@ -53,6 +60,8 @@ impl Default for Settings {
             next_id: 1,
             client: None,
             auto_update: true,
+            gamemode: true,
+            launch_options: String::new(),
             umu_run: None,
             download_folder: None,
             update_seen: None,
@@ -395,6 +404,21 @@ mod tests {
     }
 
     const PIN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    #[test]
+    fn gamemode_is_on_unless_the_player_turned_it_off() {
+        // Launcher spec Amendment B, LB2: on by default, in a file saved before it too.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), r#"{"next_id": 1}"#).unwrap();
+        assert!(Settings::load(dir.path()).unwrap().gamemode);
+        assert!(Settings::default().gamemode);
+        let off = Settings {
+            gamemode: false,
+            ..Settings::default()
+        };
+        off.save(dir.path()).unwrap();
+        assert!(!Settings::load(dir.path()).unwrap().gamemode);
+    }
 
     #[test]
     fn an_m3_settings_file_becomes_the_lists_first_server() {

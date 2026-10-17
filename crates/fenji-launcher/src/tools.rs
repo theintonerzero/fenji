@@ -173,19 +173,15 @@ pub async fn ensure_capped(
     result
 }
 
-/// Streams `url` into `part`, never past `cap` bytes, and returns the SHA-256 of what came.
-async fn fetch(
-    url: &Url,
-    local: bool,
-    part: &Path,
-    cap: u64,
-    progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
-) -> Result<[u8; 32], ToolError> {
+/// A client for what the launcher fetches from GitHub: its releases' redirects followed only on
+/// https and never far, and no proxy for an address on this machine (`local`, tests). GitHub's API
+/// wants a User-Agent.
+pub(crate) fn client(local: bool) -> Result<reqwest::Client, reqwest::Error> {
     crate::api::crypto();
     let mut builder = reqwest::Client::builder()
+        .user_agent(concat!("fenji-launcher/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(30))
-        // GitHub's release downloads redirect; never off https, and never far.
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 5 {
                 attempt.error("too many redirects")
@@ -198,9 +194,18 @@ async fn fetch(
     if local {
         builder = builder.no_proxy();
     }
-    let client = builder
-        .build()
-        .map_err(|e| ToolError::Download(e.to_string()))?;
+    builder.build()
+}
+
+/// Streams `url` into `part`, never past `cap` bytes, and returns the SHA-256 of what came.
+async fn fetch(
+    url: &Url,
+    local: bool,
+    part: &Path,
+    cap: u64,
+    progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
+) -> Result<[u8; 32], ToolError> {
+    let client = client(local).map_err(|e| ToolError::Download(e.to_string()))?;
     let failed = |e: reqwest::Error| ToolError::Download(e.without_url().to_string());
     let mut res = client.get(url.clone()).send().await.map_err(failed)?;
     if !res.status().is_success() {

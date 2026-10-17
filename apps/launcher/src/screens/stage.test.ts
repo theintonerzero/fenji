@@ -56,14 +56,27 @@ test("the moment the check ends, PLAY's fill completes and dissolves into the li
   expect(play(fresh.root).classList.contains("kindled")).toBe(false);
 });
 
-test("starting: PLAY kindles with no progress to show, Cancel beside it, and the first start says why it's slow", () => {
+test("starting: PLAY kindles with no progress to show, Cancel beside it, and Proton's setup says why it's slow", () => {
   const { root, sent } = mount(stage, golden("play-starting"));
   expect(play(root).textContent).toBe("Starting");
   expect(play(root).classList.contains("drift")).toBe(true);
   expect(root.querySelector('[role="progressbar"]')!.hasAttribute("aria-valuenow")).toBe(false);
-  expect(text(root, ".meta")).toBe("Setting up Proton (first start only)");
+  expect(text(root, ".meta")).toBe("Setting up Proton");
   press(root, "Cancel");
   expect(sent).toEqual([{ type: "cancelStart" }]);
+});
+
+test("starting while GE-Proton downloads: the meta line names it with its percent, and PLAY fills to it", () => {
+  const s = golden("play-getting-proton");
+  const { root, screen } = mount(stage, s);
+  expect(play(root).textContent).toBe("Starting");
+  expect(root.querySelector('[role="progressbar"]')!.getAttribute("aria-valuenow")).toBe("42");
+  expect(text(root, ".meta")).toBe("Getting GE-Proton 42%");
+  // Before its size is known, the name alone; umu-launcher, fetched once, says so.
+  screen.update({ ...s, job: { kind: "fetching", tool: "GE-Proton", percent: null } });
+  expect(text(root, ".meta")).toBe("Getting GE-Proton");
+  screen.update({ ...s, job: { kind: "fetching", tool: "umu-launcher", percent: 30 } });
+  expect(text(root, ".meta")).toBe("Getting umu-launcher (first start only)");
 });
 
 test("running: an outline with a dot, since when, and the player leads the friends", () => {

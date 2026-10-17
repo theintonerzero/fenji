@@ -165,6 +165,21 @@ pub fn mark_finished(prefix: &Path) -> std::io::Result<()> {
     }
 }
 
+/// The mark naming the Proton that last set the prefix up.
+const SET_UP_WITH: &str = ".fenji-proton";
+
+/// The Proton that last set `prefix` up, as umu-run got it in `PROTONPATH` (empty for umu-run's
+/// own), or none for a prefix set up before the launcher kept it. A Proton that upgrades a prefix
+/// does it before the game starts, so a new one sets the prefix up again before the ticket.
+pub fn prefix_proton(prefix: &Path) -> Option<String> {
+    std::fs::read_to_string(prefix.join(SET_UP_WITH)).ok()
+}
+
+/// Notes the Proton that set `prefix` up, once `umu-run createprefix` has ended by itself.
+pub fn mark_proton(prefix: &Path, proton: &str) -> std::io::Result<()> {
+    std::fs::write(prefix.join(SET_UP_WITH), proton)
+}
+
 /// Runs [`prepare_spec`] and judges it by the prefix, whatever umu-run's exit code.
 fn prepare(platform: &Platform) -> anyhow::Result<()> {
     let (Some(spec), Platform::Linux { prefix, .. }) = (prepare_spec(platform), platform) else {
@@ -202,6 +217,50 @@ fn passed_on(name: &OsStr) -> bool {
     !secret && !login
 }
 
+/// Feral GameMode's `gamemoderun` on `path`, when it's installed (launcher spec Amendment B, LB2).
+pub fn gamemoderun(path: Option<&OsStr>) -> Option<PathBuf> {
+    on_path(OsStr::new("gamemoderun"), path)
+}
+
+/// Whether `env` reaches a D-Bus session bus as libdbus finds one: an address in
+/// `DBUS_SESSION_BUS_ADDRESS`, else the user's own socket at `$XDG_RUNTIME_DIR/bus`. GameMode's
+/// daemon is reached over it. With none, libdbus autolaunches `dbus-launch`, which `gamemoderun`'s
+/// preload makes ask again, without end (launcher spec Amendment B, LB2), so an address that
+/// would autolaunch is none too.
+pub fn session_bus(env: &[(OsString, OsString)]) -> bool {
+    let var = |name: &str| {
+        env.iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_os_str())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(address) = var("DBUS_SESSION_BUS_ADDRESS") {
+        return !address
+            .as_encoded_bytes()
+            .split(|&b| b == b';')
+            .any(|a| a.starts_with(b"autolaunch:"));
+    }
+    var("XDG_RUNTIME_DIR").is_some_and(|dir| {
+        let mut bus = dir.to_os_string();
+        bus.push("/bus");
+        users_socket(Path::new(&bus))
+    })
+}
+
+/// Whether `path` is a socket of the user's own, as libdbus takes `$XDG_RUNTIME_DIR/bus`.
+#[cfg(unix)]
+fn users_socket(path: &Path) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|m| m.file_type().is_socket() && m.uid() == rustix::process::getuid().as_raw())
+}
+
+#[cfg(not(unix))]
+fn users_socket(_: &Path) -> bool {
+    false
+}
+
 /// The process for `spec`: its program, arguments and folder, and an environment of `parent`'s
 /// variables less [`SECRET_ENV`], `gj_*` and an AppImage's ([`appimage::outside`]), then the
 /// spec's own.
@@ -209,7 +268,25 @@ pub fn command(
     spec: &LaunchSpec,
     parent: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Command {
-    let mut cmd = Command::new(&spec.program);
+    command_under(spec, &[], parent)
+}
+
+/// [`command`], started through `wrappers`, outermost first: the first is the program, and the
+/// rest are its arguments before `spec`'s program and arguments (the player's own wrappers, then
+/// `gamemoderun`; launcher spec Amendment B, LB2 and LB3). The environment and folder are `spec`'s.
+pub fn command_under(
+    spec: &LaunchSpec,
+    wrappers: &[OsString],
+    parent: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Command {
+    let mut cmd = match wrappers.split_first() {
+        Some((first, rest)) => {
+            let mut cmd = Command::new(first);
+            cmd.args(rest).arg(&spec.program);
+            cmd
+        }
+        None => Command::new(&spec.program),
+    };
     cmd.args(&spec.args)
         .env_clear()
         .envs(appimage::outside(
@@ -433,6 +510,107 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(p, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn a_prefix_remembers_the_proton_that_set_it_up() {
+        // Final review I4 (#430): a new Proton sets the prefix up again before the ticket.
+        let d = tempfile::tempdir().unwrap();
+        let prefix = d.path().join("prefix");
+        assert_eq!(prefix_proton(&prefix), None);
+        std::fs::create_dir_all(&prefix).unwrap();
+        assert_eq!(
+            prefix_proton(&prefix),
+            None,
+            "set up before the launcher kept it"
+        );
+        mark_proton(&prefix, "/data/proton/GE-Proton11-9").unwrap();
+        assert_eq!(
+            prefix_proton(&prefix).as_deref(),
+            Some("/data/proton/GE-Proton11-9")
+        );
+        // umu-run's own default, with no PROTONPATH.
+        mark_proton(&prefix, "").unwrap();
+        assert_eq!(prefix_proton(&prefix).as_deref(), Some(""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gamemoderun_is_found_on_path_only_as_an_executable() {
+        // Launcher spec Amendment B, LB2: GameMode is there when its gamemoderun is.
+        let d = tempfile::tempdir().unwrap();
+        let (plain, good) = (d.path().join("plain"), d.path().join("good"));
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        script(&plain.join("gamemoderun"), 0o644);
+        script(&good.join("gamemoderun"), 0o755);
+        let path = std::env::join_paths([plain.clone(), good.clone()]).unwrap();
+        assert_eq!(gamemoderun(Some(&path)), Some(good.join("gamemoderun")));
+        assert_eq!(gamemoderun(Some(plain.as_os_str())), None);
+        assert_eq!(gamemoderun(None), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_bus_is_an_address_or_the_users_own_socket_as_libdbus_finds_one() {
+        // Launcher spec Amendment B, LB2: where libdbus would autolaunch dbus-launch, there's none.
+        let pair = |n: &str, v: &str| (OsString::from(n), OsString::from(v));
+        let address = |v: &str| vec![pair("DBUS_SESSION_BUS_ADDRESS", v)];
+        assert!(session_bus(&address("unix:path=/run/user/1000/bus")));
+        assert!(!session_bus(&[]));
+        assert!(!session_bus(&address("")), "empty is unset");
+        assert!(!session_bus(&address("autolaunch:")));
+        assert!(!session_bus(&address("unix:path=/nowhere/bus;autolaunch:")));
+        let d = tempfile::tempdir().unwrap();
+        let runtime = vec![pair("XDG_RUNTIME_DIR", d.path().to_str().unwrap())];
+        assert!(!session_bus(&runtime), "no socket");
+        std::fs::write(d.path().join("bus"), b"").unwrap();
+        assert!(!session_bus(&runtime), "a file isn't a bus");
+        std::fs::remove_file(d.path().join("bus")).unwrap();
+        let _bus = std::os::unix::net::UnixListener::bind(d.path().join("bus")).unwrap();
+        assert!(session_bus(&runtime), "the user's own socket");
+    }
+
+    #[test]
+    fn a_command_under_wrappers_runs_them_outermost_first_with_the_specs_environment() {
+        // Launcher spec Amendment B, LB2 and LB3: the player's wrappers, then gamemoderun, then
+        // the spec's program, with the environment and folder the spec alone would have.
+        let spec = LaunchSpec {
+            program: "/opt/umu/umu-run".into(),
+            args: vec!["game.exe".into(), "-fs".into()],
+            env: vec![("GAMEID".into(), "umu-1418100".into())],
+            cwd: "/games/bin64".into(),
+        };
+        let parent = || {
+            [("PATH", "/usr/bin"), ("FENJI_PASSWORD", "a long password")]
+                .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+        };
+        let wrappers = ["mangohud", "/usr/bin/gamemoderun"].map(OsString::from);
+        let under = command_under(&spec, &wrappers, parent());
+        let plain = command(&spec, parent());
+        assert_eq!(under.get_program(), "mangohud");
+        let args: Vec<&OsStr> = under.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "/usr/bin/gamemoderun",
+                "/opt/umu/umu-run",
+                "game.exe",
+                "-fs"
+            ]
+        );
+        let envs = |c: &Command| -> Vec<(OsString, Option<OsString>)> {
+            c.get_envs()
+                .map(|(k, v)| (k.to_owned(), v.map(OsStr::to_owned)))
+                .collect()
+        };
+        assert_eq!(envs(&under), envs(&plain));
+        assert_eq!(under.get_current_dir(), plain.get_current_dir());
+        // With none, the spec's own command.
+        let none = command_under(&spec, &[], parent());
+        assert_eq!(none.get_program(), plain.get_program());
+        assert!(none.get_args().eq(plain.get_args()));
+        assert_eq!(envs(&none), envs(&plain));
     }
 
     #[cfg(unix)]

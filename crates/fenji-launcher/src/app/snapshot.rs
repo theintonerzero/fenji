@@ -227,7 +227,32 @@ pub enum JobView {
         percent: Option<f32>,
         file: Option<String>,
         waiting_for_steam: bool,
+        /// The sign-in code to scan, while a hidden run shows one.
+        code: Option<CodeView>,
     },
+}
+
+/// A sign-in code to draw as squares (launcher spec Amendment A, LA4): `size` modules a side, its
+/// quiet zone included, and `dark`, row by row, `1` for a dark module and `0` for a light one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct CodeView {
+    pub size: u32,
+    pub dark: String,
+}
+
+impl From<&crate::depot::QrCode> for CodeView {
+    fn from(code: &crate::depot::QrCode) -> Self {
+        CodeView {
+            size: u32::try_from(code.size).unwrap_or(0),
+            dark: code
+                .dark
+                .iter()
+                .map(|&d| if d { '1' } else { '0' })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -239,9 +264,17 @@ pub enum JobView {
 #[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub enum GameView {
     Idle,
-    Starting { first_start: bool },
-    Running { since_ms: i64 },
-    Ended { code: i32 },
+    /// `first_start`: Proton sets the Wine prefix up first, on the first start, or the first with
+    /// a new Proton (the final review of 0.5.5's Amendment B work, I4).
+    Starting {
+        first_start: bool,
+    },
+    Running {
+        since_ms: i64,
+    },
+    Ended {
+        code: i32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -264,6 +297,10 @@ pub struct UpdateView {
 #[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct SettingsView {
     pub auto_update: bool,
+    /// GameMode's switch, where GameMode is installed, and none where it isn't (launcher spec
+    /// Amendment B, LB2).
+    pub gamemode: Option<bool>,
+    pub launch_options: String,
     pub umu_run: Option<String>,
     pub log_folder: String,
 }

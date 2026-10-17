@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use fenji_auth::invite::InviteCode;
 use tokio::sync::watch;
 use tokio::time::Instant;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::api::{ApiClient, ApiError, ServerInfo, Session};
 use crate::manifest::Manifest;
@@ -49,10 +49,17 @@ pub struct AppConfig {
     pub env: Vec<(OsString, OsString)>,
     /// Used instead of fetching (tests; players who have their own).
     pub depot_downloader: Option<PathBuf>,
-    /// Used instead of finding one (tests).
-    pub terminal: Option<crate::depot::Terminal>,
     /// Used before the settings, `PATH` and fetching (tests).
     pub umu_run: Option<PathBuf>,
+    /// Where Play asks for GE-Proton's latest release before each start (launcher spec
+    /// Amendment B, LB1): GitHub's API, [`crate::proton::GE_RELEASES`], or a test's. None never
+    /// asks, and plays the build there (tests).
+    pub ge_proton: Option<String>,
+    /// Feral GameMode's `gamemoderun`, where it's installed: the shell finds it on the launcher's
+    /// `PATH` ([`crate::start::gamemoderun`]), and tests give a fake. With none, or with no
+    /// session bus in `env` ([`crate::start::session_bus`]), Settings shows no GameMode switch and
+    /// the game starts without it (launcher spec Amendment B, LB2).
+    pub gamemoderun: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -157,8 +164,17 @@ struct KeyChange {
 impl App {
     /// Loads the settings (a damaged file is moved aside, with a notice), and starts the loop on
     /// `rt`.
-    pub fn start(cfg: AppConfig, rt: tokio::runtime::Handle) -> App {
+    pub fn start(mut cfg: AppConfig, rt: tokio::runtime::Handle) -> App {
+        // GameMode's daemon is reached over the session bus, and with none gamemoderun would keep
+        // the game from starting (launcher spec Amendment B, LB2).
+        if cfg.gamemoderun.is_some() && !crate::start::session_bus(&cfg.env) {
+            info!("GameMode is installed, but no session bus is: the game starts without it");
+            cfg.gamemoderun = None;
+        }
         let (settings, problem) = Settings::load_or_reset(&cfg.config_dir);
+        // A download an earlier launcher left running, crashed or killed, ends: hidden, it had no
+        // window to close (the final review of #429, I3).
+        crate::depot::end_left(&cfg.data_dir.join("depot"));
         // A game an earlier launcher started may still run (#348).
         let left = play::GameMark::left_running(&cfg.data_dir);
         let state = State {
@@ -312,6 +328,28 @@ impl App {
                     self.save(st);
                 });
                 Ok(())
+            }
+            Intent::SetGameMode { on } => {
+                self.change(|st| {
+                    st.settings.gamemode = on;
+                    self.save(st);
+                });
+                Ok(())
+            }
+            // Kept only when they read (launcher spec Amendment B, LB3); the field keeps the
+            // player's text beside the refusal.
+            Intent::SetLaunchOptions { text } => {
+                let text = text.trim();
+                match crate::options::parse(text) {
+                    Ok(_) => {
+                        self.change(|st| {
+                            st.settings.launch_options = text.to_string();
+                            self.save(st);
+                        });
+                        Ok(())
+                    }
+                    Err(e) => Err(refused(&words::launch_options(&e))),
+                }
             }
             Intent::SetUmuRun { path } => {
                 self.change(|st| {
@@ -504,6 +542,8 @@ impl State {
             },
             settings: SettingsView {
                 auto_update: self.settings.auto_update,
+                gamemode: cfg.gamemoderun.is_some().then_some(self.settings.gamemode),
+                launch_options: self.settings.launch_options.clone(),
                 umu_run: self
                     .settings
                     .umu_run
@@ -664,8 +704,9 @@ mod tests {
             pinned_build: "10015727".into(),
             env: Vec::new(),
             depot_downloader: None,
-            terminal: None,
             umu_run: None,
+            ge_proton: None,
+            gamemoderun: None,
         }
     }
 
@@ -984,6 +1025,124 @@ mod tests {
         assert!(
             saved.contains("\"auto_update\": false") && saved.contains("umu-run"),
             "{saved}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gamemodes_switch_shows_only_where_it_and_a_session_bus_are_and_is_saved() {
+        // Launcher spec Amendment B, LB2: on by default, shown only with GameMode installed and a
+        // session bus its daemon is reached by.
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        assert_eq!(
+            app.snapshot().settings.gamemode,
+            None,
+            "no GameMode, no switch"
+        );
+        drop(app);
+        let mut cfg = config(dir.path());
+        cfg.gamemoderun = Some("/usr/bin/gamemoderun".into());
+        let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
+        assert_eq!(
+            app.snapshot().settings.gamemode,
+            None,
+            "no session bus, no switch"
+        );
+        drop(app);
+        let bus = ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+        cfg.env.push((bus.0.into(), bus.1.into()));
+        let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
+        assert_eq!(
+            app.snapshot().settings.gamemode,
+            Some(true),
+            "on by default"
+        );
+        app.intent(Intent::SetGameMode { on: false }).await.unwrap();
+        assert_eq!(app.snapshot().settings.gamemode, Some(false));
+        assert_eq!(app.snapshot().notice, None);
+        drop(app);
+        let again = App::start(cfg, tokio::runtime::Handle::current());
+        assert_eq!(
+            again.snapshot().settings.gamemode,
+            Some(false),
+            "it's saved"
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_options_are_saved_or_refused_in_words_keeping_the_saved_ones() {
+        // Launcher spec Amendment B, LB3.
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        let saved = "PROTON_LOG=1 mangohud %command% -dx11";
+        app.intent(Intent::SetLaunchOptions {
+            text: format!("  {saved}\n"),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.snapshot().settings.launch_options, saved);
+        for (text, refusal) in [
+            (
+                "mangohud '%command%",
+                "A quote in the launch options isn't closed: close it, or put a backslash before it.",
+            ),
+            (
+                "%command% -x %command%",
+                "The launch options have %command% twice: keep one.",
+            ),
+            (
+                "WINEPREFIX=/tmp/p %command%",
+                "Fenji sets WINEPREFIX itself: take it out of the launch options.",
+            ),
+            (
+                "PROTONPATH=~/proton %command%",
+                "PROTONPATH needs a full path from /, or a Proton's name: Fenji doesn't expand ~ or $HOME.",
+            ),
+            (
+                "%command% --gf-sdk=mocked",
+                "Fenji starts the game without --gf-sdk: take it out of the launch options.",
+            ),
+        ] {
+            let refused = app
+                .intent(Intent::SetLaunchOptions { text: text.into() })
+                .await;
+            assert!(
+                matches!(&refused, Err(IntentError::Refused(words)) if words == refusal),
+                "{text}: {refused:?}"
+            );
+            assert_eq!(app.snapshot().settings.launch_options, saved, "{text}");
+        }
+        drop(app);
+        let again = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        assert_eq!(
+            again.snapshot().settings.launch_options,
+            saved,
+            "they're saved"
+        );
+        again
+            .intent(Intent::SetLaunchOptions { text: " ".into() })
+            .await
+            .unwrap();
+        assert_eq!(again.snapshot().settings.launch_options, "");
+    }
+
+    #[tokio::test]
+    async fn play_refuses_launch_options_that_dont_read() {
+        // Saved by hand, past the Settings field's refusal.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = config(dir.path());
+        std::fs::create_dir_all(&cfg.config_dir).unwrap();
+        std::fs::write(
+            cfg.config_dir.join("settings.json"),
+            r#"{"next_id": 1, "launch_options": "GAMEID=x %command%"}"#,
+        )
+        .unwrap();
+        let app = App::start(cfg, tokio::runtime::Handle::current());
+        let refused = app.intent(Intent::Play).await;
+        assert!(
+            matches!(&refused, Err(IntentError::Refused(words))
+                if words == "Fenji sets GAMEID itself: take it out of the launch options."),
+            "{refused:?}"
         );
     }
 

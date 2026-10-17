@@ -7,7 +7,7 @@ members = ["tools/stub", "tools/luatool", "tools/archive", "tools/oodle-helper",
 exclude = ["crates/fenji-oodle/fuzz", "apps/launcher/src-tauri"]
 
 [workspace.package]
-version = "0.5.4"
+version = "0.5.5"
 edition = "2024"
 rust-version = "1.97"
 publish = false
@@ -33,6 +33,9 @@ fenji-launcher = { path = "crates/fenji-launcher" }
 fenji-lua = { path = "crates/fenji-lua" }
 fenji-proto = { path = "crates/fenji-proto" }
 fenji-store = { path = "crates/fenji-store" }
+# GE-Proton's .tar.gz releases (launcher spec Amendment B, LB1), with the zlib-rs backend zip's
+# deflate already uses: no new crate in the graph.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
 getrandom = "0.4.3"
 if-addrs = "0.15.0"

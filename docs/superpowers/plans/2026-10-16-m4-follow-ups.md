@@ -11,7 +11,8 @@
 - #282: back to character select;
 - #244: the two-client runners and watchdog;
 - #174: the v0.4.1 review's last two runner items;
-- the launcher spec's Amendment A (the owner, 2026-10-16): Steam copies, and DepotDownloader inside the launcher (Tasks 10–13).
+- the launcher spec's Amendment A (the owner, 2026-10-16): Steam copies, and DepotDownloader inside the launcher (Tasks 10–12);
+- the launcher spec's Amendment B (the owner, 2026-10-17): the latest GE-Proton, GameMode and launch options (Tasks 13, 20 and 21).
 
 The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-13-m4-world-design.md`, `…/2026-10-14-m4-hosting-design.md` and `…/2026-10-15-m4-launcher-design.md`.
 
@@ -41,7 +42,7 @@ The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-1
   Not in it: the patcher (#336), whose design waits for the owner; the gates #337 and #338; M5's #180; and #359's two choices #371 left to the owner (a stalled console's slot, and a panic hook under `--plain`).
 
   Before 0.5.4 is tagged, the owner makes the release's SSH key (Amendment D, HD5; the commands are in `docs/development.md`), and its public line goes in with `scripts/set-release-key.sh`. Done on 2026-10-17: the owner made the key and set the `release` environment's `SSH_SIGNING_PRIVATE_KEY`, and its line went in with #421.
-- **0.5.5:** T11 to T13, DepotDownloader inside the launcher. Their rehearsal needs the owner's Steam account and phone, and Steam's own Proton installed through Steam, which the game box doesn't have. By the ruling below, they moved here from 0.5.4 (2026-10-17), so that 0.5.4 needn't wait on them.
+- **0.5.5:** T11 and T12, DepotDownloader inside the launcher; T13, the latest GE-Proton; T20 and T21, GameMode and launch options (the owner, 2026-10-17: "proton ge latest always!", "we need as much QOL as possible!"; the launcher spec's Amendment B). T11's rehearsal needs the owner's Steam account and phone. By the ruling below, T11 to T13 moved here from 0.5.4 (2026-10-17), so that 0.5.4 needn't wait on them.
 
   The ruling of 2026-10-17, while the owner was away: release what's ready, rather than hold the fixes the owner's acceptance session needs behind the work that needs the owner. By the same ruling, T15 and #394 joined 0.5.3 once both were reviewed, before it was cut: the release waits for the owner's `sign` approval in any case.
 
@@ -126,13 +127,13 @@ Find what the client expects after type 4 in the world, answer it, and return th
   - Download refuses a folder inside a Steam library, in words.
 - PRIVACY.md says the launcher reads Steam's library files, on this computer only, to find the game.
 
-### Task 11 (local): the rehearsal for DepotDownloader inside the launcher (LA4, LA6)
+### Task 11 (local): the rehearsal for DepotDownloader inside the launcher, and Play on Linux tuned (LA4; LB1, LB2)
 - On the game box, DepotDownloader 3.4.0 run as a child with `-qr`, its input closed and its output piped:
   - the exact lines of the code, of "The QR code has changed:", of progress, of the end, and of a cancel;
   - whether anything needs a terminal.
 
   Kept as fixtures for Task 12's parser, with the account name and anything identifying taken out.
-- Steam's newest stable Proton through umu-run (`PROTONPATH`), starting the pinned client under `scripts/spike/run-bare.sh`'s guards (Steam not running). It must reach the lobby against a local fenji-server, as the launcher's bare-metal end to end did.
+- The latest GE-Proton through umu-run (`PROTONPATH`, as Task 13 fetches it), under `gamemoderun` (Task 20), starting the pinned client under `scripts/spike/run-bare.sh`'s guards (Steam not running). It must reach the lobby against a local fenji-server, as the launcher's bare-metal end to end did. While it runs: whether it uses NTSYNC (`/dev/ntsync` open in its processes) and GameMode (`gamemoded -s`).
 
 ### Task 12 (inline): DepotDownloader hidden, its QR code in the launcher (LA4, LA5; L21)
 - The download and the repair run DepotDownloader as the model's own child, in a process group of its own:
@@ -141,16 +142,20 @@ Find what the client expects after type 4 in the world, answer it, and return th
   - every other line dropped unread;
   - Cancel ends the group.
 - The Downloading screen draws the code as SVG squares with "Scan this with the Steam Mobile App", and redraws it when it changes. It's designed with `impeccable` from DESIGN.md.
-- "No Steam Mobile App? Sign in with your password" keeps the terminal and the manual command (#348).
+- "No Steam Mobile App? Sign in with your password" ends the hidden run and opens the manual command, with the player's own login (#348; L3; the final review ruled out a terminal of Fenji's for it).
 - PRIVACY.md says what the launcher reads of DepotDownloader's output (the code, progress, the end) and that it keeps none of it.
 - Tests:
   - Task 11's fixtures through the parser;
   - a fake DepotDownloader that draws a code, changes it, then downloads;
   - no snapshot and no log line ever holds a code line or the account-name line.
 
-### Task 13 (inline): Steam's Proton for umu-run (LA6; L22)
-- When a Steam library holds Proton, and the player set none, umu-run gets the newest stable `Proton x.y` there as `PROTONPATH`, after Task 11 showed it works.
-- Tested with fake Steam folders: Experimental and betas skipped, the player's own setting winning.
+### Task 13 (inline): the latest GE-Proton (LB1; L23)
+Replaces Amendment A's LA6 (Steam's Proton), which draft PR #431 built: it's reworked to this.
+- Before each start on Linux, unless the player set `PROTONPATH`, the model asks GitHub for GE-Proton's latest release (`GloriousEggroll/proton-ge-custom`). A release newer than the one in the data folder's `proton/` is fetched, its archive checked against the release's own `.sha512sum`, unpacked there, and the older build removed. Offline, or when GitHub doesn't answer, the one it has plays; with none, umu-run's own default.
+- PLAY shows the fetch, as it shows umu-launcher's ("Getting GE-Proton 42%"), and Cancel start stops it.
+- umu-run gets the build's folder as `PROTONPATH`.
+- PRIVACY.md says the launcher asks GitHub for GE-Proton's latest release before a start, and fetches it from there.
+- Tested with a fake GitHub (a local server): a newer release fetched, checked and the old one removed; a wrong sum refused and the old one kept; offline with a build, and with none; the player's own `PROTONPATH` asking nothing.
 
 ### Task 14 (subagent): the update script (hosting spec Amendment B, HB1–HB10; #380)
 - `deploy/start/update-server.sh`, as HB1–HB9 say: it updates the folder it's in, or the `fenji` service that runs the program beside it.
@@ -174,6 +179,17 @@ When the world corrects a mover (type 20 to the mover), the viewers that know it
 
 ### Task 19 (subagent): signed server releases (#392; hosting spec Amendment D)
 The owner's choice (2026-10-17): a key of Fenji's own, made with `ssh-keygen -t ed25519` and kept in the `release` environment's secrets, and `ssh-keygen -Y verify`, which every Linux server and Mac already has, so hosts install nothing. The `sign` job, behind the owner's approval, signs the server's sums; the update script carries the public key and refuses an archive whose sums aren't signed by it, from the script 0.5.4 ships on; `docs/hosting.md`'s by-hand steps say how to check it too. The design goes into the hosting spec as Amendment D first.
+
+### Task 20 (inline): GameMode (LB2; L24)
+- When `gamemoderun` is on the `PATH`, Play starts the game under it, inside the player's own wrappers (Task 21) and outside `umu-run`.
+- Settings: a GameMode switch, on by default, shown only when GameMode is installed, and saved with the other settings.
+- Tested with a fake `gamemoderun` on a test `PATH`: the start's command with and without it, and with the switch off.
+
+### Task 21 (inline): launch options (LB3; L25)
+- Settings: a Launch options field (Linux only), saved with the other settings, designed with `impeccable` from DESIGN.md.
+- The model splits it as a POSIX shell would, never running a shell: leading `NAME=value` words into the start's environment, the words before `%command%` as wrappers, outermost first, the words after it as the game's added arguments; without `%command%`, all are added arguments.
+- Refused in words, the text kept: an unclosed quote, `%command%` twice, and Fenji's own variables (`WINEPREFIX`, `GAMEID`, the login path's).
+- Tested: the splitting's cases (quotes, backslashes, an escaped `%command%`), the start's command with wrappers, variables and arguments, a player's `PROTONPATH` taking GE-Proton's place, and each refusal.
 
 ## Review Focus
 1. **Nothing a player or a host does in the acceptance session should get worse.** A fix that changes a flow a host or player sees has its write-up line updated in the same PR.

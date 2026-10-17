@@ -5,6 +5,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -17,15 +18,19 @@ use super::{
 };
 use crate::api::ApiError;
 use crate::launch::base_spec;
+use crate::options::LaunchOptions;
 use crate::probe::{self, Incompatible, Status};
 use crate::settings::Os;
 use crate::start::{self, UmuOptions};
-use crate::tools;
+use crate::{proton, tools};
 
 /// An end this soon after the start means the game couldn't start, whatever its code (spec §3.12;
 /// #332).
 const STARTUP: Duration = Duration::from_secs(15);
 pub(super) const UMU_LAUNCHER: &str = "umu-launcher";
+/// The latest GE-Proton, which Play fetches before a start when a newer one is out (launcher spec
+/// Amendment B, LB1).
+pub(super) const GE_PROTON: &str = "GE-Proton";
 /// How long `umu-run createprefix` may take: a first one fetches umu's runtime, and Proton too when
 /// none is set, before it builds the prefix (#348). `words::PREFIX_TOO_LONG` says it.
 const PREFIX_LIMIT: Duration = Duration::from_secs(60 * 60);
@@ -41,6 +46,9 @@ impl App {
         if self.inner.cfg.os != Os::Linux {
             return Err(refused(words::NOT_HERE));
         }
+        // Saved only when they read, unless by hand.
+        let options = crate::options::parse(&self.inner.lock().settings.launch_options)
+            .map_err(|e| refused(&words::launch_options(&e)))?;
         let id = {
             let st = self.inner.lock();
             if playing(&st) {
@@ -87,7 +95,7 @@ impl App {
         })?;
         let app = self.clone();
         self.inner.rt.spawn(async move {
-            let started = app.start_game(id, prefix, client).await;
+            let started = app.start_game(id, prefix, client, options).await;
             app.change(|st| {
                 // Whatever else stopped the start meanwhile, the player's cancel is the news.
                 let cancelled = std::mem::take(&mut st.start_cancelled);
@@ -156,27 +164,54 @@ impl App {
     }
 
     /// umu-run, the prefix, the ticket, the start, and the wait. An error is the notice's words.
-    async fn start_game(&self, id: u32, prefix: PathBuf, client: PathBuf) -> Result<(), String> {
+    /// The launch options' variables go to making the prefix and to the game; their wrappers and
+    /// arguments to the game alone.
+    async fn start_game(
+        &self,
+        id: u32,
+        prefix: PathBuf,
+        client: PathBuf,
+        options: LaunchOptions,
+    ) -> Result<(), String> {
         let cfg = &self.inner.cfg;
         let umu_run = self.umu_run().await?;
         self.going_on()?;
-        let var = |name: &str| env_var(&cfg.env, name);
+        let proton = self.proton(&options).await;
+        self.going_on()?;
+        // The Proton the prefix is set up with, as umu-run gets it: GE-Proton's build, the
+        // player's own, or none, umu-run's own.
+        let set_up_with = match &proton {
+            Some(home) => home.display().to_string(),
+            None => own_proton(&options, &cfg.env)
+                .map(|own| own.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
         let platform = start::linux_platform(
             UmuOptions {
                 umu_run: Some(umu_run),
                 prefix: Some(prefix.clone()),
-                proton: var("PROTONPATH").map(PathBuf::from),
+                proton,
             },
             &cfg.data_dir,
-            var("PATH").as_deref(),
+            env_var(&cfg.env, "PATH").as_deref(),
             Some(cfg.data_dir.clone()),
         )
         .map_err(|e| words::couldnt_launch(&format!("{e:#}")))?;
         let log = game_log(&cfg.data_dir).map_err(|e| words::couldnt_launch(&e.to_string()))?;
-        if !start::prefix_ready(&prefix) {
-            info!("making the Wine prefix");
-            let spec =
+        // A prefix another Proton set up is set up again now, before the ticket: that Proton
+        // would upgrade it inside the game's own run, while the ticket ages (the final review, I4).
+        let set_up = !start::prefix_ready(&prefix)
+            || start::prefix_proton(&prefix).as_deref() != Some(set_up_with.as_str());
+        self.change(|st| {
+            if let GameView::Starting { first_start } = &mut st.game {
+                *first_start = set_up;
+            }
+        });
+        if set_up {
+            info!("setting the Wine prefix up");
+            let mut spec =
                 start::prepare_spec(&platform).ok_or_else(|| words::PREFIX_FAILED.to_string())?;
+            spec.env.extend(variables(&options));
             let (out, err) = log_pair(&log).map_err(|e| words::couldnt_launch(&e.to_string()))?;
             if let Err(e) =
                 std::fs::create_dir_all(&spec.cwd).and_then(|()| start::mark_unfinished(&prefix))
@@ -192,7 +227,9 @@ impl App {
                     warn!(%status, "umu-run createprefix was stopped");
                 }
                 GroupEnd::Ended(_) => {
-                    if let Err(e) = start::mark_finished(&prefix) {
+                    if let Err(e) = start::mark_finished(&prefix)
+                        .and_then(|()| start::mark_proton(&prefix, &set_up_with))
+                    {
                         warn!(error = %e, "couldn't mark the prefix finished");
                     }
                 }
@@ -210,7 +247,13 @@ impl App {
             .ok_or_else(|| words::START_CANCELLED.to_string())??;
         let mut spec = base_spec(&client, &platform);
         spec.env.extend(pairs);
-        let mut cmd = tokio::process::Command::from(start::command(&spec, cfg.env.clone()));
+        spec.env.extend(variables(&options));
+        spec.args.extend(options.args.iter().cloned());
+        let mut cmd = tokio::process::Command::from(start::command_under(
+            &spec,
+            &self.wrappers(&options),
+            cfg.env.clone(),
+        ));
         drop(spec);
         let err = log.try_clone().map_err(|e| e.to_string())?;
         cmd.stdin(Stdio::null())
@@ -294,6 +337,51 @@ impl App {
             }
         });
         fetched
+    }
+
+    /// What the game starts under, outermost first, umu-run inside them all (launcher spec
+    /// Amendment B, LB2 and LB3): the launch options' wrappers, then GameMode's `gamemoderun`,
+    /// where it's installed, a session bus is (the config keeps none otherwise), and its switch
+    /// is on. `gamemoderun` runs what it's given in its own place, so the game's process is the
+    /// one started, as without it.
+    fn wrappers(&self, options: &LaunchOptions) -> Vec<std::ffi::OsString> {
+        let on = self.inner.lock().settings.gamemode;
+        let gamemode = self.inner.cfg.gamemoderun.iter().filter(|_| on);
+        let gamemode = gamemode.map(|p| p.clone().into_os_string());
+        options
+            .wrappers
+            .iter()
+            .map(Into::into)
+            .chain(gamemode)
+            .collect()
+    }
+
+    /// The GE-Proton umu-run starts the game with (launcher spec Amendment B, LB1): none when the
+    /// player set `PROTONPATH`, in the launch options or the launcher's environment, which asks
+    /// nothing; else the latest, asked of GitHub before each start and fetched into the data
+    /// folder's `proton/` when it's newer, its download shown on PLAY; else the build there; else
+    /// none, umu-run's own default. Cancel start stops it at once.
+    async fn proton(&self, options: &LaunchOptions) -> Option<PathBuf> {
+        let cfg = &self.inner.cfg;
+        // The player's own reaches umu-run as it is, umu's own names (GE-Proton, UMU-Latest, a
+        // folder in compatibilitytools.d) too: never anchored to the launcher's folder (the final
+        // review, I2).
+        if own_proton(options, &cfg.env).is_some() {
+            return None;
+        }
+        let dir = cfg.data_dir.join("proton");
+        let Some(api) = &cfg.ge_proton else {
+            return proton::installed(&dir);
+        };
+        let app = self.clone();
+        let stop: proton::Stop = Arc::new(move || app.start_cancelled());
+        let found = proton::for_play(&dir, api, &self.fetching(GE_PROTON), &stop).await;
+        self.change(|st| {
+            if matches!(&st.client.job, Some(JobView::Fetching { tool, .. }) if tool == GE_PROTON) {
+                st.client.job = None;
+            }
+        });
+        found
     }
 
     /// The login path's pairs for one game token, taken with the session this launcher holds.
@@ -502,6 +590,35 @@ fn end_notice(code: i32, lasted: Duration) -> Option<String> {
     }
 }
 
+/// The launch options' variables for the start, `PROTONPATH` as typed among them: an empty one
+/// is none, and GE-Proton plays.
+fn variables(options: &LaunchOptions) -> impl Iterator<Item = (String, String)> + '_ {
+    options
+        .env
+        .iter()
+        .filter(|(name, value)| name != "PROTONPATH" || !value.is_empty())
+        .cloned()
+}
+
+/// The player's own `PROTONPATH`, as umu-run gets it: the launch options', else the launcher's
+/// environment's. An empty one is none, and one in the options hides the environment's, as in a
+/// shell.
+fn own_proton(
+    options: &LaunchOptions,
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Option<std::ffi::OsString> {
+    let typed = options
+        .env
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "PROTONPATH");
+    let own = match typed {
+        Some((_, value)) => Some(value.into()),
+        None => env_var(env, "PROTONPATH"),
+    };
+    own.filter(|own: &std::ffi::OsString| !own.is_empty())
+}
+
 fn env_var(
     env: &[(std::ffi::OsString, std::ffi::OsString)],
     name: &str,
@@ -641,7 +758,164 @@ fn game_log(data_dir: &Path) -> std::io::Result<std::fs::File> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
+    use super::super::AppConfig;
     use super::*;
+    use crate::manifest::Manifest;
+    use crate::options::{self, LaunchOptions};
+    use crate::proton::{MARKER, fakes};
+    use crate::test_support::until;
+
+    /// The config of an App on Linux whose own environment is `env`, asking `ge_proton` for
+    /// GE-Proton's latest release.
+    fn config_with(
+        dir: &Path,
+        env: Vec<(OsString, OsString)>,
+        ge_proton: Option<String>,
+    ) -> AppConfig {
+        AppConfig {
+            config_dir: dir.join("config"),
+            data_dir: dir.join("data"),
+            home: Some(dir.join("home")),
+            os: Os::Linux,
+            version: "0.5.5".into(),
+            manifest: Manifest::default(),
+            pinned_build: "10015727".into(),
+            env,
+            depot_downloader: None,
+            umu_run: None,
+            ge_proton,
+            gamemoderun: None,
+        }
+    }
+
+    /// The App of [`config_with`].
+    fn app_with(dir: &Path, env: Vec<(OsString, OsString)>, ge_proton: Option<String>) -> App {
+        App::start(
+            config_with(dir, env, ge_proton),
+            tokio::runtime::Handle::current(),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_game_starts_under_gamemoderun_only_where_a_session_bus_is() {
+        // Launcher spec Amendment B, LB2: with no session bus, gamemoderun's preload has libdbus
+        // autolaunch dbus-launch, which it makes ask again, without end (Task 11's rehearsal:
+        // 51,262 of them, and no game).
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = config_with(dir.path(), Vec::new(), None);
+        cfg.gamemoderun = Some("/usr/bin/gamemoderun".into());
+        let mangohud = options::parse("mangohud %command%").unwrap();
+        let app = App::start(cfg.clone(), tokio::runtime::Handle::current());
+        assert_eq!(app.wrappers(&mangohud), [OsString::from("mangohud")]);
+        drop(app);
+        let bus = ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+        cfg.env.push((bus.0.into(), bus.1.into()));
+        let app = App::start(cfg, tokio::runtime::Handle::current());
+        assert_eq!(
+            app.wrappers(&mangohud),
+            ["mangohud", "/usr/bin/gamemoderun"].map(OsString::from)
+        );
+    }
+
+    /// An address nothing answers on: the connection is refused at once.
+    const NOWHERE: &str = "http://127.0.0.1:1/api";
+
+    #[tokio::test]
+    async fn a_players_own_protonpath_asks_github_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = fakes::github("GE-Proton11-9", fakes::ge("GE-Proton11-9"), None).await;
+        let own = vec![("PROTONPATH".into(), "/home/me/proton".into())];
+        let app = app_with(dir.path(), own, Some(fake.api.clone()));
+        // No GE-Proton: the environment's own reaches umu-run as it is (final review I2).
+        assert_eq!(app.proton(&LaunchOptions::default()).await, None);
+        assert_eq!((fake.asked(), fake.hits()), (0, 0));
+        // An empty one is none: the latest GE-Proton plays.
+        let other = tempfile::tempdir().unwrap();
+        let empty = vec![("PROTONPATH".into(), "".into())];
+        let app = app_with(other.path(), empty, Some(fake.api.clone()));
+        let home = other.path().join("data/proton/GE-Proton11-9");
+        assert_eq!(app.proton(&LaunchOptions::default()).await, Some(home));
+        assert_eq!((fake.asked(), fake.hits()), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn a_launch_options_protonpath_takes_ge_protons_place_and_the_environments() {
+        // Launcher spec Amendment B, LB3: the player's own Proton, set where Settings shows it.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = fakes::github("GE-Proton11-9", fakes::ge("GE-Proton11-9"), None).await;
+        let env = vec![("PROTONPATH".into(), "/from/the/environment".into())];
+        let app = app_with(dir.path(), env, Some(fake.api.clone()));
+        let own = options::parse("PROTONPATH=GE-Proton %command%").unwrap();
+        // No GE-Proton: the options' own reaches umu-run as typed (the final review, I2), before
+        // the environment's.
+        assert_eq!(app.proton(&own).await, None);
+        assert_eq!((fake.asked(), fake.hits()), (0, 0));
+        let env = &app.inner.cfg.env;
+        assert_eq!(own_proton(&own, env), Some("GE-Proton".into()));
+        let mut vars: Vec<(String, String)> = variables(&own).collect();
+        vars.retain(|(name, _)| name == "PROTONPATH");
+        assert_eq!(vars, [("PROTONPATH".to_string(), "GE-Proton".to_string())]);
+        // An empty one in the options hides the environment's, as in a shell, and GE-Proton plays.
+        let empty = options::parse("PROTONPATH= %command%").unwrap();
+        assert_eq!(own_proton(&empty, env), None);
+        assert_eq!(variables(&empty).count(), 0);
+    }
+
+    #[tokio::test]
+    async fn play_gets_the_latest_ge_proton_into_its_data_folder_or_plays_the_one_it_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = fakes::github("GE-Proton11-9", fakes::ge("GE-Proton11-9"), None).await;
+        let app = app_with(dir.path(), Vec::new(), Some(fake.api.clone()));
+        let home = dir.path().join("data/proton/GE-Proton11-9");
+        assert_eq!(
+            app.proton(&LaunchOptions::default()).await,
+            Some(home.clone())
+        );
+        assert!(home.join(MARKER).is_file());
+        assert_eq!((fake.asked(), fake.hits()), (1, 1));
+        assert!(app.snapshot().job.is_none(), "the fetch's job ends with it");
+        // Offline, the build it has plays; with none yet, umu-run's own default.
+        let offline = app_with(dir.path(), Vec::new(), Some(NOWHERE.into()));
+        assert_eq!(offline.proton(&LaunchOptions::default()).await, Some(home));
+        let empty = tempfile::tempdir().unwrap();
+        let none = app_with(empty.path(), Vec::new(), Some(NOWHERE.into()));
+        assert_eq!(none.proton(&LaunchOptions::default()).await, None);
+    }
+
+    #[tokio::test]
+    async fn ge_protons_download_shows_on_play_and_cancel_start_stops_it_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let protons = dir.path().join("data/proton");
+        let have = fakes::built(&protons, "GE-Proton10-34");
+        let zeros = format!("{}  GE-Proton11-9-x86_64.tar.gz", "0".repeat(128));
+        let stalled = Some(fakes::stalled().await);
+        let fake = fakes::github_at("GE-Proton11-9", Vec::new(), Some(zeros), stalled).await;
+        let app = app_with(dir.path(), Vec::new(), Some(fake.api.clone()));
+        app.change(|st| st.game = GameView::Starting { first_start: false });
+        let start = tokio::spawn({
+            let app = app.clone();
+            async move { app.proton(&LaunchOptions::default()).await }
+        });
+        // Its first kilobyte of a megabyte came, and then nothing.
+        until(&app, |s| {
+            matches!(&s.job, Some(JobView::Fetching { tool, percent: Some(_) }) if tool == GE_PROTON)
+        })
+        .await;
+        app.cancel_start();
+        let found = tokio::time::timeout(Duration::from_secs(5), start)
+            .await
+            .expect("Cancel start stops it at once")
+            .unwrap();
+        assert_eq!(found, Some(have));
+        assert!(app.snapshot().job.is_none());
+        let left: Vec<_> = std::fs::read_dir(&protons)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["GE-Proton10-34"], "nothing half-made is left");
+    }
 
     #[test]
     fn a_game_that_ends_at_once_couldnt_start_whatever_its_code() {

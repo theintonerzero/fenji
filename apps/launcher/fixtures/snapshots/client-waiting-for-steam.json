@@ -63,7 +63,8 @@
     "repair": false,
     "percent": null,
     "file": null,
-    "waitingForSteam": true
+    "waitingForSteam": true,
+    "code": null
   },
   "game": {
     "kind": "idle"
@@ -80,6 +81,8 @@
   },
   "settings": {
     "autoUpdate": true,
+    "gamemode": true,
+    "launchOptions": "",
     "umuRun": null,
     "logFolder": "/home/player/.local/share/fenji-launcher/logs"
   },
