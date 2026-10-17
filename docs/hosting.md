@@ -33,7 +33,7 @@ Players need only the desktop launcher and the link you send them: the [README](
    | Linux (x86_64) | `fenji-server-<version>-x86_64-unknown-linux-musl.tar.gz` | `start-server.sh` |
    | Linux (ARM, 64-bit) | `fenji-server-<version>-aarch64-unknown-linux-musl.tar.gz` | `start-server.sh` |
 
-2. **Unpack it** in your home folder, or anywhere else on your computer's own disk. Not on a USB stick or another FAT or exFAT drive: those drives can't keep a folder private, and the server refuses to keep its key in a folder that other users can open. It unpacks into a folder named for its version, such as `fenji-server-0.5.0-x86_64-unknown-linux-musl`. Rename the folder with the start script in it to `fenji-server`: it's your server's folder from now on, and each update goes into it (section 5).
+2. **Unpack it** in your home folder, or anywhere else on your computer's own disk. Not on a USB stick or another FAT or exFAT drive: those drives can't keep a folder private, and the server refuses to keep its key in a folder that other users can open. It unpacks into a folder named for its version, such as `fenji-server-0.5.3-x86_64-unknown-linux-musl`. Rename the folder with the start script in it to `fenji-server`: it's your server's folder from now on, and each update goes into it (section 5).
 3. **Start it** with the start script in that folder:
    - **Windows:** double-click `start-server.bat`. The first time, SmartScreen says "Windows protected your PC", because the server isn't signed by Microsoft: choose More info, then Run anyway. When Windows asks whether to let `fenji-server.exe` through its firewall, allow it on private networks.
    - **macOS:** double-click `start-server.command`, which opens in Terminal. The first time, macOS says Apple can't check it, because the server isn't signed by Apple: close the message, open System Settings, Privacy & Security, and choose Open Anyway beside its name. macOS may then ask the same about `fenji-server` itself, and you allow it the same way. If macOS asks whether `fenji-server` may accept incoming network connections, allow it.
@@ -397,7 +397,7 @@ With a domain name, Caddy can serve the account API on the usual HTTPS port, wit
    sudo ufw allow 443/tcp
    ```
 
-3. Install Fenji's `Caddyfile` from the archive's `caddy` folder, put your name in place of `play.example.net` in it, and reload Caddy. In the folder you unpacked the archive in:
+3. Install Fenji's `Caddyfile` from the archive's `caddy` folder, put your name in place of `play.example.net` in it, and reload Caddy. In the folder you unpacked the archive in, with `VERSION` set as when you installed, to the version you unpacked:
 
    ```sh
    VERSION=0.5.3
@@ -659,6 +659,8 @@ xattr -dr com.apple.quarantine ~/fenji-server
 **Windows says Smart App Control blocked the server, with no Run anyway.** Smart App Control, on from the start on some new Windows 11 PCs, blocks programs that aren't signed, and the server isn't. The only way past it is to turn it off, in Windows Security, App & browser control, Smart App Control settings. On many PCs Windows can't turn it on again without a reset of Windows, so weigh that first, or host on another computer: a Linux or macOS one, or a VPS (section 4).
 
 **A player's launcher says "That isn't an invite link or an address."** in the desktop launcher, or "that isn't an invite code or link" from `fenji-launch`. What they pasted isn't the whole link: part of it was left out as it was copied, from the console or by a chat app. Copy it again from its first letter to its last (section 2's "Copying a link"), or make it with `./fenji-server invite create`, which prints each link on one line, and send that.
+
+**A player's launcher says "That address has a space in it: take it out, or paste the link again."** A space got into the address, typed by hand or added by the app the link came through. Have them delete the space, or paste the link again, copied as above.
 
 **"another fenji-server holds this data folder (…)".** Another `fenji-server` is using the same data folder, and the message names the two it may be. A server: in another window, in `tmux`, or as the reference deployment's service. Use that one (on Linux and macOS, the `fenji-server console` the message shows attaches to it, with the same `--config`, and as the same user when you ran it with `sudo -u`), or stop it first. Or one of the program's other commands, such as a `backup`, bringing the database up to date just then: try again in a moment. The system lets go of a server's lock however it ends, so this never means a stale lock.
 
