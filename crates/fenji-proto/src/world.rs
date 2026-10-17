@@ -634,6 +634,22 @@ impl MoveDetail {
         out
     }
 
+    /// What the relay of a stop carries for a mover the world corrected (#265; world.md 16.17):
+    /// direction 0, which stops the mover (16.9), and the yaw offset, the rate and the pitches 0,
+    /// at the first step after the server's clock `now_ms`: floored to 16 ms, then 16 on. For a
+    /// client whose clock doesn't lead the server's, the bound keeps a move's time at or before
+    /// the clock floored (16.15), so the stop comes after every relay of the mover a viewer holds.
+    pub fn stop(now_ms: u64) -> Self {
+        Self {
+            time: (now_ms - now_ms % 16).saturating_add(16),
+            dir: 0,
+            yaw_offset: 0,
+            rate: 0,
+            pitch: 0,
+            pitch2: 0,
+        }
+    }
+
     /// Exactly [`MoveDetail::LEN`] bytes, as [`MoveDetail::to_bytes`] writes them, bounded again
     /// against `now_ms`; `None` for any other length.
     pub fn from_bytes(b: &[u8], now_ms: u64) -> Option<Self> {

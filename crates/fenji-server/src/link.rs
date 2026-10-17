@@ -5,7 +5,8 @@
 //! entering: 772, the time syncs, type 3, then the player's own 7 and 8. Slice 2 (Amendment B)
 //! maps seeing: another player announced (6), pulled (5), sent whole (7 and 8) and taken away
 //! (9). Slice 3 (Amendment C) maps moving: the client's direction command (8) to the world, its
-//! relay to others (13), and a correction or a teleport to the player itself (20). Slice 4 (Task
+//! relay to others (13), a correction or a teleport to the player itself (20), and, with a
+//! correction, a stop to the others who see the player (13 with direction 0; #265). Slice 4 (Task
 //! 16; docs/protocol/packets/chat.md) maps chat: a line (115) to the world, the lines the world
 //! sends (378), and refusals (270); the admins' commands arrive as lines. Script messages go out
 //! through the gate's `script_out`, which refuses `NEVER_SEND`.
@@ -38,9 +39,9 @@ use crate::world::{
 };
 
 /// The world's messages a connection may hold unwritten; one more and the world lets go of it
-/// (`KickReason::SlowReader`). A tick relays at most one move of each mover in view (Amendment C),
-/// so a viewer of 20 movers gets 20 relays a tick, besides what comes into or goes out of view: 256
-/// holds more than ten ticks of that.
+/// (`KickReason::SlowReader`). A tick sends at most one 13 of each mover in view (Amendment C): its
+/// last accepted move, or a stop where the world corrected it (#265). So a viewer of 20 movers gets
+/// 20 a tick, besides what comes into or goes out of view: 256 holds more than ten ticks of that.
 pub(crate) const OUTBOUND: usize = 256;
 // No later slice may shrink it: it is the slack for a client that pauses its reads for a moment.
 const _: () = assert!(OUTBOUND >= 256);
@@ -624,6 +625,32 @@ fn encode(
                 "13: another player moved"
             );
             let body = world::move_dir_relay(pid, [p.x, p.y, p.z, p.yaw], &detail);
+            Ok(Some(server.send(
+                Stc::MoveDir.to_u8(),
+                &body,
+                &StoredCodec,
+            )?))
+        }
+        WorldOut::Stopped { pid, pos } => {
+            if pid == own {
+                tracing::warn!(pid, "a stop of the player's own actor: not sent");
+                return Ok(None);
+            }
+            // The relay an accepted stop gets (world.md 16.11), at the world's place for a mover it
+            // corrected, one step after this link's clock: after the relays of the mover this
+            // client holds, unless the mover's clock leads the server's, so that it no longer runs
+            // the mover on from one (16.17).
+            let detail = world::MoveDetail::stop(now_ms);
+            tracing::debug!(
+                pid,
+                x = pos.x,
+                y = pos.y,
+                z = pos.z,
+                yaw = pos.yaw,
+                time = detail.time,
+                "13: another player stops where the world has it"
+            );
+            let body = world::move_dir_relay(pid, [pos.x, pos.y, pos.z, pos.yaw], &detail);
             Ok(Some(server.send(
                 Stc::MoveDir.to_u8(),
                 &body,
@@ -2148,6 +2175,35 @@ mod tests {
             let want = world::move_dir_relay(300, [AT.x, AT.y, AT.z, AT.yaw], &running());
             assert_eq!(got[0].body, want);
             assert_eq!(got[0].body[..8], 300i64.to_le_bytes());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn stopped_sends_a_13_with_direction_0() {
+        linked(|mut l| async move {
+            // A stop of Lin's own actor sends nothing (world.md 16.8); then Mai's goes out, the only
+            // 13, so one for Lin would come first.
+            for pid in [258, 300] {
+                l.out
+                    .send(WorldOut::Stopped { pid, pos: AT })
+                    .await
+                    .unwrap();
+            }
+            let got = l.messages(1).await;
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert_eq!(got[0].ty, Stc::MoveDir.to_u8());
+            let body = &got[0].body;
+            assert_eq!(body[..8], 300i64.to_le_bytes());
+            // An absolute header at the first step after the test clock, a multiple of 16, then
+            // direction 0, the yaw again, and the yaw offset, the rate and the pitches 0.
+            assert_eq!(body[8], 1);
+            assert_eq!(body[9..17], (NOW as u64 + 16).to_le_bytes());
+            assert_eq!(body[31], 0, "direction 0");
+            assert_eq!(body[34..42], [0; 8]);
+            let stop = world::MoveDetail::stop(NOW as u64);
+            let want = world::move_dir_relay(300, [AT.x, AT.y, AT.z, AT.yaw], &stop);
+            assert_eq!(got[0].body, want);
         })
         .await;
     }

@@ -750,6 +750,19 @@ async fn a_move_reaches_the_player_who_sees_the_mover() {
     s.shutdown().await.unwrap();
 }
 
+/// The next message is a 13 that stops `pid` at `at` (#265; world.md 16.17), as the client of a
+/// player who has a mover the world corrected gets it: direction 0, one step after the server's
+/// clock.
+async fn stopped(bot: &mut Bot, pid: i64, at: [f64; 4]) {
+    let m = bot.recv_message().await;
+    let stop = world::move_dir_relay(pid, at, &MoveDetail::stop(NOW_MS));
+    assert_eq!(
+        (m.ty, m.body),
+        (Stc::MoveDir.to_u8(), stop.to_vec()),
+        "a stop for {pid} at {at:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_jump_too_far_is_corrected_and_not_relayed() {
     let dir = tempfile::tempdir().unwrap();
@@ -767,7 +780,10 @@ async fn a_jump_too_far_is_corrected_and_not_relayed() {
         ),
         "where she stood"
     );
+    // Mai's client, which has Lin, hears she stops there too, and nothing of the jump.
+    stopped(&mut b, lin, START).await;
     b.quiet(300).await;
+    a.quiet(300).await;
     s.shutdown().await.unwrap();
 }
 
@@ -788,6 +804,8 @@ async fn a_hostile_move_body_is_corrected_and_not_relayed() {
             world::move_sync_svr(lin, world::sync_time(NOW_MS), START).to_vec()
         )
     );
+    // Mai's client hears only that Lin stops where the world has her: nothing of the body.
+    stopped(&mut b, lin, START).await;
     b.quiet(300).await;
     // A move that fits after it is relayed as usual: the refusal changed nothing.
     let body = move_body(NOW_MS, [130, -200, 300], 90, 1, 100);
