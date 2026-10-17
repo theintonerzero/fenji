@@ -11,6 +11,7 @@ pub mod login_path;
 pub mod manifest;
 pub mod pin;
 pub mod probe;
+pub mod proton;
 pub mod servers;
 pub mod settings;
 pub mod start;

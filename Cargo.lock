@@ -1084,6 +1084,7 @@ dependencies = [
  "clap",
  "fenji-auth",
  "fenji-console",
+ "flate2",
  "rcgen",
  "reqwest",
  "rustix",
