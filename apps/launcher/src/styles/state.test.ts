@@ -16,3 +16,16 @@ test("the line of state keeps its spaces, and a long region gives way first (hos
   expect(region).toMatch(/\bmin-width: 0;/);
   expect(rule(css, ".state-live")).toMatch(/\bflex: none;/);
 });
+
+test("the server's version follows its address in the top bar, never cut short (the boards, R1)", () => {
+  // The address gives way, with an ellipsis; the version keeps its " · ", as a flex item drops the
+  // space at its start without pre.
+  const css = readFileSync(`${process.cwd()}/src/styles/components.css`, "utf8");
+  expect(rule(css, ".address")).toMatch(/\btext-overflow: ellipsis;/);
+  const version = rule(css, ".server-version");
+  expect(version).toMatch(/\bwhite-space: pre;/);
+  expect(version).toMatch(/\bflex: none;/);
+  expect(version).toMatch(/\bcolor: var\(--faint\);/);
+  // One item with the address, so the bar's gap between its items never falls between them.
+  expect(rule(css, ".where")).toMatch(/\bdisplay: flex;/);
+});

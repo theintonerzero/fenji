@@ -103,6 +103,12 @@ export function regionPart(v: ServerView): string {
   return shown && v.region !== null ? `${JOIN}${v.region}` : "";
 }
 
+/** " · Fenji 0.5.3": the Fenji the server runs, from its last answer, after its address in the top
+ * bar; nothing when it never said (the boards, R1). */
+export function versionPart(v: ServerView | null | undefined): string {
+  return v?.version ? `${JOIN}Fenji ${v.version}` : "";
+}
+
 /** A seal's tip in the rail, after the server's name: its players, or its state, and its region. */
 export function sealLine(v: ServerView): string {
   switch (v.status.kind) {

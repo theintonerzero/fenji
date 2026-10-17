@@ -533,7 +533,7 @@ impl State {
             motd: info.map(|i| i.motd.clone()).unwrap_or_default(),
             ping_ms: live.and_then(|l| l.ping_ms),
             last_seen_ms: saved.last_seen_ms,
-            version: info.map(|i| i.version.clone()),
+            version: info.map(|i| i.version.clone()).filter(|v| !v.is_empty()),
             source: info.and_then(|i| i.source.clone()),
             username: live
                 .and_then(|l| l.username.clone())
