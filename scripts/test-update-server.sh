@@ -77,6 +77,9 @@ case $url in
     [ -z "$out" ] || printf '<html></html>\n' > "$out"
     [ "$format" != '%{url_effective}' ] || printf '%s' "$landed" ;;
   "$FAKE_RELEASES/download/"*)
+    # FAKE_ON_DOWNLOAD: a command run as each download starts, as someone who times a change to the
+    # download would.
+    [ -z "${FAKE_ON_DOWNLOAD:-}" ] || sh -c "$FAKE_ON_DOWNLOAD"
     file=$FAKE_RELEASE_DIR/${url#"$FAKE_RELEASES/download/"}
     if [ ! -f "$file" ]; then
       echo "curl: (22) The requested URL returned error: 404" >&2
@@ -704,6 +707,9 @@ FAKE_SSH_KEYGEN=old run "$D/update-server.sh" 1.2.10
 refused "an ssh-keygen before OpenSSH 8.1 is refused" "it needs OpenSSH 8.1 or later"
 says "saying what to do on RHEL 8" "RHEL 8" "$err"
 same "before anything is downloaded" "$(fetched)" ""
+FENJI_RELEASE_KEY=$T/no_signers run "$D/update-server.sh" 1.2.10
+refused "a key file that isn't there is refused" "can't read $T/no_signers"
+same "before anything is downloaded" "$(fetched)" ""
 # Its own line, without FENJI_RELEASE_KEY: none until the owner makes the key (HD5), and the run's
 # releases aren't signed with the real one.
 if [ -z "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$SCRIPT")" ]; then
@@ -831,6 +837,16 @@ export FAKE_UID=0 FAKE_ROOT_UID=$uid
 run "$D/update-server.sh"
 exits "root updates a folder that's root's" 0
 same "its program is the latest's" "$(version "$D/fenji-server")" "fenji-server 1.3.0"
+# Root checks FENJI_RELEASE_KEY's file in a folder too, not only as the service.
+fresh
+folder "$D" 1.2.3
+was=$(snapshot "$D")
+cp "$T/allowed_signers" "$T/everyones_signers"
+chmod o+w "$T/everyones_signers"
+export FAKE_UID=0 FAKE_ROOT_UID=$uid
+FENJI_RELEASE_KEY=$T/everyones_signers run "$D/update-server.sh" 1.2.10
+refused "root in a folder refuses a key file everyone may write" "won't check a release as root"
+same "before anything is fetched" "$(fetched)" ""
 fresh
 folder "$D" 1.2.3
 chmod g+w "$D"
@@ -1143,6 +1159,26 @@ same "before anything is fetched" "$(fetched)" ""
 ln -s "$T/allowed_signers" "$T/linked_signers"
 FENJI_RELEASE_KEY=$T/linked_signers run "$B/fenji-update" 1.2.10
 kept "and so is a link" "won't check a release as root"
+FENJI_RELEASE_KEY=$T/everyones_signers run "$B/fenji-update" 1.2.10
+kept "and one everyone may write" "won't check a release as root"
+cp "$T/allowed_signers" "$T/theirs_signers"
+FAKE_NOT_ROOTS=$(cd -P -- "$T" && pwd -P)/theirs_signers FENJI_RELEASE_KEY=$T/theirs_signers \
+  run "$B/fenji-update" 1.2.10
+kept "and another user's" "won't check a release as root"
+FENJI_RELEASE_KEY=$T/no_signers run "$B/fenji-update" 1.2.10
+kept "and one that isn't there" "won't check a release as root"
+same "before anything is fetched" "$(fetched)" ""
+# The key is checked where it really is, every link on the way resolved, and copied before anything
+# is fetched: a folder link on the way to it, swapped as the download starts, changes nothing.
+mkdir "$T/keys-real" "$T/keys-other"
+cp "$T/allowed_signers" "$T/keys-real/allowed_signers"
+printf 'fenji-release namespaces="fenji-release" %s\n' "$(cut -d' ' -f1,2 "$T/other-key.pub")" \
+  > "$T/keys-other/allowed_signers"
+ln -s "$T/keys-real" "$T/keys"
+FAKE_ON_DOWNLOAD="ln -sfn '$T/keys-other' '$T/keys'" FENJI_RELEASE_KEY=$T/keys/allowed_signers \
+  run "$B/fenji-update" 1.2.14
+kept "a key's folder link swapped as the download starts changes nothing" "isn't signed with the release key"
+never "and the release it let in never ran" "fenji-server 1.2.14 "
 
 # As root, it writes only in folders that are root's, and that only root may write in.
 fresh

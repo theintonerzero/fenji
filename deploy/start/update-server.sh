@@ -493,19 +493,28 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/fenji-update.XXXXXX") || fail "can't make a tem
 archive=fenji-server-$wanted-$target.tar.gz
 from=$releases/download/v$wanted
 # The release key's line (HD1, HD4), and an ssh-keygen that can check with it, before anything is
-# downloaded (HD3).
+# downloaded (HD3). The line is put in the download's own folder at once, and both checks read it
+# there, so nothing can change it between them.
+allowed=$tmp/allowed_signers
 if [ -n "${FENJI_RELEASE_KEY:-}" ]; then
-  allowed=$FENJI_RELEASE_KEY
-  # As root, only a key file that's root's and that only root may write in: a sudo rule that lets
-  # someone set root's environment mustn't let them name a key of their own.
-  if [ "$uid" = 0 ] && { [ -L "$allowed" ] || [ ! -f "$allowed" ] ||
-    [ -n "$(find "$allowed" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" ]; }; then
-    fail "won't check a release as root against $allowed: FENJI_RELEASE_KEY must name a file that's root's, and only root may write in. Nothing has changed"
+  key=$FENJI_RELEASE_KEY
+  if [ "$uid" = 0 ]; then
+    # As root, only a key file that's root's and that only root may write in, in a folder that's
+    # safe for root (unsafe_for_root), found with every link on the way resolved: a sudo rule that
+    # lets someone set root's environment mustn't let them name a key of their own, or swap a folder
+    # on the way to one once it's checked.
+    keydir=$(cd -P -- "$(dirname -- "$key")" 2> /dev/null && pwd -P) || keydir=
+    key=$keydir/${key##*/}
+    if [ -z "$keydir" ] || [ -n "$(unsafe_for_root "$keydir")" ] || [ -L "$key" ] || [ ! -f "$key" ] ||
+      [ -n "$(find "$key" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" ]; then
+      fail "won't check a release as root against $FENJI_RELEASE_KEY: FENJI_RELEASE_KEY must name a file that's root's and that only root may write in, in folders only root may write in, as /etc/fenji is. Nothing has changed"
+    fi
   fi
+  { [ -f "$key" ] && cp -- "$key" "$allowed"; } 2> /dev/null ||
+    fail "can't read $FENJI_RELEASE_KEY, the file FENJI_RELEASE_KEY names, so nothing has changed"
 else
   [ -n "$RELEASE_KEY" ] ||
     fail "this update script holds no release key, so it can't check a release; update by hand (docs/hosting.md, section 5). Nothing has changed"
-  allowed=$tmp/allowed_signers
   printf '%s\n' "$RELEASE_KEY" > "$allowed"
 fi
 # A check with no signature at all: an ssh-keygen that can check answers that it can't parse one

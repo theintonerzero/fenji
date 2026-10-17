@@ -44,6 +44,7 @@ script=$root/deploy/start/update-server.sh
 guide=$root/docs/hosting.md
 if [ "$next" = yes ]; then
   # The old key's line stays, the new one joins it, once.
+  # shellcheck disable=SC2016 # awk's $0, not the shell's
   rewrite "$allowed" '$0 != line { print } END { print line }'
 else
   rewrite "$allowed" '!/^fenji-release / { print } END { print line }'
