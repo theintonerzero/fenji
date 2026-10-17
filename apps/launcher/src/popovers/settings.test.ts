@@ -43,6 +43,26 @@ test("off Linux there's no umu-run and no download folder", () => {
   const { root } = mountPopover(settingsPopover, golden("play-unsupported"));
   expect(root.querySelector("#settings-umu-run")).toBeNull();
   expect(root.querySelector("#settings-download-folder")).toBeNull();
+  expect(root.querySelector("#settings-gamemode")).toBeNull();
+});
+
+test("GameMode's switch shows on Linux where GameMode is installed, and follows the model", () => {
+  const s = golden("settings");
+  const { root, sent, content } = mountPopover(settingsPopover, s);
+  const gamemode = root.querySelector<HTMLInputElement>("#settings-gamemode")!;
+  expect(gamemode.getAttribute("role")).toBe("switch");
+  expect(gamemode.checked).toBe(true);
+  expect(root.querySelector('label[for="settings-gamemode"]')!.textContent).toBe("GameMode");
+  const line = root.querySelector(`#${gamemode.getAttribute("aria-describedby")}`)!;
+  expect(line.textContent).toBe("Performance mode while the game runs.");
+  gamemode.click();
+  expect(sent).toEqual([{ type: "setGameMode", on: false }]);
+  content.update({ ...s, settings: { ...s.settings, gamemode: false } });
+  expect(root.querySelector<HTMLInputElement>("#settings-gamemode")!.checked).toBe(false);
+  // Without GameMode, no switch.
+  content.update({ ...s, settings: { ...s.settings, gamemode: null } });
+  expect(root.querySelector("#settings-gamemode")).toBeNull();
+  expect(root.querySelector("#settings-umu-run")).not.toBeNull();
 });
 
 test("Check now keeps focus while the check runs (R7)", () => {
