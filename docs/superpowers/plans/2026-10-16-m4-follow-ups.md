@@ -32,14 +32,16 @@ The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-1
 - **0.5.2:** T4 to T7, robustness, tests, docs and tooling, and T10, a copy Steam installed.
 - **0.5.3:** what the owner's own server on v0.5.2 showed (#382, quitting from the world; #383, the launcher's window), the deferred minors (#376, #378), T8's back to character select (#282) and T9's name check, both static and tested, T14, the update script, T15, a server's region, and #394, a player's allowances kept across going back to character select.
 - **0.5.4:** everything M0 to M4 left open in the issues, but what a decision gates (the owner, 2026-10-17: "fold in everything from m0-m4 that was left over in issues besides obviously decision gated stuff, anything we need done"):
-  - T8's and T9's client runs: back to character select and quitting, checked with the client, then `!tp` across scenes and the refusal lifted (#282, #382, #281); the owner quit Steam for them;
-  - T11 to T13, DepotDownloader inside the launcher, whose rehearsal needs the owner's Steam account and phone;
+  - T8's and T9's client runs: back to character select and quitting, checked with the client, then `!tp` across scenes and the refusal lifted (#282, #382, #281); the owner quit Steam for them. Done in runs 054-b1 to 054-t3 and 054-m1 (world.md §13; #414, #416, #422). Run 054-b1's false fail-safe of the watchdog was fixed first (#411, #412);
   - T9's face string in the shape the client's shared validator writes (#391, #402); the validator's rules that need the game's design tables come with M5's #180;
   - what v0.5.3 showed: the game starting after the launcher updates itself (#406), and the Fenji a server runs in the top bar (#408);
   - #359's last minors, and the server's tests building for Windows (#405);
   - T16 to T19, below: #367's launcher minors and its packaging and guide minors, #265's stop for viewers, and #392's signed releases.
 
   Not in it: the patcher (#336), whose design waits for the owner; the gates #337 and #338; M5's #180; and #359's two choices #371 left to the owner (a stalled console's slot, and a panic hook under `--plain`).
+
+  Before 0.5.4 is tagged, the owner makes the release's SSH key (Amendment D, HD5; the commands are in `docs/development.md`), and its public line goes in with `scripts/set-release-key.sh`. Until then the `sign` job fails by design.
+- **0.5.5:** T11 to T13, DepotDownloader inside the launcher. Their rehearsal needs the owner's Steam account and phone, and Steam's own Proton installed through Steam, which the game box doesn't have. By the ruling below, they moved here from 0.5.4 (2026-10-17), so that 0.5.4 needn't wait on them.
 
   The ruling of 2026-10-17, while the owner was away: release what's ready, rather than hold the fixes the owner's acceptance session needs behind the work that needs the owner. By the same ruling, T15 and #394 joined 0.5.3 once both were reviewed, before it was cut: the release waits for the owner's `sign` approval in any case.
 
