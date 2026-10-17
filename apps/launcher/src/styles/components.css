@@ -1031,6 +1031,31 @@
   animation: sweep 1.8s var(--ease-in-out) infinite alternate;
 }
 
+/* A Steam sign-in code to scan (Amendment A, LA4), in the bar's place: ink modules on a Paper tile,
+   since a phone reads a dark code on a light ground, its quiet zone the tile's own margin. */
+.scan {
+  margin-top: 16px;
+}
+
+.scan-code .code {
+  display: block;
+  width: 184px;
+  height: 184px;
+  border-radius: 8px;
+  background: var(--text);
+}
+
+.scan-code .code path {
+  fill: var(--ink-950);
+}
+
+.scan-words {
+  margin-top: 14px;
+  color: var(--text-2);
+  font-size: var(--type-body-small-size);
+  line-height: 1.5;
+}
+
 .switch-row {
   display: flex;
   align-items: center;

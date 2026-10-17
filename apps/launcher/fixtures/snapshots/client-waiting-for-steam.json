@@ -63,7 +63,8 @@
     "repair": false,
     "percent": null,
     "file": null,
-    "waitingForSteam": true
+    "waitingForSteam": true,
+    "code": null
   },
   "game": {
     "kind": "idle"
