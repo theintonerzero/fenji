@@ -715,6 +715,7 @@ mod tests {
     use super::super::{
         App, AppConfig, CheckView, CodeView, Intent, JobView, LevelView, SteamCopyView, words,
     };
+    #[cfg(target_os = "linux")]
     use super::{EXIT_GRACE, STOP_GRACE};
     use crate::manifest::Manifest;
     use crate::settings::Os;
@@ -736,6 +737,7 @@ mod tests {
         /// to scan, then writes the files as `WritesFiles` with code 0.
         DrawsCode,
         /// Ignores `SIGTERM`, notes its pid in `dd-pid`, and waits.
+        #[cfg(target_os = "linux")]
         IgnoresTerm,
     }
 
@@ -879,6 +881,7 @@ exit {code}"#,
                 }
                 FakeDd::Exits { code } => format!("echo 'Scan this QR code'; exit {code}"),
                 FakeDd::Hangs => "echo 'Scan this QR code'; exec sleep 600".into(),
+                #[cfg(target_os = "linux")]
                 FakeDd::IgnoresTerm => format!(
                     "trap '' TERM\necho $$ > '{}'\nexec sleep 600",
                     self.root.join("dd-pid").display()
@@ -1569,6 +1572,7 @@ exit {code}"#,
     }
 
     /// The pid the fake DepotDownloader noted, once it has.
+    #[cfg(target_os = "linux")]
     async fn dd_pid(t: &Testbed) -> i32 {
         let file = t.root.join("dd-pid");
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -1586,6 +1590,8 @@ exit {code}"#,
         .expect("the fake DepotDownloader never started")
     }
 
+    /// Whether process `pid` lives, and isn't a zombie waiting to be reaped: Linux's `/proc`.
+    #[cfg(target_os = "linux")]
     fn alive(pid: i32) -> bool {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
             && !std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
@@ -1595,6 +1601,8 @@ exit {code}"#,
             })
     }
 
+    // Linux's, as downloads are, and `alive` is.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn cancel_ends_even_a_download_that_ignores_sigterm() {
         // The final review of #429, Minor 7: SIGKILL after STOP_GRACE.
@@ -1617,6 +1625,7 @@ exit {code}"#,
         assert!(!alive(pid), "DepotDownloader lives on");
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn closing_the_launcher_ends_its_hidden_download() {
         // The final review of #429, I3: no window of its own, so nothing else would stop it; even

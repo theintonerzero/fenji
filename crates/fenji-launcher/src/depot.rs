@@ -719,7 +719,9 @@ mod tests {
     }
 
     /// The final review of #429, I3: a launcher that crashed, or was killed, left its run going;
-    /// the next one ends it, and only it.
+    /// the next one ends it, and only it. Linux's: the note's start comes from `/proc`, and
+    /// downloads are Linux's alone.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_run_a_launcher_left_behind_is_ended_by_the_next_one() {
         let dir = tempfile::tempdir().unwrap();
