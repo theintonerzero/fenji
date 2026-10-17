@@ -129,7 +129,7 @@ function metaWords(variant: PlayVariant, s: Snapshot): string | null {
         }
         return `Getting ${s.job.tool} (first start only)`;
       }
-      return s.game.kind === "starting" && s.game.firstStart ? "Setting up Proton (first start only)" : null;
+      return s.game.kind === "starting" && s.game.firstStart ? "Setting up Proton" : null;
     case "running":
       return s.game.kind === "running" ? `Since ${clock(s.game.sinceMs)}` : null;
     case "unsupported":
