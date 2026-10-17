@@ -40,12 +40,12 @@ The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-1
 
   Not in it: the patcher (#336), whose design waits for the owner; the gates #337 and #338; M5's #180; and #359's two choices #371 left to the owner (a stalled console's slot, and a panic hook under `--plain`).
 
-  Before 0.5.4 is tagged, the owner makes the release's SSH key (Amendment D, HD5; the commands are in `docs/development.md`), and its public line goes in with `scripts/set-release-key.sh`. Until then the `sign` job fails by design.
+  Before 0.5.4 is tagged, the owner makes the release's SSH key (Amendment D, HD5; the commands are in `docs/development.md`), and its public line goes in with `scripts/set-release-key.sh`. Done on 2026-10-17: the owner made the key and set the `release` environment's `SSH_SIGNING_PRIVATE_KEY`, and its line went in with #421.
 - **0.5.5:** T11 to T13, DepotDownloader inside the launcher. Their rehearsal needs the owner's Steam account and phone, and Steam's own Proton installed through Steam, which the game box doesn't have. By the ruling below, they moved here from 0.5.4 (2026-10-17), so that 0.5.4 needn't wait on them.
 
   The ruling of 2026-10-17, while the owner was away: release what's ready, rather than hold the fixes the owner's acceptance session needs behind the work that needs the owner. By the same ruling, T15 and #394 joined 0.5.3 once both were reviewed, before it was cut: the release waits for the owner's `sign` approval in any case.
 
-Each release follows `docs/development.md`'s steps, and the owner approves its `sign` job.
+Each release follows `docs/development.md`'s steps, and the owner approves its `sign` job, and from 0.5.4 on its `sums` job too.
 
 ## Tasks
 

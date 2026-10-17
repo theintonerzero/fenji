@@ -4,13 +4,14 @@ name: Release
 # runner, packed by scripts/package-server.sh. And the desktop launcher's bundles (launcher spec
 # §3.8): the AppImage, the Windows installer and the macOS app, each from its own runner, with its
 # third-party notices (scripts/launcher-notices.sh, #341) and, on a tag, signed for the updater with
-# Fenji's release key, with the updater's latest.json. A v* tag attaches them all, with SHA256SUMS,
-# to the tag's draft release, which the release steps in docs/development.md check and publish. A
-# pull request that changes this workflow, the packaging scripts, what they pack (deploy/start,
-# deploy/archive, deploy/systemd, deploy/caddy, deploy/launcher, the launcher's bundle settings) or
-# the pinned tools builds
-# everything without signing or publishing (Ruling HP4), as does a run by hand; its files stay with
-# the run.
+# Fenji's release key, with the updater's latest.json. Each job that makes a file reports its sum
+# among its outputs, and the jobs that sign take only the files reported
+# (scripts/check-release-files.sh). A v* tag attaches them all, with SHA256SUMS and its signature,
+# SHA256SUMS.sig, to the tag's draft release, which the release steps in docs/development.md check
+# and publish. A pull request that changes this workflow, the scripts it runs, what they pack
+# (deploy/start, deploy/archive, deploy/systemd, deploy/caddy, deploy/launcher, the launcher's
+# bundle settings) or the pinned tools builds everything and checks it against the jobs' reports,
+# without signing or publishing (Ruling HP4), as does a run by hand; its files stay with the run.
 on:
   push:
     tags: ['v*']
@@ -22,6 +23,9 @@ on:
       - scripts/launcher-notices.sh
       - scripts/check-notices.sh
       - scripts/launcher-latest-json.sh
+      - scripts/check-release-files.sh
+      - scripts/release-notes.sh
+      - scripts/sign-sums.sh
       - scripts/versions.env
       - apps/launcher/src-tauri/tauri.conf.json
       - deploy/start/**
@@ -39,32 +43,24 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
-    name: ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # CI's notices job reads the server's targets from this job's `- target:` lines.
-        include:
-          - target: x86_64-unknown-linux-musl
-            runner: ubuntu-24.04
-          - target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
-          - target: x86_64-pc-windows-msvc
-            runner: windows-2025
-          - target: aarch64-apple-darwin
-            runner: macos-15
-    runs-on: ${{ matrix.runner }}
+  # A job of its own for each server target, rather than a matrix: each job reports its archive, as
+  # "SHA-256 file name", in its own output, report. Any job of the run can replace an artifact, but
+  # none can set another job's outputs, and the legs of a matrix would share theirs: so the jobs
+  # that sign take an archive only when it's the one its own job reported
+  # (scripts/check-release-files.sh; the hosting spec's Amendment D, HD2). The jobs share their
+  # steps (server-steps); CI's notices job reads the targets from their TARGET lines.
+  server-x86_64-linux:
+    name: x86_64-unknown-linux-musl
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
-    defaults:
+    outputs:
+      report: ${{ steps.pack.outputs.report }}
+    defaults: &bash
       run:
         shell: bash
     env:
-      TARGET: ${{ matrix.target }}
-      # The C runtime linked in, so the server runs on a Windows without the Visual C++
-      # Redistributable.
-      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
-    steps:
+      TARGET: x86_64-unknown-linux-musl
+    steps: &server-steps
       # Windows runners check out with CR LF line ends, and the build embeds files: the example
       # config, and the database's migrations, whose checksums a database is checked against. With
       # the repository's LF everywhere, every system builds from the same bytes, and a data folder
@@ -97,6 +93,7 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p fenji-server --target "$TARGET"
       - name: Pack
+        id: pack
         run: |
           bin=target/$TARGET/release/fenji-server
           exe=fenji-server
@@ -149,37 +146,64 @@ jobs:
           fi
           echo "$archive holds:"
           echo "$got"
+          # The archive, as this job's report (above).
+          if command -v sha256sum > /dev/null; then sum=$(sha256sum -b "$archive"); else sum=$(shasum -a 256 -b "$archive"); fi
+          echo "report=${sum%% *} ${archive##*/}" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fenji-server-${{ matrix.target }}
+          name: fenji-server-${{ env.TARGET }}
           path: dist/
           if-no-files-found: error
 
-  launcher:
-    name: launcher (${{ matrix.bundle }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The triple is the bundle's Rust target, which its third-party notices are for.
-          - bundle: appimage
-            runner: ubuntu-24.04
-            triple: x86_64-unknown-linux-gnu
-          - bundle: nsis
-            runner: windows-2025
-            triple: x86_64-pc-windows-msvc
-          - bundle: app
-            runner: macos-15
-            triple: aarch64-apple-darwin
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
+  server-aarch64-linux:
+    name: aarch64-unknown-linux-musl
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    outputs:
+      report: ${{ steps.pack.outputs.report }}
+    defaults: *bash
     env:
-      BUNDLE: ${{ matrix.bundle }}
-      TRIPLE: ${{ matrix.triple }}
-    steps:
+      TARGET: aarch64-unknown-linux-musl
+    steps: *server-steps
+
+  server-x86_64-windows:
+    name: x86_64-pc-windows-msvc
+    runs-on: windows-2025
+    timeout-minutes: 45
+    outputs:
+      report: ${{ steps.pack.outputs.report }}
+    defaults: *bash
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      # The C runtime linked in, so the server runs on a Windows without the Visual C++
+      # Redistributable.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+    steps: *server-steps
+
+  server-aarch64-macos:
+    name: aarch64-apple-darwin
+    runs-on: macos-15
+    timeout-minutes: 45
+    outputs:
+      report: ${{ steps.pack.outputs.report }}
+    defaults: *bash
+    env:
+      TARGET: aarch64-apple-darwin
+    steps: *server-steps
+
+  # A job of its own for each launcher bundle, reporting it as the server jobs report their
+  # archives. TRIPLE is the bundle's Rust target, which its third-party notices are for.
+  launcher-appimage:
+    name: launcher (appimage)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      report: ${{ steps.collect.outputs.report }}
+    defaults: *bash
+    env:
+      BUNDLE: appimage
+      TRIPLE: x86_64-unknown-linux-gnu
+    steps: &launcher-steps
       - name: Check out with the repository's line ends
         run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -204,7 +228,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/launcher/src-tauri
-          key: ${{ matrix.bundle }}
+          key: ${{ env.BUNDLE }}
       - name: pnpm, tauri-cli and cargo-about, at the versions scripts/versions.env pins
         run: |
           source scripts/versions.env
@@ -245,6 +269,7 @@ jobs:
           echo "The bundle's configuration, over tauri.conf.json: $config"
           cargo tauri build --bundles "$BUNDLE" --ci --config "$config"
       - name: Collect the bundle
+        id: collect
         working-directory: apps/launcher/src-tauri/target/release/bundle
         run: |
           out=$GITHUB_WORKSPACE/dist-launcher
@@ -263,23 +288,55 @@ jobs:
           fi
           cp -- "${found[0]}" "$out/"
           ls -l "$out"
+          # The bundle, as this job's report (above).
+          if command -v sha256sum > /dev/null; then sum=$(sha256sum -b "${found[0]}"); else sum=$(shasum -a 256 -b "${found[0]}"); fi
+          echo "report=${sum%% *} ${found[0]##*/}" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fenji-launcher-${{ matrix.bundle }}
+          name: fenji-launcher-${{ env.BUNDLE }}
           path: dist-launcher/
           if-no-files-found: error
 
-  # The release key signs a tag's bundles here, and only here: its secrets live in the release
-  # environment, whose deployment rule admits v* tags alone, so a branch's run can't read them
-  # whatever its workflow says. tauri-cli is installed fresh, with no cache any run could have
-  # written, before the key is in any environment; only the signing step holds it.
+  launcher-nsis:
+    name: launcher (nsis)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    outputs:
+      report: ${{ steps.collect.outputs.report }}
+    defaults: *bash
+    env:
+      BUNDLE: nsis
+      TRIPLE: x86_64-pc-windows-msvc
+    steps: *launcher-steps
+
+  launcher-app:
+    name: launcher (app)
+    runs-on: macos-15
+    timeout-minutes: 60
+    outputs:
+      report: ${{ steps.collect.outputs.report }}
+    defaults: *bash
+    env:
+      BUNDLE: app
+      TRIPLE: aarch64-apple-darwin
+    steps: *launcher-steps
+
+  # The launcher's updater key signs a tag's bundles here, and only here: its secrets live in the
+  # release environment, whose deployment rule admits v* tags alone, so a branch's run can't read
+  # them whatever its workflow says. tauri-cli is installed fresh, with no cache any run could have
+  # written, before the key is in any environment; only the signing step holds it. It signs a bundle
+  # only when it's the one the launcher job reported, and reports each signature in turn.
   sign:
     name: Sign the launcher's bundles
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: launcher
+    needs: [launcher-appimage, launcher-nsis, launcher-app]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
+    outputs:
+      appimage: ${{ steps.sign.outputs.appimage }}
+      nsis: ${{ steps.sign.outputs.nsis }}
+      app: ${{ steps.sign.outputs.app }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -291,12 +348,20 @@ jobs:
           source scripts/versions.env
           cargo install --locked tauri-cli --version "$TAURI_CLI_VERSION"
           cargo tauri --version
+      # Each bundle's artifact in a folder of its own, nothing merged.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: fenji-launcher-*
-          path: launcher
-          merge-multiple: true
+          path: artifacts
+      - name: Take only the bundles their own jobs reported
+        env:
+          LAUNCHER: >-
+            {"appimage": ${{ toJSON(needs.launcher-appimage.outputs.report) }},
+            "nsis": ${{ toJSON(needs.launcher-nsis.outputs.report) }},
+            "app": ${{ toJSON(needs.launcher-app.outputs.report) }}}
+        run: scripts/check-release-files.sh "${GITHUB_REF_NAME#v}" artifacts launcher
       - name: Sign each bundle with the release key
+        id: sign
         working-directory: launcher
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -306,9 +371,18 @@ jobs:
             echo "::error::The release environment has no TAURI_SIGNING_PRIVATE_KEY, so the bundles can't be signed."
             exit 1
           fi
-          for f in *.AppImage *-setup.exe *.app.tar.gz; do
+          for f in *; do
+            case $f in
+              *.AppImage) bundle=appimage ;;
+              *-setup.exe) bundle=nsis ;;
+              *.app.tar.gz) bundle=app ;;
+              *) echo "::error::$f isn't a bundle."; exit 1 ;;
+            esac
             cargo tauri signer sign "$f" > /dev/null
             [[ -s $f.sig ]] || { echo "::error::$f has no signature."; exit 1; }
+            # The signature, as this job's output for its bundle, which the sums job checks.
+            sum=$(sha256sum -b "$f.sig")
+            echo "$bundle=${sum%% *} $f.sig" | tee -a "$GITHUB_OUTPUT"
           done
           ls -l
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -317,50 +391,144 @@ jobs:
           path: launcher/*.sig
           if-no-files-found: error
 
+  sums:
+    # Behind the owner's approval of the release environment, as sign is, in a job that builds and
+    # installs nothing, so no third-party code runs beside the release's SSH key (the hosting spec's
+    # Amendment D, HD2). It takes each file only when it's the one its own job reported, writes the
+    # updater's latest.json with the tag's CHANGELOG.md section as its notes, and signs SHA256SUMS
+    # over them all as SHA256SUMS.sig.
+    name: Check the release's files, sum them, and sign the sums
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [server-x86_64-linux, server-aarch64-linux, server-x86_64-windows, server-aarch64-macos, launcher-appimage, launcher-nsis, launcher-app, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Each artifact in a folder of its own, nothing merged: the next step takes only what each
+      # file's own job reported, and refuses anything else.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-*
+          path: artifacts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: launcher-signatures
+          path: artifacts/launcher-signatures
+      - name: Take only the files their own jobs reported
+        env:
+          BUILD: >-
+            {"x86_64-unknown-linux-musl": ${{ toJSON(needs.server-x86_64-linux.outputs.report) }},
+            "aarch64-unknown-linux-musl": ${{ toJSON(needs.server-aarch64-linux.outputs.report) }},
+            "x86_64-pc-windows-msvc": ${{ toJSON(needs.server-x86_64-windows.outputs.report) }},
+            "aarch64-apple-darwin": ${{ toJSON(needs.server-aarch64-macos.outputs.report) }}}
+          LAUNCHER: >-
+            {"appimage": ${{ toJSON(needs.launcher-appimage.outputs.report) }},
+            "nsis": ${{ toJSON(needs.launcher-nsis.outputs.report) }},
+            "app": ${{ toJSON(needs.launcher-app.outputs.report) }}}
+          SIGNED: ${{ toJSON(needs.sign.outputs) }}
+        run: scripts/check-release-files.sh "${GITHUB_REF_NAME#v}" artifacts dist
+      - name: Write the updater's latest.json, its notes the tag's changelog section
+        run: |
+          scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
+          scripts/launcher-latest-json.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/notes.md" dist
+          cat dist/latest.json
+      - name: The update script trusts a key the sums are signed with
+        run: |
+          trusted=$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" deploy/start/update-server.sh)
+          if [[ -z $trusted ]] || ! grep -qxF -- "$trusted" deploy/allowed_signers; then
+            echo "::error::The update script's RELEASE_KEY isn't a line of deploy/allowed_signers: scripts/set-release-key.sh puts the release key in (Amendment D, HD5)."
+            exit 1
+          fi
+      - name: Write SHA256SUMS, sign it with the release's SSH key, and check the signature
+        env:
+          SSH_SIGNING_PRIVATE_KEY: ${{ secrets.SSH_SIGNING_PRIVATE_KEY }}
+        run: scripts/sign-sums.sh dist deploy/allowed_signers
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-files
+          path: dist/*
+          if-no-files-found: error
+
+  check:
+    # A pull request's run, or one by hand, takes the release's files as the sums job would, so a
+    # change that breaks a job's report fails here rather than on a tag. Nothing is signed.
+    name: Check the files against their jobs' reports
+    if: github.event_name != 'push'
+    needs: [server-x86_64-linux, server-aarch64-linux, server-x86_64-windows, server-aarch64-macos, launcher-appimage, launcher-nsis, launcher-app]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fenji-*
+          path: artifacts
+      - name: Take only the files their own jobs reported
+        env:
+          BUILD: >-
+            {"x86_64-unknown-linux-musl": ${{ toJSON(needs.server-x86_64-linux.outputs.report) }},
+            "aarch64-unknown-linux-musl": ${{ toJSON(needs.server-aarch64-linux.outputs.report) }},
+            "x86_64-pc-windows-msvc": ${{ toJSON(needs.server-x86_64-windows.outputs.report) }},
+            "aarch64-apple-darwin": ${{ toJSON(needs.server-aarch64-macos.outputs.report) }}}
+          LAUNCHER: >-
+            {"appimage": ${{ toJSON(needs.launcher-appimage.outputs.report) }},
+            "nsis": ${{ toJSON(needs.launcher-nsis.outputs.report) }},
+            "app": ${{ toJSON(needs.launcher-app.outputs.report) }}}
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          scripts/check-release-files.sh "$version" artifacts dist
+
   publish:
     name: Attach to the draft release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [build, launcher, sign]
+    needs: [sums]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write # makes the draft release and uploads its files
     steps:
-      # The whole history, for the changelog's section in latest.json's notes.
+      # For deploy/allowed_signers, which the check below reads.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
+      # What the sums job put together: the archives, the bundles and their signatures, latest.json,
+      # SHA256SUMS and SHA256SUMS.sig.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: fenji-server-*
+          name: release-files
           path: dist
-          merge-multiple: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: fenji-launcher-*
-          path: launcher
-          merge-multiple: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: launcher-signatures
-          path: launcher
-      - name: Install git-cliff, for the update's notes
-        run: |
-          source scripts/versions.env
-          cargo install --locked git-cliff --version "$GIT_CLIFF_VERSION"
-      - name: Write the updater's latest.json
-        run: |
-          git cliff --latest --strip all > "$RUNNER_TEMP/notes.md"
-          scripts/launcher-latest-json.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/notes.md" launcher
-          cat launcher/latest.json
-          mv -- launcher/* dist/
-      - name: Write SHA256SUMS
+      - name: Attach only what the signature covers
         working-directory: dist
         run: |
-          files=(*)
-          sha256sum -- "${files[@]}" > SHA256SUMS
-          cat SHA256SUMS
+          # As a host checks a release: the signature is the release key's, and every sum holds.
+          env -u SSH_AUTH_SOCK ssh-keygen -q -Y verify -f "$GITHUB_WORKSPACE/deploy/allowed_signers" \
+            -I fenji-release -n fenji-release -s SHA256SUMS.sig < SHA256SUMS > /dev/null
+          sha256sum --strict -c SHA256SUMS
+          # And nothing is attached that SHA256SUMS doesn't list.
+          listed=$(awk '{ sub(/^\*/, "", $2); print $2 }' SHA256SUMS | LC_ALL=C sort)
+          here=$(for f in *; do [[ $f == SHA256SUMS || $f == SHA256SUMS.sig ]] || echo "$f"; done | LC_ALL=C sort)
+          if [[ $listed != "$here" ]]; then
+            echo "::error::The files to attach aren't exactly those SHA256SUMS lists."
+            diff <(echo "$listed") <(echo "$here") || true
+            exit 1
+          fi
+          # And they're this tag's: an older release's files, with its own signature, would pass the
+          # checks above as well.
+          version=${GITHUB_REF_NAME#v}
+          archives=$(grep '^fenji-server-' <<< "$listed" || true)
+          if [[ -z $archives ]] || grep -v -q -F -e "fenji-server-$version-" <<< "$archives"; then
+            echo "::error::The archives to attach aren't all fenji-server-$version's: $(echo $archives)"
+            exit 1
+          fi
+          if [[ $(jq -r .version latest.json) != "$version" ]]; then
+            echo "::error::latest.json is for $(jq -r .version latest.json), not $version."
+            exit 1
+          fi
       - name: Attach the archives and SHA256SUMS
         env:
           GH_TOKEN: ${{ github.token }}

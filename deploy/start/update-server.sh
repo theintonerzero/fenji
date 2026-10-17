@@ -21,13 +21,15 @@
 # user, or as nobody for a service that runs as root, whose new server's console it does ask as
 # root, once systemd has started that server as root; in a folder, as the folder's owner.
 #
-# It trusts the release as the manual steps do: it downloads over HTTPS from the repository's
-# GitHub release, and checks the archive against that release's SHA256SUMS, which proves the
-# download arrived whole, not who made it.
+# It trusts a release only once its SHA256SUMS is signed with Fenji's release key, whose public half
+# it carries (the hosting spec's Amendment D, HD1, HD3): it downloads over HTTPS from the
+# repository's GitHub release, checks SHA256SUMS.sig with ssh-keygen -Y verify, then checks the
+# archive against SHA256SUMS. FENJI_RELEASE_KEY names a file holding a fork's allowed-signers line
+# (HD4).
 #
 # Releases come from https://github.com/theintonerzero/fenji/releases, or from FENJI_RELEASES, for a
-# fork. It needs curl, tar, and sha256sum or macOS's shasum; for a service, systemctl, sudo and
-# journalctl too, and timeout where there is one.
+# fork. It needs curl, tar, ssh-keygen from OpenSSH 8.1 or later, and sha256sum or macOS's shasum;
+# for a service, systemctl, sudo and journalctl too, and timeout where there is one.
 set -eu
 # A cd to a relative path goes where it says, not to a folder an exported CDPATH names.
 unset CDPATH
@@ -36,6 +38,10 @@ export LC_ALL=C
 umask 077
 
 me=${0##*/}
+# The release key's public half, as an OpenSSH allowed-signers line (HD1): deploy/allowed_signers
+# and section 5 of docs/hosting.md hold the same line, and a test pins that they agree. None until
+# the owner makes the key, before 0.5.4 is tagged (HD5); scripts/set-release-key.sh puts it in.
+RELEASE_KEY='fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90'
 # Fenji's own units, the only ones a service's update installs.
 UNITS='fenji.service fenji-backup.service fenji-backup.timer'
 
@@ -486,10 +492,55 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/fenji-update.XXXXXX") || fail "can't make a tem
 : > "$tmp/made"
 archive=fenji-server-$wanted-$target.tar.gz
 from=$releases/download/v$wanted
+# The release key's line (HD1, HD4), and an ssh-keygen that can check with it, before anything is
+# downloaded (HD3). The line is put in the download's own folder at once, and both checks read it
+# there, so nothing can change it between them.
+allowed=$tmp/allowed_signers
+if [ -n "${FENJI_RELEASE_KEY:-}" ]; then
+  key=$FENJI_RELEASE_KEY
+  if [ "$uid" = 0 ]; then
+    # As root, only a key file that's root's and that only root may write in, in a folder that's
+    # safe for root (unsafe_for_root), found with every link on the way resolved: a sudo rule that
+    # lets someone set root's environment mustn't let them name a key of their own, or swap a folder
+    # on the way to one once it's checked.
+    keydir=$(cd -P -- "$(dirname -- "$key")" 2> /dev/null && pwd -P) || keydir=
+    key=$keydir/${key##*/}
+    if [ -z "$keydir" ] || [ -n "$(unsafe_for_root "$keydir")" ] || [ -L "$key" ] || [ ! -f "$key" ] ||
+      [ -n "$(find "$key" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" ]; then
+      fail "won't check a release as root against $FENJI_RELEASE_KEY: FENJI_RELEASE_KEY must name a file that's root's and that only root may write in, in folders only root may write in, as /etc/fenji is. Nothing has changed"
+    fi
+  fi
+  { [ -f "$key" ] && cp -- "$key" "$allowed"; } 2> /dev/null ||
+    fail "can't read $FENJI_RELEASE_KEY, the file FENJI_RELEASE_KEY names, so nothing has changed"
+else
+  [ -n "$RELEASE_KEY" ] ||
+    fail "this update script holds no release key, so it can't check a release; update by hand (docs/hosting.md, section 5). Nothing has changed"
+  printf '%s\n' "$RELEASE_KEY" > "$allowed"
+fi
+# A check with no signature at all: an ssh-keygen that can check answers that it can't parse one
+# (255); one from before OpenSSH 8.1 doesn't know -Y (1); none at all is 127.
+code=0
+probe=$(env -u SSH_AUTH_SOCK ssh-keygen -Y verify -f "$allowed" -I fenji-release -n fenji-release \
+  -s /dev/null < /dev/null 2>&1) || code=$?
+case $code:$probe in
+  127:*) fail "checking the release's signature needs ssh-keygen, from OpenSSH 8.1 or later: install OpenSSH, then try again. Nothing has changed" ;;
+  1:*"unknown option"* | 1:*"illegal option"* | 1:*"invalid option"*)
+    fail "this ssh-keygen can't check signatures: it needs OpenSSH 8.1 or later. On RHEL 8 and its rebuilds, which have 8.0, check the release on another machine and update by hand (docs/hosting.md, section 5). Nothing has changed" ;;
+esac
 say "Downloading $archive, with its release's SHA256SUMS."
 fetch "$from/$archive" "$tmp/$archive" ||
   fail "can't download $from/$archive: is $wanted a release, with a server for $target? Nothing has changed"
 fetch "$from/SHA256SUMS" "$tmp/SHA256SUMS" || fail "can't download $from/SHA256SUMS, so nothing has changed"
+# The sums count only once their signature is the release key's (HD3).
+fetch "$from/SHA256SUMS.sig" "$tmp/SHA256SUMS.sig" ||
+  fail "can't download $from/SHA256SUMS.sig: the release isn't signed, so it can't be trusted, and nothing has changed"
+# Only the line given, never an agent's key, and nothing to answer.
+if env -u SSH_AUTH_SOCK ssh-keygen -Y verify -f "$allowed" -I fenji-release -n fenji-release \
+  -s "$tmp/SHA256SUMS.sig" < "$tmp/SHA256SUMS" > /dev/null 2>&1; then
+  say "Its SHA256SUMS is signed with the release key."
+else
+  fail "SHA256SUMS isn't signed with the release key, so this release can't be trusted, and nothing has changed. If Fenji's release key has changed since this script came, update by hand once (docs/hosting.md, section 5)"
+fi
 found=$(awk -v f="$archive" '$2 == f || $2 == "*" f { n++; s = $1 } END { print n + 0, s }' "$tmp/SHA256SUMS")
 case ${found%% *} in
   1) expected=${found#* } ;;

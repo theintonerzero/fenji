@@ -281,13 +281,18 @@ VERSION=0.5.3
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
+curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS.sig
+cat > allowed_signers <<'END'
+fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90
+END
+ssh-keygen -Y verify -f allowed_signers -I fenji-release -n fenji-release -s SHA256SUMS.sig < SHA256SUMS &&
+  sha256sum --ignore-missing -c SHA256SUMS &&
+  tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 ```
 
-The last command should print the archive's name and `OK`. Then install the program and its update script, `fenji-update`, which updates the server later (section 5). Make the user the server runs as, `fenji`, which owns the server's data and nothing else:
+The last command checks the release's signature, then its sums, which should end with the archive's name and `OK`, and unpacks the archive only if both checks pass. If the signature isn't Fenji's release key's, nothing after `ssh-keygen` runs: download again, and don't go on. Go by whether the archive unpacked, not by what `ssh-keygen` prints. The `allowed_signers` line above is that key's public half, as the update script carries it. `ssh-keygen` needs OpenSSH 8.1 or later, which Debian 11 and Ubuntu 20.04 and later have. Releases before v0.5.4 have no signature: for those, the `sha256sum` and `tar` lines alone. Then install the program and its update script, `fenji-update`, which updates the server later (section 5). Make the user the server runs as, `fenji`, which owns the server's data and nothing else:
 
 ```sh
-tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 sudo install -m 755 fenji-server-$VERSION-$TARGET/fenji-server /usr/local/bin/fenji-server
 sudo install -m 755 fenji-server-$VERSION-$TARGET/update-server.sh /usr/local/bin/fenji-update
 sudo useradd --system --user-group --home-dir /var/lib/fenji --shell /usr/sbin/nologin fenji
@@ -451,7 +456,10 @@ Read the new release's notes first, for what changed. Updating replaces the prog
 
 On Linux and macOS, the server's update script updates it in one command. It downloads the latest release for your system and checks it against the release's checksums. Then it backs up the database, and puts the new program in place, keeping the old one beside it as `fenji-server.previous`. It never touches your settings, `fenji.toml`, your data folder, your own drop-in files for the services, or Caddy's settings in `/etc/caddy`. In your server's folder on your own computer, it does replace the archive's other files, as the steps by hand do: the start script, the update script itself, the texts, and the copies in its `systemd` and `caddy` folders. Each step prints a line, and the last one says which versions it updated from and to. If something goes wrong before the new program is in place, it says why, and your server stays as it was.
 
-The script trusts a release as the steps by hand do: it downloads over HTTPS from Fenji's releases on GitHub, and checks the archive against that release's `SHA256SUMS`. That shows the download arrived whole, though not who made it.
+The script trusts a release only once its `SHA256SUMS` is signed with Fenji's release key, whose public half it carries. It downloads over HTTPS from Fenji's releases on GitHub, checks the signature with `ssh-keygen`, then checks the archive against `SHA256SUMS`. A release that isn't signed, or is signed with another key, is refused, and nothing changes.
+- **Older servers:** the script that came with a server set up before v0.5.4 has no signature check. It installs v0.5.4 as before, and from then on every release is checked.
+- **OpenSSH:** the check needs OpenSSH 8.1 or later. On RHEL 8 and its rebuilds, which have 8.0, check the release on another machine, then update by hand (below).
+- **Forks:** `FENJI_RELEASES` names a fork's releases (`https://github.com/<owner>/<repo>/releases`), and `FENJI_RELEASE_KEY` a file holding that fork's allowed-signers line. As root, that file must be root's, only root may write in it, and it must be in folders only root may write in, as `/etc/fenji` is.
 
 The script came with v0.5.3: a server set up before then updates by hand once (below), which brings it. Windows has no script yet, and updates by hand.
 
@@ -516,9 +524,16 @@ VERSION=0.5.3
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
+curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS.sig
+cat > allowed_signers <<'END'
+fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90
+END
+ssh-keygen -Y verify -f allowed_signers -I fenji-release -n fenji-release -s SHA256SUMS.sig < SHA256SUMS &&
+  sha256sum --ignore-missing -c SHA256SUMS &&
+  tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 ```
+
+From v0.5.4 on, each release's `SHA256SUMS` is signed with Fenji's release key, whose public half is the line in `allowed_signers` above, as the update script carries it. The archive unpacks only if both checks pass. If the signature isn't the key's, nothing after `ssh-keygen` runs: a release someone else changed, sums and all, stops there. Go by whether the archive unpacked, not by what `ssh-keygen` prints, part of which a signature can set. It needs OpenSSH 8.1 or later. Releases before v0.5.4 have no signature: for those, the `sha256sum` and `tar` lines alone.
 
 Back up the database, stop the server, put the new program, its services and its update script in place, and start it:
 
