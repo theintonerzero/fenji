@@ -511,6 +511,7 @@ impl ServerInfo {
 /// 32 letters, digits, `.`, `-` and `+`, as SemVer writes one.
 fn version_like(text: &str) -> bool {
     (1..=32).contains(&text.len())
+        && text.starts_with(|c: char| c.is_ascii_digit())
         && text
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
@@ -731,7 +732,11 @@ mod tests {
     #[test]
     fn a_servers_version_is_shown_only_as_a_version() {
         // Its own top-bar line shows it: a server that sends anything else shows none.
-        for kept in ["0.5.3", "1.0.0-rc.1+build.5", "x".repeat(32).as_str()] {
+        for kept in [
+            "0.5.3",
+            "1.0.0-rc.1+build.5",
+            "1.2.3-rc.1+build.20261017.0000ab",
+        ] {
             let info = info_with(json!({ "version": kept })).shown();
             assert_eq!(info.version, kept, "{kept:?}");
         }
@@ -742,7 +747,10 @@ mod tests {
             "0.5.3\n",
             "é",
             "",
-            &"x".repeat(33),
+            "1.2.3-rc.1+build.20261017.0000abc",
+            &"x".repeat(32),
+            "OFFICIAL",
+            "-",
         ] {
             let info = info_with(json!({ "version": dropped })).shown();
             assert_eq!(info.version, "", "{dropped:?}");

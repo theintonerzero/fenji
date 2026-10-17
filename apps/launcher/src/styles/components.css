@@ -295,6 +295,11 @@
   align-self: stretch;
 }
 
+/* The bar's controls keep their size, however long the address and version: the address gives way. */
+.top > :is(.chip, .me, .icon-button, .window-controls) {
+  flex: none;
+}
+
 .chip {
   display: inline-flex;
   align-items: center;

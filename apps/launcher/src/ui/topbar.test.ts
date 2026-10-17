@@ -52,7 +52,8 @@ test("the open popover's control shows open; signed out, the account is a figure
 
 test("after the address, the Fenji the server runs, from its last answer, and nothing when it never said", () => {
   const { bar } = mounted();
-  const version = () => bar.el.querySelector(".address + .server-version")!.textContent;
+  // In the address's own group, so the bar's gap never falls between them (#409's review).
+  const version = () => bar.el.querySelector(".top > .where > .address + .server-version")!.textContent;
   bar.update(golden("play-ready"), "stage", null);
   expect(version()).toBe(" · Fenji 0.5.0");
   // Offline, the version its last answer gave, as the address stays.

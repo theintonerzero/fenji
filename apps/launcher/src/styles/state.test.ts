@@ -28,4 +28,6 @@ test("the server's version follows its address in the top bar, never cut short (
   expect(version).toMatch(/\bcolor: var\(--faint\);/);
   // One item with the address, so the bar's gap between its items never falls between them.
   expect(rule(css, ".where")).toMatch(/\bdisplay: flex;/);
+  // The controls never shrink for them.
+  expect(rule(css, ".top > :is(.chip, .me, .icon-button, .window-controls)")).toMatch(/\bflex: none;/);
 });
