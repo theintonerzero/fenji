@@ -222,6 +222,45 @@ pub fn gamemoderun(path: Option<&OsStr>) -> Option<PathBuf> {
     on_path(OsStr::new("gamemoderun"), path)
 }
 
+/// Whether `env` reaches a D-Bus session bus as libdbus finds one: an address in
+/// `DBUS_SESSION_BUS_ADDRESS`, else the user's own socket at `$XDG_RUNTIME_DIR/bus`. GameMode's
+/// daemon is reached over it. With none, libdbus autolaunches `dbus-launch`, which `gamemoderun`'s
+/// preload makes ask again, without end (launcher spec Amendment B, LB2), so an address that
+/// would autolaunch is none too.
+pub fn session_bus(env: &[(OsString, OsString)]) -> bool {
+    let var = |name: &str| {
+        env.iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_os_str())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(address) = var("DBUS_SESSION_BUS_ADDRESS") {
+        return !address
+            .as_encoded_bytes()
+            .split(|&b| b == b';')
+            .any(|a| a.starts_with(b"autolaunch:"));
+    }
+    var("XDG_RUNTIME_DIR").is_some_and(|dir| {
+        let mut bus = dir.to_os_string();
+        bus.push("/bus");
+        users_socket(Path::new(&bus))
+    })
+}
+
+/// Whether `path` is a socket of the user's own, as libdbus takes `$XDG_RUNTIME_DIR/bus`.
+#[cfg(unix)]
+fn users_socket(path: &Path) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|m| m.file_type().is_socket() && m.uid() == rustix::process::getuid().as_raw())
+}
+
+#[cfg(not(unix))]
+fn users_socket(_: &Path) -> bool {
+    false
+}
+
 /// The process for `spec`: its program, arguments and folder, and an environment of `parent`'s
 /// variables less [`SECRET_ENV`], `gj_*` and an AppImage's ([`appimage::outside`]), then the
 /// spec's own.
@@ -509,6 +548,27 @@ mod tests {
         assert_eq!(gamemoderun(Some(&path)), Some(good.join("gamemoderun")));
         assert_eq!(gamemoderun(Some(plain.as_os_str())), None);
         assert_eq!(gamemoderun(None), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_bus_is_an_address_or_the_users_own_socket_as_libdbus_finds_one() {
+        // Launcher spec Amendment B, LB2: where libdbus would autolaunch dbus-launch, there's none.
+        let pair = |n: &str, v: &str| (OsString::from(n), OsString::from(v));
+        let address = |v: &str| vec![pair("DBUS_SESSION_BUS_ADDRESS", v)];
+        assert!(session_bus(&address("unix:path=/run/user/1000/bus")));
+        assert!(!session_bus(&[]));
+        assert!(!session_bus(&address("")), "empty is unset");
+        assert!(!session_bus(&address("autolaunch:")));
+        assert!(!session_bus(&address("unix:path=/nowhere/bus;autolaunch:")));
+        let d = tempfile::tempdir().unwrap();
+        let runtime = vec![pair("XDG_RUNTIME_DIR", d.path().to_str().unwrap())];
+        assert!(!session_bus(&runtime), "no socket");
+        std::fs::write(d.path().join("bus"), b"").unwrap();
+        assert!(!session_bus(&runtime), "a file isn't a bus");
+        std::fs::remove_file(d.path().join("bus")).unwrap();
+        let _bus = std::os::unix::net::UnixListener::bind(d.path().join("bus")).unwrap();
+        assert!(session_bus(&runtime), "the user's own socket");
     }
 
     #[test]
