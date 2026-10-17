@@ -78,6 +78,71 @@ test("waiting for Steam: the sign-in stays in its own window, or the player runs
   expect(document.body.textContent).toContain("Then choose the folder it downloaded to.");
 });
 
+/** How many modules a drawn code's path paints: each row's runs, `M x y h n v1 h-n z`. */
+function painted(code: Element): number {
+  const d = code.querySelector("path")!.getAttribute("d") ?? "";
+  return [...d.matchAll(/h(\d+)v1/g)].reduce((sum, run) => sum + Number(run[1]), 0);
+}
+
+function codeOf(s: ReturnType<typeof golden>): { size: number; dark: string } {
+  if (s.job?.kind !== "downloading" || s.job.code === null) {
+    throw new Error("no code in this snapshot");
+  }
+  return s.job.code;
+}
+
+test("signing in by code: the code drawn as squares, its words, Cancel and a password sign-in", () => {
+  const s = golden("client-scan-code");
+  const { root, sent } = mountPopover(gamePopover, s);
+  const code = root.querySelector('svg[role="img"]')!;
+  expect(code.getAttribute("aria-label")).toBe("Steam sign-in code");
+  expect(code.getAttribute("viewBox")).toBe(`0 0 ${codeOf(s).size} ${codeOf(s).size}`);
+  // Every dark module is painted, and nothing else.
+  expect(painted(code)).toBe([...codeOf(s).dark].filter((m) => m === "1").length);
+  expect(root.textContent).toContain("Scan this with the Steam Mobile App.");
+  expect(root.textContent).toContain("Fenji never sees your sign-in.");
+  // The code is the next step, not progress: no bar, and no ember beside it.
+  expect((root.querySelector('[role="progressbar"]') as HTMLElement).hidden).toBe(true);
+  expect(embers(root)).toBe(0);
+  expect(shows(root, "Run it yourself")).toBe(false);
+  expect(root.textContent).toContain("No Steam Mobile App? Sign in with your password");
+  press(root, "Sign in with your password");
+  press(root, "Cancel");
+  expect(sent).toEqual([{ type: "signInWithPassword" }, { type: "cancelDownload" }]);
+});
+
+test("a changed code is drawn again in its place, and the same one isn't", () => {
+  const s = golden("client-scan-code");
+  const { root, content } = mountPopover(gamePopover, s);
+  const drawn = root.querySelector('svg[role="img"]')!;
+  const before = drawn.querySelector("path")!.getAttribute("d");
+  content.update(golden("client-scan-code"));
+  expect(root.querySelector('svg[role="img"]')).toBe(drawn);
+  const next = golden("client-scan-code");
+  const { size, dark } = codeOf(next);
+  const flipped = [...dark].map((m, i) => (i === size * 10 + 10 ? (m === "1" ? "0" : "1") : m)).join("");
+  if (next.job?.kind === "downloading") {
+    next.job.code = { size, dark: flipped };
+  }
+  content.update(next);
+  const after = root.querySelector('svg[role="img"] path')!.getAttribute("d");
+  expect(after).not.toBe(before);
+  expect(painted(root.querySelector('svg[role="img"]')!)).toBe([...flipped].filter((m) => m === "1").length);
+});
+
+test("before Steam draws a code: connecting, the bar drifting, Cancel and a password sign-in", () => {
+  const s = golden("client-scan-code");
+  if (s.job?.kind === "downloading") {
+    s.job.code = null;
+  }
+  const { root, sent } = mountPopover(gamePopover, s);
+  expect(root.querySelector('svg[role="img"]')).toBeNull();
+  expect(root.textContent).toContain("Connecting to Steam…");
+  expect((root.querySelector('[role="progressbar"]') as HTMLElement).hidden).toBe(false);
+  press(root, "Sign in with your password");
+  expect(sent).toEqual([{ type: "signInWithPassword" }]);
+});
+
 test("while files come in, Cancel stands alone", () => {
   const s = golden("client-downloading");
   s.client.manual = golden("client-waiting-for-steam").client.manual;
