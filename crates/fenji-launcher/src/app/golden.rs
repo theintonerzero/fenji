@@ -171,6 +171,51 @@ fn manual(list: Option<&Path>) -> ManualView {
     }
 }
 
+/// A sign-in code shaped as a version-1 QR code is: 21 modules a side inside a quiet zone of 4,
+/// with its three finder squares and its timing lines, and a fixed scatter for its data. It
+/// decodes to nothing; it shows what the launcher draws (Amendment A, LA4).
+fn sample_code() -> CodeView {
+    const SIDE: usize = 21;
+    const QUIET: usize = 4;
+    let finder = |x: usize, y: usize| {
+        [(0, 0), (SIDE - 7, 0), (0, SIDE - 7)]
+            .iter()
+            .find(|&&(fx, fy)| (fx..fx + 7).contains(&x) && (fy..fy + 7).contains(&y))
+            .map(|&(fx, fy)| {
+                let (dx, dy) = (x - fx, y - fy);
+                let ring = dx.min(dy).min(6 - dx).min(6 - dy);
+                ring != 1
+            })
+    };
+    // A finder square's corner of 8 by 8, its light border included.
+    let near_finder = |x: usize, y: usize| {
+        let (low, high) = (|a: usize| a < 8, |a: usize| a >= SIDE - 8);
+        (low(x) && low(y)) || (high(x) && low(y)) || (low(x) && high(y))
+    };
+    let module = |x: usize, y: usize| match finder(x, y) {
+        Some(dark) => dark,
+        None if near_finder(x, y) => false,
+        None if x == 6 || y == 6 => (x + y).is_multiple_of(2),
+        None => (x * 37 + y * 11 + x * y * 7) % 5 < 2,
+    };
+    let size = SIDE + 2 * QUIET;
+    let dark = (0..size)
+        .flat_map(|y| (0..size).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let inside = (QUIET..QUIET + SIDE).contains(&x) && (QUIET..QUIET + SIDE).contains(&y);
+            if inside && module(x - QUIET, y - QUIET) {
+                '1'
+            } else {
+                '0'
+            }
+        })
+        .collect();
+    CodeView {
+        size: size as u32,
+        dark,
+    }
+}
+
 /// No folder chosen yet, and nothing checked.
 fn no_client(s: &mut Snapshot) {
     s.client.folder = None;
@@ -343,7 +388,7 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             }),
         ),
         (
-            "client-waiting-for-steam",
+            "client-scan-code",
             with(|s| {
                 s.client.check = CheckView::None;
                 // Wherever a download works, so does the player's own terminal (spec §3.12).
@@ -353,6 +398,24 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
                     percent: None,
                     file: None,
                     waiting_for_steam: true,
+                    terminal: false,
+                    code: Some(sample_code()),
+                });
+            }),
+        ),
+        (
+            "client-waiting-for-steam",
+            with(|s| {
+                s.client.check = CheckView::None;
+                s.client.manual = Some(manual(None));
+                // A password sign-in, in DepotDownloader's own terminal (Amendment A, LA5).
+                s.job = Some(JobView::Downloading {
+                    repair: false,
+                    percent: None,
+                    file: None,
+                    waiting_for_steam: true,
+                    terminal: true,
+                    code: None,
                 });
             }),
         ),
@@ -365,6 +428,8 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
                     percent: Some(42.0),
                     file: Some("data/_index/sc_res.idx".into()),
                     waiting_for_steam: false,
+                    terminal: false,
+                    code: None,
                 });
             }),
         ),

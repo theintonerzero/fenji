@@ -287,6 +287,7 @@ impl App {
                 self.cancel_download();
                 Ok(())
             }
+            Intent::SignInWithPassword => self.sign_in_with_password(),
             Intent::Repair => self.repair(),
             Intent::Play => self.play().await,
             Intent::PlayOn { id } => {

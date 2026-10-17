@@ -227,7 +227,35 @@ pub enum JobView {
         percent: Option<f32>,
         file: Option<String>,
         waiting_for_steam: bool,
+        /// Whether DepotDownloader runs in a terminal of its own, for a password sign-in (LA5),
+        /// rather than hidden, signing in by the code the launcher draws (LA4).
+        terminal: bool,
+        /// The sign-in code to scan, while a hidden run shows one.
+        code: Option<CodeView>,
     },
+}
+
+/// A sign-in code to draw as squares (launcher spec Amendment A, LA4): `size` modules a side, its
+/// quiet zone included, and `dark`, row by row, `1` for a dark module and `0` for a light one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+pub struct CodeView {
+    pub size: u32,
+    pub dark: String,
+}
+
+impl From<&crate::depot::QrCode> for CodeView {
+    fn from(code: &crate::depot::QrCode) -> Self {
+        CodeView {
+            size: u32::try_from(code.size).unwrap_or(0),
+            dark: code
+                .dark
+                .iter()
+                .map(|&d| if d { '1' } else { '0' })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

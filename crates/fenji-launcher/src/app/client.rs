@@ -1,7 +1,9 @@
-//! The player's copy (launcher spec §3.5, §3.6; L2, L3, L11; plan LP6): its checks, and
-//! DepotDownloader's downloads and repairs in a terminal window of their own, where the player
-//! signs in to Steam (never in Fenji). One job runs at a time. A check runs on a blocking thread;
-//! a download is followed through the files its run leaves in its folder.
+//! The player's copy (launcher spec §3.5, §3.6; L2, L3, L11; plan LP6; Amendment A, LA4 and
+//! LA5): its checks, and DepotDownloader's downloads and repairs. DepotDownloader runs hidden, as
+//! the launcher's own child, and the player signs in to Steam by scanning the code the launcher
+//! draws from its output; a player without the Steam Mobile App signs in with their password in
+//! a terminal window of DepotDownloader's own. Either way the sign-in is Steam's, never Fenji's.
+//! One job runs at a time. A check runs on a blocking thread.
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,10 +14,10 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{info, warn};
 
 use super::{
-    App, CheckView, FileProblem, IntentError, JobView, LevelView, Notice, State, now_ms, refused,
-    words,
+    App, CheckView, CodeView, FileProblem, IntentError, JobView, LevelView, Notice, State, now_ms,
+    refused, words,
 };
-use crate::depot::{self, DepotRun, RunState, Terminal};
+use crate::depot::{self, ChildRun, DepotRun, RunState, Terminal};
 use crate::manifest::Manifest;
 use crate::settings::Os;
 use crate::tools;
@@ -25,6 +27,9 @@ use crate::verify::{self, Level, Problem, Progress, Report, Stopped};
 const PUBLISH_EVERY: Duration = Duration::from_millis(100);
 /// How often a download's run folder is read.
 const POLL_EVERY: Duration = Duration::from_millis(500);
+/// How long a hidden run has to end, once cancelled for a password sign-in, before the terminal
+/// opens (LA5).
+const HIDDEN_RUN_ENDS: Duration = Duration::from_secs(5);
 const DEPOT_DOWNLOADER: &str = "DepotDownloader";
 
 /// The player's copy as this run knows it.
@@ -33,10 +38,12 @@ pub(super) struct Client {
     pub(super) job: Option<JobView>,
     /// The running check's stop flag.
     stop: Option<Arc<AtomicBool>>,
-    /// The running download, once its terminal has opened.
-    run: Option<DepotRun>,
+    /// The running download, once it has started.
+    run: Option<Run>,
     /// Whether the player cancelled the running download.
     cancelled: bool,
+    /// Whether the player asked to sign in with their password, in a terminal (LA5).
+    password: bool,
     /// DepotDownloader's `-filelist` of the files the last check found wrong, once written, for
     /// the repair's command in the player's own terminal (#348).
     repair_list: Option<PathBuf>,
@@ -52,6 +59,7 @@ impl Default for Client {
             stop: None,
             run: None,
             cancelled: false,
+            password: false,
             repair_list: None,
             in_steam: false,
         }
@@ -142,12 +150,38 @@ pub(super) async fn or_cancelled<T>(
     }
 }
 
-fn waiting_for_steam(repair: bool) -> JobView {
+fn waiting_for_steam(repair: bool, terminal: bool, code: Option<CodeView>) -> JobView {
     JobView::Downloading {
         repair,
         percent: None,
         file: None,
         waiting_for_steam: true,
+        terminal,
+        code,
+    }
+}
+
+/// The running download: hidden, signing in by the code the launcher draws (launcher spec
+/// Amendment A, LA4), or in a terminal of its own, for a password sign-in (LA5).
+#[derive(Debug, Clone)]
+enum Run {
+    Hidden(ChildRun),
+    Terminal(DepotRun),
+}
+
+impl Run {
+    fn state(&self) -> RunState {
+        match self {
+            Run::Hidden(run) => run.state(),
+            Run::Terminal(run) => run.state(),
+        }
+    }
+
+    fn cancel(&self) -> std::io::Result<()> {
+        match self {
+            Run::Hidden(run) => run.cancel(),
+            Run::Terminal(run) => run.cancel(),
+        }
     }
 }
 
@@ -450,14 +484,14 @@ impl App {
             return Err(refused(words::DOWNLOAD_LINUX_ONLY));
         }
         not_playing(&self.inner.lock())?;
-        let terminal = self.terminal().ok_or_else(|| refused(words::NO_TERMINAL))?;
         let repair = files.is_some();
         self.change(|st| {
             not_playing(st)?;
             free(st)?;
             st.client.cancelled = false;
+            st.client.password = false;
             st.client.job = Some(match cfg.depot_downloader {
-                Some(_) => waiting_for_steam(repair),
+                Some(_) => waiting_for_steam(repair, false, None),
                 None => JobView::Fetching {
                     tool: DEPOT_DOWNLOADER.into(),
                     percent: None,
@@ -469,8 +503,40 @@ impl App {
         let app = self.clone();
         self.inner
             .rt
-            .spawn(async move { app.downloading(terminal, folder, files).await });
+            .spawn(async move { app.downloading(folder, files).await });
         Ok(())
+    }
+
+    /// SignInWithPassword: a player without the Steam Mobile App signs in with their password in
+    /// a terminal of DepotDownloader's own (launcher spec Amendment A, LA5), on the same job,
+    /// while its hidden run still waits for its sign-in.
+    pub(super) fn sign_in_with_password(&self) -> Result<(), IntentError> {
+        self.change(|st| match &st.client.job {
+            Some(JobView::Downloading {
+                waiting_for_steam: true,
+                terminal: false,
+                ..
+            }) if !st.client.cancelled => {
+                st.client.password = true;
+                Ok(())
+            }
+            _ => Err(refused(words::NO_SIGN_IN)),
+        })
+    }
+
+    /// The job in a terminal of DepotDownloader's own, for a password sign-in (LA5). A failure is
+    /// the notice's words.
+    fn in_terminal(&self, job: &depot::Job) -> Result<DepotRun, String> {
+        let terminal = self
+            .terminal()
+            .ok_or_else(|| words::NO_TERMINAL.to_string())?;
+        // A fork while a test writes a script would make that script busy to exec.
+        #[cfg(test)]
+        let _spawn = crate::test_support::spawning();
+        DepotRun::start(&terminal, job, &self.run_dir(), self.inner.cfg.env.clone()).map_err(|e| {
+            warn!(error = %e, "the terminal for DepotDownloader didn't open");
+            words::NO_TERMINAL.to_string()
+        })
     }
 
     /// The terminal DepotDownloader opens in: the configured one, or else the first there is.
@@ -491,7 +557,7 @@ impl App {
         })
     }
 
-    async fn downloading(&self, terminal: Terminal, folder: PathBuf, files: Option<Vec<String>>) {
+    async fn downloading(&self, folder: PathBuf, files: Option<Vec<String>>) {
         let repair = files.is_some();
         // Fetching DepotDownloader ends at once on Cancel, not when the fetch does (#348).
         let cancelled = || self.inner.lock().client.cancelled;
@@ -508,35 +574,66 @@ impl App {
             folder: folder.clone(),
             files: files.clone(),
         };
+        // Hidden, signing in by the code the launcher draws (LA4).
         let started = {
             // A fork while a test writes a script would make that script busy to exec.
             #[cfg(test)]
             let _spawn = crate::test_support::spawning();
-            DepotRun::start(&terminal, &job, &self.run_dir(), self.inner.cfg.env.clone())
+            ChildRun::start(&job, &self.run_dir(), self.inner.cfg.env.clone())
         };
-        let run = match started {
-            Ok(run) => run,
+        let mut run = match started {
+            Ok(run) => Run::Hidden(run),
             Err(e) => {
-                warn!(error = %e, "the terminal for DepotDownloader didn't open");
-                return self.download_ended(words::NO_TERMINAL.into(), true);
+                warn!(error = %e, "DepotDownloader didn't start");
+                return self.download_ended(words::DEPOT_DIDNT_START.into(), true);
             }
         };
         self.change(|st| {
             st.client.run = Some(run.clone());
-            st.client.job = Some(waiting_for_steam(repair));
+            st.client.job = Some(waiting_for_steam(repair, false, None));
         });
         let mut tick = tokio::time::interval(POLL_EVERY);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            let cancelled = self.inner.lock().client.cancelled;
+            let (cancelled, password) = {
+                let st = self.inner.lock();
+                (st.client.cancelled, st.client.password)
+            };
             if cancelled {
                 // Again on each look: its process group may not have existed at the first.
                 let _ = run.cancel();
+            } else if password && matches!(run, Run::Hidden(_)) {
+                // No Steam Mobile App: the hidden run ends before the same job opens in a
+                // terminal, so the two never write the folder at once (LA5).
+                let _ = run.cancel();
+                let until = Instant::now() + HIDDEN_RUN_ENDS;
+                while !matches!(run.state(), RunState::Ended { .. }) && Instant::now() < until {
+                    tick.tick().await;
+                }
+                run = match self.in_terminal(&job) {
+                    Ok(in_terminal) => Run::Terminal(in_terminal),
+                    Err(text) => return self.download_ended(text, true),
+                };
+                self.change(|st| {
+                    st.client.run = Some(run.clone());
+                    st.client.job = Some(waiting_for_steam(repair, true, None));
+                });
+                continue;
             }
+            let terminal = matches!(run, Run::Terminal(_));
             let (text, error) = match run.state() {
-                RunState::Waiting | RunState::SignIn { .. } => {
-                    self.change(|st| st.client.job = Some(waiting_for_steam(repair)));
+                RunState::Waiting => {
+                    self.change(|st| {
+                        st.client.job = Some(waiting_for_steam(repair, terminal, None));
+                    });
+                    continue;
+                }
+                RunState::SignIn { code } => {
+                    let code = CodeView::from(&code);
+                    self.change(|st| {
+                        st.client.job = Some(waiting_for_steam(repair, terminal, Some(code)));
+                    });
                     continue;
                 }
                 RunState::Running { percent, file } => {
@@ -546,6 +643,8 @@ impl App {
                             percent: Some(percent),
                             file: Some(file),
                             waiting_for_steam: false,
+                            terminal,
+                            code: None,
                         });
                     });
                     continue;
@@ -697,7 +796,7 @@ mod tests {
     use std::time::Duration;
 
     use super::super::{
-        App, AppConfig, CheckView, Intent, JobView, LevelView, SteamCopyView, words,
+        App, AppConfig, CheckView, CodeView, Intent, JobView, LevelView, SteamCopyView, words,
     };
     use crate::depot::Terminal;
     use crate::manifest::Manifest;
@@ -716,6 +815,14 @@ mod tests {
             code: i32,
         },
         Hangs,
+        /// Draws a sign-in code as DepotDownloader 3.4.0 does, holds it a while for the player
+        /// to scan, then writes the files as `WritesFiles` with code 0.
+        DrawsCode,
+    }
+
+    /// The code the fake DepotDownloader draws.
+    fn drawn_code() -> Vec<Vec<bool>> {
+        crate::depot::reading_tests::code(29, 3)
     }
 
     /// A small build in a temp folder: its files in `pristine` (the fake DepotDownloader's
@@ -788,6 +895,12 @@ mod tests {
         /// in a new session and returns at once, as gnome-terminal does.
         fn app_with_fakes(&self, dd: FakeDd) -> App {
             let n = self.fakes.fetch_add(1, Ordering::Relaxed);
+            let draws = matches!(dd, FakeDd::DrawsCode);
+            let dd = if draws {
+                FakeDd::WritesFiles { code: 0 }
+            } else {
+                dd
+            };
             let body = match dd {
                 FakeDd::WritesFiles { code } => {
                     let all: Vec<&str> = self
@@ -815,6 +928,19 @@ exit {code}"#,
                 }
                 FakeDd::Exits { code } => format!("echo 'Scan this QR code'; exit {code}"),
                 FakeDd::Hangs => "echo 'Scan this QR code'; exec sleep 600".into(),
+                FakeDd::DrawsCode => unreachable!("drawn as WritesFiles above"),
+            };
+            let body = if draws {
+                let code: String = crate::depot::reading_tests::drawn(&drawn_code())
+                    .iter()
+                    .map(|row| format!("printf '%s\\n' '{row}'\n"))
+                    .collect();
+                format!(
+                    "echo 'Logging in with QR code...'\necho '{}'\n{code}sleep 1.5\n{body}",
+                    crate::depot::QR_HEADER
+                )
+            } else {
+                body
             };
             let mut cfg = self.config(Os::Linux);
             {
@@ -824,7 +950,10 @@ exit {code}"#,
                     program: script(
                         &self.root,
                         &format!("term-{n}"),
-                        r#"setsid "$@" </dev/null >/dev/null 2>&1 &"#,
+                        &format!(
+                            "echo opened >> '{}'\nsetsid \"$@\" </dev/null >/dev/null 2>&1 &",
+                            self.root.join("terminal-opened").display()
+                        ),
                     ),
                     before: vec![],
                 });
@@ -1027,6 +1156,44 @@ exit {code}"#,
         let s = until(&app, checked(LevelView::Full)).await;
         assert_eq!(s.client.folder.as_deref(), Some(folder.to_str().unwrap()));
         assert!(s.job.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_download_signs_in_by_the_code_drawn_in_the_launcher_and_opens_no_terminal() {
+        let t = Testbed::new(&[("a.bin", 1000), ("bin64/b.dll", 10)]);
+        let app = t.app_with_fakes(FakeDd::DrawsCode);
+        let folder = t.root.join("download");
+        app.intent(Intent::Download {
+            folder: folder.display().to_string(),
+        })
+        .await
+        .unwrap();
+        let s = until(&app, |s| {
+            matches!(&s.job, Some(JobView::Downloading { code: Some(_), .. }))
+        })
+        .await;
+        let Some(JobView::Downloading {
+            code: Some(code),
+            terminal,
+            waiting_for_steam,
+            ..
+        }) = s.job
+        else {
+            unreachable!()
+        };
+        let dark: String = drawn_code()
+            .concat()
+            .iter()
+            .map(|&d| if d { '1' } else { '0' })
+            .collect();
+        assert_eq!(code, CodeView { size: 29, dark });
+        assert!(waiting_for_steam && !terminal);
+        let s = until(&app, checked(LevelView::Full)).await;
+        assert_eq!(s.client.folder.as_deref(), Some(folder.to_str().unwrap()));
+        assert!(
+            !t.root.join("terminal-opened").exists(),
+            "a download by code opens no terminal"
+        );
     }
 
     #[tokio::test]
@@ -1449,6 +1616,7 @@ exit {code}"#,
             s.notice.unwrap().text,
             "The download stopped (code 5). Try again."
         );
+        // A password sign-in's window, closed before DepotDownloader ends (LA5).
         let app = t.app_with_fakes(FakeDd::Hangs);
         app.intent(Intent::Download {
             folder: t.root.join("e").display().to_string(),
@@ -1456,9 +1624,52 @@ exit {code}"#,
         .await
         .unwrap();
         until(&app, |s| matches!(s.job, Some(JobView::Downloading { .. }))).await;
+        app.intent(Intent::SignInWithPassword).await.unwrap();
+        until(&app, |s| {
+            matches!(s.job, Some(JobView::Downloading { terminal: true, .. }))
+        })
+        .await;
         t.kill_fake_terminal_session().await;
         let s = until(&app, |s| s.job.is_none()).await;
         assert_eq!(s.notice.unwrap().text, words::WINDOW_CLOSED);
+    }
+
+    #[tokio::test]
+    async fn a_password_sign_in_ends_the_hidden_run_and_opens_the_same_job_in_a_terminal() {
+        let t = Testbed::new(&[("a.bin", 1000), ("bin64/b.dll", 10)]);
+        let app = t.app_with_fakes(FakeDd::DrawsCode);
+        let folder = t.root.join("download");
+        let refused = app.intent(Intent::SignInWithPassword).await.unwrap_err();
+        assert_eq!(refused.to_string(), words::NO_SIGN_IN);
+        app.intent(Intent::Download {
+            folder: folder.display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, |s| {
+            matches!(&s.job, Some(JobView::Downloading { code: Some(_), .. }))
+        })
+        .await;
+        app.intent(Intent::SignInWithPassword).await.unwrap();
+        let s = until(&app, |s| {
+            matches!(s.job, Some(JobView::Downloading { terminal: true, .. }))
+        })
+        .await;
+        assert!(matches!(
+            s.job,
+            Some(JobView::Downloading {
+                code: None,
+                waiting_for_steam: true,
+                ..
+            })
+        ));
+        // Asked again, in the terminal: nothing more to switch.
+        let again = app.intent(Intent::SignInWithPassword).await.unwrap_err();
+        assert_eq!(again.to_string(), words::NO_SIGN_IN);
+        // The terminal's run of the same job downloads it, then every file is checked.
+        let s = until(&app, checked(LevelView::Full)).await;
+        assert_eq!(s.client.folder.as_deref(), Some(folder.to_str().unwrap()));
+        assert!(t.root.join("terminal-opened").exists());
     }
 
     /// #348: a terminal that fails before it runs the script is told at once, not after the
@@ -1469,7 +1680,7 @@ exit {code}"#,
         let mut cfg = t.config(Os::Linux);
         {
             let _spawn = spawning();
-            cfg.depot_downloader = Some(script(&t.root, "dd", "exit 0"));
+            cfg.depot_downloader = Some(script(&t.root, "dd", "exec sleep 600"));
             cfg.terminal = Some(Terminal {
                 program: script(&t.root, "term", "exit 1"),
                 before: vec![],
@@ -1481,6 +1692,8 @@ exit {code}"#,
         })
         .await
         .unwrap();
+        until(&app, |s| matches!(s.job, Some(JobView::Downloading { .. }))).await;
+        app.intent(Intent::SignInWithPassword).await.unwrap();
         let s = until(&app, |s| s.job.is_none() && s.notice.is_some()).await;
         assert_eq!(s.notice.unwrap().text, words::NO_TERMINAL);
     }

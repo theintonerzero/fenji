@@ -1201,12 +1201,12 @@ mod tests {
 }
 
 #[cfg(test)]
-mod reading_tests {
+pub(crate) mod reading_tests {
     use super::*;
 
     /// A code as DepotDownloader 3.4.0 draws it: QRCoder 1.6.0's `GetLineByLineGraphic(1)`, two
     /// characters a module, `██` dark and two spaces light, its quiet zone included.
-    pub(super) fn drawn(code: &[Vec<bool>]) -> Vec<String> {
+    pub(crate) fn drawn(code: &[Vec<bool>]) -> Vec<String> {
         code.iter()
             .map(|row| {
                 row.iter()
@@ -1217,7 +1217,7 @@ mod reading_tests {
     }
 
     /// A `size`-module code with a quiet zone of 4 and a pattern inside it, from `seed`.
-    pub(super) fn code(size: usize, seed: usize) -> Vec<Vec<bool>> {
+    pub(crate) fn code(size: usize, seed: usize) -> Vec<Vec<bool>> {
         (0..size)
             .map(|y| {
                 (0..size)
