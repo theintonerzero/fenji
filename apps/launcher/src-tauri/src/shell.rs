@@ -68,6 +68,7 @@ pub fn route(intent: &Intent) -> Route {
         | Intent::DismissNotice { .. }
         | Intent::SetAutoUpdate { .. }
         | Intent::SetGameMode { .. }
+        | Intent::SetLaunchOptions { .. }
         | Intent::SetUmuRun { .. }
         | Intent::SetDownloadFolder { .. } => Route::Model,
     }

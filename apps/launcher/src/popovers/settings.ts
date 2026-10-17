@@ -1,11 +1,12 @@
-// The Settings popover (the redesign's Settings board): updates; on Linux GameMode, umu-run and the
-// download folder; and where the logs, the licences, the source and the privacy page are. Each
-// change is saved as it's made.
+// The Settings popover (the redesign's Settings board): updates; on Linux GameMode, launch options,
+// umu-run and the download folder; and where the logs, the licences, the source and the privacy
+// page are. Each change is saved as it's made.
 import type { Ctx, PopoverContent } from "../app";
 import { h } from "../dom";
 import type { Intent } from "../types";
 import { button } from "../ui/button";
-import { renew, shown } from "../screens/parts";
+import { refused, renew, shown } from "../screens/parts";
+import { field } from "../ui/field";
 import { versionLine } from "../words";
 
 const REPOSITORY = "https://github.com/theintonerzero/fenji";
@@ -44,6 +45,28 @@ export function settingsPopover(ctx: Ctx): PopoverContent {
     "GameMode",
     h("p", { class: "line", id: "settings-gamemode-line" }, "Performance mode while the game runs."),
   );
+  // Launch options, as Steam's (launcher spec Amendment B, LB3). The model refuses what can't be
+  // used, in words under the field, which keeps the player's text until it's changed.
+  const optionsInput = h("input", {
+    id: "settings-launch-options",
+    class: "mono",
+    type: "text",
+    spellcheck: "false",
+    autocomplete: "off",
+    placeholder: "PROTON_LOG=1 mangohud %command%",
+    onchange: () => void sendOptions(),
+  });
+  const options = field("Launch options", optionsInput);
+  let optionsRefused = false;
+  const sendOptions = async (): Promise<void> => {
+    const refusal = await ctx.send({ type: "setLaunchOptions", text: optionsInput.value });
+    optionsRefused = refusal !== null;
+    if (refusal === null) {
+      options.setError(null);
+    } else {
+      refused(ctx, null, refusal, (words) => options.setError(words));
+    }
+  };
   // One link whose words and intent change in place, so it keeps focus while a check runs (R7).
   const versionWords = h("span", {});
   let versionIntent: Intent = { type: "checkUpdate" };
@@ -107,6 +130,7 @@ export function settingsPopover(ctx: Ctx): PopoverContent {
         s.platform.os === "linux"
           ? [
               ...(installed ? [h("section", { class: "sec" }, gamemodeRow)] : []),
+              h("section", { class: "sec" }, options.el),
               h("section", { class: "sec" }, h("label", { class: "label", for: "settings-umu-run" }, "umu-run"), umu),
               h(
                 "section",
@@ -119,6 +143,9 @@ export function settingsPopover(ctx: Ctx): PopoverContent {
       );
       if (s.settings.gamemode !== null && gamemode.checked !== s.settings.gamemode) {
         gamemode.checked = s.settings.gamemode;
+      }
+      if (document.activeElement !== optionsInput && !optionsRefused) {
+        optionsInput.value = s.settings.launchOptions;
       }
       if (document.activeElement !== umu) {
         umu.value = s.settings.umuRun ?? "";

@@ -328,6 +328,21 @@ impl App {
                 });
                 Ok(())
             }
+            // Kept only when they read (launcher spec Amendment B, LB3); the field keeps the
+            // player's text beside the refusal.
+            Intent::SetLaunchOptions { text } => {
+                let text = text.trim();
+                match crate::options::parse(text) {
+                    Ok(_) => {
+                        self.change(|st| {
+                            st.settings.launch_options = text.to_string();
+                            self.save(st);
+                        });
+                        Ok(())
+                    }
+                    Err(e) => Err(refused(&words::launch_options(&e))),
+                }
+            }
             Intent::SetUmuRun { path } => {
                 self.change(|st| {
                     st.settings.umu_run = path.filter(|p| !p.trim().is_empty()).map(PathBuf::from);
@@ -520,6 +535,7 @@ impl State {
             settings: SettingsView {
                 auto_update: self.settings.auto_update,
                 gamemode: cfg.gamemoderun.is_some().then_some(self.settings.gamemode),
+                launch_options: self.settings.launch_options.clone(),
                 umu_run: self
                     .settings
                     .umu_run
@@ -1033,6 +1049,75 @@ mod tests {
             again.snapshot().settings.gamemode,
             Some(false),
             "it's saved"
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_options_are_saved_or_refused_in_words_keeping_the_saved_ones() {
+        // Launcher spec Amendment B, LB3.
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        let saved = "PROTON_LOG=1 mangohud %command% -dx11";
+        app.intent(Intent::SetLaunchOptions {
+            text: format!("  {saved}\n"),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.snapshot().settings.launch_options, saved);
+        for (text, refusal) in [
+            (
+                "mangohud '%command%",
+                "A quote in the launch options isn't closed: close it, or put a backslash before it.",
+            ),
+            (
+                "%command% -x %command%",
+                "The launch options have %command% twice: keep one.",
+            ),
+            (
+                "WINEPREFIX=/tmp/p %command%",
+                "Fenji sets WINEPREFIX itself: take it out of the launch options.",
+            ),
+        ] {
+            let refused = app
+                .intent(Intent::SetLaunchOptions { text: text.into() })
+                .await;
+            assert!(
+                matches!(&refused, Err(IntentError::Refused(words)) if words == refusal),
+                "{text}: {refused:?}"
+            );
+            assert_eq!(app.snapshot().settings.launch_options, saved, "{text}");
+        }
+        drop(app);
+        let again = App::start(config(dir.path()), tokio::runtime::Handle::current());
+        assert_eq!(
+            again.snapshot().settings.launch_options,
+            saved,
+            "they're saved"
+        );
+        again
+            .intent(Intent::SetLaunchOptions { text: " ".into() })
+            .await
+            .unwrap();
+        assert_eq!(again.snapshot().settings.launch_options, "");
+    }
+
+    #[tokio::test]
+    async fn play_refuses_launch_options_that_dont_read() {
+        // Saved by hand, past the Settings field's refusal.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = config(dir.path());
+        std::fs::create_dir_all(&cfg.config_dir).unwrap();
+        std::fs::write(
+            cfg.config_dir.join("settings.json"),
+            r#"{"next_id": 1, "launch_options": "GAMEID=x %command%"}"#,
+        )
+        .unwrap();
+        let app = App::start(cfg, tokio::runtime::Handle::current());
+        let refused = app.intent(Intent::Play).await;
+        assert!(
+            matches!(&refused, Err(IntentError::Refused(words))
+                if words == "Fenji sets GAMEID itself: take it out of the launch options."),
+            "{refused:?}"
         );
     }
 

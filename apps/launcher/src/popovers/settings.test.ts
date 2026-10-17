@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { golden, mountPopover, press } from "../screens/test-kit";
+import { golden, mountPopover, press, settle } from "../screens/test-kit";
 import { PRIVACY, settingsPopover } from "./settings";
 
 test("updates, umu-run and the download folder on Linux, and the links", () => {
@@ -44,6 +44,42 @@ test("off Linux there's no umu-run and no download folder", () => {
   expect(root.querySelector("#settings-umu-run")).toBeNull();
   expect(root.querySelector("#settings-download-folder")).toBeNull();
   expect(root.querySelector("#settings-gamemode")).toBeNull();
+  expect(root.querySelector("#settings-launch-options")).toBeNull();
+});
+
+test("launch options: sent as typed, a refusal in words under the field, which keeps the text", async () => {
+  const s = golden("settings");
+  const refusal = "The launch options have %command% twice: keep one.";
+  const { root, sent, content } = mountPopover(settingsPopover, s, (intent) =>
+    intent.type === "setLaunchOptions" && intent.text.split("%command%").length > 2 ? refusal : null,
+  );
+  const input = root.querySelector<HTMLInputElement>("#settings-launch-options")!;
+  expect(root.querySelector('label[for="settings-launch-options"]')!.textContent).toBe("Launch options");
+  expect(input.placeholder).toBe("PROTON_LOG=1 mangohud %command%");
+  expect(input.classList.contains("mono")).toBe(true);
+  // Refused: the words under the field, the text kept through the model's next snapshot.
+  input.value = "%command% -x %command%";
+  input.dispatchEvent(new Event("change"));
+  await settle();
+  const error = root.querySelector(`#${input.id}-error`)!;
+  expect((error as HTMLElement).hidden).toBe(false);
+  expect(error.textContent).toBe(refusal);
+  expect(input.getAttribute("aria-invalid")).toBe("true");
+  content.update(s);
+  expect(input.value).toBe("%command% -x %command%");
+  // Accepted: the error goes, and the model's text shows.
+  input.value = "mangohud %command%";
+  input.dispatchEvent(new Event("change"));
+  await settle();
+  expect((error as HTMLElement).hidden).toBe(true);
+  expect(input.hasAttribute("aria-invalid")).toBe(false);
+  content.update({ ...s, settings: { ...s.settings, launchOptions: "mangohud %command%" } });
+  expect(input.value).toBe("mangohud %command%");
+  expect(sent).toEqual([
+    { type: "setLaunchOptions", text: "%command% -x %command%" },
+    { type: "dismissNotice", text: refusal },
+    { type: "setLaunchOptions", text: "mangohud %command%" },
+  ]);
 });
 
 test("GameMode's switch shows on Linux where GameMode is installed, and follows the model", () => {
