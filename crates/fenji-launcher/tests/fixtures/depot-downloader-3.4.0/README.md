@@ -1,6 +1,6 @@
 # DepotDownloader 3.4.0's own output
 
-What DepotDownloader 3.4.0 printed on the game box in the M4 follow-ups' Task 11 rehearsal (#428, 2026-10-18 UTC). It ran with `-qr` as a child, with its input closed and its output piped, the way the launcher runs it hidden (launcher spec Amendment A, LA4). `src/depot.rs`'s tests read these files through the launcher's `Reader`, and play them back through a fake DepotDownloader.
+What DepotDownloader 3.4.0 printed on the game box in the M4 follow-ups' Task 11 rehearsal (#428, 2026-10-17 UTC). It ran with `-qr` as a child, with its input closed and its output piped, the way the launcher runs it hidden (launcher spec Amendment A, LA4). `src/depot.rs`'s tests read these files through the launcher's `Reader`, and play them back through a fake DepotDownloader.
 
 | File | The run | Its end |
 |---|---|---|
