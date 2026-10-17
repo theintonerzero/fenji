@@ -21,13 +21,15 @@
 # user, or as nobody for a service that runs as root, whose new server's console it does ask as
 # root, once systemd has started that server as root; in a folder, as the folder's owner.
 #
-# It trusts the release as the manual steps do: it downloads over HTTPS from the repository's
-# GitHub release, and checks the archive against that release's SHA256SUMS, which proves the
-# download arrived whole, not who made it.
+# It trusts a release only once its SHA256SUMS is signed with Fenji's release key, whose public half
+# it carries (the hosting spec's Amendment D, HD1, HD3): it downloads over HTTPS from the
+# repository's GitHub release, checks SHA256SUMS.sig with ssh-keygen -Y verify, then checks the
+# archive against SHA256SUMS. FENJI_RELEASE_KEY names a file holding a fork's allowed-signers line
+# (HD4).
 #
 # Releases come from https://github.com/theintonerzero/fenji/releases, or from FENJI_RELEASES, for a
-# fork. It needs curl, tar, and sha256sum or macOS's shasum; for a service, systemctl, sudo and
-# journalctl too, and timeout where there is one.
+# fork. It needs curl, tar, ssh-keygen from OpenSSH 8 or later, and sha256sum or macOS's shasum;
+# for a service, systemctl, sudo and journalctl too, and timeout where there is one.
 set -eu
 # A cd to a relative path goes where it says, not to a folder an exported CDPATH names.
 unset CDPATH
@@ -36,6 +38,10 @@ export LC_ALL=C
 umask 077
 
 me=${0##*/}
+# The release key's public half, as an OpenSSH allowed-signers line (HD1): deploy/allowed_signers
+# and section 5 of docs/hosting.md hold the same line, and a test pins that they agree. None until
+# the owner makes the key, before 0.5.4 is tagged (HD5); scripts/set-release-key.sh puts it in.
+RELEASE_KEY=''
 # Fenji's own units, the only ones a service's update installs.
 UNITS='fenji.service fenji-backup.service fenji-backup.timer'
 
@@ -490,6 +496,29 @@ say "Downloading $archive, with its release's SHA256SUMS."
 fetch "$from/$archive" "$tmp/$archive" ||
   fail "can't download $from/$archive: is $wanted a release, with a server for $target? Nothing has changed"
 fetch "$from/SHA256SUMS" "$tmp/SHA256SUMS" || fail "can't download $from/SHA256SUMS, so nothing has changed"
+# The sums count only once their signature is the release key's (HD3).
+fetch "$from/SHA256SUMS.sig" "$tmp/SHA256SUMS.sig" ||
+  fail "can't download $from/SHA256SUMS.sig: the release isn't signed, so it can't be trusted, and nothing has changed"
+if [ -n "${FENJI_RELEASE_KEY:-}" ]; then
+  allowed=$FENJI_RELEASE_KEY
+else
+  [ -n "$RELEASE_KEY" ] ||
+    fail "this update script holds no release key, so it can't check a release; update by hand (docs/hosting.md, section 5). Nothing has changed"
+  allowed=$tmp/allowed_signers
+  printf '%s\n' "$RELEASE_KEY" > "$allowed"
+fi
+# Only the line given, never an agent's key, and nothing to answer.
+if why=$(env -u SSH_AUTH_SOCK ssh-keygen -Y verify -f "$allowed" -I fenji-release -n fenji-release \
+  -s "$tmp/SHA256SUMS.sig" < "$tmp/SHA256SUMS" 2>&1); then
+  say "Its SHA256SUMS is signed with the release key."
+else
+  case $?:$why in
+    127:*) fail "checking the release's signature needs ssh-keygen, from OpenSSH 8 or later: install OpenSSH, then try again. Nothing has changed" ;;
+    *"unknown option"* | *"illegal option"* | *"invalid option"*)
+      fail "this ssh-keygen can't check signatures: it needs OpenSSH 8 or later. Nothing has changed" ;;
+    *) fail "SHA256SUMS isn't signed with the release key, so this release can't be trusted, and nothing has changed" ;;
+  esac
+fi
 found=$(awk -v f="$archive" '$2 == f || $2 == "*" f { n++; s = $1 } END { print n + 0, s }' "$tmp/SHA256SUMS")
 case ${found%% *} in
   1) expected=${found#* } ;;

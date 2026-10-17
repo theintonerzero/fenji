@@ -48,6 +48,7 @@ REAL_ID=$(command -v id)
 REAL_UNAME=$(command -v uname)
 REAL_FIND=$(command -v find)
 REAL_MV=$(command -v mv)
+REAL_SSH_KEYGEN=$(command -v ssh-keygen)
 uid=$("$REAL_ID" -u)
 me=$("$REAL_ID" -un)
 
@@ -225,11 +226,35 @@ if [ -n "${FAKE_MV_FAIL:-}" ]; then
 fi
 exec "$REAL_MV" "$@"
 EOF
+# ssh-keygen, as a host's may be (HD3): none (FAKE_SSH_KEYGEN=missing, which a shell's 127 stands for),
+# or from an OpenSSH before 8, which has no -Y (old); otherwise the real one.
+cat > "$T/bin/ssh-keygen" <<'EOF'
+#!/bin/sh
+case ${FAKE_SSH_KEYGEN:-} in
+  missing) echo "ssh-keygen: not found" >&2; exit 127 ;;
+  old) echo "ssh-keygen: unknown option -- Y" >&2; echo "usage: ssh-keygen [-q] [-b bits] [-t type]" >&2; exit 1 ;;
+esac
+exec "$REAL_SSH_KEYGEN" "$@"
+EOF
 chmod 0755 "$T/bin/"*
 PATH="$T/bin:$PATH"
-export PATH REAL_ID REAL_UNAME REAL_FIND REAL_MV FAKE_CALLS=$T/calls FAKE_STATE=$T/state FAKE_RUNNING=$T/state/running
+export PATH REAL_ID REAL_UNAME REAL_FIND REAL_MV REAL_SSH_KEYGEN FAKE_CALLS=$T/calls FAKE_STATE=$T/state FAKE_RUNNING=$T/state/running
 export FAKE_RELEASES=https://releases.example/fenji/releases FAKE_RELEASE_DIR=$T/release
 export FENJI_RELEASES=$FAKE_RELEASES TMPDIR=$T/tmp
+
+# The release key, made for the run, and another (HD8). FENJI_RELEASE_KEY gives the script the
+# release key's line, as a fork's would be given (HD4).
+"$REAL_SSH_KEYGEN" -q -t ed25519 -N '' -C release -f "$T/release-key"
+"$REAL_SSH_KEYGEN" -q -t ed25519 -N '' -C other -f "$T/other-key"
+printf 'fenji-release namespaces="fenji-release" %s\n' "$(cut -d' ' -f1,2 "$T/release-key.pub")" > "$T/allowed_signers"
+export FENJI_RELEASE_KEY=$T/allowed_signers
+# signed DIR [KEY]: DIR's SHA256SUMS signed anew, as SHA256SUMS.sig, with KEY (the release key's
+# unless given), as the release workflow's sign job signs it.
+signed() {
+  rm -f -- "$1/SHA256SUMS.sig"
+  env -u SSH_AUTH_SOCK "$REAL_SSH_KEYGEN" -q -Y sign -f "${2:-$T/release-key}" -n fenji-release \
+    "$1/SHA256SUMS" < /dev/null
+}
 
 # program VERSION [REPORTS]: a stand-in fenji-server of VERSION, whose --version reports REPORTS,
 # VERSION unless given. It records each call with its version, the uid it runs as and its working
@@ -314,6 +339,7 @@ release() {
   done
   printf 'a launcher\n' > "$dir/Fenji_${v}_amd64.AppImage"
   (cd "$dir" && sums ./*.tar.gz ./*.AppImage | sed 's|  \./|  |' > SHA256SUMS)
+  signed "$dir"
 }
 
 # age DIR: everything in DIR made as old as 2020, so that anything an update writes, or a folder it
@@ -509,10 +535,21 @@ release 1.2.6 "$T/broken"
 release 1.2.7
 awk -v f="fenji-server-1.2.7-$L.tar.gz" '$2 == f { $1 = "00000000000000000000000000000000000000000000000000000000000000ff" } { print $1 "  " $2 }' \
   "$T/release/v1.2.7/SHA256SUMS" > "$T/sums" && mv "$T/sums" "$T/release/v1.2.7/SHA256SUMS"
+signed "$T/release/v1.2.7"
 release 1.2.8
 grep -v "$L" "$T/release/v1.2.8/SHA256SUMS" > "$T/sums" && mv "$T/sums" "$T/release/v1.2.8/SHA256SUMS"
+signed "$T/release/v1.2.8"
 release 1.2.11
 grep "fenji-server-1.2.11-$L.tar.gz" "$T/release/v1.2.11/SHA256SUMS" > "$T/line" && cat "$T/line" >> "$T/release/v1.2.11/SHA256SUMS"
+signed "$T/release/v1.2.11"
+# 1.2.13 isn't signed, 1.2.14 is signed with another key, and 1.2.15's SHA256SUMS changed after it
+# was signed (HD3).
+release 1.2.13
+rm -f -- "$T/release/v1.2.13/SHA256SUMS.sig"
+release 1.2.14
+signed "$T/release/v1.2.14" "$T/other-key"
+release 1.2.15
+printf '\n' >> "$T/release/v1.2.15/SHA256SUMS"
 HOSTILE=yes release 1.2.12
 ODD_UNITS=yes release 1.3.1
 A=$T/stage/fenji-server-1.3.0-$L
@@ -539,9 +576,10 @@ same "nothing is left under a temporary name, nor a lock" "$(find "$D" -name '.*
 same "nothing else is added to the folder" "$(entries "$D")" "$(printf '%s\n' LICENSE README.txt SOURCE.txt \
   THIRD-PARTY-NOTICES.txt caddy data fenji-server fenji-server.previous fenji.example.toml fenji.toml start-server.sh \
   systemd update-server.sh)"
-same "it fetches where the latest release leads, then its archive and SHA256SUMS" "$(fetched)" "$(printf '%s\n' \
-  "$FAKE_RELEASES/latest" "$FAKE_RELEASES/download/v1.3.0/fenji-server-1.3.0-$L.tar.gz" \
-  "$FAKE_RELEASES/download/v1.3.0/SHA256SUMS")"
+same "it fetches where the latest release leads, then its archive, SHA256SUMS and its signature" "$(fetched)" \
+  "$(printf '%s\n' "$FAKE_RELEASES/latest" "$FAKE_RELEASES/download/v1.3.0/fenji-server-1.3.0-$L.tar.gz" \
+  "$FAKE_RELEASES/download/v1.3.0/SHA256SUMS" "$FAKE_RELEASES/download/v1.3.0/SHA256SUMS.sig")"
+says "it says the sums are the release key's" "Its SHA256SUMS is signed with the release key." "$out"
 same "each over HTTPS alone, redirects too, failing on an HTTP error" \
   "$(awk '$1 == "curl" && !(/ --proto =https/ && / --proto-redir =https/ && / -[a-zA-Z]*f/)' <<< "$calls")" ""
 same "each with -q first, so that no .curlrc applies" "$(awk '$1 == "curl" && $3 != "first=-q"' <<< "$calls")" ""
@@ -568,7 +606,8 @@ FROM=$T RUN_CDPATH=$T/decoy run "home with space/fenji-server/update-server.sh" 
 exits "a named version updates the folder, the one it's in, not one CDPATH names" 0
 same "its program is that version's" "$(version "$D/fenji-server")" "fenji-server 1.2.4"
 same "the latest release isn't asked for" "$(fetched)" "$(printf '%s\n' \
-  "$FAKE_RELEASES/download/v1.2.4/fenji-server-1.2.4-$L.tar.gz" "$FAKE_RELEASES/download/v1.2.4/SHA256SUMS")"
+  "$FAKE_RELEASES/download/v1.2.4/fenji-server-1.2.4-$L.tar.gz" "$FAKE_RELEASES/download/v1.2.4/SHA256SUMS" \
+  "$FAKE_RELEASES/download/v1.2.4/SHA256SUMS.sig")"
 same "CDPATH's folder is untouched" "$(entries "$T/decoy/home with space/fenji-server")" "$(printf '%s\n' fenji-server start-server.sh)"
 
 # Updated again, by the update script the last update brought: one previous program, the last.
@@ -650,6 +689,25 @@ run "$D/update-server.sh" 1.2.8
 refused "an archive SHA256SUMS has no line for is refused" "SHA256SUMS has no line for fenji-server-1.2.8-$L.tar.gz"
 run "$D/update-server.sh" 1.2.11
 refused "an archive SHA256SUMS has two lines for is refused" "SHA256SUMS has 2 lines for fenji-server-1.2.11-$L.tar.gz"
+run "$D/update-server.sh" 1.2.13
+refused "a release with no signature is refused" "the release isn't signed"
+run "$D/update-server.sh" 1.2.14
+refused "a release signed with another key is refused" "isn't signed with the release key"
+run "$D/update-server.sh" 1.2.15
+refused "sums changed after they were signed are refused" "isn't signed with the release key"
+FAKE_SSH_KEYGEN=missing run "$D/update-server.sh" 1.2.10
+refused "with no ssh-keygen, it refuses" "needs ssh-keygen, from OpenSSH 8 or later"
+FAKE_SSH_KEYGEN=old run "$D/update-server.sh" 1.2.10
+refused "an ssh-keygen before OpenSSH 8 is refused" "it needs OpenSSH 8 or later"
+# Its own line, without FENJI_RELEASE_KEY: none until the owner makes the key (HD5), and the run's
+# releases aren't signed with the real one.
+if [ -z "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$SCRIPT")" ]; then
+  FENJI_RELEASE_KEY= run "$D/update-server.sh" 1.2.10
+  refused "a script that holds no release key refuses" "holds no release key"
+else
+  FENJI_RELEASE_KEY= run "$D/update-server.sh" 1.2.10
+  refused "its own line refuses the run's key" "isn't signed with the release key"
+fi
 run "$D/update-server.sh" 9.9.9
 refused "a version with no release is refused" "can't download"
 run "$D/update-server.sh" 1.2.5
@@ -1159,6 +1217,45 @@ same "a program anyone could write in the archive is installed 0755" "$(mode "$B
 same "and the update script 0755" "$(mode "$B/fenji-update")" "-rwxr-xr-x"
 
 if [ -z "$dirty" ]; then ok "every run cleaned up its temporary folder"; else bad "these runs left temporary files$dirty"; fi
+
+# scripts/set-release-key.sh puts the run's key into a copy of the three places that carry it: the
+# copied script then checks a release with its own line, with no FENJI_RELEASE_KEY, and refuses
+# another key's; a key that isn't ed25519 is refused; and a second time leaves one line.
+K=$T/keyed
+mkdir -p "$K/deploy/start" "$K/docs"
+cp "$REPO/deploy/allowed_signers" "$K/deploy/"
+cp "$SCRIPT" "$K/deploy/start/"
+cp "$REPO/docs/hosting.md" "$K/docs/"
+holds "the run's key goes in" env FENJI_REPO="$K" "$REPO/scripts/set-release-key.sh" "$T/release-key.pub" > /dev/null
+holds "and again" env FENJI_REPO="$K" "$REPO/scripts/set-release-key.sh" "$T/release-key.pub" > /dev/null
+line=$(cat "$T/allowed_signers")
+same "deploy/allowed_signers holds the one line" "$(grep -v '^#' "$K/deploy/allowed_signers")" "$line"
+same "the script's RELEASE_KEY is it" "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$K/deploy/start/update-server.sh")" "$line"
+same "and the guide's" "$(grep -h '^fenji-release namespaces=' "$K/docs/hosting.md")" "$line"
+same "the script keeps its mode" "$(mode "$K/deploy/start/update-server.sh")" "$(mode "$SCRIPT")"
+printf 'ssh-rsa AAAAB3NzaC1yc2E rsa\n' > "$T/rsa.pub"
+if env FENJI_REPO="$K" "$REPO/scripts/set-release-key.sh" "$T/rsa.pub" > /dev/null 2>&1; then
+  bad "a key that isn't ed25519 is refused"
+else
+  ok "a key that isn't ed25519 is refused"
+fi
+fresh
+SCRIPT=$K/deploy/start/update-server.sh folder "$D" 1.2.3
+FENJI_RELEASE_KEY= run "$D/update-server.sh" 1.2.10
+exits "a script holding the release key's line checks a release with it" 0
+same "and updates the folder" "$(version "$D/fenji-server")" "fenji-server 1.2.10"
+fresh
+SCRIPT=$K/deploy/start/update-server.sh folder "$D" 1.2.3
+was=$(snapshot "$D")
+FENJI_RELEASE_KEY= run "$D/update-server.sh" 1.2.14
+refused "and refuses one signed with another key" "isn't signed with the release key"
+
+# One release key wherever it's written (HD8): deploy/allowed_signers, this script's RELEASE_KEY and
+# section 5 of the guide. None yet, until the owner makes the key (HD5).
+key_lines() { grep -h '^fenji-release namespaces=' "$@" 2> /dev/null; }
+same "the script's release key is deploy/allowed_signers's" \
+  "$(sed -n "s/^RELEASE_KEY='\(.*\)'\$/\1/p" "$SCRIPT")" "$(key_lines "$REPO/deploy/allowed_signers")"
+same "and so is the guide's" "$(key_lines "$REPO/docs/hosting.md")" "$(key_lines "$REPO/deploy/allowed_signers")"
 
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"
