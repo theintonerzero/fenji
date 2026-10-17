@@ -85,8 +85,9 @@ cargo check --workspace          # refreshes Cargo.lock; CI builds with --locked
 (cd apps/launcher/src-tauri && cargo check)   # and the launcher shell's own Cargo.lock
 # set CLAUDE.md's **Status:** line: this milestone released as vX.Y.Z, and which milestone is next;
 # and the public files' status: README.md's status paragraph and milestone table, and the version
-# PRIVACY.md and SECURITY.md name; and docs/hosting.md's VERSION= examples: X.Y.Z where it installs,
-# and the next patch where it updates
+# PRIVACY.md and SECURITY.md name; and docs/hosting.md's VERSION= examples and the versions in its
+# example folder names (fenji-server-X.Y.Z-…): X.Y.Z where it installs, and the next patch where it
+# updates
 git cliff --tag vX.Y.Z -o CHANGELOG.md
 # stage the release files only, so no unrelated local edit rides into the release commit
 git add Cargo.toml Cargo.lock CHANGELOG.md CLAUDE.md README.md PRIVACY.md SECURITY.md docs/hosting.md \
