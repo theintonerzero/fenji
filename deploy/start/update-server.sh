@@ -8,11 +8,17 @@
 # It updates where it is (HB2): the systemd service named fenji, if that service runs the
 # fenji-server beside this script, as on the reference VPS; otherwise this folder. Nothing changes
 # until the new version's archive matches the release's SHA256SUMS and its program runs and reports
-# that version (HB4). The database is backed up first (HB6), and the old program stays as
-# fenji-server.previous (HB7). It never touches fenji.toml, the data folder, systemd's drop-ins or
-# Caddy's settings (HB8). For a service, it installs Fenji's three units by name alone, as root's
-# files with root's modes, and never runs a fenji-server as root to check it: it runs them as the
-# service's user, or as nobody for a service that runs as root.
+# that version (HB4). The database is backed up first (HB6), and what it replaces in a service stays
+# as <name>.previous: the program, and the units (HB7). It never touches fenji.toml, the data
+# folder, systemd's drop-ins or Caddy's own settings (HB8); in a folder it replaces the archive's
+# other files, as the steps by hand do.
+#
+# A service's units are replaced only when the service is Fenji's own unit, which runs the
+# archive's fenji.service's ExecStart as its User, and then only Fenji's three units, by name, as
+# root's files with root's modes. As root, it writes only in folders that are root's and that only
+# root may write in. It runs no fenji-server as root to check it: in a service, as the service's
+# user, or as nobody for a service that runs as root, whose new server's console it does ask as
+# root, once systemd has started that server as root; in a folder, as the folder's owner.
 #
 # It trusts the release as the manual steps do: it downloads over HTTPS from the repository's
 # GitHub release, and checks the archive against that release's SHA256SUMS, which proves the
@@ -20,11 +26,13 @@
 #
 # Releases come from https://github.com/theintonerzero/fenji/releases, or from FENJI_RELEASES, for a
 # fork. It needs curl, tar, and sha256sum or macOS's shasum; for a service, systemctl, sudo and
-# journalctl too.
+# journalctl too, and timeout where there is one.
 set -eu
 # A cd to a relative path goes where it says, not to a folder an exported CDPATH names.
 unset CDPATH
 export LC_ALL=C
+# What it makes starts as this user's alone, and gets its final mode only once it's whole.
+umask 077
 
 me=${0##*/}
 # Fenji's own units, the only ones a service's update installs.
@@ -102,11 +110,6 @@ version_of() {
   printf '%s\n' "$said"
 }
 
-# resolved PATH: PATH, its folder's links resolved as this script's own folder's are; or nothing.
-resolved() {
-  (cd -P -- "$(dirname -- "$1")" 2> /dev/null && printf '%s/%s\n' "$(pwd -P)" "${1##*/}") || :
-}
-
 # config_of WORD...: the --config of the server's command line, ExecStart's words; or nothing.
 config_of() {
   while [ $# -gt 0 ]; do
@@ -118,8 +121,15 @@ config_of() {
   done
 }
 
-# fetch URL FILE: URL into FILE, over HTTPS alone, redirects too, failing on an HTTP error.
-fetch() { curl -fsSL --proto '=https' --proto-redir '=https' -o "$2" "$1"; }
+# squeezed TEXT: TEXT with each run of spaces and tabs one space, and none at either end.
+squeezed() { printf '%s\n' "$1" | tr -s ' \t' '  ' | sed 's/^ //; s/ $//'; }
+
+# unit_value KEY FILE: the value FILE's last KEY= line gives, squeezed.
+unit_value() { squeezed "$(sed -n "s/^$1=//p" "$2" | tail -n 1)"; }
+
+# fetch URL FILE: URL into FILE, over HTTPS alone, redirects too, failing on an HTTP error, and with
+# no ~/.curlrc of anyone's (-q) to say otherwise.
+fetch() { curl -q -fsSL --proto '=https' --proto-redir '=https' -o "$2" "$1"; }
 
 # sum256: the SHA-256 of stdin, by sha256sum, or by shasum on macOS.
 sum256() {
@@ -132,22 +142,56 @@ sum256() {
   fi
 }
 
-# staged PATH: where the new version of PATH waits beside it, under a temporary name, until the
-# swap renames it over PATH.
-staged() { printf '%s/.%s.update\n' "${1%/*}" "${1##*/}"; }
+# root_alone DIR: whether DIR is a folder that's root's, and that only root may write in.
+root_alone() {
+  [ -d "$1" ] && [ -z "$(find "$1" -prune \( ! -user 0 -o -perm -020 -o -perm -002 \) -print)" ]
+}
 
-# stage FILE PATH [MODE]: FILE, copied beside PATH under PATH's temporary name, and kept track of,
-# so that a failure takes it away again. With MODE, the copy is a new file of this user's with that
-# mode, as root installs a service's files, whatever owner and mode the archive gave FILE; without,
-# it keeps the archive's modes.
-stage() {
-  to=$(staged "$2")
-  printf '%s\n' "$to" >> "$tmp/staged"
-  if [ -n "${3-}" ]; then
-    rm -f -- "$to" && cp -- "$1" "$to" && chmod "$3" "$to"
-  else
-    cp -p -- "$1" "$to"
-  fi || fail "can't copy the new ${2##*/} into ${2%/*}, so nothing has changed"
+# guard DIR: as root, refuses to write in DIR unless it's root's and only root may write in it, so
+# that nobody else can put a link, or another program, where root writes.
+guard() {
+  [ "$uid" = 0 ] || return 0
+  root_alone "$1" && return 0
+  # ls shows owner and mode on Linux and macOS alike, the mode with an SELinux or ACL mark at its end.
+  # shellcheck disable=SC2012
+  is=$(ls -ld -- "$1" 2> /dev/null | awk '{ m = $1; sub(/[.+@]$/, "", m); print $3 "'"'"'s, with mode " m }')
+  fail "won't write as root in $1, which is ${is:-missing}: a folder root writes in must be root's, and only root may write in it. Make it so (sudo chown root $1 && sudo chmod go-w $1), or update by hand (docs/hosting.md, section 5)"
+}
+
+# writes DIR: refuses a folder DIR this user can't write in, before anything changes.
+writes() { [ -w "$1" ] || fail "can't write in $1, so nothing has changed"; }
+
+# into PATH: refuses a PATH the swap couldn't rename a file over: a folder.
+into() {
+  if [ -d "$1" ]; then fail "$1 is a folder, where the new version has a file, so nothing has changed"; fi
+}
+
+# stage_in FOLDER: sets $sd to a new staging folder in FOLDER, this user's alone, with a name nobody
+# can guess, for what goes into FOLDER: the swap's renames then stay on one file system. Cleanup
+# takes it away.
+stage_in() {
+  sd=$(mktemp -d "$1/.fenji-update.XXXXXX") || fail "can't make a staging folder in $1, so nothing has changed"
+  printf '%s\n' "$sd" >> "$tmp/stages"
+}
+
+# put FILE STAGED MODE: FILE, copied to STAGED, a new path in a staging folder, with MODE. Nothing is
+# ever copied into a path that's there already.
+put() {
+  if [ -e "$2" ] || [ -L "$2" ]; then fail "$2 is there already, so nothing has changed"; fi
+  { cp -- "$1" "$2" && chmod "$3" "$2"; } || fail "can't copy the new ${1##*/} into place, so nothing has changed"
+}
+
+# keep PATH STAGED: PATH, as it is, at STAGED, a new path in a staging folder: a hard link where it
+# can be, a copy where it can't.
+keep() {
+  ln -- "$1" "$2" 2> /dev/null || cp -p -- "$1" "$2" || fail "can't keep the old ${1##*/}, so nothing has changed"
+}
+
+# swap STAGED PATH: renames STAGED over PATH. Where STAGED is already PATH's file, as a kept program
+# is when its .previous is a link to it, STAGED just goes.
+swap() {
+  # shellcheck disable=SC3013 # -ef: dash's, bash's and busybox's test all have it
+  if [ "$1" -ef "$2" ]; then rm -f -- "$1"; else mv -f -- "$1" "$2"; fi
 }
 
 # installs PATH: whether the archive's PATH is among what a folder's update replaces: all but the
@@ -165,44 +209,66 @@ listed() {
   done < "$tmp/files" | uniq | awk '{ printf "%s%s", (NR > 1 ? ", " : ""), $0 }'
 }
 
-# as_server ARG...: the service's program with ARGs, as the service's user and with its --config,
-# from /, as systemd runs the server.
+# as_server [-t] ARG...: the service's program with ARGs, as the service's user and with its
+# --config, where systemd runs the server; with -t, for 5 seconds at most.
 as_server() {
+  bound=''
+  if [ "$1" = -t ]; then bound=yes; shift; fi
   if [ -n "$config" ]; then set -- --config "$config" "$@"; fi
   if [ -n "$user" ] && [ "$user" != root ]; then
-    (cd / && sudo -u "$user" -- "$prog" "$@")
+    set -- sudo -u "$user" -- "$prog" "$@"
   else
-    (cd / && "$prog" "$@")
+    set -- "$prog" "$@"
   fi
+  if [ -n "$bound" ] && command -v timeout > /dev/null 2>&1; then set -- timeout 5 "$@"; fi
+  (cd "$rundir" && "$@")
 }
 
-# gone: the service didn't come up. Its journal's last lines, and how to go back (HB9).
+# go_back: how to go back to the version this replaced: the previous program and units, and the
+# backup made first.
+go_back() {
+  printf 'To go back to %s, stop it, and put the previous program back' "$current"
+  if [ -n "$replaced" ]; then printf ', and the previous units'; fi
+  printf ':\n  sudo systemctl stop fenji\n  sudo mv %s.previous %s\n' "$prog" "$prog"
+  for u in $replaced; do printf '  sudo mv %s/%s.previous %s/%s\n' "$unitdir" "$u" "$unitdir" "$u"; done
+  if [ -n "$replaced" ]; then printf '  sudo systemctl daemon-reload\n'; fi
+  printf 'Then restore the backup made before this update, as docs/hosting.md section 6 says:\n'
+  printf '  %s\n' "${backup:-(none was made)}"
+  printf 'and start it again: sudo systemctl start fenji\n'
+}
+
+# gone UP: the service didn't come up (HB9): its journal's last lines and how to go back. UP is yes
+# when systemd had it active at every look, so that it runs, but its console never answered.
 gone() {
   {
-    printf "%s: fenji didn't come up within 30 seconds. Its journal's last lines:\n" "$me"
+    if [ "$1" = yes ]; then
+      printf "%s: fenji is active, but its console didn't answer within 30 seconds, so this can't tell whether the server came up. Its journal's last lines:\n" "$me"
+    else
+      printf "%s: fenji didn't come up within 30 seconds. Its journal's last lines:\n" "$me"
+    fi
     journalctl -u fenji -n 20 --no-pager 2>&1 || :
-    printf 'To go back to %s, stop it, and put the previous program back:\n' "$current"
-    printf '  sudo systemctl stop fenji\n'
-    printf '  sudo mv %s.previous %s\n' "$prog" "$prog"
-    printf 'Then restore the backup made before this update, as docs/hosting.md section 6 says:\n'
-    printf '  %s\n' "${backup:-(none was made)}"
-    printf 'and start it again: sudo systemctl start fenji\n'
+    if [ "$1" = yes ]; then
+      printf 'If players can connect, it works, and its console may have no socket, as its log says. If they can'\''t:\n'
+    fi
+    go_back
   } >&2 2> /dev/null || :
   exit 1
 }
 
-# cleanup: on every exit, takes away whatever is still under a temporary name, the folders made for
-# it, and the download.
-tmp=
+# cleanup: on every exit, takes away the staging folders, with whatever is still in them, the
+# folders made for the swap if they're empty, the lock and the download.
+tmp='' locked=''
 cleanup() {
-  [ -n "$tmp" ] || return 0
-  if [ -f "$tmp/staged" ]; then
-    while IFS= read -r f; do rm -f -- "$f"; done < "$tmp/staged"
+  if [ -n "$tmp" ] && [ -f "$tmp/stages" ]; then
+    while IFS= read -r d; do
+      case $d in */.fenji-update.?*) rm -rf -- "$d" ;; esac
+    done < "$tmp/stages"
   fi
-  if [ -f "$tmp/made" ]; then
+  if [ -n "$tmp" ] && [ -f "$tmp/made" ]; then
     sort -r -- "$tmp/made" | while IFS= read -r d; do rmdir -- "$d" 2> /dev/null || :; done
   fi
-  rm -rf -- "$tmp"
+  if [ -n "$locked" ]; then rmdir -- "$lock" 2> /dev/null || :; fi
+  if [ -n "$tmp" ]; then rm -rf -- "$tmp"; fi
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -212,7 +278,7 @@ case ${1-} in
   -*) usage >&2; exit 2 ;;
 esac
 [ $# -le 1 ] || { usage >&2; exit 2; }
-wanted=
+wanted=''
 if [ $# -eq 1 ]; then
   wanted=${1#v}
   is_version "$wanted" || fail "not a version: $1 (a version is like 0.5.3)" 2
@@ -242,22 +308,24 @@ case $system:$machine in
   *) fail "there's no Fenji server for $system on $machine: the releases have one for Linux on x86_64 or 64-bit ARM, one for macOS on Apple silicon, and one for Windows, which updates by hand (docs/hosting.md, section 5)" ;;
 esac
 
-# The fenji service, if it runs the program beside this script (HB2), from what systemd says of it:
-# its ExecStart's program, as the service's User, with its --config, and its units' folder.
-service=no user='' config='' state='' unitdir=/etc/systemd/system shown=''
+# The fenji service, if it runs the program beside this script, or a link to it (HB2), from what
+# systemd says of it: its ExecStart's command line, its User, its working folder and its units'.
+service=no user='' argv='' config='' state='' unitdir=/etc/systemd/system workdir='' shown=''
 if command -v systemctl > /dev/null 2>&1; then
-  shown=$(systemctl show --property=LoadState,ActiveState,User,ExecStart,FragmentPath fenji 2> /dev/null) || shown=''
+  shown=$(systemctl show --property=LoadState,ActiveState,User,ExecStart,FragmentPath,WorkingDirectory fenji 2> /dev/null) ||
+    shown=''
 fi
 prop() { printf '%s\n' "$shown" | sed -n "s/^$1=//p" | head -n 1; }
 if [ "$(prop LoadState)" = loaded ]; then
   # ExecStart={ path=/usr/local/bin/fenji-server ; argv[]=/usr/local/bin/fenji-server --config … run ; … }
   line=$(prop ExecStart)
   path=$(printf '%s\n' "$line" | sed -n 's/^{ path=\(.*\) ; argv\[\]=.*$/\1/p')
-  if [ -n "$path" ] && [ "$(resolved "$path")" = "$prog" ]; then
+  # shellcheck disable=SC3013 # -ef: dash's, bash's and busybox's test all have it
+  if [ -n "$path" ] && [ "$path" -ef "$prog" ]; then
     service=yes
     user=$(prop User)
     state=$(prop ActiveState)
-    argv=$(printf '%s\n' "$line" | sed -n 's/^.* ; argv\[\]=\(.*\) ; ignore_errors=.*$/\1/p')
+    argv=$(squeezed "$(printf '%s\n' "$line" | sed -n 's/^.* ; argv\[\]=\(.*\) ; ignore_errors=.*$/\1/p')")
     # The words as systemd shows them, split at spaces: the reference unit's have none of their own.
     set -f
     # shellcheck disable=SC2086
@@ -265,15 +333,20 @@ if [ "$(prop LoadState)" = loaded ]; then
     set +f
     fragment=$(prop FragmentPath)
     [ -z "$fragment" ] || unitdir=${fragment%/*}
+    unitdir=$(cd -P -- "$unitdir" 2> /dev/null && pwd -P) || unitdir=${fragment%/*}
+    workdir=$(prop WorkingDirectory)
+    workdir=${workdir#!}
   fi
 fi
 
-# Who runs it (HB8): root for a service, which writes in /usr/local/bin and the units' folder; the
-# folder's owner for a folder, so that the files it puts there stay theirs.
+# Who runs it (HB8): root for a service, which writes in the program's folder and the units'; the
+# folder's owner for a folder, so that the files it puts there stay theirs. Root writes only in
+# folders that are root's and that only root may write in.
 uid=$(id -u)
-running=no checker=''
+running=no checker='' rundir=/
 if [ "$service" = yes ]; then
   [ "$uid" = 0 ] || fail "the fenji service runs $prog, and updating it takes root: run sudo $self"
+  guard "$here"
   # Who runs the programs' --version, never root: the service's user, or nobody for a service
   # that runs as root.
   checker=$user
@@ -285,6 +358,17 @@ if [ "$service" = yes ]; then
     inactive | failed) running=no ;;
     *) fail "the fenji service is $state: run this again once it's active, or stopped" ;;
   esac
+  # The service's commands run where systemd runs the server, which matters for a --config that
+  # isn't a full path: its WorkingDirectory, or /.
+  case $config in
+    /*) ;;
+    *)
+      case $workdir in
+        '') ;;
+        /*) rundir=$workdir ;;
+        *) fail "the fenji service reads ${config:-fenji.toml} in its WorkingDirectory, $workdir, which this can't follow: give its ExecStart a --config with a full path" ;;
+      esac ;;
+  esac
 else
   # A VPS's fenji-update, run without sudo, may find no service: systemd answers only root where
   # there's no D-Bus.
@@ -293,24 +377,22 @@ else
   elif [ ! -f "$here/$start" ]; then
     fail "$here has no $start, so it isn't a server's folder, and no fenji service runs its fenji-server: update it by hand (docs/hosting.md, section 5)"
   fi
-  # ls shows a folder's owner on Linux and macOS alike, where stat's options differ.
-  # shellcheck disable=SC2012
-  owner=$(ls -ldn -- "$here" | awk '{ print $3 }')
-  if [ "$owner" != "$uid" ]; then
-    # shellcheck disable=SC2012
+  if [ -z "$(find "$here" -prune -user "$uid" -print)" ]; then
+    # shellcheck disable=SC2012 # ls shows the owner's name on Linux and macOS alike
     name=$(ls -ld -- "$here" | awk '{ print $3 }')
     if [ "$uid" = 0 ]; then
       fail "$here is $name's, and this runs as root: run it as $name, without sudo, so that the files it puts there stay $name's"
     fi
     fail "$here is $name's: run it as $name"
   fi
+  guard "$here"
 fi
 
 # Which version (HB3): the latest release, from where releases/latest leads, or the one named.
 current=$(version_of "$prog") ||
   fail "$prog doesn't run, or doesn't say its version: update it by hand (docs/hosting.md, section 5)"
 if [ -z "$wanted" ]; then
-  landed=$(curl -fsSL --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "$releases/latest") ||
+  landed=$(curl -q -fsSL --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "$releases/latest") ||
     fail "can't reach $releases/latest, to find the latest release"
   wanted=${landed##*/tag/v}
   if [ "$wanted" = "$landed" ] || ! is_version "$wanted"; then
@@ -318,7 +400,9 @@ if [ -z "$wanted" ]; then
   fi
   say "The latest release is $wanted."
 fi
-case $(compare "$wanted" "$current") in
+order=$(compare "$wanted" "$current")
+case $order in
+  1) ;;
   0)
     if [ $# -eq 0 ]; then
       say "This server runs $current, the latest release: there's nothing to update."
@@ -327,6 +411,7 @@ case $(compare "$wanted" "$current") in
     fi
     exit 0 ;;
   -1) fail "$wanted is older than $current, which this server runs, and an update never goes back, as the database may have moved on since: to go back to $wanted, restore a backup made with $wanted, with that version's program (docs/hosting.md, section 6)" ;;
+  *) fail "can't tell whether $wanted comes after $current, so nothing has changed" ;;
 esac
 
 # A server running from a folder runs in a terminal or in tmux, where it can't be started again
@@ -334,6 +419,17 @@ esac
 if [ "$service" = no ] && (cd "$here" && ./fenji-server console --run online) > /dev/null 2>&1; then
   fail "a server is running from $here: stop it first: type stop in its console, then run $me again"
 fi
+
+# One update at a time: a second's swap would cross the first's.
+writes "$here"
+lock=$here/.fenji-update.lock
+if ! mkdir -- "$lock" 2> /dev/null; then
+  if [ -d "$lock" ]; then
+    fail "another update of this server is running, or one was cut short: if none is running, remove $lock, and run this again"
+  fi
+  fail "can't make $lock, so nothing has changed"
+fi
+locked=yes
 
 if [ "$service" = yes ]; then
   say "Updating the fenji service, which runs $prog, from $current to $wanted."
@@ -344,7 +440,7 @@ fi
 # The download, checked (HB4): nothing changes until it matches SHA256SUMS, and its program runs and
 # reports its version.
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/fenji-update.XXXXXX") || fail "can't make a temporary folder for the download"
-: > "$tmp/staged"
+: > "$tmp/stages"
 : > "$tmp/made"
 archive=fenji-server-$wanted-$target.tar.gz
 from=$releases/download/v$wanted
@@ -352,8 +448,12 @@ say "Downloading $archive, with its release's SHA256SUMS."
 fetch "$from/$archive" "$tmp/$archive" ||
   fail "can't download $from/$archive: is $wanted a release, with a server for $target? Nothing has changed"
 fetch "$from/SHA256SUMS" "$tmp/SHA256SUMS" || fail "can't download $from/SHA256SUMS, so nothing has changed"
-expected=$(awk -v f="$archive" '$2 == f || $2 == "*" f { n++; s = $1 } END { if (n == 1) print s }' "$tmp/SHA256SUMS")
-[ -n "$expected" ] || fail "SHA256SUMS has no line for $archive, so it can't be checked, and nothing has changed"
+found=$(awk -v f="$archive" '$2 == f || $2 == "*" f { n++; s = $1 } END { print n + 0, s }' "$tmp/SHA256SUMS")
+case ${found%% *} in
+  1) expected=${found#* } ;;
+  0) fail "SHA256SUMS has no line for $archive, so it can't be checked, and nothing has changed" ;;
+  *) fail "SHA256SUMS has ${found%% *} lines for $archive, so it can't be checked, and nothing has changed" ;;
+esac
 actual=$(sum256 < "$tmp/$archive") || fail "can't take the download's checksum: this needs sha256sum, or shasum on macOS"
 actual=${actual%% *}
 if [ "$actual" != "$expected" ]; then
@@ -365,51 +465,87 @@ tar -xzf "$tmp/$archive" -C "$tmp/new" || fail "can't unpack $archive, so nothin
 new=$tmp/new/fenji-server-$wanted-$target
 [ -f "$new/fenji-server" ] || fail "$archive has no fenji-server-$wanted-$target/fenji-server, so nothing has changed"
 
-# The new program waits beside the old one, where it's run to check it: the temporary folder may
-# not let programs run, nor a service's user reach it.
-next=$(staged "$prog")
-if [ "$service" = yes ]; then stage "$new/fenji-server" "$prog" 0755; else stage "$new/fenji-server" "$prog"; fi
+# The new program waits beside the old one, in a staging folder, where it's run to check it: the
+# temporary folder may not let programs run, nor a service's user reach them. That user may pass
+# through the staging folder, but not see into it or write there.
+stage_in "$here"
+pstage=$sd
+if [ "$service" = yes ]; then chmod 0711 "$pstage"; fi
+next=$pstage/fenji-server
+into "$prog"
+put "$new/fenji-server" "$next" 0755
 said=$(said_version "$next") || fail "the new fenji-server doesn't run on this computer, so nothing has changed"
 said=${said##* }
 [ "$said" = "$wanted" ] || fail "the new fenji-server says it's ${said:-no version}, not $wanted, so nothing has changed"
 say "The new fenji-server runs, and reports $wanted."
 # The old program, as fenji-server.previous will keep it (HB7).
-kept=$(staged "$prog.previous")
-printf '%s\n' "$kept" >> "$tmp/staged"
-rm -f -- "$kept"
-ln -- "$prog" "$kept" 2> /dev/null || cp -p -- "$prog" "$kept" ||
-  fail "can't keep the old program beside the new one, in $here, so nothing has changed"
+kept=$pstage/fenji-server.previous
+into "$prog.previous"
+keep "$prog" "$kept"
 
 # The rest of what the update replaces waits beside it too: in a folder, the archive's other files;
-# in a service, the units and this script.
+# in a service, Fenji's units, if the service is Fenji's own unit, and this script.
+replaced='' units=''
 if [ "$service" = no ]; then
   (cd "$new" && find . -type d -print) > "$tmp/dirs"
   (cd "$new" && find . -type f -print) | LC_ALL=C sort > "$tmp/files"
   while IFS= read -r d; do
     d=${d#./}
     installs "$d" || continue
-    if [ ! -d "$here/$d" ]; then
+    if [ -d "$here/$d" ]; then
+      guard "$here/$d"
+      writes "$here/$d"
+    elif [ -e "$here/$d" ] || [ -L "$here/$d" ]; then
+      fail "$here/$d is a file, where the new version has a folder, so nothing has changed"
+    else
       printf '%s\n' "$here/$d" >> "$tmp/made"
-      mkdir -- "$here/$d" || fail "can't make $here/$d, so nothing has changed"
+      { mkdir -- "$here/$d" && chmod 0755 "$here/$d"; } || fail "can't make $here/$d, so nothing has changed"
     fi
+    mkdir -p -- "$pstage/$d"
   done < "$tmp/dirs"
   while IFS= read -r f; do
     f=${f#./}
     installs "$f" || continue
-    stage "$new/$f" "$here/$f"
+    into "$here/$f"
+    if [ -x "$new/$f" ]; then mode=0755; else mode=0644; fi
+    put "$new/$f" "$pstage/$f" "$mode"
   done < "$tmp/files"
 else
-  # Fenji's own units, by name: an archive can't add one of its own.
-  for u in $UNITS; do
-    if [ -f "$new/systemd/$u" ]; then stage "$new/systemd/$u" "$unitdir/$u" 0644; fi
-  done
-  odd=''
-  for u in "$new"/systemd/*; do
-    [ -e "$u" ] || continue
-    case " $UNITS " in *" ${u##*/} "*) ;; *) odd="$odd${odd:+, }${u##*/}" ;; esac
-  done
-  [ -z "$odd" ] || say "Left out $odd, from the archive's systemd/: only Fenji's own three units are installed."
-  if [ -f "$new/update-server.sh" ]; then stage "$new/update-server.sh" "$self" 0755; fi
+  # The archive's units replace the installed ones only if the service is Fenji's own unit: it runs
+  # the archive's fenji.service's ExecStart, as its User. A host's own unit stays as it is.
+  ours=no
+  if [ -f "$new/systemd/fenji.service" ]; then
+    want_exec=$(unit_value ExecStart "$new/systemd/fenji.service")
+    want_user=$(unit_value User "$new/systemd/fenji.service")
+    if [ -n "$want_exec" ] && [ "$want_exec" = "$argv" ] && [ "$want_user" = "$user" ]; then ours=yes; fi
+  fi
+  if [ "$ours" = yes ]; then
+    guard "$unitdir"
+    stage_in "$unitdir"
+    ustage=$sd
+    for u in $UNITS; do
+      [ -f "$new/systemd/$u" ] || continue
+      into "$unitdir/$u"
+      put "$new/systemd/$u" "$ustage/$u" 0644
+      if [ -e "$unitdir/$u" ]; then
+        into "$unitdir/$u.previous"
+        keep "$unitdir/$u" "$ustage/$u.previous"
+      fi
+      units="$units $u"
+    done
+    odd=''
+    for u in "$new"/systemd/*; do
+      [ -e "$u" ] || continue
+      case " $UNITS " in *" ${u##*/} "*) ;; *) odd="$odd${odd:+, }${u##*/}" ;; esac
+    done
+    [ -z "$odd" ] || say "Left out $odd, from the archive's systemd/: only Fenji's own three units are installed."
+  elif [ -d "$new/systemd" ]; then
+    say "Left the units in $unitdir as they are: the fenji service runs $argv as ${user:-root}, not as Fenji's own unit does, so only the program is updated."
+  fi
+  if [ -f "$new/update-server.sh" ]; then
+    into "$self"
+    put "$new/update-server.sh" "$pstage/update-server.sh" 0755
+  fi
 fi
 
 # A backup first (HB6): the console's while a service's server runs, or the program's own.
@@ -435,7 +571,7 @@ fi
 # update stops halfway.
 trap '' HUP INT TERM PIPE
 if [ "$service" = no ]; then
-  if ! { mv -f -- "$kept" "$prog.previous" && mv -f -- "$next" "$prog"; }; then
+  if ! { swap "$kept" "$prog.previous" && swap "$next" "$prog"; }; then
     fail "can't put the new program in place in $here, so nothing has changed"
   fi
   say "Installed fenji-server $wanted, and kept $current as fenji-server.previous."
@@ -443,9 +579,11 @@ if [ "$service" = no ]; then
   while IFS= read -r f; do
     f=${f#./}
     installs "$f" || continue
-    mv -f -- "$(staged "$here/$f")" "$here/$f" || left="$left $f"
+    swap "$pstage/$f" "$here/$f" || left="$left $f"
   done < "$tmp/files"
-  [ -z "$left" ] || fail "fenji-server $wanted is in place, but these files of its archive couldn't replace the old ones:$left"
+  if [ -n "$left" ]; then
+    fail "fenji-server $wanted is in place, but these files of its archive couldn't replace the old ones:$left. Go back to $current (mv $prog.previous $prog) and run this again"
+  fi
   say "Replaced the archive's other files: $(listed)."
   say "Updated from $current to $wanted. Start the server with ./$start."
   exit 0
@@ -455,33 +593,39 @@ fi
 if [ "$running" = yes ]; then
   say "Stopping fenji."
   if ! systemctl stop fenji; then
-    systemctl start fenji 2> /dev/null || :
-    fail "can't stop the fenji service, so nothing has changed"
+    if systemctl start fenji 2> /dev/null && systemctl is-active --quiet fenji; then
+      fail "can't stop the fenji service, so nothing has changed, and it runs on as it was"
+    fi
+    fail "can't stop the fenji service, so nothing has changed, but it isn't running now: sudo systemctl start fenji starts it, and sudo journalctl -u fenji says why it didn't stop"
   fi
 fi
-if ! { mv -f -- "$kept" "$prog.previous" && mv -f -- "$next" "$prog"; }; then
+if ! { swap "$kept" "$prog.previous" && swap "$next" "$prog"; }; then
   if [ "$running" = yes ]; then systemctl start fenji || :; fi
   fail "can't put the new program in place in $here, so nothing has changed"
 fi
 say "Installed fenji-server $wanted in $here, and kept $current as fenji-server.previous."
-units=''
-for u in $UNITS; do
-  [ -f "$new/systemd/$u" ] || continue
-  if mv -f -- "$(staged "$unitdir/$u")" "$unitdir/$u"; then
-    units=yes
-  else
-    say "Couldn't install $u in $unitdir: the old one stays."
-  fi
-done
 if [ -n "$units" ]; then
-  if systemctl daemon-reload; then
-    say "Installed the units in $unitdir, and reloaded systemd."
-  else
-    say "Installed the units in $unitdir, but systemctl daemon-reload failed, above."
+  installed=''
+  for u in $units; do
+    if [ -e "$ustage/$u.previous" ]; then
+      if swap "$ustage/$u.previous" "$unitdir/$u.previous"; then replaced="$replaced $u"; fi
+    fi
+    if swap "$ustage/$u" "$unitdir/$u"; then
+      installed=yes
+    else
+      say "Couldn't install $u in $unitdir: the old one stays."
+    fi
+  done
+  if [ -n "$installed" ]; then
+    if systemctl daemon-reload; then
+      say "Installed the units in $unitdir, kept the old ones as <unit>.previous, and reloaded systemd."
+    else
+      say "Installed the units in $unitdir, kept the old ones as <unit>.previous, but systemctl daemon-reload failed, above."
+    fi
   fi
 fi
-if [ -f "$new/update-server.sh" ]; then
-  if mv -f -- "$(staged "$self")" "$self"; then
+if [ -f "$pstage/update-server.sh" ]; then
+  if swap "$pstage/update-server.sh" "$self"; then
     say "Replaced $self."
   else
     say "Couldn't replace $self: the old one stays."
@@ -497,10 +641,16 @@ systemctl start fenji || :
 trap 'exit 1' HUP INT TERM
 trap - PIPE
 # Up once systemd has it active and its console answers, which it does once the store is open and
-# its ports listen (HB9).
-n=1
-until systemctl is-active --quiet fenji && as_server console --run online > /dev/null 2>&1; do
-  [ "$n" -lt 30 ] || gone
+# its ports listen (HB9). Each look takes 5 seconds at most. Active at every look, it runs, even if
+# its console never answers.
+n=1 up=yes
+while :; do
+  if systemctl is-active --quiet fenji; then
+    if as_server -t console --run online > /dev/null 2>&1; then break; fi
+  else
+    up=no
+  fi
+  [ "$n" -lt 30 ] || gone "$up"
   n=$((n + 1))
   sleep 1
 done
