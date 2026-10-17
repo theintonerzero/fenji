@@ -17,7 +17,6 @@
   { "type": "stopCheck" },
   { "type": "download", "folder": "/home/player/Games/SoLO" },
   { "type": "cancelDownload" },
-  { "type": "signInWithPassword" },
   { "type": "repair" },
   { "type": "play" },
   { "type": "playOn", "id": 1 },

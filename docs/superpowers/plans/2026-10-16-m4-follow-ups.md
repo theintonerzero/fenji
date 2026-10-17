@@ -142,7 +142,7 @@ Find what the client expects after type 4 in the world, answer it, and return th
   - every other line dropped unread;
   - Cancel ends the group.
 - The Downloading screen draws the code as SVG squares with "Scan this with the Steam Mobile App", and redraws it when it changes. It's designed with `impeccable` from DESIGN.md.
-- "No Steam Mobile App? Sign in with your password" keeps the terminal and the manual command (#348).
+- "No Steam Mobile App? Sign in with your password" ends the hidden run and opens the manual command, with the player's own login (#348; L3; the final review ruled out a terminal of Fenji's for it).
 - PRIVACY.md says what the launcher reads of DepotDownloader's output (the code, progress, the end) and that it keeps none of it.
 - Tests:
   - Task 11's fixtures through the parser;

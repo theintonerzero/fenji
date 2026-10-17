@@ -19,17 +19,11 @@ pub const BAD_CODE: &str = "That isn't an invite code.";
 pub const DOWNLOAD_LINUX_ONLY: &str = "Downloading works on Linux only for now.";
 /// A check, download or repair while another runs.
 pub const BUSY: &str = "Something's already running. Wait, or stop it.";
-/// No terminal to open DepotDownloader in: the player runs the command from the Game popover's
-/// Run it yourself, while setting up or on Repair, in a terminal of their own (#348).
-pub const NO_TERMINAL: &str = "Fenji couldn't open a terminal. Open Game, then Run it yourself.";
 /// DepotDownloader, run hidden to sign in by code, couldn't be started (Amendment A, LA4).
 pub const DEPOT_DIDNT_START: &str =
     "DepotDownloader couldn't start. Open Game, then Run it yourself.";
-/// A password sign-in asked for when no download is waiting for a Steam sign-in by code (LA5).
-pub const NO_SIGN_IN: &str = "Nothing is waiting for a Steam sign-in.";
 pub const CHECK_STOPPED: &str = "Verification stopped.";
 pub const DOWNLOAD_CANCELLED: &str = "Download cancelled.";
-pub const WINDOW_CLOSED: &str = "The download window closed early. Try again.";
 pub const NOTHING_TO_REPAIR: &str = "Nothing to repair.";
 /// Play, a check or a repair with no game folder chosen (or one that's gone).
 pub const NO_FOLDER: &str = "Set up the game first. Open Game.";

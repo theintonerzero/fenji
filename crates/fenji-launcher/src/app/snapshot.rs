@@ -227,9 +227,6 @@ pub enum JobView {
         percent: Option<f32>,
         file: Option<String>,
         waiting_for_steam: bool,
-        /// Whether DepotDownloader runs in a terminal of its own, for a password sign-in (LA5),
-        /// rather than hidden, signing in by the code the launcher draws (LA4).
-        terminal: bool,
         /// The sign-in code to scan, while a hidden run shows one.
         code: Option<CodeView>,
     },

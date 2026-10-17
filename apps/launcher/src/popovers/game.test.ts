@@ -68,16 +68,6 @@ test("downloading: its progress and Cancel, which keeps focus as the progress st
   expect(sent).toEqual([{ type: "cancelDownload" }]);
 });
 
-test("waiting for Steam: the sign-in stays in its own window, or the player runs it in their own", () => {
-  const { root, asked } = mountPopover(gamePopover, golden("client-waiting-for-steam"));
-  expect(root.textContent).toContain("Sign in to Steam in its own window. Fenji never sees it.");
-  expect(root.querySelector('[role="progressbar"]')!.hasAttribute("aria-valuenow")).toBe(false);
-  expect(shows(root, "Run it yourself")).toBe(true);
-  press(root, "Run it yourself");
-  expect(asked.dialogs).toHaveLength(1);
-  expect(document.body.textContent).toContain("Then choose the folder it downloaded to.");
-});
-
 /** How many modules a drawn code's path paints: each row's runs, `M x y h n v1 h-n z`. */
 function painted(code: Element): number {
   const d = code.querySelector("path")!.getAttribute("d") ?? "";
@@ -93,7 +83,7 @@ function codeOf(s: ReturnType<typeof golden>): { size: number; dark: string } {
 
 test("signing in by code: the code drawn as squares, its words, Cancel and a password sign-in", () => {
   const s = golden("client-scan-code");
-  const { root, sent } = mountPopover(gamePopover, s);
+  const { root, sent, asked } = mountPopover(gamePopover, s);
   const code = root.querySelector('svg[role="img"]')!;
   expect(code.getAttribute("aria-label")).toBe("Steam sign-in code");
   expect(code.getAttribute("viewBox")).toBe(`0 0 ${codeOf(s).size} ${codeOf(s).size}`);
@@ -106,9 +96,27 @@ test("signing in by code: the code drawn as squares, its words, Cancel and a pas
   expect(embers(root)).toBe(0);
   expect(shows(root, "Run it yourself")).toBe(false);
   expect(root.textContent).toContain("No Steam Mobile App? Sign in with your password");
+  // A password sign-in is the player's own command, with their own login, in their own terminal
+  // (L3, LA5; the final review, C2): Fenji's run, waiting, ends first.
   press(root, "Sign in with your password");
+  expect(sent).toEqual([{ type: "cancelDownload" }]);
+  expect(asked.dialogs).toHaveLength(1);
+  expect(document.body.textContent).toContain("Then choose the folder it downloaded to.");
   press(root, "Cancel");
-  expect(sent).toEqual([{ type: "signInWithPassword" }, { type: "cancelDownload" }]);
+  expect(sent).toEqual([{ type: "cancelDownload" }, { type: "cancelDownload" }]);
+});
+
+test("a repair waiting for its sign-in: the password route runs the repair's own command", () => {
+  const s = golden("client-scan-code");
+  s.client.manual = golden("client-repair").client.manual;
+  if (s.job?.kind === "downloading") {
+    s.job.repair = true;
+  }
+  const { root, sent, asked } = mountPopover(gamePopover, s);
+  press(root, "Sign in with your password");
+  expect(sent).toEqual([{ type: "cancelDownload" }]);
+  expect(asked.dialogs).toHaveLength(1);
+  expect(document.body.textContent).toContain("It downloads the files that need repair. Then verify them.");
 });
 
 test("a changed code is drawn again in its place, and the same one isn't", () => {
@@ -135,12 +143,13 @@ test("before Steam draws a code: connecting, the bar drifting, Cancel and a pass
   if (s.job?.kind === "downloading") {
     s.job.code = null;
   }
-  const { root, sent } = mountPopover(gamePopover, s);
+  const { root, sent, asked } = mountPopover(gamePopover, s);
   expect(root.querySelector('svg[role="img"]')).toBeNull();
   expect(root.textContent).toContain("Connecting to Steam…");
   expect((root.querySelector('[role="progressbar"]') as HTMLElement).hidden).toBe(false);
   press(root, "Sign in with your password");
-  expect(sent).toEqual([{ type: "signInWithPassword" }]);
+  expect(sent).toEqual([{ type: "cancelDownload" }]);
+  expect(asked.dialogs).toHaveLength(1);
 });
 
 test("while files come in, Cancel stands alone", () => {
@@ -148,6 +157,7 @@ test("while files come in, Cancel stands alone", () => {
   s.client.manual = golden("client-waiting-for-steam").client.manual;
   const { root } = mountPopover(gamePopover, s);
   expect(shows(root, "Run it yourself")).toBe(false);
+  expect(shows(root, "Sign in with your password")).toBe(false);
   expect(shows(root, "Cancel")).toBe(true);
 });
 
@@ -209,8 +219,3 @@ test("repair offers a plain Verify too, for files put back another way (launcher
   expect(sent).toEqual([{ type: "check", level: "quick" }]);
 });
 
-test("Run it yourself while Fenji's own DepotDownloader waits cancels that one first", () => {
-  const { root, sent } = mountPopover(gamePopover, golden("client-waiting-for-steam"));
-  press(root, "Run it yourself");
-  expect(sent).toEqual([{ type: "cancelDownload" }]);
-});

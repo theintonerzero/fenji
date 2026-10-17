@@ -74,9 +74,6 @@ pub enum Intent {
         folder: String,
     },
     CancelDownload,
-    /// A player without the Steam Mobile App signs in with their password, in a terminal of
-    /// DepotDownloader's own, while a download waits for its sign-in by code (Amendment A, LA5).
-    SignInWithPassword,
     Repair,
     Play,
     PlayOn {
@@ -154,7 +151,6 @@ pub fn name(i: &Intent) -> &'static str {
         Intent::StopCheck => "stopCheck",
         Intent::Download { .. } => "download",
         Intent::CancelDownload => "cancelDownload",
-        Intent::SignInWithPassword => "signInWithPassword",
         Intent::Repair => "repair",
         Intent::Play => "play",
         Intent::PlayOn { .. } => "playOn",
@@ -194,7 +190,6 @@ pub const ALL: &[&str] = &[
     "stopCheck",
     "download",
     "cancelDownload",
-    "signInWithPassword",
     "repair",
     "play",
     "playOn",

@@ -4,11 +4,6 @@ import type { LevelView } from "./LevelView";
 
 export type JobView = { "kind": "checking", level: LevelView, filesDone: number, filesTotal: number, percent: number, } | { "kind": "fetching", tool: string, percent: number | null, } | { "kind": "downloading", repair: boolean, percent: number | null, file: string | null, waitingForSteam: boolean, 
 /**
- * Whether DepotDownloader runs in a terminal of its own, for a password sign-in (LA5),
- * rather than hidden, signing in by the code the launcher draws (LA4).
- */
-terminal: boolean, 
-/**
  * The sign-in code to scan, while a hidden run shows one.
  */
 code: CodeView | null, };

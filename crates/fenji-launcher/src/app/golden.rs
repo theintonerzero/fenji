@@ -398,7 +398,6 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
                     percent: None,
                     file: None,
                     waiting_for_steam: true,
-                    terminal: false,
                     code: Some(sample_code()),
                 });
             }),
@@ -408,13 +407,12 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
             with(|s| {
                 s.client.check = CheckView::None;
                 s.client.manual = Some(manual(None));
-                // A password sign-in, in DepotDownloader's own terminal (Amendment A, LA5).
+                // Connecting to Steam: before DepotDownloader draws its first code (LA4).
                 s.job = Some(JobView::Downloading {
                     repair: false,
                     percent: None,
                     file: None,
                     waiting_for_steam: true,
-                    terminal: true,
                     code: None,
                 });
             }),
@@ -428,7 +426,6 @@ pub fn all() -> Vec<(&'static str, Snapshot)> {
                     percent: Some(42.0),
                     file: Some("data/_index/sc_res.idx".into()),
                     waiting_for_steam: false,
-                    terminal: false,
                     code: None,
                 });
             }),

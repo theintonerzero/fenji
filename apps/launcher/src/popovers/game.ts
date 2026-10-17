@@ -1,8 +1,8 @@
 // The Game popover (the redesign's Your game boards): the player's copy, as it is. Verified, with
 // where it is, when, Verify integrity and Change folder. Set up: the Steam library first, then
 // another folder, then a download. Downloading or verifying, with its progress; while a download
-// waits for its Steam sign-in, the code DepotDownloader drew, to scan (Amendment A, LA4), or a
-// password sign-in in its own terminal (LA5). Needs repair, with each file and Repair. Its
+// waits for its Steam sign-in, the code DepotDownloader drew, to scan (Amendment A, LA4), or the
+// player's own command for a password sign-in (LA5). Needs repair, with each file and Repair. Its
 // actions' refusals show in it, under its sections.
 import type { Ctx, PopoverContent } from "../app";
 import { h, s as svg, type Child } from "../dom";
@@ -78,12 +78,7 @@ function work(job: JobView): { title: string; percent: number | null; stop: [str
         percent: job.percent,
         stop: ["Cancel", { type: "cancelDownload" }],
         // A code to scan carries its own words.
-        line:
-          !job.waitingForSteam || job.code !== null
-            ? null
-            : job.terminal
-              ? "Sign in to Steam in its own window. Fenji never sees it."
-              : "Connecting to Steam…",
+        line: !job.waitingForSteam || job.code !== null ? null : "Connecting to Steam…",
       };
   }
 }
@@ -144,12 +139,11 @@ export function gamePopover(ctx: Ctx): PopoverContent {
       void act(stopIntent)();
     }
   }, true);
-  // While DepotDownloader waits for a Steam sign-in in its own terminal, the player can run it in
-  // a terminal of their own instead.
-  let runCommand: (() => void) | null = null;
-  const runLink = button.link("Run it yourself", () => runCommand?.());
-  // While it waits hidden, the code it drew, drawn again only when it changes (LA4), and a
-  // password sign-in in its own terminal for a player without the Steam Mobile App (LA5).
+  // While DepotDownloader waits for a Steam sign-in, a player without the Steam Mobile App signs in
+  // with their password through their own command, in their own terminal (L3, LA5).
+  let passwordRoute: (() => void) | null = null;
+  // While it waits, the code it drew, drawn again only when it changes (LA4), and the password
+  // sign-in for a player without the Steam Mobile App (LA5).
   const codeTile = h("div", { class: "scan-code" });
   let drawn = "";
   const scan = h(
@@ -159,8 +153,8 @@ export function gamePopover(ctx: Ctx): PopoverContent {
     h("p", { class: "scan-words" }, "Scan this with the Steam Mobile App."),
     line("Fenji never sees your sign-in."),
   );
-  const password = line("No Steam Mobile App? ", button.link("Sign in with your password", act({ type: "signInWithPassword" })));
-  const working = section(h("p", { class: "work-head" }, workTitle, workPercent), bar, scan, workLine, acts(stop, runLink), password);
+  const password = line("No Steam Mobile App? ", button.link("Sign in with your password", () => passwordRoute?.()));
+  const working = section(h("p", { class: "work-head" }, workTitle, workPercent), bar, scan, workLine, acts(stop), password);
 
   function build(view: Exclude<View, "working">, s: Snapshot): Child[] {
     const { client, platform } = s;
@@ -297,16 +291,17 @@ export function gamePopover(ctx: Ctx): PopoverContent {
           codeTile.replaceChildren(...(code === null ? [] : [drawCode(code)]));
           drawn = code?.dark ?? "";
         }
-        password.hidden = !(job.kind === "downloading" && job.waitingForSteam && !job.terminal);
-        const waiting = job.kind === "downloading" && job.waitingForSteam && job.terminal && manual !== null;
-        runLink.hidden = !waiting;
-        runCommand = null;
+        const waiting = job.kind === "downloading" && job.waitingForSteam && manual !== null;
+        password.hidden = !waiting;
+        passwordRoute = null;
         if (waiting) {
           // A repair's own command fetches only the files that need it, then the files are verified.
           const repair = job.kind === "downloading" && job.repair && manual.repair !== null;
           const command = repair ? manual.repair! : manual.download;
-          // Two DepotDownloaders would write one folder: Fenji's own, waiting, goes first.
-          runCommand = () => {
+          // A password sign-in is the player's own command, with their own login (L3, LA5; the
+          // final review, C2). Two DepotDownloaders would write one folder: Fenji's own, waiting,
+          // goes first.
+          passwordRoute = () => {
             void ctx.send({ type: "cancelDownload" });
             ctx.show((done) => commandDialog(ctx, command, manual.get, repair ? "check" : "chooseFolder", done));
           };
