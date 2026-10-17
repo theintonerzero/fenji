@@ -228,11 +228,21 @@ pub struct ConsoleReply {
 /// What the world tells a connection task.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorldOut {
-    /// Load this scene and stand here (772): the first message after a join. A teleport to
-    /// another scene would send it too, but the world refuses one for now (#280).
+    /// Load this scene and stand here (772): the first message after a join, and a teleport to
+    /// another scene's.
     LoadScene { pid: ActorId, at: Location },
     /// The player's own actor, once its client has loaded (type 7, then its speed, then 8).
     SelfEnter {
+        pid: ActorId,
+        look: Look,
+        pos: Pos,
+        speed: i64,
+    },
+    /// The player's own actor again, once its client has loaded the scene a teleport took it to:
+    /// a 9 naming it, which its client destroys, then [`WorldOut::SelfEnter`]'s, which make it
+    /// anew at `pos`. On a 7 alone the client kept the actor where it stood, in the old scene's
+    /// coordinates (run 054-t1).
+    SelfReenter {
         pid: ActorId,
         look: Look,
         pos: Pos,
