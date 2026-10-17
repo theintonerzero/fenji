@@ -407,7 +407,7 @@ async fn a_client_that_stops_reading_is_closed() {
     let t = ticket(&s, "aaa").await;
     let mut a = Bot::connect(s.login_addr, payload(&t, "aaa", false)).await;
     a.expect_work().await;
-    // Nine characters with a face near the largest in the client's own shape (#391) make each
+    // Nine characters with a face near the widest the check takes (#391) make each
     // list about 36 KB: every section at its widest, in ten-digit values.
     let big = "2147483647";
     let sliders = format!("{}0,0,2147483647,1073741823", format!("{big},").repeat(61));

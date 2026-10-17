@@ -1,10 +1,10 @@
-//! The face string's shape (lobby.md 5.9, 5.10; #391). The client's shared validator,
+//! The face string's shape (lobby.md 5.9–5.11; #391). The client's shared validator,
 //! `check_feature_face` (`data/core/share/face_verification.luac`, S15 `0.45`, its parser `0.35`),
 //! rebuilds a face from its sections and falls back to a default face when one fails. But it runs
 //! only on the select screen and in the shop: in the world, a client hands another player's face
-//! straight from property 215 to the native `set_face` (world.md 4.10). So Fenji passes on only
-//! faces in the shape the validator writes, which the client's own faces have: the run m3-l3b
-//! default face had exactly its sections, counts and masks.
+//! straight from property 215 to the native `set_face` (lobby.md 5.11, S30). So Fenji passes on
+//! only faces in a shape that holds every face the client writes: the validator's sections, counts
+//! and masks, which the run m3-l3b default face had exactly.
 //!
 //! The validator also clamps every value to the game's design tables and checks every id against
 //! them. Those rules wait for the server to read the tables (M5, #180); what's checked here needs
@@ -17,7 +17,8 @@ use crate::lobby::FACE_MAX;
 const VERSION: &str = "v:5";
 
 /// The section 2 layer types, in the validator's order of output, and how many values each
-/// entry holds: (type << 16 | id), alpha and colour, then its extras.
+/// entry holds: (type << 16 | id), alpha and colour, then its extras. Not type 7: the create screen
+/// has no panel for it, and the client's own writer skips it, though the validator would keep one.
 const LAYERS: [(i32, std::ops::RangeInclusive<usize>); 9] = [
     (1, 3..=3),
     (2, 3..=3),
@@ -48,8 +49,11 @@ const BODY_MAX: usize = 256;
 ///   [`BODY_MAX`] values. 6: one value. 7: empty, or up to two `|`-separated pairs, an ear (part 0)
 ///   and a tail (part 1).
 ///
-/// Ids, masks and packed values aren't negative. Values the validator clamps to the design tables
-/// are only checked to be integers.
+/// Ids, masks and packed values aren't negative, but for the eyes' packed saturation and lightness,
+/// which the shop clamps to −50..50. Values the validator clamps to the design tables are only
+/// checked to be integers. The shape takes some faces the client never writes, such as a hair mask
+/// without its base or a layer of id 0; none of those can mislead a reader of the shape, and the
+/// design tables' rules (M5, #180) will refuse them.
 pub fn valid(face: &str, vocation: i64) -> bool {
     if face.len() > FACE_MAX || !face.is_ascii() {
         return false;
@@ -80,7 +84,7 @@ pub fn valid(face: &str, vocation: i64) -> bool {
         let ok = match key {
             1 => sliders(value),
             2 => layers(value),
-            3 => ints(value).is_some_and(|v| v.len() == 5 && non_negative(&v, [0, 1, 2, 4])),
+            3 => ints(value).is_some_and(|v| v.len() == 5 && non_negative(&v, [0, 1, 2])),
             4 => hair(value),
             5 => ints(value).is_some_and(|v| v.len() <= BODY_MAX && v.iter().all(|&x| x >= 0)),
             6 => ints(value).is_some_and(|v| v.len() == 1 && v[0] >= 0),
@@ -185,10 +189,39 @@ fn fox(value: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// A face of every section, in the client's own shape, for vocation 7, its digits ours.
+    /// A face of every section, in the shape the check takes, for vocation 7, its digits ours.
     const EVERY: &str = "v:5;1:120,-340,560,7,9,11,0;2:65543,255,16777215|196613,200,12618100,500;\
                          3:2,6553650,5243780,0,3276850;4:13,121,8,25;5:66536,132572,197608;6:12;\
                          7:1,1|300,502;";
+
+    #[test]
+    fn the_widest_face_the_rules_take_fits_within_the_limit() {
+        // Every section at its widest, its widest values: 4,088 bytes. So the stored face, the
+        // select list and the world's enter stay bounded, and the length check refuses nothing
+        // the shape takes; it only stops reading a longer string early.
+        let (max, min) = ("2147483647", "-1000000000");
+        let sliders = format!("{}2147483647,1073741823", format!("{min},").repeat(63));
+        let layers = [
+            65535, 131071, 196607, 262143, 327679, 393215, 458751, 589823, 655359,
+        ]
+        .map(|head: i32| {
+            let extras = match head >> 16 {
+                3 | 8 | 9 => 1,
+                6 => 2,
+                _ => 0,
+            };
+            format!("{head},{max},{max}{}", format!(",{min}").repeat(extras))
+        })
+        .join("|");
+        let face = format!(
+            "v:5;1:{sliders};2:{layers};3:{max},{max},{max},{min},{min};\
+             4:31,{max},{max},{max},{max},{max};5:{};6:{max};7:255,{max}|511,{max};",
+            vec![max; 256].join(","),
+        );
+        assert!(valid(&face, 7), "{face}");
+        assert_eq!(face.len(), 4_088);
+        assert!(face.len() <= FACE_MAX);
+    }
 
     #[test]
     fn the_clients_shape_is_valid() {
@@ -256,12 +289,19 @@ mod tests {
             "--1",
             "1e3",
             "99999999999",
+            "00000000001",
             "1,",
         ] {
             assert!(!valid(&face(bad), 0), "{bad:?}");
         }
         // Where the validator writes no negative value: an id, a mask, a packed value.
         assert!(!valid(&face("-1"), 0));
+        // But the eyes' packed saturation and lightness may be: the shop clamps them to −50..50.
+        assert!(valid(
+            "v:5;2:65543,255,16777215;3:2,1,1,0,-3276850;4:9,1,2",
+            0
+        ));
+        assert!(!valid("v:5;2:65543,255,16777215;3:2,1,-1,0,0;4:9,1,2", 0));
         assert!(
             valid(
                 "v:5;1:-5,0,0,1,0;2:65543,255,16777215;3:2,1,1,-7,0;4:9,1,2",
@@ -283,6 +323,11 @@ mod tests {
         assert!(valid(&face("5,0,0,0,1"), 0), "the second mask counts too");
         assert!(!valid(&face("0,0,0"), 0), "fewer than four");
         assert!(!valid(&face("0,0,-1,0"), 0), "a negative mask");
+        // i32::MIN has one bit set, so its count fits one value: the sign is what refuses it.
+        assert!(
+            !valid(&face("5,0,0,-2147483648,0"), 0),
+            "the first mask's sign"
+        );
         // Bits 0–29 of the second mask: 61 sliders in all.
         assert!(valid(
             &face(&format!("{}0,0,2147483647,1073741823", "1,".repeat(61))),
@@ -318,6 +363,7 @@ mod tests {
             "65543,255,1,1",           // a brow has no extras
             "524295,255,1",            // type 8 has its spacing
             "393223,255,1,1,1,1",      // type 6 has at most two extras
+            "196615,255,1,5,6",        // type 3 has at most one
             "65543,255,1|65544,255,1", // type 1 twice
             "-1,255,1",
             "65543,-1,1",

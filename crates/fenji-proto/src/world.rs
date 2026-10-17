@@ -434,7 +434,7 @@ pub fn sync_enter_player(actor: &PlayerActor) -> Vec<u8> {
     }
     entries.push((prop::AVATAR_FEATURE, BlobValue::Int(a.base_face)));
     // Only a face in the shape the client's shared validator writes, as a client hands it to
-    // native code without the validator here (#391; world.md 4.10).
+    // native code without the validator here (#391; lobby.md 5.11).
     if let Some(f) = (a.face.as_ref()).filter(|f| face::valid(f, actor.vocation)) {
         entries.push((
             prop::AVATAR_FEATURE_FACE,

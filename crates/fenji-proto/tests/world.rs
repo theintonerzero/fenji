@@ -351,7 +351,7 @@ fn decode_blob_reads_back_v7() {
 #[test]
 fn a_face_out_of_the_validators_shape_goes_to_no_one() {
     // #391: in the world, a client hands another player's face straight to native code, without
-    // the shared validator it runs on the select screen (world.md 4.10).
+    // the shared validator it runs on the select screen (lobby.md 5.11).
     for bad in [
         "v:5;",
         "v:5;2:1,2,3;3:1,2,3,4,5;4:1,2,3,4",
@@ -365,6 +365,22 @@ fn a_face_out_of_the_validators_shape_goes_to_no_one() {
         let entries = world::decode_blob(&v7[14..]).unwrap();
         assert!(entries.iter().all(|(index, _)| *index != 215), "{bad}");
     }
+    // A fox's ears and tail go out for a Fox Mage alone: the check takes the actor's vocation.
+    let fox = "v:5;2:1,2,3;3:1,2,3,4,5;4:7,2,3,4;7:1,1|300,502";
+    let look = Appearance {
+        face: Some(fox.into()),
+        ..lin_look()
+    };
+    let sent = |vocation| {
+        let v7 = world::sync_enter_player(&PlayerActor {
+            vocation,
+            ..lin(&look)
+        });
+        let entries = world::decode_blob(&v7[14..]).unwrap();
+        entries.iter().any(|(index, _)| *index == 215)
+    };
+    assert!(sent(7), "a Fox Mage's");
+    assert!(!sent(0), "a Spearmaster's");
 }
 
 #[test]

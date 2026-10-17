@@ -203,7 +203,7 @@ mod tests {
 
     const NINE: LobbyLimits = LobbyLimits { max_characters: 9 };
 
-    /// The shortest face in the client's own shape (#391).
+    /// The shortest face the check takes (#391).
     const FACE: &str = "v:5;2:0,0,0;3:0,0,0,0,0;4:0";
 
     /// A short string as the pickle writes it: tag 08, a length byte, the bytes.
@@ -332,6 +332,15 @@ mod tests {
             line.contains("account=tester") && line.contains("face_len=12"),
             "{line}"
         );
+        // The check takes the request's vocation: a fox's ears and tail only for a Fox Mage.
+        let mut spearmaster = request("Mai");
+        if let Value::Table(t) = &mut spearmaster[0] {
+            t.hash[5].1 = s(&format!("{FACE};7:1,1|300,502"));
+        }
+        rt.block_on(handle(&store, &NINE, &account, NOW, at, &spearmaster));
+        let made = rt.block_on(store.list_characters(account.id)).unwrap();
+        let mai = made.iter().find(|c| c.name == "Mai").unwrap();
+        assert_eq!(stored_appearance(&mai.appearance).unwrap().face, None);
     }
 
     #[tokio::test]
