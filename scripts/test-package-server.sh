@@ -155,7 +155,14 @@ packs "a Linux target packs"
 same "it prints the archive's path" "$out" "$T/out/$L.tar.gz"
 # A Linux archive also carries deploy/systemd's units and deploy/caddy's Caddyfile, so a VPS needs no
 # second download (#359).
-DEPLOY=(systemd/ systemd/fenji.service systemd/fenji-backup.service systemd/fenji-backup.timer caddy/ caddy/Caddyfile)
+# Every file deploy/systemd holds, in byte order: the archive is compared with that listing (#367).
+UNITS=()
+for path in "$REPO"/deploy/systemd/*; do UNITS+=("${path##*/}"); done
+same "deploy/systemd holds the service, the backup and its timer" "$(printf '%s\n' "${UNITS[@]}")" \
+  "$(printf '%s\n' fenji-backup.service fenji-backup.timer fenji.service)"
+DEPLOY=(systemd/ "${UNITS[@]/#/systemd/}" caddy/ caddy/Caddyfile)
+UNIT_MODES=()
+for u in "${UNITS[@]}"; do UNIT_MODES+=("-rw-r--r-- $L/systemd/$u"); done
 same "the Linux tarball holds one folder: the server, start-server.sh, update-server.sh, the texts and the VPS's units" \
   "$(tar -tzf "$T/out/$L.tar.gz")" \
   "$(entries "$L" fenji-server start-server.sh update-server.sh fenji.example.toml README.txt LICENSE SOURCE.txt \
@@ -164,8 +171,7 @@ same "the folders, the server and the two scripts are 0755, the texts and units 
   "drwxr-xr-x $L/" "-rwxr-xr-x $L/fenji-server" "-rwxr-xr-x $L/start-server.sh" "-rwxr-xr-x $L/update-server.sh" \
   "-rw-r--r-- $L/fenji.example.toml" \
   "-rw-r--r-- $L/README.txt" "-rw-r--r-- $L/LICENSE" "-rw-r--r-- $L/SOURCE.txt" "-rw-r--r-- $L/THIRD-PARTY-NOTICES.txt" \
-  "drwxr-xr-x $L/systemd/" "-rw-r--r-- $L/systemd/fenji.service" "-rw-r--r-- $L/systemd/fenji-backup.service" \
-  "-rw-r--r-- $L/systemd/fenji-backup.timer" "drwxr-xr-x $L/caddy/" "-rw-r--r-- $L/caddy/Caddyfile")"
+  "drwxr-xr-x $L/systemd/" "${UNIT_MODES[@]}" "drwxr-xr-x $L/caddy/" "-rw-r--r-- $L/caddy/Caddyfile")"
 case "$(tar --version 2>/dev/null)" in
   *"GNU tar"*)
     same "every entry is root's, by number" "$(tar --numeric-owner -tvzf "$T/out/$L.tar.gz" | awk '{ print $2 }' | sort -u)" 0/0 ;;
@@ -184,7 +190,7 @@ holds "start-server.sh is deploy/start's" cmp -s "$X/start-server.sh" "$REPO/dep
 holds "update-server.sh is deploy/start's" cmp -s "$X/update-server.sh" "$REPO/deploy/start/update-server.sh"
 holds "fenji.example.toml is the server's" cmp -s "$X/fenji.example.toml" "$REPO/crates/fenji-server/fenji.example.toml"
 holds "LICENSE is the repository's" cmp -s "$X/LICENSE" "$REPO/LICENSE"
-for unit in fenji.service fenji-backup.service fenji-backup.timer; do
+for unit in "${UNITS[@]}"; do
   holds "systemd/$unit is deploy/systemd's" cmp -s "$X/systemd/$unit" "$REPO/deploy/systemd/$unit"
 done
 holds "caddy/Caddyfile is deploy/caddy's" cmp -s "$X/caddy/Caddyfile" "$REPO/deploy/caddy/Caddyfile"

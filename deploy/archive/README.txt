@@ -35,6 +35,9 @@ Fenji @VERSION@: a private server for Swords of Legends Online
    the new version in place, keeping your settings and data. On Windows,
    follow the hosting guide's section 5 to update by hand.
 
+On Linux, systemd/ and caddy/ are for a VPS: the hosting guide's section 4
+installs them.
+
 fenji.example.toml describes every setting. Fenji is free software: LICENSE
 is its licence, the GNU Affero General Public License, version 3 or later,
 and SOURCE.txt says where this version's source code is.

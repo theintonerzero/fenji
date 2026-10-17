@@ -15,10 +15,10 @@ const OWN: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 const FIXED: [&str; 1] = ["GTK_THEME"];
 
 /// `vars` as they would be outside the AppImage their `APPDIR` names: without [`OWN`] and
-/// [`FIXED`], and without the image's folders in any list of paths, where an empty element goes
-/// too (AppRun leaves one, the current folder, where the value was empty). A variable left with
-/// nothing goes. Without an `APPDIR`, or with one that isn't an absolute folder below the root,
-/// `vars` stay as they are.
+/// [`FIXED`], and without the image's folders, or any other image's mount ([`in_a_mount`]), in
+/// any list of paths, where an empty element goes too (AppRun leaves one, the current folder,
+/// where the value was empty). A variable left with nothing goes. Without an `APPDIR`, or with one
+/// that isn't an absolute folder below the root, `vars` stay as they are.
 pub fn outside(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
     let vars: Vec<_> = vars.into_iter().collect();
     let Some(image) = image(&vars) else {
@@ -30,22 +30,74 @@ pub fn outside(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(OsS
         .collect()
 }
 
+/// How the launcher starts itself again after an update inside an AppImage (#413): the image the
+/// updater replaced, with the environment as it is outside the old image ([`outside`]), from the
+/// folder the player started it in (the runtime's `OWD`, else their home). So the new launcher
+/// loads none of the old image's libraries and doesn't hold its mount as its working folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restart {
+    pub program: PathBuf,
+    pub env: Vec<(OsString, OsString)>,
+    pub dir: PathBuf,
+}
+
+/// [`Restart`] for `vars`, or `None` outside an AppImage, or for an image named by a relative path:
+/// Tauri's own restart, then.
+pub fn restart(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Option<Restart> {
+    let vars: Vec<_> = vars.into_iter().collect();
+    let image = image(&vars)?;
+    let absolute = |name: &str| {
+        vars.iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| PathBuf::from(v))
+            .filter(|p| p.is_absolute())
+    };
+    let program = absolute("APPIMAGE")?;
+    // Not an image's own folder: the old AppRun cds into its usr/, and a restart before this one,
+    // Tauri's, passed that on as the next image's OWD (#419's review).
+    let dir = absolute("OWD")
+        .filter(|d| !d.starts_with(&image) && !in_a_mount(d))
+        .or_else(|| absolute("HOME"))
+        .unwrap_or_else(|| PathBuf::from("/"));
+    Some(Restart {
+        program,
+        env: outside(vars),
+        dir,
+    })
+}
+
 fn image(vars: &[(OsString, OsString)]) -> Option<PathBuf> {
     let (_, dir) = vars.iter().find(|(k, _)| k == "APPDIR")?;
     let dir = Path::new(dir);
     (dir.is_absolute() && dir.parent().is_some()).then(|| dir.to_path_buf())
 }
 
-/// `value` less the paths in it that are in `image`, or `None` when nothing else is left. A value
-/// with none stays as it is, byte for byte.
+/// Whether `path` is in an AppImage's mount: the folder an image's runtime makes in the
+/// temporary folder, `.mount_` and a few letters of the image's name (`/tmp/.mount_Fenji_CAmBLK`),
+/// or, for an image run with `--appimage-extract-and-run`, `appimage_extracted_` and a hash.
+/// A launcher the updater restarted inherits the previous launcher's environment
+/// (`tauri::process::restart`), so its variables hold the previous image's folders too, behind
+/// its own; and that image stays mounted while the new launcher runs, since it holds the previous
+/// runtime's keep-alive pipe. A child that inherited them loaded the previous image's files. An
+/// extracted one's folder goes when the previous launcher ends, unless `NO_CLEANUP` keeps it.
+fn in_a_mount(path: &Path) -> bool {
+    path.ancestors().filter_map(Path::file_name).any(|name| {
+        let name = name.as_encoded_bytes();
+        name.starts_with(b".mount_") || name.starts_with(b"appimage_extracted_")
+    })
+}
+
+/// `value` less the paths in it that are in `image` or in another image's mount, or `None` when
+/// nothing else is left. A value with none stays as it is, byte for byte.
 fn without(image: &Path, value: OsString) -> Option<OsString> {
     let paths: Vec<PathBuf> = std::env::split_paths(&value).collect();
-    if !paths.iter().any(|p| p.starts_with(image)) {
+    let imaged = |p: &PathBuf| p.starts_with(image) || in_a_mount(p);
+    if !paths.iter().any(imaged) {
         return Some(value);
     }
     let kept: Vec<PathBuf> = paths
         .into_iter()
-        .filter(|p| !p.as_os_str().is_empty() && !p.starts_with(image))
+        .filter(|p| !p.as_os_str().is_empty() && !imaged(p))
         .collect();
     if kept.is_empty() {
         return None;
@@ -94,6 +146,61 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_runs_the_image_outside_its_own_environment_from_where_the_player_started_it() {
+        // #413: the updater's restart passed on the old image's environment and folder, so the
+        // new launcher loaded the old image's libraries and kept its mount busy.
+        let old = "/tmp/.mount_Fenji_CAmBLK";
+        let v = vars(&[
+            ("APPDIR", "$IMG"),
+            ("APPIMAGE", "/home/p/Fenji.AppImage"),
+            ("OWD", "/home/p/Downloads"),
+            (
+                "LD_LIBRARY_PATH",
+                &format!("$IMG/usr/lib/:{old}/usr/lib/:/opt/lib"),
+            ),
+            ("PWD", "$IMG/usr"),
+            ("HOME", "/home/p"),
+        ]);
+        let plan = restart(v).unwrap();
+        assert_eq!(plan.program, PathBuf::from("/home/p/Fenji.AppImage"));
+        assert_eq!(plan.dir, PathBuf::from("/home/p/Downloads"));
+        assert_eq!(
+            plan.env,
+            vars(&[("LD_LIBRARY_PATH", "/opt/lib"), ("HOME", "/home/p")])
+        );
+        // No folder the player started it in: their home, not the image's.
+        let v = vars(&[
+            ("APPDIR", "$IMG"),
+            ("APPIMAGE", "/x/F.AppImage"),
+            ("HOME", "/home/p"),
+        ]);
+        assert_eq!(restart(v).unwrap().dir, PathBuf::from("/home/p"));
+        // Not in an image, even with APPIMAGE set: Tauri's own restart.
+        assert!(restart(vars(&[("HOME", "/home/p")])).is_none());
+        let v = vars(&[("APPIMAGE", "/x/F.AppImage"), ("HOME", "/home/p")]);
+        assert!(restart(v).is_none(), "APPIMAGE without APPDIR");
+        let v = vars(&[("APPDIR", "$IMG"), ("APPIMAGE", "relative.AppImage")]);
+        assert!(restart(v).is_none(), "an image named by a relative path");
+        // A folder the player started it in that is an image's own (the AppRun's cd, passed on by
+        // a restart before this one), or relative, isn't one: their home instead; with none, /.
+        for owd in [
+            format!("{old}/usr"),
+            format!("{IMAGE}/usr"),
+            "Downloads".to_string(),
+        ] {
+            let v = vars(&[
+                ("APPDIR", "$IMG"),
+                ("APPIMAGE", "/x/F.AppImage"),
+                ("OWD", &owd),
+                ("HOME", "/home/p"),
+            ]);
+            assert_eq!(restart(v).unwrap().dir, PathBuf::from("/home/p"), "{owd}");
+        }
+        let v = vars(&[("APPDIR", "$IMG"), ("APPIMAGE", "/x/F.AppImage")]);
+        assert_eq!(restart(v).unwrap().dir, PathBuf::from("/"));
+    }
+
+    #[test]
     fn outside_an_appimage_nothing_changes() {
         let v = vars(&[
             ("PATH", "/usr/local/bin:/usr/bin"),
@@ -113,7 +220,7 @@ mod tests {
             ("ARGV0", "./Fenji.AppImage"),
             ("OWD", "/home/p"),
             ("HOME", "/home/p"),
-            // A folder whose name only starts with the image's isn't in it.
+            // Another image's mount, whose name only starts with this one's, goes too.
             (
                 "PATH",
                 "$IMG/usr/bin/:$IMG/usr/sbin/:$IMG/bin/:/tmp/.mount_FenjiAb12x/bin:/usr/bin",
@@ -136,9 +243,71 @@ mod tests {
             outside(v),
             vars(&[
                 ("HOME", "/home/p"),
-                ("PATH", "/tmp/.mount_FenjiAb12x/bin:/usr/bin"),
+                ("PATH", "/usr/bin"),
                 ("XDG_DATA_DIRS", "/usr/share:/usr/local/share"),
                 ("LS_COLORS", "di=01;34:ln=01;36:"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_launcher_the_updater_restarted_leaves_out_the_previous_images_folders_too() {
+        // The updater restarts the launcher with its own environment (`tauri::process::restart`),
+        // so the new image's AppRun puts its folders in front of the previous image's, which stays
+        // mounted while the new launcher runs: umu-run then loaded the previous image's libcrypto,
+        // older than the system's Python needs, and the game couldn't start (v0.5.3).
+        let old = "/tmp/.mount_Fenji_CAmBLK";
+        let v = vars(&[
+            ("APPDIR", "$IMG"),
+            (
+                "LD_LIBRARY_PATH",
+                &format!("$IMG/usr/lib/:$IMG/lib64/:{old}/usr/lib/:{old}/lib64/:/opt/lib"),
+            ),
+            ("PATH", &format!("$IMG/usr/bin/:{old}/usr/bin/:/usr/bin")),
+            (
+                "PYTHONPATH",
+                &format!("$IMG/usr/share/pyshared/:{old}/usr/share/pyshared/:"),
+            ),
+            // The previous AppRun's folder, which the restart kept (#407's review).
+            ("PWD", &format!("{old}/usr")),
+        ]);
+        assert_eq!(
+            outside(v),
+            vars(&[("LD_LIBRARY_PATH", "/opt/lib"), ("PATH", "/usr/bin")])
+        );
+    }
+
+    #[test]
+    fn a_launcher_the_updater_restarted_leaves_out_an_extracted_previous_image_too() {
+        // Run with `--appimage-extract-and-run` and kept with `NO_CLEANUP`, the previous image's
+        // folder outlives its launcher.
+        let old = "/tmp/appimage_extracted_0f3c9a1d2b4e";
+        let v = vars(&[
+            ("APPDIR", "$IMG"),
+            (
+                "LD_LIBRARY_PATH",
+                &format!("$IMG/usr/lib/:{old}/usr/lib/:/opt/lib"),
+            ),
+        ]);
+        assert_eq!(outside(v), vars(&[("LD_LIBRARY_PATH", "/opt/lib")]));
+    }
+
+    #[test]
+    fn a_folder_whose_name_only_starts_with_an_extracted_images_isnt_in_it() {
+        // An AppDir extracted by hand (`--appimage-extract`) is wherever the player put it.
+        let v = vars(&[
+            ("APPDIR", "/opt/Fenji.AppDir"),
+            (
+                "PATH",
+                "/opt/Fenji.AppDir/usr/bin:/opt/Fenji.AppDirX/bin:/usr/bin",
+            ),
+            ("XDG_DATA_DIRS", "/usr/share/.mounted:/usr/share"),
+        ]);
+        assert_eq!(
+            outside(v),
+            vars(&[
+                ("PATH", "/opt/Fenji.AppDirX/bin:/usr/bin"),
+                ("XDG_DATA_DIRS", "/usr/share/.mounted:/usr/share"),
             ])
         );
     }

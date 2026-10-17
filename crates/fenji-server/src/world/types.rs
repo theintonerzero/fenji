@@ -228,11 +228,21 @@ pub struct ConsoleReply {
 /// What the world tells a connection task.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorldOut {
-    /// Load this scene and stand here (772): the first message after a join. A teleport to
-    /// another scene would send it too, but the world refuses one for now (#280).
+    /// Load this scene and stand here (772): the first message after a join, and a teleport to
+    /// another scene's.
     LoadScene { pid: ActorId, at: Location },
     /// The player's own actor, once its client has loaded (type 7, then its speed, then 8).
     SelfEnter {
+        pid: ActorId,
+        look: Look,
+        pos: Pos,
+        speed: i64,
+    },
+    /// The player's own actor again, once its client has loaded the scene a teleport took it to:
+    /// a 9 naming it, which its client destroys, then [`WorldOut::SelfEnter`]'s, which make it
+    /// anew at `pos`. On a 7 alone the client kept the actor where it stood, in the old scene's
+    /// coordinates (run 054-t1).
+    SelfReenter {
         pid: ActorId,
         look: Look,
         pos: Pos,
@@ -251,6 +261,15 @@ pub enum WorldOut {
     Leave { pids: Vec<ActorId> },
     /// Another player moved.
     Moved { pid: ActorId, step: MoveStep },
+    /// Another player's last move this tick was refused, and it stands here: the client, which
+    /// would run it on from its last relay, stops it here (13 with direction 0; #265), as the
+    /// mover's own client is put here with [`WorldOut::Correct`]. `detail` is the refused move's,
+    /// as the connection side bounded it: the stop takes its time, and nothing else of it.
+    Stopped {
+        pid: ActorId,
+        pos: Pos,
+        detail: Arc<[u8]>,
+    },
     /// The player's move was refused: it stands here (20).
     Correct { pos: Pos },
     /// An admin moved the player within its scene.

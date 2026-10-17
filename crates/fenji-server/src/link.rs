@@ -5,7 +5,9 @@
 //! entering: 772, the time syncs, type 3, then the player's own 7 and 8. Slice 2 (Amendment B)
 //! maps seeing: another player announced (6), pulled (5), sent whole (7 and 8) and taken away
 //! (9). Slice 3 (Amendment C) maps moving: the client's direction command (8) to the world, its
-//! relay to others (13), and a correction or a teleport to the player itself (20). Slice 4 (Task
+//! relay to others (13), a correction or a teleport to the player itself (20), and, when a tick's
+//! last move of the player was refused, a stop to the others who see it (13 with direction 0, at
+//! that move's time; #265). Slice 4 (Task
 //! 16; docs/protocol/packets/chat.md) maps chat: a line (115) to the world, the lines the world
 //! sends (378), and refusals (270); the admins' commands arrive as lines. Script messages go out
 //! through the gate's `script_out`, which refuses `NEVER_SEND`.
@@ -38,9 +40,10 @@ use crate::world::{
 };
 
 /// The world's messages a connection may hold unwritten; one more and the world lets go of it
-/// (`KickReason::SlowReader`). A tick relays at most one move of each mover in view (Amendment C),
-/// so a viewer of 20 movers gets 20 relays a tick, besides what comes into or goes out of view: 256
-/// holds more than ten ticks of that.
+/// (`KickReason::SlowReader`). A tick sends at most one 13 of each mover in view (Amendment C): its
+/// last accepted move, or, when the tick's last move of it was refused, a stop where the world has
+/// it (#265). So a viewer of 20 movers gets 20 a tick, besides what comes into or goes out of view:
+/// 256 holds more than ten ticks of that.
 pub(crate) const OUTBOUND: usize = 256;
 // No later slice may shrink it: it is the slack for a client that pauses its reads for a moment.
 const _: () = assert!(OUTBOUND >= 256);
@@ -509,7 +512,7 @@ fn masked(body: &[u8], machine: fn(usize) -> bool) -> String {
 /// `now_ms`, or `None` for what isn't sent: what names `own` itself (world.md 14.11: a 9 naming it
 /// would make the client's own player leave, and a 6 would queue its own id; 16.8: a 13 would place
 /// the player's own actor; interest leaves a viewer out of its own view, so this guards against a
-/// bug in the world), and a move whose detail isn't [`world::MoveDetail::LEN`] bytes, which only a
+/// bug in the world), but `SelfReenter`'s 9, which is meant to (1.6), and a move whose detail isn't [`world::MoveDetail::LEN`] bytes, which only a
 /// bug in the world makes. `play` closes on a kick before it gets here.
 fn encode(
     server: &mut Server,
@@ -542,6 +545,27 @@ fn encode(
             // with it (world.md 6.5).
             tracing::debug!(pid, speed, "the player's own actor: 7 and 8");
             Ok(Some(enter_and_finish(server, pid, &look, pos, speed)?))
+        }
+        WorldOut::SelfReenter {
+            pid,
+            look,
+            pos,
+            speed,
+        } => {
+            tracing::debug!(
+                pid,
+                speed,
+                "the player's own actor anew, in another scene: 9, 7 and 8"
+            );
+            // The one 9 that names the player's own actor (world.md 14.11): its client destroys
+            // the actor it kept through the load, and the 7 makes it anew where it stands now.
+            let mut out = server.send(
+                Stc::SyncLeave.to_u8(),
+                &world::sync_leave(&[pid]),
+                &StoredCodec,
+            )?;
+            out.extend(enter_and_finish(server, pid, &look, pos, speed)?);
+            Ok(Some(out))
         }
         WorldOut::Announce { pid, pos } => {
             if pid == own {
@@ -624,6 +648,41 @@ fn encode(
                 "13: another player moved"
             );
             let body = world::move_dir_relay(pid, [p.x, p.y, p.z, p.yaw], &detail);
+            Ok(Some(server.send(
+                Stc::MoveDir.to_u8(),
+                &body,
+                &StoredCodec,
+            )?))
+        }
+        WorldOut::Stopped { pid, pos, detail } => {
+            if pid == own {
+                tracing::warn!(pid, "a stop of the player's own actor: not sent");
+                return Ok(None);
+            }
+            // The relay an accepted stop gets (world.md 16.11), at the world's place for a mover it
+            // corrected, at its refused move's time, bounded again as a relay's is: no relay of the
+            // mover this client holds is timed after it, and no move the mover made after the
+            // refused one before it (16.17).
+            let Some(detail) = world::MoveDetail::from_bytes(&detail, now_ms) else {
+                tracing::warn!(
+                    pid,
+                    len = detail.len(),
+                    "a stop whose detail doesn't fit: not sent"
+                );
+                return Ok(None);
+            };
+            let detail = detail.stopped();
+            // At trace, as a relay: a correction brings one to each of the mover's viewers.
+            tracing::trace!(
+                pid,
+                x = pos.x,
+                y = pos.y,
+                z = pos.z,
+                yaw = pos.yaw,
+                time = detail.time,
+                "13: another player stops where the world has it"
+            );
+            let body = world::move_dir_relay(pid, [pos.x, pos.y, pos.z, pos.yaw], &detail);
             Ok(Some(server.send(
                 Stc::MoveDir.to_u8(),
                 &body,
@@ -1733,7 +1792,7 @@ mod tests {
         let appearance = Appearance {
             voice: Some(2),
             base_face: 2,
-            face: Some("v:5;".into()),
+            face: Some("v:5;2:0,0,0;3:0,0,0,0,0;4:0".into()),
             equips_id: 1,
             portrait: 3 << 16,
         };
@@ -1996,6 +2055,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_players_own_actor_anew_is_a_9_naming_it_then_7_and_8() {
+        // Run 054-t1: after a teleport's load, a 7 alone left the client's actor where it stood,
+        // in the old scene's coordinates. A 9 naming it first has the client make it anew.
+        linked(|mut l| async move {
+            let (look, _) = mai();
+            l.out
+                .send(WorldOut::SelfReenter {
+                    pid: 258,
+                    look,
+                    pos: AT,
+                    speed: 100,
+                })
+                .await
+                .unwrap();
+            let got = l.messages(3).await;
+            assert_eq!(got.len(), 3, "{got:?}");
+            assert_eq!(
+                (got[0].ty, &got[0].body[..]),
+                (Stc::SyncLeave.to_u8(), &258i64.to_le_bytes()[..])
+            );
+            assert_eq!(got[1].ty, Stc::SyncEnter.to_u8());
+            assert_eq!(got[1].body[..8], 258i64.to_le_bytes());
+            assert_eq!(
+                (got[2].ty, &got[2].body[..]),
+                (
+                    Stc::SyncEnterFinish.to_u8(),
+                    &world::sync_enter_finish(258)[..]
+                )
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn the_players_own_pid_is_never_sent_to_it() {
         // world.md 14.11: a 9 naming it makes the client's own player leave, and a 6 would queue
         // its own id. Lin is pid 258. The 9 for 300 comes last, so whatever went out before it
@@ -2148,6 +2241,57 @@ mod tests {
             let want = world::move_dir_relay(300, [AT.x, AT.y, AT.z, AT.yaw], &running());
             assert_eq!(got[0].body, want);
             assert_eq!(got[0].body[..8], 300i64.to_le_bytes());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn stopped_sends_a_13_with_direction_0_at_the_refused_moves_time() {
+        // The clock 5 ms past a multiple of 16, so that a time the link didn't floor would show.
+        let now = NOW as u64 + 5;
+        linked_at(now as i64, |mut l| async move {
+            let refused = |time: u64| -> Arc<[u8]> {
+                Arc::from(world::MoveDetail { time, ..running() }.to_bytes())
+            };
+            let stop = |pid: ActorId, detail: Arc<[u8]>| WorldOut::Stopped {
+                pid,
+                pos: AT,
+                detail,
+            };
+            // A stop of Lin's own actor sends nothing (world.md 16.8), nor one whose detail doesn't
+            // fit; then two of Mai's go out, the only 13s, so that either of the others would come
+            // first: one refused 208 ms back, floored; one 4 s ahead, held to a second ahead.
+            for msg in [
+                stop(258, refused(now - 208)),
+                stop(301, Arc::from(&refused(now)[..16])),
+                stop(300, refused(now - 208)),
+                stop(300, refused(now + 4_000)),
+            ] {
+                l.out.send(msg).await.unwrap();
+            }
+            let got = l.messages(2).await;
+            assert_eq!(got.len(), 2, "{got:?}");
+            let times = [NOW as u64 - 208, NOW as u64 + 992];
+            for (m, time) in got.iter().zip(times) {
+                assert_eq!(m.ty, Stc::MoveDir.to_u8());
+                assert_eq!(m.body[..8], 300i64.to_le_bytes());
+                // An absolute header at the refused move's bounded time, not the clock's, then
+                // direction 0, the yaw again, and the yaw offset, the rate and the pitches 0.
+                assert_eq!(m.body[8], 1);
+                assert_eq!(m.body[9..17], time.to_le_bytes());
+                assert_eq!(m.body[31], 0, "direction 0");
+                assert_eq!(m.body[34..42], [0; 8]);
+                let still = world::MoveDetail {
+                    time,
+                    dir: 0,
+                    yaw_offset: 0,
+                    rate: 0,
+                    pitch: 0,
+                    pitch2: 0,
+                };
+                let want = world::move_dir_relay(300, [AT.x, AT.y, AT.z, AT.yaw], &still);
+                assert_eq!(m.body, want);
+            }
         })
         .await;
     }

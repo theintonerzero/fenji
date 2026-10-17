@@ -33,7 +33,7 @@ Players need only the desktop launcher and the link you send them: the [README](
    | Linux (x86_64) | `fenji-server-<version>-x86_64-unknown-linux-musl.tar.gz` | `start-server.sh` |
    | Linux (ARM, 64-bit) | `fenji-server-<version>-aarch64-unknown-linux-musl.tar.gz` | `start-server.sh` |
 
-2. **Unpack it** in your home folder, or anywhere else on your computer's own disk. Not on a USB stick or another FAT or exFAT drive: those drives can't keep a folder private, and the server refuses to keep its key in a folder that other users can open. It unpacks into a folder named for its version, such as `fenji-server-0.5.0-x86_64-unknown-linux-musl`. Rename the folder with the start script in it to `fenji-server`: it's your server's folder from now on, and each update goes into it (section 5).
+2. **Unpack it** in your home folder, or anywhere else on your computer's own disk. Not on a USB stick or another FAT or exFAT drive: those drives can't keep a folder private, and the server refuses to keep its key in a folder that other users can open. It unpacks into a folder named for its version, such as `fenji-server-0.5.4-x86_64-unknown-linux-musl`. Rename the folder with the start script in it to `fenji-server`: it's your server's folder from now on, and each update goes into it (section 5).
 3. **Start it** with the start script in that folder:
    - **Windows:** double-click `start-server.bat`. The first time, SmartScreen says "Windows protected your PC", because the server isn't signed by Microsoft: choose More info, then Run anyway. When Windows asks whether to let `fenji-server.exe` through its firewall, allow it on private networks.
    - **macOS:** double-click `start-server.command`, which opens in Terminal. The first time, macOS says Apple can't check it, because the server isn't signed by Apple: close the message, open System Settings, Privacy & Security, and choose Open Anyway beside its name. macOS may then ask the same about `fenji-server` itself, and you allow it the same way. If macOS asks whether `fenji-server` may accept incoming network connections, allow it.
@@ -97,7 +97,7 @@ The console works like a Minecraft server's. The log scrolls above, the command 
 - Type a command and press Enter. While you type its first word, or when you press Tab, a list shows the commands that match: ↑ and ↓ choose, Tab completes, Enter runs and Esc closes it. With the list closed, ↑ and ↓ go back through the commands you typed.
 - PgUp and PgDn scroll back through the last 5,000 lines of the log. The mouse wheel doesn't: the console turns off the terminal's habit of turning it into ↑ and ↓, which would bring back your earlier commands instead.
 - The log's times are in UTC, as the title bar says (`times in UTC`).
-- `stop`, or Ctrl-C, stops the server cleanly: it lets every player go, saves where each one stood, and says `Fenji has stopped` with where its log is. Closing the window, or losing the SSH connection the server runs in, stops it cleanly too, though there's no window left to say so. A server started with SIGHUP ignored, as `trap '' HUP` leaves it, runs on instead, without a console, and its log says so: `./fenji-server console` attaches to it, and `./fenji-server console --run stop` stops it. On Windows, Windows ends the server a few seconds after its window closes, and the server saves where everyone stood first.
+- `stop`, or Ctrl-C, stops the server cleanly: it lets every player go, saves where each one stood, and says `Fenji has stopped` with where its log is. Closing the window, or losing the SSH connection the server runs in, stops it cleanly too, though there's no window left to say so. A server started with SIGHUP ignored, as `trap '' HUP` leaves it, runs on instead, without a console, and its log says so, and how to reach it: `./fenji-server console` attaches to it, and `./fenji-server console --run stop` stops it, each with the same `--config`, and as the same user when you ran the server with `sudo -u`. On Windows, Windows ends the server a few seconds after its window closes, and the server saves where everyone stood first.
 - The window needs to be at least 60 columns by 15 rows. A smaller one shows a note asking for a bigger window, and the server keeps running.
 - The colours are exact in a terminal with 24-bit colour, and close elsewhere. With `NO_COLOR` set there are none. Any monospaced font works; Geist Mono, under the SIL Open Font License, suits the console's design.
 - This full-screen console also writes the log to files in `data/logs`, one for each day the server runs (`fenji.2026-10-16.log`, by the day in UTC), and keeps those of the last 14 days it ran. Attach the day's file to a bug report.
@@ -165,7 +165,7 @@ Commands work in any case. `help` lists them, and `help <command>` shows one's u
 | `online`, or `list` | Who is connected: the account, the character it plays or `lobby`, the scene, and since when. Never an address. |
 | `announce <text>`, or `say <text>` | Shows the text to everyone in the game, on the marquee: at most 140 characters, without backslashes or words in square brackets, which the game would read as links or sounds. |
 | `kick <name>` | Lets the player go, with the kick reason. They can come back: `ban` keeps an account out. |
-| `tp <name> <name>` | Takes the first player to the second, in the same scene. |
+| `tp <name> <name>` | Takes the first player to the second, in any scene. |
 | `motd` | Shows the message of the day. |
 | `motd <text>` | Sets the message of the day, at once: plain text of at most 200 characters, which launchers show players as your notice, and which each player gets once in the game's chat when their character has loaded into the world. It's kept in the database, over `motd` in `fenji.toml`. |
 | `motd off` | Drops the message the console set, so that `motd` in `fenji.toml` is the message of the day again: none, unless you wrote one there. |
@@ -277,17 +277,22 @@ Some steps use `VERSION` and `TARGET`, which the first one sets in your shell, a
 Set `VERSION` to the latest release's number, without its `v`, and download that release's archive for your server's processor, with its checksums:
 
 ```sh
-VERSION=0.5.3
+VERSION=0.5.4
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
+curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS.sig
+cat > allowed_signers <<'END'
+fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90
+END
+ssh-keygen -Y verify -f allowed_signers -I fenji-release -n fenji-release -s SHA256SUMS.sig < SHA256SUMS &&
+  sha256sum --ignore-missing -c SHA256SUMS &&
+  tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 ```
 
-The last command should print the archive's name and `OK`. Then install the program and its update script, `fenji-update`, which updates the server later (section 5). Make the user the server runs as, `fenji`, which owns the server's data and nothing else:
+The last command checks the release's signature, then its sums, which should end with the archive's name and `OK`, and unpacks the archive only if both checks pass. If the signature isn't Fenji's release key's, nothing after `ssh-keygen` runs: download again, and don't go on. Go by whether the archive unpacked, not by what `ssh-keygen` prints. The `allowed_signers` line above is that key's public half, as the update script carries it. `ssh-keygen` needs OpenSSH 8.1 or later, which Debian 11 and Ubuntu 20.04 and later have. Releases before v0.5.4 have no signature: for those, the `sha256sum` and `tar` lines alone. Then install the program and its update script, `fenji-update`, which updates the server later (section 5). Make the user the server runs as, `fenji`, which owns the server's data and nothing else:
 
 ```sh
-tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 sudo install -m 755 fenji-server-$VERSION-$TARGET/fenji-server /usr/local/bin/fenji-server
 sudo install -m 755 fenji-server-$VERSION-$TARGET/update-server.sh /usr/local/bin/fenji-update
 sudo useradd --system --user-group --home-dir /var/lib/fenji --shell /usr/sbin/nologin fenji
@@ -397,10 +402,10 @@ With a domain name, Caddy can serve the account API on the usual HTTPS port, wit
    sudo ufw allow 443/tcp
    ```
 
-3. Install Fenji's `Caddyfile` from the archive's `caddy` folder, put your name in place of `play.example.net` in it, and reload Caddy. In the folder you unpacked the archive in:
+3. Install Fenji's `Caddyfile` from the archive's `caddy` folder, put your name in place of `play.example.net` in it, and reload Caddy. In the folder you unpacked the archive in, with `VERSION` set as when you installed, to the version you unpacked:
 
    ```sh
-   VERSION=0.5.3
+   VERSION=0.5.4
    TARGET=$(uname -m)-unknown-linux-musl
    sudo install -m 644 fenji-server-$VERSION-$TARGET/caddy/Caddyfile /etc/caddy/Caddyfile
    sudo nano /etc/caddy/Caddyfile
@@ -451,7 +456,10 @@ Read the new release's notes first, for what changed. Updating replaces the prog
 
 On Linux and macOS, the server's update script updates it in one command. It downloads the latest release for your system and checks it against the release's checksums. Then it backs up the database, and puts the new program in place, keeping the old one beside it as `fenji-server.previous`. It never touches your settings, `fenji.toml`, your data folder, your own drop-in files for the services, or Caddy's settings in `/etc/caddy`. In your server's folder on your own computer, it does replace the archive's other files, as the steps by hand do: the start script, the update script itself, the texts, and the copies in its `systemd` and `caddy` folders. Each step prints a line, and the last one says which versions it updated from and to. If something goes wrong before the new program is in place, it says why, and your server stays as it was.
 
-The script trusts a release as the steps by hand do: it downloads over HTTPS from Fenji's releases on GitHub, and checks the archive against that release's `SHA256SUMS`. That shows the download arrived whole, though not who made it.
+The script trusts a release only once its `SHA256SUMS` is signed with Fenji's release key, whose public half it carries. It downloads over HTTPS from Fenji's releases on GitHub, checks the signature with `ssh-keygen`, then checks the archive against `SHA256SUMS`. A release that isn't signed, or is signed with another key, is refused, and nothing changes.
+- **Older servers:** the script that came with a server set up before v0.5.4 has no signature check. It installs v0.5.4 as before, and from then on every release is checked.
+- **OpenSSH:** the check needs OpenSSH 8.1 or later. On RHEL 8 and its rebuilds, which have 8.0, check the release on another machine, then update by hand (below).
+- **Forks:** `FENJI_RELEASES` names a fork's releases (`https://github.com/<owner>/<repo>/releases`), and `FENJI_RELEASE_KEY` a file holding that fork's allowed-signers line. As root, that file must be root's, only root may write in it, and it must be in folders only root may write in, as `/etc/fenji` is.
 
 The script came with v0.5.3: a server set up before then updates by hand once (below), which brings it. Windows has no script yet, and updates by hand.
 
@@ -499,7 +507,7 @@ The update goes into your server's folder, so that its settings, its data and ev
    ```
 
 3. Start the server with its start script.
-4. Check that it runs the new version: the console's status line shows its number, such as `v0.5.3`, and `maintenance` shows it's still on. Then type `maintenance off`.
+4. Check that it runs the new version: the console's status line shows its number, such as `v0.5.4`, and `maintenance` shows it's still on. Then type `maintenance off`.
 
 ### Another version
 
@@ -512,13 +520,20 @@ These steps are for Windows, for a server set up before v0.5.3, and for hosts wh
 **On a VPS.** Turn maintenance on, as above. Download the new version, as in section 4, with its number:
 
 ```sh
-VERSION=0.5.3
+VERSION=0.5.4
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
+curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS.sig
+cat > allowed_signers <<'END'
+fenji-release namespaces="fenji-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuaOhW9eNcSlDXz+5TR8nH7GBNc5mWLrwz9pHT5XN90
+END
+ssh-keygen -Y verify -f allowed_signers -I fenji-release -n fenji-release -s SHA256SUMS.sig < SHA256SUMS &&
+  sha256sum --ignore-missing -c SHA256SUMS &&
+  tar -xzf fenji-server-$VERSION-$TARGET.tar.gz
 ```
+
+From v0.5.4 on, each release's `SHA256SUMS` is signed with Fenji's release key, whose public half is the line in `allowed_signers` above, as the update script carries it. The archive unpacks only if both checks pass. If the signature isn't the key's, nothing after `ssh-keygen` runs: a release someone else changed, sums and all, stops there. Go by whether the archive unpacked, not by what `ssh-keygen` prints, part of which a signature can set. It needs OpenSSH 8.1 or later. Releases before v0.5.4 have no signature: for those, the `sha256sum` and `tar` lines alone.
 
 Back up the database, stop the server, put the new program, its services and its update script in place, and start it:
 
@@ -549,16 +564,16 @@ Then look around, and turn maintenance off, as above. From then on, `sudo fenji-
 1. In the console, type `maintenance on 15m Updating Fenji`, then `backup`, then `stop`.
 2. Download the new version's archive (section 2), and unpack it anywhere but your server's folder, such as your Downloads folder.
 3. Copy everything in the new version's folder into your server's folder, replacing the old files. The archive holds no `fenji.toml` and no `data` folder, so yours stay.
-   - On Linux and macOS, delete the old program first, then copy. On macOS, a program copied into the old one's file can be killed as it starts, as macOS remembers the old program's signature; on Linux, a copy can't replace a program something still runs ("Text file busy"). In these two lines, put the new version's folder in place of `~/Downloads/fenji-server-0.5.3-x86_64-unknown-linux-musl`, and your server's folder in place of `~/fenji-server`, if yours are elsewhere or named otherwise:
+   - On Linux and macOS, delete the old program first, then copy. On macOS, a program copied into the old one's file can be killed as it starts, as macOS remembers the old program's signature; on Linux, a copy can't replace a program something still runs ("Text file busy"). In these two lines, put the new version's folder in place of `~/Downloads/fenji-server-0.5.4-x86_64-unknown-linux-musl`, and your server's folder in place of `~/fenji-server`, if yours are elsewhere or named otherwise:
 
      ```sh
      rm ~/fenji-server/fenji-server
-     cp -R ~/Downloads/fenji-server-0.5.3-x86_64-unknown-linux-musl/. ~/fenji-server/
+     cp -R ~/Downloads/fenji-server-0.5.4-x86_64-unknown-linux-musl/. ~/fenji-server/
      ```
 
    - On Windows, copy the new folder's files into your server's folder in Explorer, and choose "Replace the files in the destination".
 4. Start the start script. Windows and macOS may ask again, as on the first start.
-5. Check that it runs the new version: the console's status line shows its number, such as `v0.5.3`, and `maintenance` shows it's still on. Then type `maintenance off`.
+5. Check that it runs the new version: the console's status line shows its number, such as `v0.5.4`, and `maintenance` shows it's still on. Then type `maintenance off`.
 
 ## 6. Backups and restoring
 
@@ -659,6 +674,8 @@ xattr -dr com.apple.quarantine ~/fenji-server
 **Windows says Smart App Control blocked the server, with no Run anyway.** Smart App Control, on from the start on some new Windows 11 PCs, blocks programs that aren't signed, and the server isn't. The only way past it is to turn it off, in Windows Security, App & browser control, Smart App Control settings. On many PCs Windows can't turn it on again without a reset of Windows, so weigh that first, or host on another computer: a Linux or macOS one, or a VPS (section 4).
 
 **A player's launcher says "That isn't an invite link or an address."** in the desktop launcher, or "that isn't an invite code or link" from `fenji-launch`. What they pasted isn't the whole link: part of it was left out as it was copied, from the console or by a chat app. Copy it again from its first letter to its last (section 2's "Copying a link"), or make it with `./fenji-server invite create`, which prints each link on one line, and send that.
+
+**A player's launcher says "That address has a space in it: take it out, or paste the link again."** A space got into the address, typed by hand or added by the app the link came through. Have them delete the space, or paste the link again, copied as above.
 
 **"another fenji-server holds this data folder (…)".** Another `fenji-server` is using the same data folder, and the message names the two it may be. A server: in another window, in `tmux`, or as the reference deployment's service. Use that one (on Linux and macOS, the `fenji-server console` the message shows attaches to it, with the same `--config`, and as the same user when you ran it with `sudo -u`), or stop it first. Or one of the program's other commands, such as a `backup`, bringing the database up to date just then: try again in a moment. The system lets go of a server's lock however it ends, so this never means a stale lock.
 

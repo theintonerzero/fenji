@@ -5,6 +5,7 @@
 //! SIGHUP, SIGINT and SIGQUIT too, giving the terminal back (Review Focus 2). `--run` runs one
 //! command for a script, prints its answer, and exits 0 if it ran, or 1. Linux and macOS: Windows
 //! has no console socket in M4.
+use std::path::Path;
 use std::process::ExitCode;
 
 use crate::config::Config;
@@ -12,16 +13,22 @@ use crate::config::Config;
 #[cfg(unix)]
 pub use self::unix::run_once;
 
-/// `fenji-server console`: attaches to the server that runs on `cfg`'s data folder. With `run`, it
-/// runs that command, prints its answer's lines and exits 0 if it ran, or 1. Otherwise it's the
-/// full-screen console, or plain lines with `plain` or without a terminal, until the host leaves
-/// or the server says goodbye.
+/// `fenji-server console`: attaches to the server that runs on `cfg`'s data folder, `given` being
+/// the `--config` it was given, which a command it suggests repeats. With `run`, it runs that
+/// command, prints its answer's lines and exits 0 if it ran, or 1. Otherwise it's the full-screen
+/// console, or plain lines with `plain` or without a terminal, until the host leaves or the server
+/// says goodbye.
 ///
 /// # Errors
 /// If no server answers on the data folder's console socket, or the server speaks another protocol.
 #[cfg(unix)]
-pub async fn console(cfg: &Config, run: Option<&str>, plain: bool) -> anyhow::Result<ExitCode> {
-    unix::console(cfg, run, plain).await
+pub async fn console(
+    cfg: &Config,
+    given: Option<&Path>,
+    run: Option<&str>,
+    plain: bool,
+) -> anyhow::Result<ExitCode> {
+    unix::console(cfg, given, run, plain).await
 }
 
 /// `fenji-server console` on Windows, which has no console socket in M4.
@@ -29,7 +36,12 @@ pub async fn console(cfg: &Config, run: Option<&str>, plain: bool) -> anyhow::Re
 /// # Errors
 /// Always.
 #[cfg(not(unix))]
-pub async fn console(_cfg: &Config, _run: Option<&str>, _plain: bool) -> anyhow::Result<ExitCode> {
+pub async fn console(
+    _cfg: &Config,
+    _given: Option<&Path>,
+    _run: Option<&str>,
+    _plain: bool,
+) -> anyhow::Result<ExitCode> {
     anyhow::bail!("attaching isn't available on Windows; run the server in its own window")
 }
 
@@ -83,6 +95,7 @@ mod unix {
 
     pub(super) async fn console(
         cfg: &Config,
+        given: Option<&Path>,
         run: Option<&str>,
         plain: bool,
     ) -> anyhow::Result<ExitCode> {
@@ -130,7 +143,7 @@ mod unix {
                 return Ok(ExitCode::SUCCESS);
             }
         };
-        let (note, ok) = ending(&ended, front);
+        let (note, ok) = ending(&ended, front, given);
         if let Some(note) = note {
             server::say(&note);
         }
@@ -199,9 +212,14 @@ mod unix {
     }
 
     /// What the host is told as an attached console ends, and whether it ended as it should. A
-    /// full-screen console that failed suggests plain lines, as `run`'s own does. A terminal that
-    /// hangs up is the host leaving, with no terminal left to tell (#359).
-    fn ending(ended: &io::Result<Ending>, front: Front) -> (Option<String>, bool) {
+    /// full-screen console that failed suggests plain lines, as `run`'s own does, with the
+    /// `--config` it was `given` ([`crate::cli::command_line`]). A terminal that hangs up is the
+    /// host leaving, with no terminal left to tell (#359).
+    fn ending(
+        ended: &io::Result<Ending>,
+        front: Front,
+        given: Option<&Path>,
+    ) -> (Option<String>, bool) {
         match ended {
             Ok(Ending::Detached) => (Some("Left the console. The server runs on.".into()), true),
             Ok(Ending::ServerStopped(reason)) => (
@@ -215,8 +233,9 @@ mod unix {
             ),
             Err(e) if front == Front::Full => (
                 Some(format!(
-                    "The console has closed: {e}. `fenji-server console --plain` gives the \
-                     console as plain lines, for a terminal the full-screen one doesn't suit."
+                    "The console has closed: {e}. `{}` gives the console as plain lines, for a \
+                     terminal the full-screen one doesn't suit.",
+                    crate::cli::command_line(given, "console --plain")
                 )),
                 false,
             ),
@@ -501,25 +520,25 @@ mod unix {
         #[test]
         fn an_attached_console_says_how_it_ended_and_fails_only_when_it_lost_the_server() {
             for front in [Front::Full, Front::Plain] {
-                let (left, ok) = ending(&Ok(Ending::Detached), front);
+                let (left, ok) = ending(&Ok(Ending::Detached), front, None);
                 assert!(ok);
                 assert_eq!(
                     left.as_deref(),
                     Some("Left the console. The server runs on.")
                 );
                 let stopping = Ok(Ending::ServerStopped("the server is stopping".into()));
-                let (bye, ok) = ending(&stopping, front);
+                let (bye, ok) = ending(&stopping, front, None);
                 assert!(ok);
                 assert_eq!(
                     bye.as_deref(),
                     Some("The server closed the console: the server is stopping.")
                 );
-                assert_eq!(ending(&Ok(Ending::InputClosed), front), (None, true));
+                assert_eq!(ending(&Ok(Ending::InputClosed), front, None), (None, true));
                 // #359: a terminal that hangs up is the host leaving, with none left to tell.
-                assert_eq!(ending(&Ok(Ending::HungUp), front), (None, true));
-                assert!(!ending(&Ok(Ending::Lost), front).1);
+                assert_eq!(ending(&Ok(Ending::HungUp), front, None), (None, true));
+                assert!(!ending(&Ok(Ending::Lost), front, None).1);
                 let panicked = Err(io::Error::other("a panic ended the console"));
-                assert!(!ending(&panicked, front).1);
+                assert!(!ending(&panicked, front, None).1);
             }
         }
 
@@ -528,7 +547,7 @@ mod unix {
             // The hosting plan's final review, carry line 9: as `run`'s own console says when it
             // closes, a terminal the full-screen console doesn't suit has plain lines.
             let failed = || Err(io::Error::other("the terminal has no raw mode"));
-            let (note, ok) = ending(&failed(), Front::Full);
+            let (note, ok) = ending(&failed(), Front::Full, None);
             assert!(!ok);
             assert_eq!(
                 note.as_deref(),
@@ -539,11 +558,28 @@ mod unix {
                 )
             );
             // Plain lines that fail have nothing plainer to suggest.
-            let (note, ok) = ending(&failed(), Front::Plain);
+            let (note, ok) = ending(&failed(), Front::Plain, None);
             assert!(!ok);
             assert_eq!(
                 note.as_deref(),
                 Some("The console has closed: the terminal has no raw mode.")
+            );
+        }
+
+        #[test]
+        fn plain_lines_are_suggested_with_the_config_the_console_was_given() {
+            // #359: the suggestion was `fenji-server console --plain` alone, which finds no
+            // fenji.toml outside the server's folder, for a console attached with `--config`.
+            let failed = Err(io::Error::other("the terminal has no raw mode"));
+            let etc = Path::new("/etc/fenji/fenji.toml");
+            let (note, _) = ending(&failed, Front::Full, Some(etc));
+            let note = note.expect("a note");
+            assert!(
+                note.contains(
+                    "`fenji-server --config /etc/fenji/fenji.toml console --plain` gives the \
+                     console as plain lines"
+                ),
+                "{note}"
             );
         }
 

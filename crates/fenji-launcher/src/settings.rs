@@ -3,6 +3,7 @@
 //! without the `dirs` crate (D20). No password or session token is ever stored.
 use std::path::{Path, PathBuf};
 
+use fenji_console::text::escape_hidden;
 use serde::{Deserialize, Serialize};
 
 use crate::pin::{Pin, ServerAddr};
@@ -118,6 +119,13 @@ impl Settings {
             s.active = Some(id);
         }
         (s.username, s.pin) = (None, None);
+        // A name a launcher before 0.5.1 cached as the server sent it, hidden characters and all,
+        // shows as the server's answers now do (#367); one already escaped stays as it is.
+        for v in &mut s.servers {
+            if let Some(name) = &mut v.name {
+                *name = escape_hidden(name);
+            }
+        }
         Ok(s)
     }
 
@@ -488,6 +496,26 @@ mod tests {
         assert!(!s.remove_server(id));
         assert!(!s.set_active(id) && !s.set_pin(id, None));
         assert!(s.add_server(&a).id() > other, "ids are never reused");
+    }
+
+    #[test]
+    fn a_server_name_an_older_launcher_cached_is_escaped_when_it_loads() {
+        // #367: 0.5.0 cached a server's name as the server sent it, and a later launcher showed it
+        // as cached until the server answered again.
+        let dir = tempfile::tempdir().unwrap();
+        let json = serde_json::json!({
+            "servers": [
+                { "id": 1, "origin": "https://moon.example", "name": "Moon\u{202e}ward\u{0007}" },
+                { "id": 2, "origin": "https://jade.example", "name": "Jade Hall" },
+            ],
+            "next_id": 3,
+        });
+        std::fs::write(dir.path().join("settings.json"), json.to_string()).unwrap();
+        let s = Settings::load(dir.path()).unwrap();
+        let names: Vec<_> = s.servers.iter().map(|v| v.name.clone().unwrap()).collect();
+        assert_eq!(names[0], escape_hidden("Moon\u{202e}ward\u{0007}"));
+        assert!(!names[0].contains('\u{202e}') && !names[0].contains('\u{7}'));
+        assert_eq!(names[1], "Jade Hall");
     }
 
     #[test]

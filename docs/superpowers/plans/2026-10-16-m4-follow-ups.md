@@ -31,15 +31,21 @@ The specs that set the behaviour stay binding: `docs/superpowers/specs/2026-10-1
 - **0.5.1:** T1, T2 and T3, what M4's acceptance session will touch first.
 - **0.5.2:** T4 to T7, robustness, tests, docs and tooling, and T10, a copy Steam installed.
 - **0.5.3:** what the owner's own server on v0.5.2 showed (#382, quitting from the world; #383, the launcher's window), the deferred minors (#376, #378), T8's back to character select (#282) and T9's name check, both static and tested, T14, the update script, T15, a server's region, and #394, a player's allowances kept across going back to character select.
-- **0.5.4:**
-  - T11 to T13, DepotDownloader inside the launcher, whose rehearsal needs the owner's Steam account and phone;
-  - T8's and T9's client runs: back to character select and quitting, checked with the client, then `!tp` across scenes;
-  - T9's face string in the shape the client's shared validator writes (#391); the validator's rules that need the game's design tables come with M5's #180;
-  - the patcher (#336), whose design waits for the owner.
+- **0.5.4:** everything M0 to M4 left open in the issues, but what a decision gates (the owner, 2026-10-17: "fold in everything from m0-m4 that was left over in issues besides obviously decision gated stuff, anything we need done"):
+  - T8's and T9's client runs: back to character select and quitting, checked with the client, then `!tp` across scenes and the refusal lifted (#282, #382, #281); the owner quit Steam for them. Done in runs 054-b1 to 054-t3 and 054-m1 (world.md §13; #414, #416, #422). Run 054-b1's false fail-safe of the watchdog was fixed first (#411, #412);
+  - T9's face string in the shape the client's shared validator writes (#391, #402); the validator's rules that need the game's design tables come with M5's #180;
+  - what v0.5.3 showed: the game starting after the launcher updates itself (#406), and the Fenji a server runs in the top bar (#408);
+  - #359's last minors, and the server's tests building for Windows (#405);
+  - T16 to T19, below: #367's launcher minors and its packaging and guide minors, #265's stop for viewers, and #392's signed releases.
+
+  Not in it: the patcher (#336), whose design waits for the owner; the gates #337 and #338; M5's #180; and #359's two choices #371 left to the owner (a stalled console's slot, and a panic hook under `--plain`).
+
+  Before 0.5.4 is tagged, the owner makes the release's SSH key (Amendment D, HD5; the commands are in `docs/development.md`), and its public line goes in with `scripts/set-release-key.sh`. Done on 2026-10-17: the owner made the key and set the `release` environment's `SSH_SIGNING_PRIVATE_KEY`, and its line went in with #421.
+- **0.5.5:** T11 to T13, DepotDownloader inside the launcher. Their rehearsal needs the owner's Steam account and phone, and Steam's own Proton installed through Steam, which the game box doesn't have. By the ruling below, they moved here from 0.5.4 (2026-10-17), so that 0.5.4 needn't wait on them.
 
   The ruling of 2026-10-17, while the owner was away: release what's ready, rather than hold the fixes the owner's acceptance session needs behind the work that needs the owner. By the same ruling, T15 and #394 joined 0.5.3 once both were reviewed, before it was cut: the release waits for the owner's `sign` approval in any case.
 
-Each release follows `docs/development.md`'s steps, and the owner approves its `sign` job.
+Each release follows `docs/development.md`'s steps, and the owner approves its `sign` job, and from 0.5.4 on its `sums` job too.
 
 ## Tasks
 
@@ -156,6 +162,18 @@ Find what the client expects after type 4 in the world, answer it, and return th
 - The server: `[server] region`; the guess from the timezone for `init` and the first run, and the start's hint; `GET /api/v1/server`'s `region`.
 - The launcher: the region in the state line and the seal's tip, designed with `impeccable` from DESIGN.md; the model's `ServerView` carries it.
 - `docs/hosting.md` and PRIVACY.md, as HC6 says.
+
+### Task 16 (inline): #367's launcher minors
+The 0.5.1 reviews' deferred launcher items in #367: the second first fetch that can drop a change, the checked folder passed into Starting, NotOpened telling a failed terminal from one that handed the script on, a cached 0.5.0 name escaped, Cancel start offered whenever the game starts, the Client tab's Cancel download cancelling Play's own fetch, the one-line command under fish, DepotDownloader's path cached outside the state lock, and the two test gaps. Built inline, as the launcher is, with one review at the end.
+
+### Task 17 (subagent): #367's packaging and guide minors
+The Caddy step's `VERSION` set as at install; the own-computer update's examples in the release step's list; the archive's unit list checked against `deploy/systemd`; README.txt saying what `systemd/` and `caddy/` are for; a space in an address refused in its own words.
+
+### Task 18 (subagent): a stop for the viewers of a corrected mover (#265)
+When the world corrects a mover (type 20 to the mover), the viewers that know it get a stop at the corrected place, so none runs the mover on from its last relay. Tested in the world's harness; its client check joins T8 and T9's runs where it can.
+
+### Task 19 (subagent): signed server releases (#392; hosting spec Amendment D)
+The owner's choice (2026-10-17): a key of Fenji's own, made with `ssh-keygen -t ed25519` and kept in the `release` environment's secrets, and `ssh-keygen -Y verify`, which every Linux server and Mac already has, so hosts install nothing. The `sign` job, behind the owner's approval, signs the server's sums; the update script carries the public key and refuses an archive whose sums aren't signed by it, from the script 0.5.4 ships on; `docs/hosting.md`'s by-hand steps say how to check it too. The design goes into the hosting spec as Amendment D first.
 
 ## Review Focus
 1. **Nothing a player or a host does in the acceptance session should get worse.** A fix that changes a flow a host or player sees has its write-up line updated in the same PR.

@@ -145,7 +145,10 @@ pub fn verify_with(
         bytes_total: m.entries.iter().map(|e| e.size).sum(),
         ..Progress::default()
     });
-    // The lock is released before `progress` runs.
+    // The count's lock is released before `progress` runs, so the hashing threads don't wait on
+    // it; the reports go one at a time, each newer than the last, so progress never goes back,
+    // whichever thread reports first.
+    let reported = Mutex::new(0usize);
     let tick = |size: u64| {
         let now = {
             let mut p = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -153,7 +156,11 @@ pub fn verify_with(
             p.bytes_done += size;
             *p
         };
-        progress(now);
+        let mut last = reported.lock().unwrap_or_else(|e| e.into_inner());
+        if now.files_done > *last {
+            *last = now.files_done;
+            progress(now);
+        }
     };
     let stopped = || stop.load(Ordering::Relaxed);
     let mut report = Report::default();
@@ -279,6 +286,34 @@ mod tests {
             std::fs::write(&full, vec![b'a' + (i % 26) as u8; *size as usize]).unwrap();
         }
         Manifest::generate(root).unwrap()
+    }
+
+    #[test]
+    fn a_report_that_comes_late_never_takes_the_progress_back() {
+        // #417's review: a report made after the count's lock could come after a newer one. A
+        // callback that dawdles on the first file's report shows it at once.
+        let dir = tempfile::tempdir().unwrap();
+        let m = folder_with(
+            dir.path(),
+            &[("a.bin", 10), ("b.bin", 20), ("c.bin", 30), ("d.bin", 40)],
+        );
+        let seen = std::sync::Mutex::new(Vec::new());
+        verify_with(
+            dir.path(),
+            &m,
+            Level::Full,
+            &|p| {
+                if p.files_done == 1 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                seen.lock().unwrap().push(p.files_done);
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let seen = seen.into_inner().unwrap();
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+        assert_eq!(seen.last(), Some(&4));
     }
 
     #[test]

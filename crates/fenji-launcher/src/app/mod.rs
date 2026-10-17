@@ -108,6 +108,9 @@ struct State {
     swept_at: Option<Instant>,
     /// The copy Steam installed, once looked for (Amendment A, LA1).
     steam: Option<crate::steam::SteamCopy>,
+    /// The DepotDownloader Fenji would run: the configured one, else the one in the tools folder,
+    /// looked up at start and set again by a fetch, never read on each change (#367).
+    depot_downloader: Option<PathBuf>,
 }
 
 /// What this run knows of a server beyond its saved entry.
@@ -186,6 +189,12 @@ impl App {
             notice: problem.map(|text| Notice { text, error: true }),
             swept_at: None,
             steam: None,
+            depot_downloader: cfg.depot_downloader.clone().or_else(|| {
+                crate::tools::installed(
+                    &crate::tools::depot_downloader(),
+                    &cfg.data_dir.join("tools"),
+                )
+            }),
         };
         let (tx, _) = watch::channel(state.snapshot(&cfg));
         let steam_roots =
@@ -432,10 +441,7 @@ impl State {
         // the DepotDownloader Fenji would run, or else where to get one (#348).
         let manual = platform.can_download.then(|| {
             let tool = crate::tools::depot_downloader();
-            let dd = cfg
-                .depot_downloader
-                .clone()
-                .or_else(|| crate::tools::installed(&tool, &cfg.data_dir.join("tools")));
+            let dd = self.depot_downloader.clone();
             let folder = folder.unwrap_or(&default_folder);
             let command = |list| crate::depot::manual_command(dd.as_deref(), folder, list);
             ManualView {
@@ -533,7 +539,7 @@ impl State {
             motd: info.map(|i| i.motd.clone()).unwrap_or_default(),
             ping_ms: live.and_then(|l| l.ping_ms),
             last_seen_ms: saved.last_seen_ms,
-            version: info.map(|i| i.version.clone()),
+            version: info.map(|i| i.version.clone()).filter(|v| !v.is_empty()),
             source: info.and_then(|i| i.source.clone()),
             username: live
                 .and_then(|l| l.username.clone())

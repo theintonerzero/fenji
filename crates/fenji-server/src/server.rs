@@ -527,13 +527,13 @@ pub async fn run(
                 // No terminal to tell: the log says it, unless the hang-up's SIGHUP is stopping
                 // the server.
                 if runs_on(console.stopping(), HANGUP_WAIT).await {
-                    tracing::warn!("{TERMINAL_GONE}");
+                    tracing::warn!("{}", terminal_gone(given));
                 }
             } else {
                 // The terminal is the host's again, whatever ended the console, unless the
                 // console was left to its thread, its terminal stalled.
                 let serving = !served.is_finished() && !*console.stopping().borrow();
-                if let Some(note) = closed_note(&ended, serving, &logs) {
+                if let Some(note) = closed_note(&ended, serving, &logs, given) {
                     say(&note);
                 }
             }
@@ -612,11 +612,17 @@ const HANGUP_WAIT: Duration = Duration::from_millis(500);
 
 /// What `run` logs once its full-screen console's terminal has gone while the server runs on, SIGHUP
 /// having come ignored (`trap '' HUP`, or `nohup`): the server has no console now, and this says how
-/// a host reaches it, and stops it (#359).
-const TERMINAL_GONE: &str = "the console's terminal has gone (its window closed, or its SSH \
-     connection was lost), and SIGHUP didn't stop the server, so it runs on without a console: \
-     `fenji-server console` attaches to it, and `fenji-server console --run stop`, SIGINT or \
-     SIGTERM stops it";
+/// a host reaches it, and stops it, with the `--config` the server was `given`, and as its user
+/// when sudo ran it as another ([`crate::cli::command_line`]; #359).
+fn terminal_gone(given: Option<&Path>) -> String {
+    format!(
+        "the console's terminal has gone (its window closed, or its SSH connection was lost), and \
+         SIGHUP didn't stop the server, so it runs on without a console: `{}` attaches to it, and \
+         `{}`, SIGINT or SIGTERM stops it",
+        crate::cli::command_line(given, "console"),
+        crate::cli::command_line(given, "console --run stop")
+    )
+}
 
 /// Whether the server runs on `wait` after its console's terminal has gone, `stopping` being the
 /// console service's ([`ConsoleService::stopping`]): not when it begins stopping meanwhile.
@@ -668,15 +674,29 @@ fn still_serving(ended: &std::io::Result<Ending>) -> Option<String> {
 }
 
 /// What `run` tells the host once the full-screen console has ended while the server still serves
-/// (`serving`): why, how the server stops now, and where its log is. Nothing once the server has
-/// said goodbye, or stopped meanwhile.
-fn closed_note(ended: &std::io::Result<Ending>, serving: bool, logs: &Path) -> Option<String> {
+/// (`serving`): why, how the server stops now, where its log is, and the command that gives the
+/// console as plain lines, with the `--config` the server was `given` on Linux and macOS
+/// ([`crate::cli::command_line`]; #359). Nothing once the server has said goodbye, or stopped
+/// meanwhile.
+fn closed_note(
+    ended: &std::io::Result<Ending>,
+    serving: bool,
+    logs: &Path,
+    given: Option<&Path>,
+) -> Option<String> {
     let why = still_serving(ended)?;
     serving.then(|| {
+        // Windows' shells quote otherwise than the command line's POSIX words, and its start
+        // script gives no `--config`.
+        let plain = if cfg!(unix) {
+            crate::cli::command_line(given, "--plain")
+        } else {
+            "fenji-server --plain".to_owned()
+        };
         format!(
             "The console has closed ({why}). The server runs on until Ctrl-C, SIGTERM or closing \
-             this terminal stops it; its log is in {}. `fenji-server --plain` gives the console \
-             as plain lines, for a terminal the full-screen one doesn't suit.",
+             this terminal stops it; its log is in {}. `{plain}` gives the console as plain \
+             lines, for a terminal the full-screen one doesn't suit.",
             logs.display()
         )
     })
@@ -909,6 +929,8 @@ mod tests {
         assert_eq!(closed.unwrap(), Ending::InputClosed);
     }
 
+    // On Unix alone, where systemd runs the server and consoles attach through the socket.
+    #[cfg(unix)]
     #[test]
     fn systemd_waits_out_a_stops_worst_case_with_room_to_spare() {
         // #281: a stop takes at most the connections' grace, the world thread's wait, the last
@@ -1033,12 +1055,37 @@ mod tests {
     }
 
     #[test]
+    fn a_server_whose_terminal_has_gone_says_how_to_reach_it_with_its_config() {
+        // #359 (Task 7's re-review): the log line named `fenji-server console` alone, which finds
+        // no fenji.toml outside the server's folder, for a server started with `--config`.
+        let etc = Path::new("/etc/fenji/fenji.toml");
+        let text = terminal_gone(Some(etc));
+        assert!(
+            text.ends_with(
+                "so it runs on without a console: `fenji-server --config /etc/fenji/fenji.toml \
+                 console` attaches to it, and `fenji-server --config /etc/fenji/fenji.toml console \
+                 --run stop`, SIGINT or SIGTERM stops it"
+            ),
+            "{text}"
+        );
+        // In the server's folder, the commands are as they were.
+        let text = terminal_gone(None);
+        assert!(
+            text.ends_with(
+                "so it runs on without a console: `fenji-server console` attaches to it, and \
+                 `fenji-server console --run stop`, SIGINT or SIGTERM stops it"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_console_says_the_server_runs_on_only_while_it_does() {
         // Review 1, Minor 3: a console that ends as the server stops (a key pressed just then, or
         // the server's own task failing) mustn't be told the server runs on.
         let logs = Path::new("/srv/fenji/data/logs");
         let panicked = || Err(std::io::Error::other(CONSOLE_PANICKED));
-        let note = closed_note(&panicked(), true, logs).expect("a note while it serves");
+        let note = closed_note(&panicked(), true, logs, None).expect("a note while it serves");
         // Closing the terminal stops it cleanly too (the hosting plan's final review, Important 1).
         assert_eq!(
             note,
@@ -1047,10 +1094,27 @@ mod tests {
              in /srv/fenji/data/logs. `fenji-server --plain` gives the console as plain lines, \
              for a terminal the full-screen one doesn't suit."
         );
-        assert_eq!(closed_note(&panicked(), false, logs), None);
-        assert_eq!(closed_note(&Ok(Ending::Lost), false, logs), None);
+        assert_eq!(closed_note(&panicked(), false, logs, None), None);
+        assert_eq!(closed_note(&Ok(Ending::Lost), false, logs, None), None);
         let stopped = Ok(Ending::ServerStopped(service::STOPPING.into()));
-        assert_eq!(closed_note(&stopped, true, logs), None);
+        assert_eq!(closed_note(&stopped, true, logs, None), None);
+    }
+
+    #[test]
+    fn a_console_that_closes_suggests_plain_lines_with_the_servers_config() {
+        // #359: the note suggested `fenji-server --plain` alone, which finds no fenji.toml outside
+        // the server's folder, for a server started with `--config`. On Linux and macOS, the
+        // command repeats it; Windows' shells quote otherwise, and its start script gives none.
+        let logs = Path::new("/srv/fenji/data/logs");
+        let etc = Path::new("/etc/fenji/fenji.toml");
+        let ended = Ok(Ending::InputClosed);
+        let note = closed_note(&ended, true, logs, Some(etc)).expect("a note while it serves");
+        let plain = if cfg!(unix) {
+            "`fenji-server --config /etc/fenji/fenji.toml --plain` gives the console as plain lines"
+        } else {
+            "`fenji-server --plain` gives the console as plain lines"
+        };
+        assert!(note.contains(plain), "{note}");
     }
 
     #[test]

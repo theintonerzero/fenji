@@ -67,7 +67,7 @@ async fn fenji_server() -> anyhow::Result<ExitCode> {
         // server's log is what it shows.
         Command::Console { run } => {
             let cfg = config::load_existing(given)?;
-            console::attach::console(&cfg, run.as_deref(), cli.plain).await
+            console::attach::console(&cfg, given, run.as_deref(), cli.plain).await
         }
         cmd => {
             // The log goes to stderr, as systemd's journal keeps it.

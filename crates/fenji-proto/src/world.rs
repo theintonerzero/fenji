@@ -7,6 +7,7 @@
 //! under their type; 772 is a script message, built by `script_body`, which refuses `NEVER_SEND`.
 //! This module builds and parses; the server decides. Functions are the pinned exe's; their REA
 //! Evidence IDs are in world.md's REA Evidence IDs table.
+use crate::face;
 use crate::lobby::Appearance;
 use crate::opcode::Cts;
 use crate::packet::script_body;
@@ -432,7 +433,9 @@ pub fn sync_enter_player(actor: &PlayerActor) -> Vec<u8> {
         entries.push((prop::VOICE, BlobValue::Int(v)));
     }
     entries.push((prop::AVATAR_FEATURE, BlobValue::Int(a.base_face)));
-    if let Some(f) = &a.face {
+    // Only a face in the shape the client's shared validator writes, as a client hands it to
+    // native code without the validator here (#391; lobby.md 5.11).
+    if let Some(f) = (a.face.as_ref()).filter(|f| face::valid(f, actor.vocation)) {
         entries.push((
             prop::AVATAR_FEATURE_FACE,
             BlobValue::Str(f.as_bytes().to_vec()),
@@ -629,6 +632,22 @@ impl MoveDetail {
         out[13..15].copy_from_slice(&self.pitch.to_le_bytes());
         out[15..17].copy_from_slice(&self.pitch2.to_le_bytes());
         out
+    }
+
+    /// This move's time alone, stopped: what the relay of a stop carries for a mover the world
+    /// corrected, from its refused move (#265; world.md 16.17). Direction 0 stops the mover (16.9),
+    /// and the yaw offset, the rate and the pitches are 0. A client times each command by its
+    /// clock as the command starts (16.3, 16.5), so no relay of the mover a viewer holds is timed
+    /// after the stop, and no move the mover made after the refused one is timed before it.
+    pub fn stopped(self) -> Self {
+        Self {
+            time: self.time,
+            dir: 0,
+            yaw_offset: 0,
+            rate: 0,
+            pitch: 0,
+            pitch2: 0,
+        }
     }
 
     /// Exactly [`MoveDetail::LEN`] bytes, as [`MoveDetail::to_bytes`] writes them, bounded again

@@ -110,8 +110,8 @@ impl Claim {
 
 /// Claims the data folder `data` for this process, before the server opens its store or listens
 /// (Review Focus 5), making the folder owner-only if it's missing:
-/// - another server holds its lock, or answers on its socket: `a server is already using this
-///   data folder (<path>)`;
+/// - another server holds its lock, or answers on its socket: `another fenji-server holds this
+///   data folder (<path>)`, then the two it may be and what to do about each (`lock::in_use`);
 /// - a socket nobody answers on is stale, and is replaced;
 /// - the new socket is bound 0600 from the start.
 ///

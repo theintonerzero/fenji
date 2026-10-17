@@ -49,3 +49,21 @@ test("the open popover's control shows open; signed out, the account is a figure
   expect(find("Account").getAttribute("aria-label")).toBe("Account");
   expect(find("Account").querySelector("svg")).not.toBeNull();
 });
+
+test("after the address, the Fenji the server runs, from its last answer, and nothing when it never said", () => {
+  const { bar } = mounted();
+  // In the address's own group, so the bar's gap never falls between them (#409's review).
+  const version = () => bar.el.querySelector(".top > .where > .address + .server-version")!.textContent;
+  bar.update(golden("play-ready"), "stage", null);
+  expect(version()).toBe(" · Fenji 0.5.0");
+  // Offline, the version its last answer gave, as the address stays.
+  bar.update(golden("play-offline"), "stage", null);
+  expect(version()).toBe(" · Fenji 0.5.0");
+  const unknown = golden("play-ready");
+  unknown.servers[0]!.version = null;
+  bar.update(unknown, "stage", null);
+  expect(version()).toBe("");
+  // No server's on the welcome screen.
+  bar.update(golden("play-ready"), "welcome", null);
+  expect(version()).toBe("");
+});

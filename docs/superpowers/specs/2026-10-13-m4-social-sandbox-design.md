@@ -52,7 +52,7 @@ Done when:
 - A protocol bot built on `fenji-proto` (sign in, enter, move, chat) runs in CI (parent §9), and 20 bots measure the tick against the parent spec's targets (§6.7).
 - Two real clients on the owner's machine meet in the zone. Each runner gives its client a loopback-only network of its own, so both clients run in one runner's namespace, against its one server ([world spec](2026-10-13-m4-world-design.md) §4.3).
 
-**Status (2026-10-16):** done, except `!tp` to another scene, which is refused until a run checks it (#281). See [`m4-summary.md`](../../re/m4-summary.md).
+**Status (2026-10-17):** done. `!tp` to another scene, refused until a run checked it, works since 0.5.4 (#281; world.md 1.6). See [`m4-summary.md`](../../re/m4-summary.md).
 
 **Out of M4:**
 - emotes, teams, friends lists, mounts, NPCs and quests;

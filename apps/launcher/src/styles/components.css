@@ -273,9 +273,31 @@
   white-space: nowrap;
 }
 
+/* The address and the Fenji the server runs: one line, which the bar's gap keeps apart from the
+   controls but not within. */
+.where {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+/* The Fenji the server runs, after its address and as faint, never cut short: the address gives
+   way first. pre keeps its " · ", which a flex item drops at its start. */
+.server-version {
+  flex: none;
+  color: var(--faint);
+  font: var(--type-mono-weight) 13px/1 var(--type-mono-family);
+  white-space: pre;
+}
+
 .spacer {
   flex: 1;
   align-self: stretch;
+}
+
+/* The bar's controls keep their size, however long the address and version: the address gives way. */
+.top > :is(.chip, .me, .icon-button, .window-controls) {
+  flex: none;
 }
 
 .chip {

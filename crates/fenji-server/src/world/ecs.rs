@@ -66,9 +66,9 @@ pub(super) enum Stage {
     InWorld,
 }
 
-/// Its own actor has entered once, and it has had the MOTD if there was one: a later load, as a
-/// teleport to another scene would bring (#280), doesn't greet it again. No load comes later yet,
-/// so no test reaches that branch until #280's teleport does.
+/// Its own actor has entered once, and it has had the MOTD if there was one. A later load, which
+/// only a teleport to another scene brings, doesn't greet it again, and finds its client still
+/// holding its own actor, which `SelfReenter` has it make anew (world.md 1.6).
 #[derive(Component)]
 struct Greeted;
 
@@ -545,11 +545,23 @@ fn loaded(world: &mut World, e: Entity) {
     let (Some(actor), Some(here)) = (world.get::<Actor>(e), world.get::<Here>(e)) else {
         return;
     };
-    let msg = WorldOut::SelfEnter {
-        pid: actor.pid,
-        look: actor.look.clone(),
-        pos: here.0.pos,
-        speed: SPEED_RATE,
+    let (pid, look, pos, speed) = (actor.pid, actor.look.clone(), here.0.pos, SPEED_RATE);
+    // Only a teleport to another scene loads again a player who has entered (`Greeted`): its
+    // client still holds its actor, which it must make anew (054-t1).
+    let msg = if world.get::<Greeted>(e).is_some() {
+        WorldOut::SelfReenter {
+            pid,
+            look,
+            pos,
+            speed,
+        }
+    } else {
+        WorldOut::SelfEnter {
+            pid,
+            look,
+            pos,
+            speed,
+        }
     };
     if let Some(mut stage) = world.get_mut::<Stage>(e) {
         *stage = Stage::InWorld;
