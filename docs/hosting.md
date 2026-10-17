@@ -507,7 +507,7 @@ The update goes into your server's folder, so that its settings, its data and ev
    ```
 
 3. Start the server with its start script.
-4. Check that it runs the new version: the console's status line shows its number, such as `v0.5.5`, and `maintenance` shows it's still on. Then type `maintenance off`.
+4. Check that it runs the new version: the console's status line shows its number, such as `v0.5.4`, and `maintenance` shows it's still on. Then type `maintenance off`.
 
 ### Another version
 
@@ -520,7 +520,7 @@ These steps are for Windows, for a server set up before v0.5.3, and for hosts wh
 **On a VPS.** Turn maintenance on, as above. Download the new version, as in section 4, with its number:
 
 ```sh
-VERSION=0.5.5
+VERSION=0.5.4
 TARGET=$(uname -m)-unknown-linux-musl
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/fenji-server-$VERSION-$TARGET.tar.gz
 curl -fLO https://github.com/theintonerzero/fenji/releases/download/v$VERSION/SHA256SUMS
@@ -564,16 +564,16 @@ Then look around, and turn maintenance off, as above. From then on, `sudo fenji-
 1. In the console, type `maintenance on 15m Updating Fenji`, then `backup`, then `stop`.
 2. Download the new version's archive (section 2), and unpack it anywhere but your server's folder, such as your Downloads folder.
 3. Copy everything in the new version's folder into your server's folder, replacing the old files. The archive holds no `fenji.toml` and no `data` folder, so yours stay.
-   - On Linux and macOS, delete the old program first, then copy. On macOS, a program copied into the old one's file can be killed as it starts, as macOS remembers the old program's signature; on Linux, a copy can't replace a program something still runs ("Text file busy"). In these two lines, put the new version's folder in place of `~/Downloads/fenji-server-0.5.5-x86_64-unknown-linux-musl`, and your server's folder in place of `~/fenji-server`, if yours are elsewhere or named otherwise:
+   - On Linux and macOS, delete the old program first, then copy. On macOS, a program copied into the old one's file can be killed as it starts, as macOS remembers the old program's signature; on Linux, a copy can't replace a program something still runs ("Text file busy"). In these two lines, put the new version's folder in place of `~/Downloads/fenji-server-0.5.4-x86_64-unknown-linux-musl`, and your server's folder in place of `~/fenji-server`, if yours are elsewhere or named otherwise:
 
      ```sh
      rm ~/fenji-server/fenji-server
-     cp -R ~/Downloads/fenji-server-0.5.5-x86_64-unknown-linux-musl/. ~/fenji-server/
+     cp -R ~/Downloads/fenji-server-0.5.4-x86_64-unknown-linux-musl/. ~/fenji-server/
      ```
 
    - On Windows, copy the new folder's files into your server's folder in Explorer, and choose "Replace the files in the destination".
 4. Start the start script. Windows and macOS may ask again, as on the first start.
-5. Check that it runs the new version: the console's status line shows its number, such as `v0.5.5`, and `maintenance` shows it's still on. Then type `maintenance off`.
+5. Check that it runs the new version: the console's status line shows its number, such as `v0.5.4`, and `maintenance` shows it's still on. Then type `maintenance off`.
 
 ## 6. Backups and restoring
 
