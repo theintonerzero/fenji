@@ -329,3 +329,25 @@ The owner, after v0.5.0: "depot downloader for those who dont have access to the
 | L20 | Play starts the game itself, never through Steam (LA3). | The ticket, one game at a time, and ground rule 6's gate for a patched client. | Closing Steam before Play, should the acceptance session need it. |
 | L21 | DepotDownloader runs hidden with `-qr`, and the launcher redraws its QR code from DepotDownloader's own output. Only a password sign-in keeps the terminal. This replaces L3's terminal for the QR sign-in (LA4, LA5). | The owner's decision. No credential passes through Fenji, and the window that opened beside the launcher goes. | The terminal path, kept for passwords, back for everyone. |
 | L22 | umu-run uses Steam's newest stable Proton when a library holds one, after a rehearsal (LA6). | The first start's largest download, skipped. | umu's own Proton, as before. |
+
+## 9. Amendment B: Play on Linux, tuned (the owner, 2026-10-17)
+
+The owner, on 2026-10-17, after Amendment A's tasks were built: the latest GE-Proton always ("proton ge latest always!"), and GameMode and a launch options field ("we need as much QOL as possible!"). Where this section and the earlier ones differ, this section wins. The follow-ups plan's tasks carry each item, built inline as the launcher was.
+
+- **The latest GE-Proton (LB1).** On Linux, unless the player set `PROTONPATH`, Play starts the game with the latest GE-Proton (GloriousEggroll's `proton-ge-custom`), the Proton family Fenji's client runs use (pinned there, the latest here). Since 10-10, GE-Proton uses NTSYNC where the kernel has it.
+  - The launcher fetches it itself, as it fetches DepotDownloader and umu-launcher: from GE-Proton's latest GitHub release, checked against that release's own SHA-512 sum, into its data folder's `proton/`, and passes that folder to umu-run as `PROTONPATH`. A newer release replaces the one it has, which is removed once the new one is in place.
+  - It asks GitHub for the latest release before each start. PLAY shows the fetch as it comes ("Getting GE-Proton 42%"), as it shows umu-launcher's. Offline, or when GitHub doesn't answer, the build it has plays; with none yet, umu-run's own default, as before.
+  - This replaces LA6 (Steam's Proton): every player on one runtime, the one the client runs test.
+- **GameMode (LB2).** When Feral GameMode's `gamemoderun` is on the `PATH`, Play starts the game under it: the CPU's performance governor, and the game's scheduling and I/O priority, while it runs. Settings has a GameMode switch, on by default, shown only when GameMode is installed.
+- **Launch options (LB3).** Settings has a Launch options field, as Steam's: `NAME=value … wrapper … %command% arguments…`.
+  - The text is split into words as a POSIX shell splits them (quotes and backslashes), and never run through a shell.
+  - Words of the form `NAME=value` before any other word set the start's environment: `PROTONPATH` among them, which is how a player sets their own Proton. The words before `%command%` wrap the start, outermost first (`mangohud`, `gamescope -f --`); the words after it are added to the game's arguments, after Fenji's own. Without `%command%`, the words are the game's added arguments, as in Steam.
+  - The start's order: the player's wrappers, then `gamemoderun`, then `umu-run`.
+  - The variables Fenji sets for the start can't be set there: `WINEPREFIX`, `GAMEID` and the login path's. A field that tries, an unclosed quote, or `%command%` twice is refused in words, and the field keeps the player's text.
+  - Linux only, as Play is. Settings shows the field there only.
+
+| # | Ruling | Why | Cost if wrong |
+|---|---|---|---|
+| L23 | The latest GE-Proton by default, fetched and checked by the launcher into its own folder (LB1). | The owner's decision. One runtime for every player, the client runs' own; its progress on PLAY, and its old builds removed. umu-run's own codenames do neither: `GE-Proton` installs each release into Steam's `compatibilitytools.d` and keeps them all, unseen during Starting, and `GE-Latest` updates only through umu's delta patches, which need a module umu may not have, so it can stay at its first build. | umu-run's `PROTONPATH=GE-Proton`, its downloads unseen. |
+| L24 | GameMode when it's installed, on by default, with a switch to turn it off (LB2). | The owner's decision: as much quality of life as possible, at no cost where GameMode isn't installed. | GameMode off by default. |
+| L25 | Launch options as Steam's, split as a shell would but never run through one (LB3). | Linux players know Steam's form; a shell would run the field's text as code, quotes and all. | A shell's corner cases (globs, `$VAR`) the field doesn't do. |
