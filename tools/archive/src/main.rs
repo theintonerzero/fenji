@@ -17,6 +17,7 @@ use fenji_data::archive::{
     CONTAINER_MAGIC, OodleSource, Record, STATUS_USED, each_oodle_blob, read_blob_header,
     read_part_header,
 };
+use fenji_data::client::{live_places, part_path, read_record};
 use fenji_data::oodle_spool::OodleSpool;
 use fenji_data::{Codec, FIXED_LEN, cache, index};
 use sha1::{Digest, Sha1};
@@ -115,10 +116,6 @@ enum Command {
     },
 }
 
-fn part_path(client: &Path, n: u32) -> PathBuf {
-    client.join("data").join(format!("data{n:03}"))
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -202,14 +199,6 @@ fn main() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Where a live record keeps a file: part, offset, stored size, codec.
-struct Place {
-    part: u32,
-    offset: u32,
-    size: u32,
-    codec: &'static str,
-}
-
 /// The output directory, and the spool if one is given, both inside re/ (the spool holds the
 /// client's compressed blocks).
 fn out_and_spool(out: &Path, spool: Option<&Path>) -> Result<(PathBuf, Option<OodleSpool>)> {
@@ -273,75 +262,6 @@ fn decoded_index(
     let index_path = client.join("data").join("_index");
     let bytes = std::fs::read(&index_path).with_context(|| index_path.display().to_string())?;
     Ok(decode(&bytes, 0, spool)?.map(|raw| index::build(&raw)))
-}
-
-/// Every live record's place by key (the first part's wins), with counts for `paths`' summary.
-struct Places {
-    by_key: HashMap<[u8; 20], Place>,
-    live: usize,
-    repeated: usize,
-    unreadable: usize,
-}
-
-fn live_places(client: &Path) -> Result<Places> {
-    let mut p = Places {
-        by_key: HashMap::new(),
-        live: 0,
-        repeated: 0,
-        unreadable: 0,
-    };
-    for n in 0..1000 {
-        let path = part_path(client, n);
-        if !path.exists() {
-            break;
-        }
-        let h = read_part_header(&path).with_context(|| path.display().to_string())?;
-        let mut f = File::open(&path)?;
-        for r in h.live() {
-            p.live += 1;
-            if p.by_key.contains_key(&r.key) {
-                p.repeated += 1;
-                continue;
-            }
-            let codec = match read_blob_header(&mut f, u64::from(r.offset)) {
-                Ok(b) => b.codec.name(),
-                Err(_) => {
-                    p.unreadable += 1;
-                    "bad-header"
-                }
-            };
-            p.by_key.insert(
-                r.key,
-                Place {
-                    part: n,
-                    offset: r.offset,
-                    size: r.size,
-                    codec,
-                },
-            );
-        }
-    }
-    Ok(p)
-}
-
-/// A live record's blob, read whole once it is known to lie inside its part.
-fn read_record(client: &Path, p: &Place) -> Result<Vec<u8>> {
-    let part = part_path(client, p.part);
-    let mut f = File::open(&part).with_context(|| part.display().to_string())?;
-    let len = f.metadata()?.len();
-    if u64::from(p.offset) + u64::from(p.size) > len {
-        bail!(
-            "the record at {:#x} ({} bytes) runs past the end of {} ({len} bytes)",
-            p.offset,
-            p.size,
-            part.display()
-        );
-    }
-    f.seek(SeekFrom::Start(u64::from(p.offset)))?;
-    let mut blob = vec![0; p.size as usize];
-    f.read_exact(&mut blob)
-        .with_context(|| part.display().to_string())?;
-    Ok(blob)
 }
 
 /// A key's 20 bytes, from its 40 hex digits.
