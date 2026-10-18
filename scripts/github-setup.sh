@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One-time (idempotent) GitHub setup for the Fenji repo: labels, milestones M0–M5, default branch `dev`.
+# One-time (idempotent) GitHub setup for the Fenji repo: labels, milestones M0–M5 and the patcher's
+# and retranslation's between M4 and M5, default branch `dev`.
 # Requires an authenticated `gh` and a GitHub remote. Safe to re-run.
 #
 #   scripts/github-setup.sh            apply
@@ -46,6 +47,7 @@ M1 Data layer|archive dumps items, skills, monsters, XP curve, maps; luatool rea
 M2 Transport + handshake|Stub completes the real client's gate handshake and decodes its first packets; Oodle Network path decided (release 0.3.0)
 M3 Login + lobby|Invite accounts, launcher, ticket handoff, character list/create/delete in the real client (release 0.4.0)
 M4 Social sandbox + VPS|Friends enter the starting zone, move, see each other, chat; admin commands; deployed (release 0.5.0)
+Patcher + retranslation|The first patch set (every way out, the AGT driver, a Steam copy's needs) and the game's English translated anew from the Chinese, in fenji-content (release 0.6.0)
 M5 Grind loop (v1)|Monsters, AI, combat, XP, loot, inventory, persistence, live rates (release 1.0.0)"
 
 existing=$(gh api "repos/$REPO/milestones?state=all&per_page=100" -q '.[].title')

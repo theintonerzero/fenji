@@ -65,7 +65,7 @@ PRs into `dev` are squash-merged with a Conventional Commit title. Release and h
 
 - One version for the whole monorepo: `[workspace.package] version` in `Cargo.toml`. Every crate inherits it (`version.workspace = true`). The desktop launcher's `apps/launcher/package.json` and `apps/launcher/src-tauri/Cargo.toml` carry it too (its `tauri.conf.json` has none of its own), kept equal by the release steps below and checked in CI by `scripts/check-launcher-version.sh`.
 - Tags: `vX.Y.Z` on `main`. Release candidates: `vX.Y.Z-rc.N` on the release branch.
-- Before 1.0.0, each milestone release bumps the **minor** version: M0 → `0.1.0`, M1 → `0.2.0`, M2 → `0.3.0`, M3 → `0.4.0`, M4 → `0.5.0`. M5 (grind loop, v1) → `1.0.0`.
+- Before 1.0.0, each milestone release bumps the **minor** version: M0 → `0.1.0`, M1 → `0.2.0`, M2 → `0.3.0`, M3 → `0.4.0`, M4 → `0.5.0`. The patcher and the retranslation → `0.6.0`, after M4 (the owner, 2026-10-18). M5 (grind loop, v1) → `1.0.0`, its slices as `0.7.0` and on before it.
 - Between milestones: fixes bump **patch**.
 - From 1.0.0: breaking change to config, saved data or launcher↔server compatibility → **major**; new feature → **minor**; fix → **patch**.
 - The pinned SoLO client build is not part of our version. Each release's notes state which pinned build it supports. Changing the pinned build is at least a minor bump (major after 1.0.0).
