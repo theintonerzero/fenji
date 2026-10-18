@@ -8,6 +8,9 @@
 use crate::{Error, Result};
 
 pub mod json;
+mod write;
+
+pub use write::write;
 
 /// Tables nest at most this deep: the client's unpacker counts from 1 and refuses a table that
 /// takes the count past 32 ("unpack table too depth!", FUN_1400D5850, FUN_1400D4AC0; payloads.md

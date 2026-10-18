@@ -5,7 +5,7 @@ mod fingerprint;
 mod pack;
 mod tsv;
 
-pub use fingerprint::{Fingerprint, fingerprint};
+pub use fingerprint::{Fingerprint, fingerprint, fingerprint_in};
 pub use pack::{FORMAT, MAX_PACK, MAX_UNPACKED, Manifest, Pack, read_pack, verify};
 pub use tsv::{Entry, escape, read_tsv, unescape, write_tsv};
 

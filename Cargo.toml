@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["tools/stub", "tools/luatool", "tools/archive", "tools/oodle-helper", "crates/fenji-data", "crates/fenji-oodle", "crates/fenji-lua", "crates/fenji-proto", "crates/fenji-auth", "crates/fenji-store", "crates/fenji-server", "crates/fenji-launcher", "crates/fenji-console", "crates/fenji-pack"]
+members = ["tools/stub", "tools/luatool", "tools/archive", "tools/oodle-helper", "crates/fenji-data", "crates/fenji-oodle", "crates/fenji-lua", "crates/fenji-proto", "crates/fenji-auth", "crates/fenji-store", "crates/fenji-server", "crates/fenji-launcher", "crates/fenji-console", "crates/fenji-pack", "tools/translate"]
 # Crates in the tree that aren't the workspace's, each a workspace of its own: fenji-oodle's fuzz
 # target (its Cargo.toml and README), and the desktop launcher's Tauri shell, whose webview needs
 # system libraries the workspace's other builds don't (launcher spec §3.1).
