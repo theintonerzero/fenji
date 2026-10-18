@@ -309,6 +309,9 @@ mod tests {
     /// The object schema of one of an answer's lines.
     fn line_schema(schema: &str) -> Value {
         let schema: Value = serde_json::from_str(schema).unwrap();
+        // The CLI refuses a schema naming the 2020-12 meta-schema, which its validator lacks
+        // (Task 7's real run).
+        assert_eq!(schema.get("$schema"), None);
         assert_eq!(fields(&schema), (vec!["lines"], true));
         schema["properties"]["lines"]["items"].clone()
     }

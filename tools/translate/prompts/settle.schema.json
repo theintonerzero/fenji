@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "The final reading",
   "description": "Every disputed line, once, with its final English and why.",
   "type": "object",
