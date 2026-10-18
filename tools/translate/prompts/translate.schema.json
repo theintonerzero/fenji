@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A translator's answer",
+  "description": "Every line of the batch, once, with its English.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["lines"],
+  "properties": {
+    "lines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fp", "en"],
+        "properties": {
+          "fp": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "The line's fingerprint, copied exactly."
+          },
+          "en": {
+            "type": "string",
+            "description": "The line's English."
+          }
+        }
+      }
+    }
+  }
+}
