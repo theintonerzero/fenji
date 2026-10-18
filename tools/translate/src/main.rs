@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fenji_data::client::GameCopy;
-use fenji_translate::{extract, glossary, lines};
+use fenji_translate::{batch, extract, glossary, lines};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -32,6 +32,8 @@ enum Command {
         #[command(subcommand)]
         command: GlossaryCommand,
     },
+    /// The lines in batches by context, each with its glossary's terms: OUT/batches/<area>-<n>.json, replacing any plan there
+    Batch,
 }
 
 #[derive(Subcommand)]
@@ -88,6 +90,19 @@ fn main() -> Result<()> {
             let out = glossary::export(&glossary::load(&work)?)?;
             std::fs::write(work.join("glossary.tsv"), &out)?;
             println!("{} terms", out.lines().count());
+        }
+        Command::Batch => {
+            let all = lines::read_lines(&work)?;
+            let rules = fenji_translate::check::Rules::load(&work, &all)?;
+            let planned = batch::plan_batches(&all, &glossary::load(&work)?, &rules);
+            batch::write_batches(&work, &planned)?;
+            let mut by_area = std::collections::BTreeMap::<&str, usize>::new();
+            for b in &planned {
+                *by_area
+                    .entry(b.id.split('-').next().unwrap_or(""))
+                    .or_default() += 1;
+            }
+            println!("{} batches: {by_area:?}", planned.len());
         }
     }
     Ok(())

@@ -65,14 +65,21 @@ pub fn east_asian(c: char) -> bool {
             0x3000..=0x30FF | 0xFF00..=0xFFEF | 0xAC00..=0xD7AF | 0x1100..=0x11FF | 0x3130..=0x318F)
 }
 
+/// Characters today's English uses that the new English doesn't: curly quotes, since its quotes
+/// are straight (the style guide), and the replacement character, which marks broken text.
+pub const NEVER: &[char] = &['‘', '’', '“', '”', '\u{FFFD}'];
+
 impl Rules {
     /// Printable ASCII, a line break and a tab, and every other character today's English uses
-    /// that isn't East Asian; tight lines within 110% of today's length.
+    /// that isn't East Asian or [`NEVER`]; tight lines within 110% of today's length.
     pub fn from_lines(lines: &[Line]) -> Rules {
         let mut allowed: BTreeSet<char> = (' '..='~').chain(['\n', '\t']).collect();
         for line in lines {
             if let Some(en) = &line.en {
-                allowed.extend(en.chars().filter(|&c| !east_asian(c) && !c.is_control()));
+                allowed.extend(
+                    en.chars()
+                        .filter(|&c| !east_asian(c) && !c.is_control() && !NEVER.contains(&c)),
+                );
             }
         }
         Rules {
@@ -174,6 +181,13 @@ fn orphan_closes(s: &str) -> BTreeMap<String, usize> {
     orphans
 }
 
+/// The most characters a tight line's English may draw (RT11): its English today's, by the rules'
+/// percentage. A line that isn't tight, or has no English today, has no budget.
+pub fn budget(line: &Line, rules: &Rules) -> Option<usize> {
+    let today = line.en.as_deref().filter(|_| line.tight)?;
+    Some((drawn(today).chars().count() * rules.budget_percent as usize).div_ceil(100))
+}
+
 /// Every problem `english` has as `line`'s translation.
 pub fn check(line: &Line, english: &str, glossary: &Glossary, rules: &Rules) -> Vec<Problem> {
     let mut problems = Vec::new();
@@ -217,9 +231,7 @@ pub fn check(line: &Line, english: &str, glossary: &Glossary, rules: &Rules) -> 
             problems.push(Problem::Term(term.en.clone()));
         }
     }
-    if let (true, Some(today)) = (line.tight, &line.en) {
-        let today = drawn(today).chars().count();
-        let budget = (today * rules.budget_percent as usize).div_ceil(100);
+    if let Some(budget) = budget(line, rules) {
         let len = shown.chars().count();
         if len > budget {
             problems.push(Problem::TooLong { len, budget });
@@ -366,16 +378,18 @@ mod tests {
     }
 
     #[test]
-    fn the_rules_allow_what_todays_english_uses_but_chinese() {
+    fn the_rules_allow_todays_characters_but_chinese_curly_quotes_and_breakage() {
         let lines = [
             line("剑", Some("Ü – sword。"), false),
             line("盾", None, false),
+            // Today's English has curly quotes and broken text here and there.
+            line("刀", Some("“It’s ‘mine’”\u{FFFD}"), false),
         ];
         let r = Rules::from_lines(&lines);
-        for c in ['a', '~', ' ', '\n', '\t', 'Ü', '–'] {
+        for c in ['a', '~', ' ', '\n', '\t', 'Ü', '–', 'I'] {
             assert!(r.allowed.contains(&c), "{c:?}");
         }
-        for c in ['。', '剑', '“'] {
+        for c in ['。', '剑', '“', '”', '‘', '’', '\u{FFFD}'] {
             assert!(!r.allowed.contains(&c), "{c:?}");
         }
         assert_eq!(r.budget_percent, 110);
