@@ -18,7 +18,7 @@ Read who speaks, to whom, and how, and write what that speaker would say in Engl
 - **Poems** are rendered as verse: the same number of lines, a steady rhythm, and an image for each image. Rhyme only where it comes naturally.
   - `孤舟载月过寒江，\n一夜霜华满客裳。` → `A lone boat ferries the moon across the cold river;\nby dawn, the frost lies white on a traveler's clothes.`
 - **Narration and descriptions** (quests, items, books) are clear, vivid prose. An item's lore can be atmospheric; its effect is plain and exact.
-- **The interface** is plain, short and consistent. Buttons, tabs and menu items are in Title Case (`Accept Quest`), and messages in sentence case (`Your bag is full.`).
+- **The interface** is plain, short and consistent. Buttons, tabs, window titles and section headers are in Title Case (`Accept Quest`, `Sound Settings`). Options and settings are in sentence case (`Show damage numbers`, `Background music`), as today's English mostly has them, and so are a class's or a feature's short descriptions and messages (`Your bag is full.`).
 
 ## 2. American English
 

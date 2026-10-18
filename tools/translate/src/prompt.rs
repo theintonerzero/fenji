@@ -296,6 +296,18 @@ mod tests {
     }
 
     #[test]
+    fn the_style_guide_says_how_an_option_is_capitalized() {
+        // The translator read a setting's label as a menu item in one batch and not in another
+        // (#479): the system settings in Title Case, the preferences in sentence case.
+        let rule = STYLE
+            .lines()
+            .find(|l| l.starts_with("- **The interface**"))
+            .expect("the interface's rule");
+        assert!(rule.contains("Options and settings are in sentence case"));
+        assert!(rule.contains("section headers"));
+    }
+
+    #[test]
     fn the_style_guides_examples_pass_the_checks() {
         let rules = Rules::from_lines(&[]);
         let problems = |(zh, en): &(String, String)| {
