@@ -4,6 +4,7 @@
 pub mod area;
 pub mod batch;
 pub mod check;
+pub mod drive;
 pub mod extract;
 pub mod glossary;
 pub mod lines;

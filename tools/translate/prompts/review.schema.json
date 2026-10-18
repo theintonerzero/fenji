@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "A reviewer's answer",
   "description": "Every line of the batch, once: kept, or replaced with a reason.",
   "type": "object",

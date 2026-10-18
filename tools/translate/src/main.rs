@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fenji_data::client::GameCopy;
-use fenji_translate::{batch, extract, glossary, lines};
+use fenji_translate::{batch, drive, extract, glossary, lines};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -34,6 +34,30 @@ enum Command {
     },
     /// The lines in batches by context, each with its glossary's terms: OUT/batches/<area>-<n>.json, replacing any plan there
     Batch,
+    /// Every batch through its translation, review and settling, in headless Claude Code runs; it resumes where it stopped, and starts no job while OUT/PAUSE is there
+    Drive {
+        /// The Claude Code CLI
+        #[arg(long, default_value = "claude")]
+        claude: PathBuf,
+        #[arg(long, default_value = drive::DEFAULT_MODEL)]
+        model: String,
+        #[arg(long, default_value = drive::DEFAULT_EFFORT)]
+        effort: String,
+        /// Runs at once, two at most
+        #[arg(long, default_value_t = drive::MAX_RUNS)]
+        runs: usize,
+        /// The folder the runs start in, outside any checkout (default: fenji-translate-runs in the system's temporary folder)
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Tries after the first, before what fails is queued
+        #[arg(long, default_value_t = 2)]
+        retries: u32,
+        /// Only this batch, by its id
+        #[arg(long)]
+        only: Option<String>,
+    },
+    /// Where the work stands: batches translated, reviewed, settled and queued, and whether the driver is waiting out a usage limit
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -104,6 +128,28 @@ fn main() -> Result<()> {
             }
             println!("{} batches: {by_area:?}", planned.len());
         }
+        Command::Drive {
+            claude,
+            model,
+            effort,
+            runs,
+            cwd,
+            retries,
+            only,
+        } => {
+            let cwd = cwd.unwrap_or_else(|| std::env::temp_dir().join("fenji-translate-runs"));
+            let driver = drive::Driver {
+                claude,
+                model,
+                effort,
+                runs,
+                retries,
+                only,
+                ..drive::Driver::new(work, cwd)
+            };
+            println!("{:?}", driver.run()?);
+        }
+        Command::Status => println!("{:?}", drive::status(&work)?),
     }
     Ok(())
 }
