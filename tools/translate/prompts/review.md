@@ -10,7 +10,7 @@ Each line has the fields the translator had (`fp`, `zh`, `en_old`, `context`, `t
 - **Voice.** Each speaker sounds as the Chinese makes them sound. Formal stays formal and rough stays rough; a poem is verse, and a joke lands.
 - **Consistency.** The glossary's names are as it has them, its words carry the sense and English it gives them, with ordinary capitals in a sentence, and the same thing is said the same way across the batch.
 - **English.** It's natural, idiomatic and American, with no stiffness carried over from the Chinese word order.
-- **The rules.** Markup, placeholders, line breaks and numbers are kept; only the allowed characters are used; a tight line is within its budget.
+- **The rules.** Markup, placeholders, line breaks and numbers are kept; only the allowed characters are used; a tight line is within its budget without losing anything the Chinese says.
 
 ## Your answer
 

@@ -84,6 +84,8 @@ Where the interface is tight (buttons, tabs, item and skill names, short labels)
 - leave articles out of a label (`Open Bag`, not `Open the Bag`);
 - use a shorter form the glossary gives.
 
+A shorter wording, never a shorter meaning: a label that loses its verb or its object to fit is wrong. `显示友方名字` (show ally names) as `Ally Names` loses what the option does; `Show Allies` keeps it.
+
 Never cut a word short with a period (`Atk.`) unless the glossary does.
 
 ## 7. Faithful, not copied
