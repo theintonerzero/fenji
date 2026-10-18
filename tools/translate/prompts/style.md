@@ -38,7 +38,8 @@ Read who speaks, to whom, and how, and write what that speaker would say in Engl
 
 ## 3. Names and terms come from the glossary
 
-- **The glossary's terms.** Every term in a batch's glossary is written exactly as the glossary has it, capitals included, or as one of its variants. The checks refuse a name written any other way.
+- **The glossary's names.** A term whose kind is `name` is written exactly as the glossary has it, capitals included, or as one of its variants. The checks refuse a name written any other way.
+- **The glossary's words.** A term whose kind is `word` gives a term's sense and the English for it; it isn't a name. In a sentence it takes ordinary English capitals and grammar: a plural, a verb's form. A tooltip's Healing stat keeps its capital, but healing in a story has none.
 - **People's names** are in pinyin, without tone marks: the family name first, then the given name as one word (`Ke Muqing`). The glossary keeps the official English names that are right, and corrects those that aren't.
 - **A name the glossary lacks** is written the same way throughout the batch, as the glossary would write it: in pinyin for a person, and by its meaning for a place or thing whose Chinese name describes it.
 - **Forms of address and titles** (teacher, elder, sworn brother, sect leader) follow the glossary. Where it has none, choose an English form that keeps the relationship, and keep to it.
