@@ -155,7 +155,14 @@ fn main() -> Result<()> {
             };
             println!("{:?}", driver.run()?);
         }
-        Command::Status => println!("{:?}", drive::status(&work)?),
+        Command::Status => {
+            println!("{:?}", drive::status(&work)?);
+            let used = drive::usage(&work)?;
+            println!(
+                "{} runs: {} tokens in, {} out, ${:.2} by the CLI's reckoning",
+                used.runs, used.input_tokens, used.output_tokens, used.cost_usd
+            );
+        }
         Command::Assemble { to } => {
             let all = lines::read_lines(&work)?;
             let coverage = assemble::assemble(&work, &all, &to)?;

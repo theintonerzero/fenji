@@ -41,6 +41,9 @@ pub const QUEUE: &str = "queue";
 pub const PAUSE: &str = "PAUSE";
 /// While the driver waits out a usage limit, this file holds when the wait ends.
 pub const WAITING: &str = "WAITING";
+/// A line per run, appended as each ends: its batch and job, the model and effort, how it ended,
+/// how long it took, and what it used by the CLI's own count.
+pub const RUNS: &str = "runs.jsonl";
 
 /// The most runs at once, by the owner's rule.
 pub const MAX_RUNS: usize = 2;
@@ -102,6 +105,79 @@ pub struct Summary {
     pub queued: usize,
     /// Whether the driver is waiting out a usage limit.
     pub waiting: bool,
+}
+
+/// What the runs so far have used, from [`RUNS`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct Usage {
+    pub runs: usize,
+    /// Every input token, cached or not.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// The CLI's own reckoning, in dollars. On a subscription it's a measure of use, not a bill.
+    pub cost_usd: f64,
+}
+
+/// What the runs in `work` have used, from [`RUNS`]: nothing if there is none yet.
+pub fn usage(work: &Path) -> Result<Usage> {
+    let path = work.join(RUNS);
+    if !path.exists() {
+        return Ok(Usage::default());
+    }
+    let text = std::fs::read_to_string(&path).with_context(|| path.display().to_string())?;
+    let mut u = Usage::default();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let v: Value = serde_json::from_str(line).with_context(|| path.display().to_string())?;
+        u.runs += 1;
+        u.input_tokens += v["input_tokens"].as_u64().unwrap_or(0);
+        u.output_tokens += v["output_tokens"].as_u64().unwrap_or(0);
+        u.cost_usd += v["cost_usd"].as_f64().unwrap_or(0.0);
+    }
+    Ok(u)
+}
+
+/// What one run used, by the CLI's result, and how long it took.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Ran {
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_usd: f64,
+    seconds: f64,
+}
+
+/// The usage a CLI result reports: every input token, cached or not, the output tokens, and its
+/// cost. Nothing for output that isn't its JSON.
+fn usage_of(stdout: &[u8]) -> Ran {
+    let Ok(v) = serde_json::from_str::<Value>(String::from_utf8_lossy(stdout).trim()) else {
+        return Ran::default();
+    };
+    let u = &v["usage"];
+    let n = |field: &str| u[field].as_u64().unwrap_or(0);
+    Ran {
+        input_tokens: n("input_tokens")
+            + n("cache_creation_input_tokens")
+            + n("cache_read_input_tokens"),
+        output_tokens: n("output_tokens"),
+        cost_usd: v["total_cost_usd"].as_f64().unwrap_or(0.0),
+        seconds: 0.0,
+    }
+}
+
+/// One line of [`RUNS`].
+#[derive(Serialize)]
+struct RunRecord<'a> {
+    /// When the run ended, in seconds since the epoch.
+    at: u64,
+    batch: &'a str,
+    job: &'a str,
+    model: &'a str,
+    effort: &'a str,
+    /// `kept`, `failed`, `limit` or `busy`.
+    outcome: &'a str,
+    seconds: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_usd: f64,
 }
 
 /// Where the work in `work` stands, from its files.
@@ -572,10 +648,38 @@ impl Driver {
                     }
                 }
             };
-            let result = self.attempt(ctx, &picked);
+            let mut ran = Ran::default();
+            let result = self.attempt(ctx, &picked, &mut ran);
             let mut s = state.lock().expect("no worker panicked");
             s.busy.remove(&picked.batch);
             let key = (picked.batch, picked.job);
+            if let Ok(step) = &result {
+                let outcome = match step {
+                    Step::Done => "kept",
+                    Step::Limit(_) => "limit",
+                    Step::Busy(_) => "busy",
+                    Step::Failed { .. } => "failed",
+                };
+                let record = RunRecord {
+                    at: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    batch: &ctx.batches[picked.batch].id,
+                    job: picked.job.name(),
+                    model: &self.model,
+                    effort: &self.effort,
+                    outcome,
+                    seconds: ran.seconds,
+                    input_tokens: ran.input_tokens,
+                    output_tokens: ran.output_tokens,
+                    cost_usd: ran.cost_usd,
+                };
+                // Under the workers' lock, so two runs' lines never interleave.
+                if let Err(e) = append_line(&self.work.join(RUNS), &record) {
+                    s.error = Some(e);
+                }
+            }
             match result {
                 Ok(Step::Done) => {
                     s.tries.remove(&key);
@@ -685,8 +789,9 @@ impl Driver {
         Ok(Some((Job::Settle, disputes)))
     }
 
-    /// One try at a job: its prompt, its run, and its answer checked and kept.
-    fn attempt(&self, ctx: &Ctx, p: &Picked) -> Result<Step> {
+    /// One try at a job: its prompt, its run, and its answer checked and kept. What the run used
+    /// goes in `ran`.
+    fn attempt(&self, ctx: &Ctx, p: &Picked, ran: &mut Ran) -> Result<Step> {
         let b = &ctx.batches[p.batch];
         let prompt = match p.job {
             Job::Translate => translate_prompt(b, STYLE),
@@ -722,7 +827,9 @@ impl Driver {
                 answer,
             },
         };
-        let value = match self.run_claude(&p.job.schema(), &prompt)? {
+        let (outcome, used) = self.run_claude(&p.job.schema(), &prompt)?;
+        *ran = used;
+        let value = match outcome {
             Outcome::Limit(reset) => {
                 let now = SystemTime::now();
                 let until = match reset {
@@ -847,8 +954,9 @@ impl Driver {
     }
 
     /// One headless run: the prompt on stdin, the result on stdout, stopped after
-    /// [`RUN_TIMEOUT`]. An error only if `claude` can't be started.
-    fn run_claude(&self, schema: &str, prompt: &str) -> Result<Outcome> {
+    /// [`RUN_TIMEOUT`]; and what it used. An error only if `claude` can't be started.
+    fn run_claude(&self, schema: &str, prompt: &str) -> Result<(Outcome, Ran)> {
+        let started = Instant::now();
         let mut child = Command::new(&self.claude)
             .args(["-p", "--output-format", "json", "--json-schema", schema])
             .args([
@@ -898,14 +1006,19 @@ impl Driver {
         let _ = writer.join();
         let out = stdout.join().expect("a reader");
         let err = stderr.join().expect("a reader");
-        Ok(if finished {
+        let ran = Ran {
+            seconds: started.elapsed().as_secs_f64(),
+            ..usage_of(&out)
+        };
+        let outcome = if finished {
             parse_result(&out, &err)
         } else {
             Outcome::Failed(format!(
                 "the run took longer than {} minutes",
                 RUN_TIMEOUT.as_secs() / 60
             ))
-        })
+        };
+        Ok((outcome, ran))
     }
 }
 
@@ -943,6 +1056,20 @@ fn lines_retry(lines: &[QueuedLine]) -> String {
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let bytes = std::fs::read(path).with_context(|| path.display().to_string())?;
     serde_json::from_slice(&bytes).with_context(|| path.display().to_string())
+}
+
+/// Appends `value` to `path` as one line of JSON.
+fn append_line(path: &Path, value: &impl Serialize) -> Result<()> {
+    let mut line = serde_json::to_vec(value)?;
+    line.push(b'\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| path.display().to_string())?;
+    file.write_all(&line)
+        .with_context(|| path.display().to_string())?;
+    Ok(())
 }
 
 /// Writes `value` to a temporary file beside `path`, then renames it into place.

@@ -99,5 +99,5 @@ case "$mode" in
     printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":529,"result":"API Error: Repeated 529 Overloaded errors","session_id":"fake"}\n'
     exit 1 ;;
   *)
-    printf '{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"result":"","structured_output":%s,"session_id":"fake","num_turns":2}\n' "$answer" ;;
+    printf '{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"result":"","structured_output":%s,"session_id":"fake","num_turns":2,"duration_ms":1000,"total_cost_usd":0.5,"usage":{"input_tokens":10,"cache_creation_input_tokens":30,"cache_read_input_tokens":40,"output_tokens":20}}\n' "$answer" ;;
 esac
