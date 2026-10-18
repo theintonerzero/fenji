@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fenji_data::client::GameCopy;
-use fenji_translate::{batch, drive, extract, glossary, lines};
+use fenji_translate::{assemble, batch, drive, extract, glossary, lines};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -58,6 +58,12 @@ enum Command {
     },
     /// Where the work stands: batches translated, reviewed, settled and queued, and whether the driver is waiting out a usage limit
     Status,
+    /// The new English into a fenji-content checkout, by area, with the glossary and the style guide; what it covers goes in OUT/coverage.txt
+    Assemble {
+        /// The fenji-content checkout, outside this one
+        #[arg(long)]
+        to: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -150,6 +156,17 @@ fn main() -> Result<()> {
             println!("{:?}", driver.run()?);
         }
         Command::Status => println!("{:?}", drive::status(&work)?),
+        Command::Assemble { to } => {
+            let all = lines::read_lines(&work)?;
+            let coverage = assemble::assemble(&work, &all, &to)?;
+            println!(
+                "{} lines, {} translated, {} missing: {}",
+                coverage.lines,
+                coverage.translated,
+                coverage.missing.len(),
+                work.join(assemble::COVERAGE).display()
+            );
+        }
     }
     Ok(())
 }
