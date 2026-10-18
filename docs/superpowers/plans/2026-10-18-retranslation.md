@@ -180,7 +180,7 @@
 - [ ] **Step 5: Run them to verify they pass.** `cargo test -p fenji-translate`. Expected: all pass.
 - [ ] **Step 6: Run it on the pinned copy, locally.**
   - `cargo run -p fenji-translate --release -- extract`. Expected:
-    - `re/retranslation/lines.jsonl` holds about 175,415 + 9,100 lines;
+    - `re/retranslation/lines.jsonl` holds about 175,415 + 9,100 lines. It holds 176,282: 175,415, plus 39 in the map's contexts, plus 828 table lines with no English (Task 3's ruling);
     - `report.txt`'s counts agree with §5 within the escapes' difference.
   - Ledger the counts. They are numbers only.
 - [ ] **Step 7: Run the gate, then commit.** `feat(tools): translate extract, every line with where it's used`.

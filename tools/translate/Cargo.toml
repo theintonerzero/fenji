@@ -1,0 +1,31 @@
+[package]
+name = "fenji-translate"
+description = "The retranslation's tools (retranslation spec §6.5): the pinned copy's lines, the checks a translation passes, the glossary, batches, the driver of headless runs and the assembly of the new English. Writes only under re/retranslation/ (ground rule 3)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "translate"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+fenji-data.workspace = true
+fenji-lua.workspace = true
+fenji-luatool = { path = "../luatool" }
+fenji-pack.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+fenji-data = { workspace = true, features = ["test-util"] }
+mlua.workspace = true
+sha1.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

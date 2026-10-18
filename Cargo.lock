@@ -1237,6 +1237,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fenji-translate"
+version = "0.5.5"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fenji-data",
+ "fenji-lua",
+ "fenji-luatool",
+ "fenji-pack",
+ "mlua",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tempfile",
+]
+
+[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"

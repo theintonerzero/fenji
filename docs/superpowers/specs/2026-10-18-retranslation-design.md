@@ -113,7 +113,7 @@ From [`docs/re/m2-tables.md`](../../re/m2-tables.md) and a count over the pinned
 
   So some markup carries text players see (a name inside a tag, a word inside a colour code), and that text is translated. The markup around it is kept.
 - **Gaps today:**
-  - about 9,100 distinct table lines have no entry in `locale_en` at all. That count is approximate: it unescaped Lua strings simply;
+  - 828 distinct table lines have no entry in `locale_en` at all. Task 3's extractor counted them, unescaping Lua strings as Lua does. A first count that unescaped them simply had found about 9,100;
   - 1,107 entries give the source itself as the English;
   - 1,031 English entries still hold Chinese characters.
 
@@ -160,7 +160,7 @@ From [`docs/re/m2-tables.md`](../../re/m2-tables.md) and a count over the pinned
   - the player's own copy: its Chinese keys, and today's English for lines the pack lacks;
   - the pack, matched by fingerprint.
 
-  Lines the client has no English for at all, about 9,100 (§5), get an entry too. Their Chinese comes from the player's own tables.
+  Lines the client has no English for at all, 828 of them (§5), get an entry too. Their Chinese comes from the player's own tables. The map also has 39 lines in 27 small contexts, such as `noun`, beside its main table: those keep their contexts (Task 3's `fingerprint_in`).
 - **How it does that** is the patcher spec's to choose, after RE: for instance by serving the rebuilt `locale_en` where the client reads it, or by replacing the loaded map's values. The player's files never change.
 - **Every way out first.** The pack only reaches the client with the patcher's "every way out" set in place (rule 4).
 - **Another build** still works: a copy of another build keeps its own English wherever its lines differ from the pinned build's.

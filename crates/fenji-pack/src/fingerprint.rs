@@ -19,6 +19,17 @@ pub fn fingerprint(source: &[u8]) -> Fingerprint {
     Fingerprint(fp)
 }
 
+/// The fingerprint of `source` in the locale context `env`. The client's locale map has a main
+/// table, context `""`, and a few small tables for contexts such as `noun`, where one source
+/// line has another translation. A line in the main table is keyed by [`fingerprint`] of its
+/// source; a line in a context by the fingerprint of `<env>\0<source>`, which no source holds.
+pub fn fingerprint_in(env: &str, source: &[u8]) -> Fingerprint {
+    if env.is_empty() {
+        return fingerprint(source);
+    }
+    fingerprint(&[env.as_bytes(), b"\0", source].concat())
+}
+
 impl fmt::Display for Fingerprint {
     /// 32 lowercase hex digits.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,6 +63,20 @@ impl FromStr for Fingerprint {
     }
 }
 
+/// As its 32 hex digits, as the tools' JSON files hold it.
+impl serde::Serialize for Fingerprint {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Fingerprint {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = <std::borrow::Cow<'de, str>>::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +99,32 @@ mod tests {
         ] {
             assert!(bad.parse::<Fingerprint>().is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_line_in_a_context_has_a_fingerprint_of_its_own() {
+        assert_eq!(
+            fingerprint_in("", "剑".as_bytes()),
+            fingerprint("剑".as_bytes())
+        );
+        assert_eq!(
+            fingerprint_in("noun", "剑".as_bytes()),
+            fingerprint("noun\0剑".as_bytes())
+        );
+        assert_ne!(
+            fingerprint_in("noun", "剑".as_bytes()),
+            fingerprint("剑".as_bytes())
+        );
+    }
+
+    #[test]
+    fn fingerprints_serialize_as_their_hex() {
+        let fp = fingerprint(b"abc");
+        let json = serde_json::to_string(&fp).unwrap();
+        assert_eq!(json, "\"ba7816bf8f01cfea414140de5dae2223\"");
+        assert_eq!(serde_json::from_str::<Fingerprint>(&json).unwrap(), fp);
+        assert!(serde_json::from_str::<Fingerprint>("\"abc\"").is_err());
+        assert!(serde_json::from_str::<Fingerprint>("7").is_err());
     }
 
     #[test]
