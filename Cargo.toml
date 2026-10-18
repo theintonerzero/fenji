@@ -7,7 +7,7 @@ members = ["tools/stub", "tools/luatool", "tools/archive", "tools/oodle-helper",
 exclude = ["crates/fenji-oodle/fuzz", "apps/launcher/src-tauri"]
 
 [workspace.package]
-version = "0.5.4"
+version = "0.5.5"
 edition = "2024"
 rust-version = "1.97"
 publish = false

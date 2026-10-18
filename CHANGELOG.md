@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] - 2026-10-17
+
+### Added
+
+- **launcher:** DepotDownloader hidden, its Steam sign-in code drawn in the launcher (#432)
+- **launcher:** Play starts the game with the latest GE-Proton, fetched by the launcher (#431)
+- **launcher:** Play starts the game under GameMode where it's installed (#437)
+- **launcher:** Launch options as Steam's, split as a shell would but never run through one (#438)
+
+### Changed
+
+- **deps:** The shell ignores zbus 5's unmaintained helper crates (#440)
+
+### Documentation
+
+- **docs:** A release's hosting examples name it, in the steps by hand too (#426)
+- **proto:** A corrected mover's stop, with the client (#427)
+- **launcher:** Play on Linux, tuned: the latest GE-Proton, GameMode and launch options (#435)
+- **docs:** CLAUDE.md's status after v0.5.4, with 0.5.5's Amendment B (#436)
+- **launcher:** The rehearsal's fixtures dated in UTC
+
 ## [0.5.4] - 2026-10-17
 
 ### Added
