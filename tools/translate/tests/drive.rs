@@ -13,7 +13,9 @@ use fenji_pack::fingerprint;
 use fenji_translate::area::classify;
 use fenji_translate::batch::{plan_batches, read_batches, write_batches};
 use fenji_translate::check::{Glossary, Rules};
-use fenji_translate::drive::{ANSWERS, Driver, PAUSE, QUEUE, REVIEWS, SETTLED, Summary, status};
+use fenji_translate::drive::{
+    ANSWERS, Driver, PAUSE, QUEUE, REVIEWS, RUNS, SETTLED, Summary, Usage, status, usage,
+};
 use fenji_translate::lines::{Line, Use, write_lines};
 use fenji_translate::prompt::{Answer, Settled, TRANSLATE};
 
@@ -206,6 +208,51 @@ fn the_driver_translates_reviews_and_settles_every_batch() {
         .collect();
     assert!(going.iter().all(|&n| n <= 2), "{going:?}");
     assert!(going.contains(&2), "two at once: {going:?}");
+}
+
+#[test]
+fn every_run_is_recorded_with_what_it_used() {
+    let s = setup("ok", "0");
+    assert_eq!(driver(&s).run().unwrap(), ALL_DONE);
+    let text = std::fs::read_to_string(s.work.join(RUNS)).unwrap();
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(records.len(), 5, "a line per run: {text}");
+    let jobs: BTreeSet<(&str, &str)> = records
+        .iter()
+        .map(|r| (r["batch"].as_str().unwrap(), r["job"].as_str().unwrap()))
+        .collect();
+    assert!(jobs.contains(&("dialogue-00001", "settle")));
+    for r in &records {
+        assert_eq!(r["model"], "claude-opus-5-5");
+        assert_eq!(r["effort"], "high");
+        assert_eq!(r["outcome"], "kept");
+        assert_eq!(r["output_tokens"], 20);
+        assert_eq!(r["input_tokens"], 80, "every input token, cached or not");
+        assert!(r["at"].as_u64().unwrap() > 1_700_000_000);
+    }
+    assert_eq!(
+        usage(&s.work).unwrap(),
+        Usage {
+            runs: 5,
+            input_tokens: 400,
+            output_tokens: 100,
+            cost_usd: 2.5,
+        }
+    );
+
+    // A run that fails is recorded too, with nothing used.
+    let j = setup("junk", "0");
+    driver(&j).run().unwrap();
+    let text = std::fs::read_to_string(j.work.join(RUNS)).unwrap();
+    assert_eq!(text.lines().count(), 6, "three tries a batch");
+    assert!(
+        text.lines().all(|l| l.contains("\"outcome\":\"failed\"")),
+        "{text}"
+    );
+    assert_eq!(usage(&j.work).unwrap().output_tokens, 0);
 }
 
 #[test]
