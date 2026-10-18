@@ -113,8 +113,10 @@ fn text_attribute(tag: &str, name: &str) -> bool {
         .any(|(t, names)| *t == tag && (names.contains(&"*") || names.contains(&name)))
 }
 
-/// The longest token, in characters: past it, an opening `[`, `{`, `<`, `|` or `#` is text.
-const MAX_TOKEN: usize = 200;
+/// The longest token, in characters: past it, an opening `[`, `{`, `<`, `|` or `#` is text. A
+/// tag's English can be several times its Chinese: a `[vocation]` tag holds a phrase for each of up
+/// to ten classes (#473).
+const MAX_TOKEN: usize = 2_000;
 /// The longest code between pipes or hashes.
 const MAX_CODE: usize = 60;
 
@@ -403,6 +405,18 @@ mod tests {
 
     fn plain(family: Family, shape: &str) -> (Family, String, Vec<String>) {
         (family, shape.into(), vec![])
+    }
+
+    #[test]
+    fn a_tag_whose_english_outgrows_its_chinese_is_still_one_token() {
+        // A class's variant for each of eight classes, in English three times as long as its
+        // Chinese: 258 characters in the bake-off (#473).
+        let zh = "[vocation tg=\"天罡一脉\" zf=\"斩风一脉\" yj=\"清禹师兄座下\" mf=\"妙法洞虚长老座下\" sm=\"司命一脉\" zy=\"咒隐一脉\" ly=\"珑瑛一脉\" yf=\"异芳一脉\"]";
+        let en = "[vocation tg=\"among the Spearmasters\" zf=\"among the Berserkers\" yj=\"among the disciples of Brother Qingyu\" mf=\"among the disciples of Elder Dongxu of the Bards\" sm=\"among the Summoners\" zy=\"among the Reapers\" ly=\"among the Warriors\" yf=\"among the Fox Mages\"]";
+        assert!(en.chars().count() > 200);
+        let (source, english) = (tokens(zh), tokens(en));
+        assert_eq!(english.len(), 1);
+        assert_eq!(english[0].shape, source[0].shape);
     }
 
     #[test]
