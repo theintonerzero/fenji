@@ -135,7 +135,7 @@ The boards' words are the launcher's copy. "Moonward", "Wen" and the counts give
   - the script shows everything DepotDownloader prints in the terminal;
   - it passes the launcher only the progress lines (a percentage and a file path) and the exit status, through files in the launcher's data folder;
   - the blade climbs with the percentage.
-- **No `-remember-password`,** so no Steam login token is kept, and a later repair signs in again.
+- **No `-remember-password`,** so a later repair signs in again. (DepotDownloader saves each sign-in's tokens all the same; Amendment A's LA4 removes them with the run, #443.)
 - **Cancel download** ends DepotDownloader. The files fetched so far stay, and a later download skips the ones that already match.
 - **The end.** When DepotDownloader exits with 0, a full check runs. Otherwise the screen says the download stopped, with its status, and offers to try again.
 
@@ -320,6 +320,7 @@ The owner, after v0.5.0: "depot downloader for those who dont have access to the
   - Progress lines are read as in §3.6, and the run's end is the child's exit. Cancel ends the child's process group.
   - Every other line is dropped unread: never logged, shown or kept. That includes the account name DepotDownloader prints after a sign-in (ground rule 7).
   - The code is a sign-in request that only the player's Steam app can approve, and the session goes to DepotDownloader. No password or token passes through Fenji. There's still no `-remember-password`, so each download signs in again.
+  - DepotDownloader saves each sign-in itself, even without `-remember-password`: the account name, Steam's token for the sign-in and Steam Guard's token for the computer, in its own settings (`account.config`, in .NET's isolated storage under `$XDG_DATA_HOME`; 3.4.0's `Steam3Session.cs`). Fenji never has it use them again, so each hidden run gets a data folder of its own in its run folder (both 0700), as its `XDG_DATA_HOME`, whatever the player's own. That folder goes as the run ends: finished, failed, cancelled, or stopped as the launcher exits. A launcher that ends without its exit (a crash, a signal, an update's restart) leaves it to the next one, which removes it as it starts (#443). The password route's command runs where the player runs it, and DepotDownloader keeps its file in its usual place there, as PRIVACY.md says.
 - **A password sign-in is the player's own command (LA5).** "No Steam Mobile App? Sign in with your password" ends the hidden run and shows the command for the player's own terminal, with their own login, as L3 described for a player without the Steam app (#348). The password is typed into DepotDownloader there, never into Fenji. (The final review of #429 ruled so: L3's terminal is QR-only, and only the player may type a login, ground rule 7, so a terminal Fenji opened could never take a password. That terminal went with it.)
 - **Steam's Proton (LA6).** On Linux, when a Steam library holds Proton, umu-run uses the newest stable `Proton x.y` there (`PROTONPATH`), unless the player set one. So a player with Steam skips Proton's download on the first start. This comes after a game-box rehearsal shows that version starting the client through umu-run.
 
@@ -329,6 +330,7 @@ The owner, after v0.5.0: "depot downloader for those who dont have access to the
 | L20 | Play starts the game itself, never through Steam (LA3). | The ticket, one game at a time, and ground rule 6's gate for a patched client. | Closing Steam before Play, should the acceptance session need it. |
 | L21 | DepotDownloader runs hidden with `-qr`, and the launcher redraws its QR code from DepotDownloader's own output. A password sign-in is the player's own command in their own terminal. This replaces L3's terminal (LA4, LA5). | The owner's decision. No credential passes through Fenji, and the window that opened beside the launcher goes. | The terminal path back for everyone, from git (15a4cda). |
 | L22 | umu-run uses Steam's newest stable Proton when a library holds one, after a rehearsal (LA6). | The first start's largest download, skipped. | umu's own Proton, as before. |
+| L26 | A hidden run's `XDG_DATA_HOME` is a folder of its own, removed as the run ends (LA4; #443). | DepotDownloader saves a Steam token after every sign-in, which Fenji never uses again: on the player's disk it's only a risk. | The token where DepotDownloader keeps it, as before #443. |
 
 ## 9. Amendment B: Play on Linux, tuned (the owner, 2026-10-17)
 

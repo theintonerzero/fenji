@@ -194,13 +194,15 @@ const MAX_LINE: usize = 16 * 1024;
 /// DepotDownloader as the launcher's own child, signing in by QR code (launcher spec Amendment A,
 /// LA4; L21), in a process group of its own. Its input is closed. What it prints goes through a
 /// [`Reader`]: the code it draws, to draw again as squares, and its progress; every other line is
-/// dropped unread, and its error output too, so nothing it prints is logged or kept. Unix only,
-/// like Play.
+/// dropped unread, and its error output too, so nothing it prints is logged or kept. What it
+/// saves goes as it ends ([`OWN_DATA`]). Unix only, like Play.
 #[derive(Debug, Clone)]
 pub struct ChildRun {
     seen: Arc<Mutex<Seen>>,
     /// The child's own process group: its pid.
     pgid: i32,
+    /// Its own data folder, in its run's folder ([`OWN_DATA`]).
+    data: PathBuf,
 }
 
 /// What a hidden run has shown so far.
@@ -218,7 +220,8 @@ fn lock(seen: &Mutex<Seen>) -> std::sync::MutexGuard<'_, Seen> {
 
 impl ChildRun {
     /// Starts DepotDownloader on `job` with `-qr`, its environment `env` as it is outside an
-    /// AppImage ([`appimage::outside`]); a repair's file list goes into a fresh `run_dir`.
+    /// AppImage ([`appimage::outside`]) but for its own data folder ([`OWN_DATA`]); that folder,
+    /// and a repair's file list, go into a fresh `run_dir`.
     pub fn start(
         job: &Job,
         run_dir: &Path,
@@ -228,7 +231,8 @@ impl ChildRun {
         dirs.recursive(true);
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut dirs, 0o700);
-        dirs.create(run_dir)?;
+        let data = run_dir.join(OWN_DATA);
+        dirs.create(&data)?;
         let mut cmd = std::process::Command::new(&job.dd);
         cmd.args(PINNED_ARGS)
             .arg("-qr")
@@ -241,6 +245,7 @@ impl ChildRun {
         }
         cmd.env_clear()
             .envs(appimage::outside(env))
+            .env("XDG_DATA_HOME", &data)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -263,12 +268,14 @@ impl ChildRun {
             let seen = seen.clone();
             std::thread::spawn(move || read_lines(out, &seen));
         }
-        let ended = seen.clone();
+        let (ended, saved) = (seen.clone(), data.clone());
         std::thread::spawn(move || {
             let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+            // Before the run is seen to end, so that nothing it saved outlives it.
+            let _ = std::fs::remove_dir_all(saved);
             lock(&ended).exit = Some(code);
         });
-        Ok(ChildRun { seen, pgid })
+        Ok(ChildRun { seen, pgid, data })
     }
 
     /// Where the run is now: its end, else its progress once the download has begun, else the
@@ -305,12 +312,13 @@ impl ChildRun {
     /// would stop it (the final review of #429, I3).
     pub fn stop(&self, grace: Duration) {
         let _ = self.cancel();
-        if self.ended_within(grace) {
-            return;
+        if !self.ended_within(grace) {
+            let _ = self.kill();
+            // Killed, it's gone once its waiter has reaped it.
+            self.ended_within(KILLED_GONE);
         }
-        let _ = self.kill();
-        // Killed, it's gone once its waiter has reaped it.
-        self.ended_within(KILLED_GONE);
+        // Its waiter removes its data as it ends, but the launcher may exit first (#443).
+        let _ = std::fs::remove_dir_all(&self.data);
     }
 
     /// Whether the run's process group is gone, looked at until `limit` has passed.
@@ -333,6 +341,12 @@ const KILLED_GONE: Duration = Duration::from_secs(1);
 /// [`end_left`].
 const LEFT: &str = "pgid";
 
+/// DepotDownloader's own data folder in a run's folder, its `XDG_DATA_HOME`, where .NET keeps its
+/// isolated storage. DepotDownloader saves its settings there, the account and Steam token of
+/// every sign-in among them, whatever its flags (3.4.0's `Steam3Session.cs`). Fenji never has it
+/// use them again (no `-remember-password`, LA4), so the folder goes as the run ends (#443).
+const OWN_DATA: &str = "data";
+
 /// When process `pid` started, in clock ticks since boot (`/proc/<pid>/stat`'s 22nd field), which
 /// tells it from a later process given the same number. None where there's no `/proc`.
 fn started_at(pid: i32) -> Option<u64> {
@@ -344,28 +358,44 @@ fn started_at(pid: i32) -> Option<u64> {
 
 /// Ends what a launcher that didn't stop its runs left in `runs`, its runs' folders: each run
 /// whose process group still lives, led by the very process it started, is killed. A number the
-/// system has since given another process is left alone.
+/// system has since given another process is left alone. What every run there saved goes: no run
+/// of this launcher's has started yet (#443). Only its runs' own folders, named by their start
+/// as the sweep before each run takes them, never through a link.
 pub fn end_left(runs: &Path) {
     let Ok(entries) = std::fs::read_dir(runs) else {
         return;
     };
     for run in entries.filter_map(Result::ok) {
-        let left = run.path().join(LEFT);
-        let Ok(text) = std::fs::read_to_string(&left) else {
+        let named = run
+            .file_name()
+            .to_str()
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if !named || !run.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
-        };
-        let mut words = text.split_whitespace();
-        let (Some(Ok(pgid)), Some(Ok(at))) = (
-            words.next().map(str::parse::<i32>),
-            words.next().map(str::parse::<u64>),
-        ) else {
-            continue;
-        };
-        if pgid > 0 && started_at(pgid) == Some(at) {
-            let _ = signal_group(pgid, true);
         }
-        let _ = std::fs::remove_file(left);
+        end_noted(&run.path());
+        let _ = std::fs::remove_dir_all(run.path().join(OWN_DATA));
     }
+}
+
+/// Kills the run that run folder `run`'s note names, if it's still that very run, and removes
+/// the note.
+fn end_noted(run: &Path) {
+    let left = run.join(LEFT);
+    let Ok(text) = std::fs::read_to_string(&left) else {
+        return;
+    };
+    let mut words = text.split_whitespace();
+    let (Some(Ok(pgid)), Some(Ok(at))) = (
+        words.next().map(str::parse::<i32>),
+        words.next().map(str::parse::<u64>),
+    ) else {
+        return;
+    };
+    if pgid > 0 && started_at(pgid) == Some(at) {
+        let _ = signal_group(pgid, true);
+    }
+    let _ = std::fs::remove_file(left);
 }
 
 /// Reads a hidden run's output to its end, a line at a time, into `seen`.
@@ -731,6 +761,8 @@ mod tests {
                 ("APPDIR", "/tmp/.mount_FenjiAb12"),
                 ("PATH", "/tmp/.mount_FenjiAb12/usr/bin/:/usr/bin:/bin"),
                 ("PYTHONHOME", "/tmp/.mount_FenjiAb12/usr/"),
+                // A player's own gives way to the run's (#443).
+                ("XDG_DATA_HOME", "/home/p/.local/share"),
             ]
             .map(|(k, v)| (OsString::from(k), OsString::from(v)));
             ChildRun::start(&job, &dir.path().join("run"), env).unwrap()
@@ -744,26 +776,87 @@ mod tests {
             .lines()
             .filter(|l| !["PWD=", "SHLVL=", "_="].iter().any(|p| l.starts_with(p)))
             .collect();
-        assert_eq!(vars, ["PATH=/usr/bin:/bin"]);
+        // And its own data folder (#443).
+        let data = format!(
+            "XDG_DATA_HOME={}",
+            dir.path().join("run").join(OWN_DATA).display()
+        );
+        assert_eq!(vars, ["PATH=/usr/bin:/bin", data.as_str()]);
+    }
+
+    /// Where a fake that saves a sign-in ([`reading_tests::saving_sign_in`]) saved it, once it has.
+    fn saved_in(saved: &Path) -> PathBuf {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !saved.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let own = std::fs::read_to_string(saved).expect("the run's own data folder, to save in");
+        PathBuf::from(own.trim())
+    }
+
+    /// #443: DepotDownloader saves the sign-in's account and Steam token after every one,
+    /// whatever its flags, in its own settings under `$XDG_DATA_HOME`. A hidden run's is a folder
+    /// of its own in the run's folder, gone as soon as the run ends, finished or cancelled; the
+    /// run's folder stays until the next run (#348).
+    #[test]
+    fn a_hidden_runs_own_data_goes_as_soon_as_it_ends() {
+        for cancelled in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (run_dir, saved) = (dir.path().join("run"), dir.path().join("saved"));
+            let end = if cancelled { "exec sleep 30" } else { "exit 0" };
+            let run = {
+                let _spawn = spawning();
+                let save = reading_tests::saving_sign_in(dir.path(), &saved);
+                let dd = fake_dd(dir.path(), &format!("{save}\n{end}"));
+                let files = Some(vec!["bin64/a.dll".into()]);
+                start_child(&dd, &dir.path().join("SoLO"), files, &run_dir)
+            };
+            assert_eq!(saved_in(&saved), run_dir.join(OWN_DATA));
+            if cancelled {
+                run.cancel().unwrap();
+            }
+            assert!(matches!(
+                wait_child(&run, |s| matches!(s, RunState::Ended { .. })),
+                RunState::Ended { .. }
+            ));
+            assert!(
+                !run_dir.join(OWN_DATA).exists(),
+                "the sign-in outlived its run (cancelled: {cancelled})"
+            );
+            assert!(
+                run_dir.join("files.txt").exists(),
+                "the run's folder stays until the next run"
+            );
+        }
     }
 
     /// The final review of #429, I3: a run that ignores `SIGTERM` still ends, `SIGKILL` after the
-    /// grace, with everything it started.
+    /// grace, with everything it started; and its sign-in with it (#443), before the launcher
+    /// that stopped it exits.
     #[test]
     fn stop_ends_even_a_run_that_ignores_sigterm() {
         let dir = tempfile::tempdir().unwrap();
+        let (run_dir, saved) = (dir.path().join("run"), dir.path().join("saved"));
         let run = {
             let _spawn = spawning();
-            let dd = fake_dd(dir.path(), "trap '' TERM\necho started\nexec sleep 600");
-            start_child(&dd, &dir.path().join("SoLO"), None, &dir.path().join("run"))
+            let save = reading_tests::saving_sign_in(dir.path(), &saved);
+            let body = format!("trap '' TERM\n{save}\necho started\nexec sleep 600");
+            let dd = fake_dd(dir.path(), &body);
+            start_child(&dd, &dir.path().join("SoLO"), None, &run_dir)
         };
-        while !std::fs::read_to_string(dir.path().join("args")).is_ok_and(|a| a.contains("closed"))
-        {
-            std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(saved_in(&saved), run_dir.join(OWN_DATA));
+        // While it holds a sign-in, only the player may look in: .NET's own folders are 0755.
+        for held in [run_dir.clone(), run_dir.join(OWN_DATA)] {
+            let mode = std::fs::metadata(&held).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{held:?}");
         }
         let started = Instant::now();
         run.stop(Duration::from_millis(300));
         assert!(!group_alive(run.pgid), "it lives on after its stop");
+        assert!(
+            !run_dir.join(OWN_DATA).exists(),
+            "the sign-in outlived the stop"
+        );
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "{:?}",
@@ -789,6 +882,8 @@ mod tests {
             start_child(&dd, &dir.path().join("SoLO"), None, &runs.join("1"))
         };
         let left = runs.join("1").join(LEFT);
+        let own = runs.join("1").join(OWN_DATA);
+        assert!(own.is_dir(), "the run has its own data folder");
         let text = std::fs::read_to_string(&left).unwrap();
         // A number given since to another process: its start differs, and it's left alone.
         let (pgid, at) = text.trim().split_once(' ').unwrap();
@@ -806,6 +901,9 @@ mod tests {
             "another process's number is no run of ours"
         );
         assert!(group_alive(run.pgid));
+        // No run of this launcher's is going yet, so what a left one saved goes, whatever its
+        // note says (#443).
+        assert!(!own.exists(), "a left run's sign-in stayed");
         // The very run: ended.
         std::fs::write(&left, &text).unwrap();
         end_left(&runs);
@@ -815,6 +913,28 @@ mod tests {
         }
         assert!(!group_alive(run.pgid), "the run it left lives on");
         assert!(!left.exists(), "its note goes with it");
+        // A crashed launcher's run, long ended, with nobody left to wait for it: what it saved
+        // goes too, its note or none.
+        let crashed = runs.join("2").join(OWN_DATA).join("IsolatedStorage");
+        std::fs::create_dir_all(&crashed).unwrap();
+        std::fs::write(crashed.join("account.config"), "lin_yue_on_steam").unwrap();
+        end_left(&runs);
+        assert!(
+            !runs.join("2").join(OWN_DATA).exists(),
+            "a crashed run's sign-in stayed"
+        );
+        // Only its own runs' folders, named by their start: never through a link, and never a
+        // folder it didn't make.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join(OWN_DATA)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, runs.join("3")).unwrap();
+        std::fs::create_dir_all(runs.join("notes").join(OWN_DATA)).unwrap();
+        end_left(&runs);
+        assert!(elsewhere.join(OWN_DATA).is_dir(), "it went through a link");
+        assert!(
+            runs.join("notes").join(OWN_DATA).is_dir(),
+            "it swept a folder not its own"
+        );
         // A folder with no note, or none at all, is nothing to end.
         end_left(&dir.path().join("none"));
     }
@@ -945,6 +1065,24 @@ pub(crate) mod reading_tests {
 
     /// Where the rehearsal's one file was, as the fixtures name it.
     pub(crate) const REPAIRED: &str = "/home/player/Games/SoLO/bin64/loader.ini";
+
+    /// Shell lines that save a sign-in as DepotDownloader 3.4.0 does after every one, whatever
+    /// its flags (`Steam3Session.cs`): the account and its Steam token in `account.config`, in
+    /// .NET's isolated store under `$XDG_DATA_HOME`; then `$XDG_DATA_HOME` goes into `saved`.
+    /// Only where `$XDG_DATA_HOME` is inside `within`, so no test writes in a real one (#443).
+    /// Unix only, like the tests that run it.
+    #[cfg(unix)]
+    pub(crate) fn saving_sign_in(within: &Path, saved: &Path) -> String {
+        format!(
+            r#"case "$XDG_DATA_HOME" in '{within}'/*)
+  store="$XDG_DATA_HOME/IsolatedStorage/a.b/c.d/Url.e/AssemFiles"
+  mkdir -p "$store" && echo 'lin_yue_on_steam eyFakeSteamToken' > "$store/account.config" &&
+    echo "$XDG_DATA_HOME" > '{saved}.new' && mv '{saved}.new' '{saved}' ;;
+esac"#,
+            within = within.display(),
+            saved = saved.display(),
+        )
+    }
 
     fn read(lines: &[String]) -> Vec<Event> {
         let mut reader = Reader::default();

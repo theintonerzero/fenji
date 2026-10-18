@@ -926,8 +926,13 @@ exit {code}"#,
                 let (code, steam) = (self.root.join("dd-code"), self.root.join("dd-steam"));
                 std::fs::write(&code, lines[..signed_in].join("\n") + "\n").unwrap();
                 std::fs::write(&steam, lines[signed_in..download].join("\n") + "\n").unwrap();
+                // Signed in, it saves the sign-in where DepotDownloader would (#443).
+                let save = crate::depot::reading_tests::saving_sign_in(
+                    &self.root,
+                    &self.root.join("dd-saved"),
+                );
                 format!(
-                    "cat '{}'\nsleep 1.5\ncat '{}'\n{body}",
+                    "cat '{}'\nsleep 1.5\ncat '{}'\n{save}\n{body}",
                     code.display(),
                     steam.display()
                 )
@@ -1197,6 +1202,40 @@ exit {code}"#,
             }
         }
         assert!(!logs.contains(&dark), "the code reached the log");
+    }
+
+    #[tokio::test]
+    async fn no_sign_in_depot_downloader_saved_outlives_its_download() {
+        // #443: DepotDownloader 3.4.0 saves the account and its Steam token after every sign-in,
+        // whatever its flags, and Fenji never has it use them again: none of them stays.
+        fn configs(dir: &Path, found: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    configs(&entry.path(), found);
+                } else if entry.file_name() == "account.config" {
+                    found.push(entry.path());
+                }
+            }
+        }
+        let t = Testbed::new(&[("a.bin", 1000), ("bin64/b.dll", 10)]);
+        let app = t.app_with_fakes(FakeDd::DrawsCode);
+        app.intent(Intent::Download {
+            folder: t.root.join("download").display().to_string(),
+        })
+        .await
+        .unwrap();
+        until(&app, checked(LevelView::Full)).await;
+        let saved = std::fs::read_to_string(t.root.join("dd-saved"))
+            .expect("DepotDownloader had a data folder of its own, in its run's");
+        let own = PathBuf::from(saved.trim());
+        assert!(
+            own.starts_with(t.root.join("data").join("depot")),
+            "{own:?}"
+        );
+        assert!(!own.exists(), "its data folder outlived the download");
+        let mut left = Vec::new();
+        configs(&t.root, &mut left);
+        assert!(left.is_empty(), "a sign-in stayed: {left:?}");
     }
 
     #[tokio::test]
