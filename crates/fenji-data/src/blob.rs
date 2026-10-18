@@ -8,6 +8,33 @@ use crate::{Decompressor, Error, Result};
 
 /// Length of the fixed part of the header.
 pub const FIXED_LEN: usize = 32;
+/// The block size of a stored blob [`stored`] writes. A stored blob has no blocks, but the engine
+/// takes a block size from 128 bytes to 2 MiB in every header (FUN_1400BC230,
+/// docs/re/retranslation-locale.md 3.9).
+const STORED_BLOCK_SIZE: u32 = 0x8_0000;
+
+/// The check a header carries in its last two bytes: the CRC-16/ARC of its first 30, which the
+/// engine verifies (FUN_1400BC230, docs/re/retranslation-locale.md 3.9).
+pub fn header_check(fixed: &[u8; FIXED_LEN]) -> u16 {
+    crate::archive::crc16_arc(&fixed[..30])
+}
+
+/// `content` as a stored blob the engine reads: the header, with its check, then the content as
+/// it is.
+pub fn stored(content: &[u8], timestamp: u64) -> Vec<u8> {
+    let mut fixed = [0u8; FIXED_LEN];
+    fixed[..8].copy_from_slice(&(content.len() as u64).to_le_bytes());
+    fixed[8..16].copy_from_slice(&timestamp.to_le_bytes());
+    fixed[16..24].copy_from_slice(&((FIXED_LEN + content.len()) as u64).to_le_bytes());
+    fixed[24..28].copy_from_slice(&STORED_BLOCK_SIZE.to_le_bytes());
+    // Codec 0, stored, is already there.
+    let check = header_check(&fixed);
+    fixed[30..].copy_from_slice(&check.to_le_bytes());
+    let mut blob = Vec::with_capacity(FIXED_LEN + content.len());
+    blob.extend_from_slice(&fixed);
+    blob.extend_from_slice(content);
+    blob
+}
 /// No client file comes near this; larger raw sizes mean a corrupt header.
 const MAX_RAW: u64 = 1 << 32;
 /// The most `decode` reserves up front; larger outputs grow block by block.
@@ -59,7 +86,8 @@ pub struct BlobHeader {
     pub stored_size: u64,
     pub block_size: u32,
     pub codec: Codec,
-    /// Meaning unknown (docs/re/m1-script-format.md §2).
+    /// The CRC-16/ARC of the header's first 30 bytes, which the engine checks ([`header_check`]).
+    /// The parser doesn't.
     pub check: u16,
     /// Compressed size of each block; empty for stored blobs.
     pub block_sizes: Vec<u32>,
@@ -216,6 +244,32 @@ mod tests {
     use super::*;
     use crate::BuiltinCodecs;
     use crate::test_util::{lz4_blob, lz4_blob_blocks, stored_blob};
+
+    #[test]
+    fn a_stored_blob_carries_the_engines_header_check() {
+        // _index's header (docs/re/m1-archives.md 3.1) and its check, the CRC-16/ARC of its first
+        // 30 bytes as FUN_1400BC230 computes it (docs/re/retranslation-locale.md 3.9).
+        let mut fixed = [0u8; FIXED_LEN];
+        fixed[..8].copy_from_slice(&25_533_513u64.to_le_bytes());
+        fixed[8..16].copy_from_slice(&1_669_368_538u64.to_le_bytes());
+        fixed[16..24].copy_from_slice(&5_736_039u64.to_le_bytes());
+        fixed[24..28].copy_from_slice(&0x8_0000u32.to_le_bytes());
+        fixed[28..30].copy_from_slice(&4u16.to_le_bytes());
+        assert_eq!(header_check(&fixed), 0xB355);
+
+        let blob = stored(b"abc", 7);
+        let h = BlobHeader::parse(&blob, 0).unwrap();
+        assert_eq!(
+            (h.raw_size, h.timestamp, h.stored_size, h.codec),
+            (3, 7, 35, Codec::Stored)
+        );
+        // The engine takes a block size from 128 bytes to 2 MiB, a stored blob's too.
+        assert_eq!(h.block_size, 0x8_0000);
+        assert_eq!(h.check, header_check(blob[..FIXED_LEN].try_into().unwrap()));
+        assert_eq!(decode(&blob, 0, &BuiltinCodecs).unwrap(), b"abc");
+        let empty = BlobHeader::parse(&stored(b"", 0), 0).unwrap();
+        assert_eq!((empty.raw_size, empty.stored_size), (0, 32));
+    }
 
     #[test]
     fn single_block_lz4_round_trip() {

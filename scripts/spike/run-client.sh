@@ -16,7 +16,7 @@
 #       them, with no watchdog (#148). So after a GE-Proton bump, remove re/runs/compat and run
 #       setup: on an existing workspace it makes a fresh prefix, and keeps the client copies.
 #   scripts/spike/run-client.sh run NAME [--hosts FILE] [--ports "P1 P2"] [--timeout S]
-#       [--display N] [--no-gpu] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]...
+#       [--display N] [--no-gpu] [--channels WINEDEBUG] [--env VAR=VALUE]... [--client-file NAME=SRC]... [--early-load]
 #       [--click T:X,Y]... [--key T:KEY[/MS]]... [--type T:TEXT]... [--stub-arg ARG]...
 #       [--server CONFIG [--server-data DIR] [--launch "ARGS" [--launch-password FILE]]]
 #       [--clients 2 --display2 M [--second-after S] [--timeout2 S]
@@ -28,6 +28,10 @@
 #       follows a link.
 #       --client-file puts SRC into the run's client copy as NAME at the install root, an input
 #       the client reads, for this run only. It never replaces a file the copy already has.
+#       --early-load runs client/ with an early check's load in it (early-check.sh, which passes
+#       it): a patch/ folder at the install root, which goes into the evidence and out of the copy
+#       like any entry there, and a data/_index that isn't the pinned copy's, which
+#       `translate early revert` puts back. Without it, a run refuses both.
 #       --click plays a player's left click at X,Y on the nested display, T seconds into the run
 #       (xclick.py, through XTEST): input to the client's own UI, never a change to the client.
 #       --stub-arg passes one word to fenji-stub, e.g. --stub-arg --speak (M2).
@@ -295,6 +299,7 @@ record_inputs() {
   echo "client args: $*"
   echo "extra env: ${envs[*]-}"
   echo "client files: ${client_files[*]-}"
+  echo "early load (client/patch and a changed data/_index): $([ "${early_load-0}" = 1 ] && echo yes || echo no)"
   echo "clicks (T:X,Y): ${clicks[*]-}"
   echo "keys (T:KEY): ${keys[*]-}"
   echo "text (T:TEXT): ${types[*]-}"
@@ -519,7 +524,7 @@ cmd_run() {
   local envs=() client_files=() clicks=() stub_args=() keys=() types=() presses=()
   local server_cfg="" server_data="" launch="" launch_password="" ports_given=0 launch_words=()
   local clients=1 display2="" second_after=30 second_after_given=0 tmo2="" tmo2_given=0 gpu=1
-  local launch2="" launch_password2="" clicks2=() keys2=() types2=()
+  local launch2="" launch_password2="" clicks2=() keys2=() types2=() early_load=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --hosts) [ $# -ge 2 ] || usage; hosts=$(realpath -- "$2"); shift 2 ;;
@@ -547,6 +552,7 @@ cmd_run() {
       --channels) [ $# -ge 2 ] || usage; channels=$2; shift 2 ;;
       --env) [ $# -ge 2 ] || usage; envs+=("$2"); shift 2 ;;
       --client-file) [ $# -ge 2 ] || usage; client_files+=("$2"); shift 2 ;;
+      --early-load) early_load=1; shift ;;
       --click)
         [ $# -ge 2 ] || usage
         case "$2" in 2@*) clicks2+=("${2#2@}") ;; *) clicks+=("$2") ;; esac
@@ -613,11 +619,21 @@ cmd_run() {
       if [ -e "$left" ] || [ -L "$left" ]; then
         case "${left##*/}" in
           bin64 | data | tools) ;;
+          # An early check's load, in client/ only (early-check.sh).
+          patch) [ "$early_load" = 1 ] && [ "$copy" = client ] ||
+            die "leftover patch at the install root of $copy/, which should hold only bin64, data and tools; move it first (an early check's load runs with --early-load)" ;;
           *) die "leftover ${left##*/} at the install root of $copy/, which should hold only bin64, data and tools; move it first" ;;
         esac
       fi
     done
   done
+  # An early check's load also changes client/'s data/_index, and `translate early revert` puts it
+  # back. A run without --early-load refuses a copy whose _index isn't the pinned copy's: a load
+  # still in, which it would otherwise run with unawares.
+  if [ "$early_load" != 1 ] && [ -f "${FENJI_CLIENT_PATH-}/data/_index" ] &&
+    ! cmp -s -- "$WORK/client/data/_index" "$FENJI_CLIENT_PATH/data/_index"; then
+    die "client/data/_index isn't the pinned copy's: an early check's load is still in; put it back with target/release/translate early revert"
+  fi
   need_display "$display"
   if [ "$clients" = 2 ]; then need_display "$display2"; fi
   [ -f "$hosts" ] || die "hosts file missing: $hosts"

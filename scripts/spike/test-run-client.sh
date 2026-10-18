@@ -12,6 +12,9 @@ HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=run-client.sh
 . "$HERE/run-client.sh"
 set +e # run-client.sh sets -e; these tests check exit statuses themselves
+# No test reads the real pinned copy: a run compares client/'s _index with the pinned copy's, and the
+# tests that check that name a pinned copy of their own.
+unset FENJI_CLIENT_PATH
 TESTROOT=$(mktemp -d) || { echo "FATAL: mktemp failed" >&2; exit 2; }
 readonly TESTROOT
 [ -d "$TESTROOT" ] || { echo "FATAL: no test root" >&2; exit 2; }
@@ -105,6 +108,25 @@ mkdir -p "$TESTROOT/work/client/bin64" "$TESTROOT/work/client/settings" "$TESTRO
 touch "$TESTROOT/work/compat/pfx/system.reg"
 refuses "a run refuses a client copy with another run's leftovers" "leftover" --
 rm -rf -- "$TESTROOT/work/client" "$TESTROOT/work/compat"
+
+# An early check's load (early-check.sh): patch/ at the install root and a data/_index that isn't
+# the pinned copy's, which only a run given --early-load takes.
+mkdir -p "$TESTROOT/work/client/bin64" "$TESTROOT/work/client/patch" "$TESTROOT/work/compat/pfx"
+touch "$TESTROOT/work/compat/pfx/system.reg"
+refuses "a run refuses an early check's patch/ without --early-load" "leftover patch" -- --display 4242
+refuses "--early-load lets the early check's patch/ through" "no nested display" -- --early-load --display 4242
+rm -rf -- "$TESTROOT/work/client/patch"
+mkdir -p "$TESTROOT/work/client/data" "$TESTROOT/pinned/data"
+echo ours > "$TESTROOT/work/client/data/_index"
+echo pinned > "$TESTROOT/pinned/data/_index"
+FENJI_CLIENT_PATH=$TESTROOT/pinned refuses "a run refuses a copy whose _index isn't the pinned copy's" \
+  "isn't the pinned copy's" -- --display 4242
+FENJI_CLIENT_PATH=$TESTROOT/pinned refuses "--early-load takes a load's _index" "no nested display" -- \
+  --early-load --display 4242
+echo pinned > "$TESTROOT/work/client/data/_index"
+FENJI_CLIENT_PATH=$TESTROOT/pinned refuses "a copy whose _index is the pinned copy's passes" \
+  "no nested display" -- --display 4242
+rm -rf -- "$TESTROOT/work/client" "$TESTROOT/work/compat" "$TESTROOT/pinned"
 
 refuses "--env can't redirect the log the watchdog reads" "PROTON_LOG_DIR" -- --env PROTON_LOG_DIR=/tmp/x
 refuses "--env can't rename the log the watchdog reads" "SteamGameId" -- --env SteamGameId=1

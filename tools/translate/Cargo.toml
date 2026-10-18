@@ -21,11 +21,11 @@ fenji-luatool = { path = "../luatool" }
 fenji-pack.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
 
 [dev-dependencies]
 fenji-data = { workspace = true, features = ["test-util"] }
 mlua.workspace = true
-sha1.workspace = true
 tempfile.workspace = true
 
 [lints]

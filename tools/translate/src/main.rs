@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fenji_data::client::GameCopy;
-use fenji_translate::{assemble, batch, drive, extract, glossary, lines};
+use fenji_translate::{assemble, batch, drive, early, extract, glossary, lines};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -63,6 +63,30 @@ enum Command {
         /// The fenji-content checkout, outside this one
         #[arg(long)]
         to: PathBuf,
+    },
+    /// The early check's loader, for a sandboxed run only: new English into a run workspace's copy, and back out (docs/re/retranslation-locale.md §4)
+    Early {
+        #[command(subcommand)]
+        command: EarlyCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EarlyCommand {
+    /// Loads a file's lines (fingerprint, tab, English) into the copy: a patch part, and one more _index line; the copy's own _index waits in OUT/early/ until revert
+    Apply {
+        /// The run workspace's copy, inside re/
+        #[arg(long, default_value = "re/runs/client")]
+        copy: PathBuf,
+        /// The lines' new English, as fenji-content's files hold it
+        #[arg(long)]
+        english: PathBuf,
+    },
+    /// Puts the copy's own _index back, and takes the patch part out
+    Revert {
+        /// The run workspace's copy, inside re/
+        #[arg(long, default_value = "re/runs/client")]
+        copy: PathBuf,
     },
 }
 
@@ -166,6 +190,37 @@ fn main() -> Result<()> {
                 coverage.missing.len(),
                 work.join(assemble::COVERAGE).display()
             );
+        }
+        Command::Early { command } => {
+            let pinned = cli
+                .client
+                .or_else(|| std::env::var_os("FENJI_CLIENT_PATH").map(PathBuf::from));
+            match command {
+                EarlyCommand::Apply { copy, english } => {
+                    let copy = early::run_copy(&repo, &copy, pinned.as_deref())?;
+                    let text = std::fs::read_to_string(&english)
+                        .with_context(|| english.display().to_string())?;
+                    let english: std::collections::HashMap<_, _> = fenji_pack::read_tsv(&text)?
+                        .into_iter()
+                        .map(|e| (e.fingerprint, e.english))
+                        .collect();
+                    let applied = early::apply(&copy, &work, &english, &[])?;
+                    let key: String = applied.key.iter().map(|b| format!("{b:02x}")).collect();
+                    println!(
+                        "{} lines given new English, of {} asked for; the cache's new key {key}",
+                        applied.replaced,
+                        english.len()
+                    );
+                }
+                EarlyCommand::Revert { copy } => {
+                    let copy = early::run_copy(&repo, &copy, pinned.as_deref())?;
+                    if early::revert(&copy, &work)? {
+                        println!("the copy's own _index put back, and the patch part taken out");
+                    } else {
+                        println!("nothing to put back");
+                    }
+                }
+            }
         }
     }
     Ok(())
