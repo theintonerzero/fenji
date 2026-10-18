@@ -134,42 +134,63 @@ mod tests {
     use sha1::{Digest, Sha1};
 
     use super::*;
-    use crate::test_util::{oodle_blob, stored_blob, zfs_part};
+    use crate::test_util::{lz4_blob, stored_blob, zfs_part};
 
     fn key(bytes: &[u8]) -> [u8; 20] {
         Sha1::digest(bytes).into()
     }
 
-    #[test]
-    fn a_copy_reads_a_file_by_path_through_its_index() {
+    /// A copy at a fresh folder: each file `(path, content, blob)` in a part of its own, and an
+    /// `_index` of their paths, plus one whose key no part holds, in the blob `index` makes.
+    fn copy_of(
+        files: &[(&str, &[u8], Vec<u8>)],
+        index: impl Fn(&[u8]) -> Vec<u8>,
+    ) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         let data = root.path().join("data");
         std::fs::create_dir_all(&data).unwrap();
-        // Invented files: one stored, one Oodle-packed.
-        let plain = b"an invented table\n".to_vec();
-        let packed = b"an invented cache, Oodle-packed".to_vec();
-        std::fs::write(
-            data.join("data000"),
-            zfs_part(&[vec![(1, key(&plain), stored_blob(&plain))]]),
-        )
-        .unwrap();
-        std::fs::write(
-            data.join("data001"),
-            zfs_part(&[vec![(1, key(&packed), oodle_blob(&packed, 512 * 1024))]]),
-        )
-        .unwrap();
-        let index = format!(
-            "{}\tdata/tables/x.tab\n{}\tdata/caches/y.new_cache\n{}\tdata/gone.tab\n",
-            crate::hex(&key(&plain)),
-            crate::hex(&key(&packed)),
-            crate::hex(&[7; 20])
-        );
-        std::fs::write(
-            data.join("_index"),
-            oodle_blob(index.as_bytes(), 512 * 1024),
-        )
-        .unwrap();
+        let mut text = String::new();
+        for (n, (path, content, blob)) in files.iter().enumerate() {
+            let part = zfs_part(&[vec![(1, key(content), blob.clone())]]);
+            std::fs::write(data.join(format!("data{n:03}")), part).unwrap();
+            text.push_str(&format!("{}\t{path}\n", crate::hex(&key(content))));
+        }
+        text.push_str(&format!("{}\tdata/gone.tab\n", crate::hex(&[7; 20])));
+        std::fs::write(data.join("_index"), index(text.as_bytes())).unwrap();
+        root
+    }
 
+    /// With the `oodle` feature, as the tools build fenji-data: an Oodle file and an Oodle
+    /// `_index`, as the client's are. CI also tests fenji-data without it.
+    #[cfg(feature = "oodle")]
+    #[test]
+    fn a_copy_decodes_oodle_records_and_index() {
+        use crate::test_util::oodle_blob;
+        let packed = b"an invented cache, Oodle-packed";
+        let root = copy_of(
+            &[(
+                "data/caches/y.new_cache",
+                packed,
+                oodle_blob(packed, 512 * 1024),
+            )],
+            |text| oodle_blob(text, 512 * 1024),
+        );
+        let copy = GameCopy::open(root.path()).unwrap();
+        assert_eq!(copy.read("data/caches/y.new_cache").unwrap(), packed);
+    }
+
+    #[test]
+    fn a_copy_reads_a_file_by_path_through_its_index() {
+        // Invented files: one stored, one LZ4-packed, as every build decodes them.
+        let plain: &[u8] = b"an invented table\n";
+        let packed: &[u8] = b"an invented cache, LZ4-packed";
+        let root = copy_of(
+            &[
+                ("data/tables/x.tab", plain, stored_blob(plain)),
+                ("data/caches/y.new_cache", packed, lz4_blob(packed, 0)),
+            ],
+            stored_blob,
+        );
         let copy = GameCopy::open(root.path()).unwrap();
         assert_eq!(copy.read("data/tables/x.tab").unwrap(), plain);
         assert_eq!(copy.read("data/caches/y.new_cache").unwrap(), packed);
