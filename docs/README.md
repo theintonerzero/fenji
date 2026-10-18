@@ -36,6 +36,7 @@ Playing on a friend's server needs only the desktop launcher: the root [README](
 | [`re/m3-summary.md`](re/m3-summary.md) | M3 summary: the ticket and the players' path answered, deviations, Done-when status, the bare-metal runs. |
 | [`re/m4-summary.md`](re/m4-summary.md) | M4 summary: the world, hosting and the desktop launcher, the open questions answered, Done-when status, gates and rulings, and what M5 inherits. |
 | [`re/m4-launcher-e2e.md`](re/m4-launcher-e2e.md) | M4: the desktop launcher's end-to-end run on bare metal, from an invite link to the lobby, and what its rehearsals found. |
+| [`re/retranslation-locale.md`](re/retranslation-locale.md) | The retranslation: how the client loads its locale cache, the language Fenji's start gives it, the engine's file system with its patch parts and `--fs` indexes, and the early check's loader. |
 | [`protocol/README.md`](protocol/README.md) | Our protocol findings (transport, opcode ledger, payloads) and their format. |
 | [`protocol/login.md`](protocol/login.md) | M1: how the client finds its server, and the first connection to our stub. |
 | [`protocol/transport.md`](protocol/transport.md) | M2: the client's transport: hello, variants, frames and keys, the Oodle wrapper, auth. |
