@@ -144,5 +144,5 @@ The owner's rulings during M4:
   - **A stray backslash in a server line with a `]` and no `[`.** `server_text` writes a `\` before each bracket, which the client's tag parser reads as the bracket itself, but the parser runs only on a line that holds a `[` (chat.md 2.5). So a lone `]` shows as `\]`. It's cosmetic, and only the server's own system lines can carry one: the answers to admins' and the console's commands, and the MOTD the host sets.
 - **Hosting:** the reviews' follow-ups and the acceptance session's checks are in #359. The Windows and macOS steps have been read, built and packed, not run.
 - **The launcher:** the deferred minors in #348; Windows and macOS Play wait on gate #337.
-- **Patching:** the first patch set (#336), starting with cutting every way the client can reach anything but Fenji.
+- **Patching:** the first patch set (#336), starting with cutting every way the client can reach anything but Fenji. Since 2026-10-18 it ships in 0.6.0 with the retranslation, before M5 ([`2026-10-18-retranslation-design.md`](../superpowers/specs/2026-10-18-retranslation-design.md)).
 - **The runners:** #244 and #174's last two items.

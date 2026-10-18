@@ -19,6 +19,7 @@ Playing on a friend's server needs only the desktop launcher: the root [README](
 | [`design/launcher/`](design/launcher/README.md) | The launcher's approved boards (2026-10-13), one per state, with the host console and the brand tokens; [`DESIGN.md`](../DESIGN.md) is the system they share. |
 | [`superpowers/specs/2026-10-14-oodle-decoder-design.md`](superpowers/specs/2026-10-14-oodle-decoder-design.md) | The open Oodle decoder: `fenji-oodle`, a safe Rust port of `ooz`'s Kraken decoder (GPL-3.0-or-later), and how Fenji's tools read the game's archives with it. |
 | [`superpowers/plans/2026-10-14-oodle-decoder.md`](superpowers/plans/2026-10-14-oodle-decoder.md) | The Oodle decoder's implementation plan. |
+| [`superpowers/specs/2026-10-18-retranslation-design.md`](superpowers/specs/2026-10-18-retranslation-design.md) | The retranslation: every line of the game's English translated anew from its Chinese, kept in the separate `fenji-content` repository and applied at launch; gate #338's answers and ground rule 3's amendment. |
 | `superpowers/plans/` | One implementation plan per milestone (M0–M5), or per piece where a milestone's spec splits it (M4), written before that work starts. |
 | [`development.md`](development.md) | Machine setup (macOS/Linux), branches, Conventional Commits, SemVer, changelog, releases. |
 | [`re/README.md`](re/README.md) | Reverse-engineering workflow: pinned build, analysis setup, sandboxed client runs, what may be committed. |
