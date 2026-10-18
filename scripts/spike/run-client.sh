@@ -620,8 +620,10 @@ cmd_run() {
         case "${left##*/}" in
           bin64 | data | tools) ;;
           # An early check's load, in client/ only (early-check.sh).
-          patch) [ "$early_load" = 1 ] && [ "$copy" = client ] ||
-            die "leftover patch at the install root of $copy/, which should hold only bin64, data and tools; move it first (an early check's load runs with --early-load)" ;;
+          patch)
+            if [ "$early_load" != 1 ] || [ "$copy" != client ]; then
+              die "leftover patch at the install root of $copy/, which should hold only bin64, data and tools; move it first (an early check's load runs with --early-load)"
+            fi ;;
           *) die "leftover ${left##*/} at the install root of $copy/, which should hold only bin64, data and tools; move it first" ;;
         esac
       fi
