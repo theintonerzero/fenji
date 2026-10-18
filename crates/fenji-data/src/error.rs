@@ -27,6 +27,8 @@ pub enum Error {
     BadEntry { va: u64, reason: String },
     #[error("archive: {0}")]
     BadArchive(String),
+    #[error("the copy holds no file at {0}")]
+    NotFound(String),
     #[error("table cache: {0}")]
     BadCache(String),
     #[error("output directory: {0}")]

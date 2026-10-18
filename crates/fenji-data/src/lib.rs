@@ -3,6 +3,7 @@
 pub mod archive;
 mod blob;
 pub mod cache;
+pub mod client;
 mod codec;
 mod error;
 mod exe_fs;
