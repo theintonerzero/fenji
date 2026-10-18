@@ -1041,6 +1041,8 @@ pub(crate) mod reading_tests {
     /// its flags (`Steam3Session.cs`): the account and its Steam token in `account.config`, in
     /// .NET's isolated store under `$XDG_DATA_HOME`; then `$XDG_DATA_HOME` goes into `saved`.
     /// Only where `$XDG_DATA_HOME` is inside `within`, so no test writes in a real one (#443).
+    /// Unix only, like the tests that run it.
+    #[cfg(unix)]
     pub(crate) fn saving_sign_in(within: &Path, saved: &Path) -> String {
         format!(
             r#"case "$XDG_DATA_HOME" in '{within}'/*)
