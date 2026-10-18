@@ -359,12 +359,20 @@ fn started_at(pid: i32) -> Option<u64> {
 /// Ends what a launcher that didn't stop its runs left in `runs`, its runs' folders: each run
 /// whose process group still lives, led by the very process it started, is killed. A number the
 /// system has since given another process is left alone. What every run there saved goes: no run
-/// of this launcher's has started yet (#443).
+/// of this launcher's has started yet (#443). Only its runs' own folders, named by their start
+/// as the sweep before each run takes them, never through a link.
 pub fn end_left(runs: &Path) {
     let Ok(entries) = std::fs::read_dir(runs) else {
         return;
     };
     for run in entries.filter_map(Result::ok) {
+        let named = run
+            .file_name()
+            .to_str()
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if !named || !run.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
         end_noted(&run.path());
         let _ = std::fs::remove_dir_all(run.path().join(OWN_DATA));
     }
@@ -753,6 +761,8 @@ mod tests {
                 ("APPDIR", "/tmp/.mount_FenjiAb12"),
                 ("PATH", "/tmp/.mount_FenjiAb12/usr/bin/:/usr/bin:/bin"),
                 ("PYTHONHOME", "/tmp/.mount_FenjiAb12/usr/"),
+                // A player's own gives way to the run's (#443).
+                ("XDG_DATA_HOME", "/home/p/.local/share"),
             ]
             .map(|(k, v)| (OsString::from(k), OsString::from(v)));
             ChildRun::start(&job, &dir.path().join("run"), env).unwrap()
@@ -835,6 +845,11 @@ mod tests {
             start_child(&dd, &dir.path().join("SoLO"), None, &run_dir)
         };
         assert_eq!(saved_in(&saved), run_dir.join(OWN_DATA));
+        // While it holds a sign-in, only the player may look in: .NET's own folders are 0755.
+        for held in [run_dir.clone(), run_dir.join(OWN_DATA)] {
+            let mode = std::fs::metadata(&held).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{held:?}");
+        }
         let started = Instant::now();
         run.stop(Duration::from_millis(300));
         assert!(!group_alive(run.pgid), "it lives on after its stop");
@@ -886,6 +901,9 @@ mod tests {
             "another process's number is no run of ours"
         );
         assert!(group_alive(run.pgid));
+        // No run of this launcher's is going yet, so what a left one saved goes, whatever its
+        // note says (#443).
+        assert!(!own.exists(), "a left run's sign-in stayed");
         // The very run: ended.
         std::fs::write(&left, &text).unwrap();
         end_left(&runs);
@@ -895,7 +913,6 @@ mod tests {
         }
         assert!(!group_alive(run.pgid), "the run it left lives on");
         assert!(!left.exists(), "its note goes with it");
-        assert!(!own.exists(), "and its sign-in (#443)");
         // A crashed launcher's run, long ended, with nobody left to wait for it: what it saved
         // goes too, its note or none.
         let crashed = runs.join("2").join(OWN_DATA).join("IsolatedStorage");
@@ -905,6 +922,18 @@ mod tests {
         assert!(
             !runs.join("2").join(OWN_DATA).exists(),
             "a crashed run's sign-in stayed"
+        );
+        // Only its own runs' folders, named by their start: never through a link, and never a
+        // folder it didn't make.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join(OWN_DATA)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, runs.join("3")).unwrap();
+        std::fs::create_dir_all(runs.join("notes").join(OWN_DATA)).unwrap();
+        end_left(&runs);
+        assert!(elsewhere.join(OWN_DATA).is_dir(), "it went through a link");
+        assert!(
+            runs.join("notes").join(OWN_DATA).is_dir(),
+            "it swept a folder not its own"
         );
         // A folder with no note, or none at all, is nothing to end.
         end_left(&dir.path().join("none"));
