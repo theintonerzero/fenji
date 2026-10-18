@@ -12,6 +12,7 @@ name = "translate"
 path = "src/main.rs"
 
 [dependencies]
+aho-corasick.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 fenji-data.workspace = true

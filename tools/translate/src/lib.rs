@@ -4,5 +4,6 @@
 pub mod area;
 pub mod check;
 pub mod extract;
+pub mod glossary;
 pub mod lines;
 pub mod markup;
