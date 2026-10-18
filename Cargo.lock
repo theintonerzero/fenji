@@ -1240,6 +1240,7 @@ dependencies = [
 name = "fenji-translate"
 version = "0.5.5"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "clap",
  "fenji-data",

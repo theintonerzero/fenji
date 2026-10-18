@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fenji_data::client::GameCopy;
-use fenji_translate::{extract, lines};
+use fenji_translate::{extract, glossary, lines};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -27,21 +27,34 @@ struct Cli {
 enum Command {
     /// Every source line of the copy, with its English today and where the game uses it: OUT/lines.jsonl and OUT/report.txt
     Extract,
+    /// The glossary's candidates, and its export
+    Glossary {
+        #[command(subcommand)]
+        command: GlossaryCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum GlossaryCommand {
+    /// The names and recurring words of OUT/lines.jsonl, most used first: OUT/candidates.tsv
+    Candidates,
+    /// OUT/glossary.json as fenji-content's glossary.tsv, which holds no Chinese: OUT/glossary.tsv
+    Export,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let repo = fenji_data::re_dir::find_repo_root(&std::env::current_dir()?)?;
     let work = fenji_data::re_dir::resolve_out_dir(&repo, &cli.out)?;
-    let client = match cli.client {
-        Some(dir) => dir,
-        None => PathBuf::from(
-            std::env::var_os("FENJI_CLIENT_PATH")
-                .context("pass --client, or set FENJI_CLIENT_PATH to the pinned copy")?,
-        ),
-    };
     match cli.command {
         Command::Extract => {
+            let client = match cli.client {
+                Some(dir) => dir,
+                None => PathBuf::from(
+                    std::env::var_os("FENJI_CLIENT_PATH")
+                        .context("pass --client, or set FENJI_CLIENT_PATH to the pinned copy")?,
+                ),
+            };
             let exe_path = client.join("bin64").join("gujianol.exe");
             let exe = fenji_luatool::client::load(&exe_path, cli.any_build)?;
             let copy = GameCopy::open(&client).with_context(|| client.display().to_string())?;
@@ -50,6 +63,31 @@ fn main() -> Result<()> {
             let report = extract::report_text(&found);
             std::fs::write(work.join("report.txt"), &report)?;
             print!("{report}");
+        }
+        Command::Glossary {
+            command: GlossaryCommand::Candidates,
+        } => {
+            let found = glossary::candidates(&lines::read_lines(&work)?);
+            std::fs::write(
+                work.join(glossary::CANDIDATES),
+                glossary::candidates_tsv(&found),
+            )?;
+            let names = found
+                .iter()
+                .filter(|c| c.kind == fenji_translate::check::TermKind::Name)
+                .count();
+            println!(
+                "{} candidates: {names} names, {} words",
+                found.len(),
+                found.len() - names
+            );
+        }
+        Command::Glossary {
+            command: GlossaryCommand::Export,
+        } => {
+            let out = glossary::export(&glossary::load(&work)?)?;
+            std::fs::write(work.join("glossary.tsv"), &out)?;
+            println!("{} terms", out.lines().count());
         }
     }
     Ok(())
