@@ -273,6 +273,21 @@ mod tests {
     }
 
     #[test]
+    fn the_style_guide_holds_names_to_their_capitals_and_lets_words_take_ordinary_ones() {
+        // The early check found words capitalized mid-sentence ("bring Healing to others") under a
+        // rule that held every term to the glossary's capitals (#475).
+        let rule = |start: &str| {
+            STYLE
+                .lines()
+                .find(|l| l.starts_with(start))
+                .unwrap_or_else(|| panic!("no rule starting {start}"))
+        };
+        assert!(rule("- **The glossary's names.**").contains("capitals included"));
+        assert!(rule("- **The glossary's words.**").contains("ordinary English capitals"));
+        assert!(!STYLE.contains("Every term in a batch's glossary is written exactly"));
+    }
+
+    #[test]
     fn the_style_guides_examples_pass_the_checks() {
         let rules = Rules::from_lines(&[]);
         let problems = |(zh, en): &(String, String)| {

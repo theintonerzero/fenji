@@ -15,7 +15,7 @@ The lines come in the game's order: a table's rows in turn, a row's name before 
 ## What to do
 
 1. Translate every line from the Chinese, as the style guide says. Meaning, voice and register come from the Chinese.
-2. Wherever the Chinese holds one of the glossary's terms, write it exactly as the glossary has it, or as one of its variants.
+2. Wherever the Chinese holds one of the glossary's names, write it exactly as the glossary has it, or as one of its variants. Where it holds one of its words, use the word's English for that sense, with the capitals and grammar the sentence needs (the style guide, section 3).
 3. Keep every tag, placeholder, code, line break and number. Translate only what players read: the text between tags, and the values of a tag's text attributes, such as a name.
 4. Keep a tight line within its budget.
 5. Use only the characters the style guide allows.
