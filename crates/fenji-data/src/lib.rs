@@ -14,7 +14,10 @@ pub mod re_dir;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
-pub use blob::{BlobHeader, Block, Codec, FIXED_LEN, blocks, decode as decode_blob};
+pub use blob::{
+    BlobHeader, Block, Codec, FIXED_LEN, blocks, decode as decode_blob, header_check,
+    stored as stored_blob,
+};
 #[cfg(feature = "oodle")]
 pub use codec::decode_oodle_block;
 pub use codec::{BuiltinCodecs, Decompressor, MAX_OODLE_BLOCK, OODLE_DECODER, oodle_payload};

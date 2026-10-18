@@ -161,6 +161,47 @@ pub fn parse_part_header(bytes: &[u8]) -> Result<PartHeader> {
     read_part_header_from(&mut Cursor::new(bytes))
 }
 
+/// A part holding `files`, each a key and its blob, as the engine reads one: the magic, one index
+/// block with a record in use for each file (its offset, size and CRC), free records after them,
+/// then the blobs in order. The engine loads every file in a copy's `patch/` folder as a part,
+/// after its data parts (docs/re/retranslation-locale.md 3.4).
+pub fn write_part(files: &[([u8; 20], Vec<u8>)]) -> Result<Vec<u8>> {
+    if files.len() > RECORDS {
+        return Err(Error::BadArchive(format!(
+            "{} files, and one index block holds {RECORDS}",
+            files.len()
+        )));
+    }
+    let total = DATA_START + files.iter().map(|(_, b)| b.len() as u64).sum::<u64>();
+    if total > u64::from(u32::MAX) {
+        return Err(Error::BadArchive(format!(
+            "{total} bytes, and a record's offset is a u32"
+        )));
+    }
+    let mut p = PART_MAGIC.to_vec();
+    p.extend_from_slice(INDEX_MAGIC);
+    // The next block's offset: none.
+    p.extend_from_slice(&0u32.to_le_bytes());
+    let mut offset = DATA_START as u32;
+    for (key, blob) in files {
+        let mut r = [0u8; RECORD_LEN];
+        r[..20].copy_from_slice(key);
+        r[20..24].copy_from_slice(&offset.to_le_bytes());
+        r[24..28].copy_from_slice(&(blob.len() as u32).to_le_bytes());
+        let crc = crc16_arc(&r[..28]);
+        r[28..30].copy_from_slice(&crc.to_le_bytes());
+        r[31] = STATUS_USED;
+        p.extend_from_slice(&r);
+        offset += blob.len() as u32;
+    }
+    // The free records, whose status 0 ends the block.
+    p.resize(DATA_START as usize, 0);
+    for (_, blob) in files {
+        p.extend_from_slice(blob);
+    }
+    Ok(p)
+}
+
 /// The blob header at `offset`: the fixed part, plus the block list for compressed codecs. A
 /// stored blob has none; its content follows the fixed part.
 pub fn read_blob_header<R: Read + Seek>(r: &mut R, offset: u64) -> Result<BlobHeader> {
@@ -480,6 +521,39 @@ mod tests {
     use crate::test_util::{
         container, lz4_blob, oodle_blob as oodle_file, oodle_memset_blob, stored_blob, zfs_part,
     };
+
+    #[test]
+    fn a_written_part_reads_back() {
+        let files = [
+            ([1u8; 20], crate::blob::stored(b"one", 0)),
+            ([2u8; 20], crate::blob::stored(b"two, longer", 0)),
+        ];
+        let part = write_part(&files).unwrap();
+        let h = parse_part_header(&part).unwrap();
+        assert_eq!(h.blocks, [FIRST_INDEX]);
+        let live: Vec<&Record> = h.live().collect();
+        assert_eq!(live.len(), 2);
+        assert_eq!(u64::from(live[0].offset), DATA_START);
+        for ((key, blob), r) in files.iter().zip(&live) {
+            assert_eq!(&r.key, key);
+            let at = r.offset as usize;
+            assert_eq!(&part[at..at + r.size as usize], &blob[..]);
+        }
+        assert_eq!(
+            part.len(),
+            DATA_START as usize + files[0].1.len() + files[1].1.len()
+        );
+        // One index block holds them all, or the part isn't written.
+        let many: Vec<([u8; 20], Vec<u8>)> = (0..=RECORDS)
+            .map(|i| {
+                (
+                    (i as u32).to_le_bytes().repeat(5).try_into().unwrap(),
+                    Vec::new(),
+                )
+            })
+            .collect();
+        assert!(write_part(&many).is_err());
+    }
 
     /// An LZ4 blob relabelled codec 4: its header is all these tests read.
     fn oodle_blob() -> Vec<u8> {

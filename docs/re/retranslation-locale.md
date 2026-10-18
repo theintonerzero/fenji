@@ -62,13 +62,15 @@ The ruling (the plan's Task 9, step 2), among its three options:
 
 Everything stays inside the sandbox (rule 4), and the copy itself is never written: the overlay holds the two files. The patcher's content hook (#336) faces the same choices for a player's copy, and its spec decides from this.
 
+**Run early-2 (the plan's Task 10, 2026-10-18 UTC).** The loader is `translate early` with `scripts/spike/early-check.sh`. The overlay is the run workspace's private copy, `re/runs/client`, which `run-client.sh` takes with `--early-load`. The run was sandboxed, every guard on, on the launcher's path with the stub. One invented line went in: the English of the one line whose English today is the title screen's "System Settings". The title screen showed it in that menu entry's place, at 90 s. The watchdog saw no event, and the copy was put back. So the patch part, the re-pointed `_index` line, both stored blobs and an uncompressed locale cache are all taken: **Observed**. The run's evidence is `re/runs/out/early-2/`, and the screenshot is kept as `re/retranslation/early/early-2-screen-90s.png`.
+
 ## 5. Unknowns
 
 | # | Question | What would answer it |
 |---|---|---|
 | U1 | What FUN_140665670 does with the "one index" flag (3.10) | Its callees, statically. It matters only to a second index. |
 | U2 | Whether the engine checks a record's content against its key | A sandboxed run with a stored record under a wrong key. The loader writes the right SHA-1 anyway. |
-| U3 | That §3 holds at run time | The early check itself (the plan's Task 11). |
+| U3 | That §3 holds at run time | For the loader's path, answered by run early-2 (§4). The rest, the markup's grammar, the font and the interface's room, by the early check of the plan's Task 11. |
 
 ## REA Evidence IDs
 
