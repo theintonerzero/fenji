@@ -2,6 +2,7 @@
 //! and write only under `re/retranslation/` (ground rule 3): nothing derived from the copy is
 //! committed, and only the new English, keyed by fingerprints, leaves for `fenji-content`.
 pub mod area;
+pub mod assemble;
 pub mod batch;
 pub mod check;
 pub mod drive;
