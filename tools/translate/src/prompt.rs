@@ -288,6 +288,14 @@ mod tests {
     }
 
     #[test]
+    fn the_budget_shortens_the_wording_never_the_meaning() {
+        // The early check found a settings label that dropped its verb to fit its budget, and a
+        // review that let it through (#477).
+        assert!(STYLE.contains("A shorter wording, never a shorter meaning"));
+        assert!(REVIEW.contains("within its budget without losing"));
+    }
+
+    #[test]
     fn the_style_guides_examples_pass_the_checks() {
         let rules = Rules::from_lines(&[]);
         let problems = |(zh, en): &(String, String)| {
