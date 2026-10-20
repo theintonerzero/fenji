@@ -30,6 +30,8 @@ rustix.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+# Checks fenji-content's latest release as the launcher will (tests/content_release.rs).
+fenji-pack.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true
 tokio-rustls.workspace = true
