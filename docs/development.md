@@ -164,6 +164,36 @@ The last line writes the key's public half, as an allowed-signers line, into thr
 
 If the old key is lost or leaked, skip steps 2 and 3. Hosts' scripts then refuse the next release, saying to update by hand once (section 5 of the guide), which brings the new line.
 
+## Releasing a content pack
+
+The new English (the retranslation spec, §6) ships from its own repository, [`theintonerzero/fenji-content`](https://github.com/theintonerzero/fenji-content), never from Fenji's, as a content pack: a gzipped tar in `fenji-pack`'s format, which its `scripts/pack.sh` builds, refusing what the launcher would. Its `check` workflow builds a pack on every change, and a `v*` tag releases one:
+
+```bash
+# in a fenji-content checkout, on main, once the change is in
+git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+# its release workflow packs; its sign job waits for the owner to approve the release environment's
+# deployment (the run's page, "Review deployments"), signs the pack and checks the signature against
+# content.pub; then it publishes the pack and its .minisig as the release
+# then, in Fenji, check the release as the launcher will: the signature against the content key,
+# the pack read whole, its version the tag's, and its build the pinned one
+cargo test -p fenji-launcher --test content_release -- --ignored
+```
+
+**The content key** (RT4) signs content packs only, never a launcher or a server's release. Its private half lives only:
+- on the owner's game box, in `~/.config/fenji/content-key/` (readable by the owner only), under a password;
+- in `fenji-content`'s `release` environment, as the secrets `CONTENT_SIGNING_KEY` (the key file's text) and `CONTENT_SIGNING_PASSWORD`, behind the same rules as Fenji's: `v*` tags only, and the owner's approval of each deployment.
+
+Its public half, key ID 42B62B67B663DE9B, is in two places: `content.pub` at `fenji-content`'s root, which the release workflow checks each signature against, and `fenji_pack::CONTENT_PUBLIC_KEY`, which the launcher will check each pack against (the retranslation plan's Task 14), and whose test holds the key ID. The owner made it once:
+
+```sh
+mkdir -p ~/.config/fenji/content-key && chmod 700 ~/.config/fenji/content-key && cd ~/.config/fenji/content-key
+minisign -G -p content.pub -s content.key
+gh secret set CONTENT_SIGNING_KEY --env release --repo theintonerzero/fenji-content < content.key
+gh secret set CONTENT_SIGNING_PASSWORD --env release --repo theintonerzero/fenji-content
+```
+
+**A new key** changes both public halves and the secrets together. Once the launcher checks packs, it trusts only the key it carries, so a launcher release with the new public half must reach players before a pack signed with the new key: until then, their launchers refuse the new packs.
+
 ## Checks before a PR
 
 ```bash

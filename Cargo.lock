@@ -1101,6 +1101,7 @@ dependencies = [
  "clap",
  "fenji-auth",
  "fenji-console",
+ "fenji-pack",
  "flate2",
  "rcgen",
  "reqwest",

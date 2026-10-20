@@ -22,7 +22,7 @@ Playing on a friend's server needs only the desktop launcher: the root [README](
 | [`superpowers/specs/2026-10-18-retranslation-design.md`](superpowers/specs/2026-10-18-retranslation-design.md) | The retranslation: every line of the game's English translated anew from its Chinese, kept in the separate `fenji-content` repository and applied at launch; gate #338's answers and ground rule 3's amendment. |
 | [`superpowers/plans/2026-10-18-retranslation.md`](superpowers/plans/2026-10-18-retranslation.md) | The retranslation's implementation plan: `fenji-pack`, the `translate` tool (extract, checks, glossary, batches, the driver of headless runs, assemble), the client's locale and the early check, `fenji-content`, the bulk, and the launcher's part for 0.6.0. |
 | `superpowers/plans/` | One implementation plan per milestone (M0–M5), or per piece where a milestone's spec splits it (M4), written before that work starts. |
-| [`development.md`](development.md) | Machine setup (macOS/Linux), branches, Conventional Commits, SemVer, changelog, releases. |
+| [`development.md`](development.md) | Machine setup (macOS/Linux), branches, Conventional Commits, SemVer, changelog, releases, and content packs and their key. |
 | [`re/README.md`](re/README.md) | Reverse-engineering workflow: pinned build, analysis setup, sandboxed client runs, what may be committed. |
 | [`re/sources.md`](re/sources.md) | External sources we used, and sources rejected for clean-room reasons. |
 | [`re/pinned-build.md`](re/pinned-build.md) | The exact SoLO build Fenji targets (AppID, depot manifest, exe SHA-256). |
