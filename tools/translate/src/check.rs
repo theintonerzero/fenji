@@ -188,6 +188,14 @@ pub fn budget(line: &Line, rules: &Rules) -> Option<usize> {
     Some((drawn(today).chars().count() * rules.budget_percent as usize).div_ceil(100))
 }
 
+/// Where `term` is in `source`, as byte ranges, overlapping ones too.
+fn places<'a>(source: &'a str, term: &'a str) -> impl Iterator<Item = (usize, usize)> + 'a {
+    source
+        .char_indices()
+        .filter(move |&(i, _)| source[i..].starts_with(term))
+        .map(move |(i, _)| (i, i + term.len()))
+}
+
 /// Every problem `english` has as `line`'s translation.
 pub fn check(line: &Line, english: &str, glossary: &Glossary, rules: &Rules) -> Vec<Problem> {
     let mut problems = Vec::new();
@@ -222,12 +230,26 @@ pub fn check(line: &Line, english: &str, glossary: &Glossary, rules: &Rules) -> 
     odd.sort_unstable();
     odd.dedup();
     problems.extend(odd.into_iter().map(Problem::Char));
-    for term in &glossary.terms {
-        if term.kind == TermKind::Name
-            && line.zh.contains(&term.zh)
-            && !english.contains(&term.en)
-            && !term.variants.iter().any(|v| english.contains(v.as_str()))
-        {
+    // A name the English doesn't write is still met where the source holds it only inside a longer
+    // name the English does: a place given with its region may drop the region when the longer
+    // name's variants say so.
+    let names: Vec<&Term> = glossary
+        .terms
+        .iter()
+        .filter(|t| t.kind == TermKind::Name && line.zh.contains(&t.zh))
+        .collect();
+    let written = |t: &Term| {
+        english.contains(&t.en) || t.variants.iter().any(|v| english.contains(v.as_str()))
+    };
+    let met: Vec<(usize, usize)> = names
+        .iter()
+        .filter(|t| written(t))
+        .flat_map(|t| places(&line.zh, &t.zh))
+        .collect();
+    for term in names.iter().filter(|t| !written(t)) {
+        let inside =
+            |(a, b): (usize, usize)| met.iter().any(|&(c, d)| c <= a && b <= d && d - c > b - a);
+        if !places(&line.zh, &term.zh).all(inside) {
             problems.push(Problem::Term(term.en.clone()));
         }
     }
@@ -349,6 +371,53 @@ mod tests {
         assert!(problems(&l, "Linyue has come").contains(&Problem::Term("Lin Yue".into())));
         assert_eq!(problems(&l, "Lin Yue has come"), []);
         assert_eq!(problems(&l, "Yue has come"), []);
+    }
+
+    #[test]
+    fn a_name_inside_a_longer_name_the_english_writes_is_met() {
+        let name = |zh: &str, en: &str, variants: &[&str]| Term {
+            zh: zh.into(),
+            en: en.into(),
+            kind: TermKind::Name,
+            variants: variants.iter().map(|v| (*v).into()).collect(),
+            note: String::new(),
+        };
+        let glossary = Glossary {
+            terms: vec![
+                name("青石岭", "Bluestone Ridge", &[]),
+                name("望月台", "Moonwatch Terrace", &[]),
+                name(
+                    "青石岭·望月台",
+                    "Bluestone Ridge: Moonwatch Terrace",
+                    &["Moonwatch Terrace"],
+                ),
+            ],
+        };
+        let terms = |zh: &str, english: &str| -> Vec<Problem> {
+            check(&line(zh, None, false), english, &glossary, &rules())
+                .into_iter()
+                .filter(|p| matches!(p, Problem::Term(_)))
+                .collect()
+        };
+        // The place's short form drops its region, as the longer name allows.
+        assert_eq!(terms("青石岭·望月台", "Moonwatch Terrace"), []);
+        // Where the region also stands alone, it's still asked for.
+        assert_eq!(
+            terms(
+                "青石岭的风吹过青石岭·望月台",
+                "The wind blows over Moonwatch Terrace"
+            ),
+            [Problem::Term("Bluestone Ridge".into())]
+        );
+        // A longer name the English doesn't write meets nothing inside it.
+        assert_eq!(
+            terms("青石岭·望月台", "The terrace"),
+            [
+                Problem::Term("Bluestone Ridge".into()),
+                Problem::Term("Moonwatch Terrace".into()),
+                Problem::Term("Bluestone Ridge: Moonwatch Terrace".into()),
+            ]
+        );
     }
 
     #[test]
