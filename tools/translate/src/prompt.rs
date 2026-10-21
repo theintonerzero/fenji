@@ -352,25 +352,55 @@ mod tests {
             "only where there are any"
         );
 
-        let disputes = [Dispute {
-            fp: moonlight,
-            first: "Beneath the forest's moonlight".into(),
-            second: "Lin Yue, beneath the forest's moonlight".into(),
-            reason: "It names her.".into(),
-            first_by_chance: vec!["林月".into()],
-            second_by_chance: vec![],
-        }];
+        let disputes = [
+            Dispute {
+                fp: moonlight,
+                first: "Beneath the forest's moonlight".into(),
+                second: "Under the forest's moon".into(),
+                reason: "Plainer.".into(),
+                first_by_chance: vec!["林月".into()],
+                second_by_chance: vec!["林月".into(), "月光".into()],
+            },
+            Dispute {
+                fp: coming,
+                first: "Lin Yue has come.".into(),
+                second: "Here comes Lin Yue.".into(),
+                reason: "Livelier.".into(),
+                first_by_chance: vec![],
+                second_by_chance: vec![],
+            },
+        ];
         let shown = shown_lines(&settle_prompt(b, &disputes, "STYLE"));
-        assert_eq!(shown[0]["first_by_chance"], serde_json::json!(["林月"]));
-        assert_eq!(shown[0].get("second_by_chance"), None);
+        let of = |fp: Fingerprint| {
+            shown
+                .iter()
+                .find(|l| l["fp"] == fp.to_string())
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            of(moonlight)["first_by_chance"],
+            serde_json::json!(["林月"])
+        );
+        assert_eq!(
+            of(moonlight)["second_by_chance"],
+            serde_json::json!(["林月", "月光"])
+        );
+        for list in ["first_by_chance", "second_by_chance"] {
+            assert_eq!(of(coming).get(list), None, "only where there are any");
+        }
     }
 
     #[test]
     fn the_prompts_say_a_name_held_by_chance_is_listed_never_one_the_line_means() {
         for prompt in [TRANSLATE, SETTLE] {
             assert!(prompt.contains("`by_chance`"));
-            assert!(prompt.contains("Never list a name the line means."));
+            assert!(prompt.contains("Never list a name the line means, not even to fit a budget"));
         }
+        // A tight line can't be passed by leaving out a name it means.
+        assert!(
+            REVIEW.contains("Leaving out a name the line means is wrong, even to fit a budget.")
+        );
         assert!(REVIEW.contains("- **Names by chance.**"));
         assert!(REVIEW.contains("A line you keep keeps the translator's list."));
         assert!(SETTLE.contains("`first_by_chance` and `second_by_chance`"));

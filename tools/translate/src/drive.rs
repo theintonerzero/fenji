@@ -471,13 +471,14 @@ fn whole_problems(wanted: &[Fingerprint], got: &[Fingerprint]) -> Option<String>
 }
 
 /// The checks on `english` as `line`'s, as text, within the budget its batch gives it: planning
-/// set it from the line's fields, which a batch line doesn't carry (#491).
+/// set it from the line's fields, which a batch line doesn't carry (#491). `chance` is the names
+/// its answer says the line holds only by chance (#495).
 fn line_problems(
     line: &BatchLine,
     english: &str,
-    chance: &[String],
     glossary: &Glossary,
     rules: &Rules,
+    chance: &[String],
 ) -> Vec<String> {
     check_within(
         &as_line(line),
@@ -904,7 +905,7 @@ impl Driver {
                 }
                 for l in &answer.lines {
                     let problems =
-                        line_problems(by_fp[&l.fp], &l.en, &l.by_chance, glossary, rules);
+                        line_problems(by_fp[&l.fp], &l.en, glossary, rules, &l.by_chance);
                     if !problems.is_empty() {
                         failed.push(QueuedLine {
                             fp: l.fp,
@@ -916,14 +917,14 @@ impl Driver {
                 serde_json::to_value(answer)
             }
             Job::Review => {
-                let review: Review = serde_json::from_value(value).map_err(shape)?;
+                let mut review: Review = serde_json::from_value(value).map_err(shape)?;
                 let got: Vec<Fingerprint> = review.lines.iter().map(|l| l.fp).collect();
                 if let Some(why) = whole_problems(wanted, &got) {
                     return Err(Failure::Whole(why));
                 }
                 for l in review.lines.iter().filter(|l| !l.keep) {
                     let mut problems = match &l.en {
-                        Some(en) => line_problems(by_fp[&l.fp], en, &l.by_chance, glossary, rules),
+                        Some(en) => line_problems(by_fp[&l.fp], en, glossary, rules, &l.by_chance),
                         None => vec!["no English for a line it doesn't keep".into()],
                     };
                     if l.reason.as_deref().is_none_or(|r| r.trim().is_empty()) {
@@ -937,6 +938,11 @@ impl Driver {
                         });
                     }
                 }
+                // A kept line keeps the translator's list: one the review gave it would read as a
+                // claim on the translator's English.
+                for l in review.lines.iter_mut().filter(|l| l.keep) {
+                    l.by_chance.clear();
+                }
                 serde_json::to_value(review)
             }
             Job::Settle => {
@@ -947,7 +953,7 @@ impl Driver {
                 }
                 for l in &settled.lines {
                     let problems =
-                        line_problems(by_fp[&l.fp], &l.en, &l.by_chance, glossary, rules);
+                        line_problems(by_fp[&l.fp], &l.en, glossary, rules, &l.by_chance);
                     if !problems.is_empty() {
                         failed.push(QueuedLine {
                             fp: l.fp,
@@ -1062,9 +1068,9 @@ fn lines_retry(lines: &[QueuedLine]) -> String {
          missing; ExtraToken, one the source doesn't have; OutOfOrder, a tag closes before it \
          opens; Cjk, Chinese is left; Char, a character the font doesn't draw; Term, a glossary \
          name the line holds isn't written as the glossary has it (a name the line holds only by \
-         chance goes in `by_chance` instead, never one it means); Chance, a name in `by_chance` \
-         that the line doesn't hold; TooLong, longer than the line's budget; British, a British \
-         spelling; Empty, nothing is drawn.\n",
+         chance goes in `by_chance` instead, never one it means, nor to fit a budget); Chance, a \
+         term in `by_chance` that the line's Chinese doesn't hold; TooLong, longer than the line's \
+         budget; British, a British spelling; Empty, nothing is drawn.\n",
     );
     out
 }
@@ -1114,13 +1120,13 @@ mod tests {
             budget: Some(13),
         };
         let (glossary, rules) = (Glossary::default(), Rules::from_lines(&[]));
-        assert!(line_problems(&line, "Scorpion Yao", &[], &glossary, &rules).is_empty());
+        assert!(line_problems(&line, "Scorpion Yao", &glossary, &rules, &[]).is_empty());
         let strict = BatchLine {
             budget: Some(4),
             ..line
         };
         assert_eq!(
-            line_problems(&strict, "Scorpion Yao", &[], &glossary, &rules),
+            line_problems(&strict, "Scorpion Yao", &glossary, &rules, &[]),
             ["TooLong { len: 12, budget: 4 }"]
         );
     }
@@ -1186,8 +1192,78 @@ mod tests {
             );
             let mut by_chance = line.clone();
             by_chance["by_chance"] = serde_json::json!(["林月"]);
-            assert!(judged(&by_chance).is_ok(), "{}", job.name());
+            let Ok(kept) = judged(&by_chance) else {
+                panic!("{}", job.name())
+            };
+            // Kept with its list, which the next job and an audit read back.
+            assert_eq!(
+                kept["lines"][0]["by_chance"],
+                serde_json::json!(["林月"]),
+                "{}",
+                job.name()
+            );
         }
+        // A line the review keeps keeps the translator's list, not one the review gives it.
+        let p = Picked {
+            batch: 0,
+            job: Job::Review,
+            disputes: vec![],
+            retry: None,
+        };
+        let kept_line = serde_json::json!({
+            "fp": fp, "keep": true, "en": null, "reason": null, "by_chance": ["林月"]
+        });
+        let Ok(kept) = driver.judge(&ctx, &p, &[fp], serde_json::json!({ "lines": [kept_line] }))
+        else {
+            panic!("a kept line")
+        };
+        assert_eq!(kept["lines"][0].get("by_chance"), None);
+    }
+
+    #[test]
+    fn a_dispute_carries_each_readings_list() {
+        // The translator's list goes with the first reading, the reviewer's with the second
+        // (#495).
+        let dir = tempfile::tempdir().unwrap();
+        let zh = "树林月光下，青石旁";
+        let fp = fenji_pack::fingerprint(zh.as_bytes());
+        let batch = Batch {
+            id: "dialogue-00001".into(),
+            lines: vec![BatchLine {
+                fp,
+                zh: zh.into(),
+                en_old: None,
+                context: String::new(),
+                tight: false,
+                budget: None,
+            }],
+            glossary: vec![],
+        };
+        for (folder, value) in [
+            (
+                ANSWERS,
+                serde_json::json!({ "lines": [{
+                    "fp": fp, "en": "Beneath the forest's moonlight, by Bluestone",
+                    "by_chance": ["林月"]
+                }]}),
+            ),
+            (
+                REVIEWS,
+                serde_json::json!({ "lines": [{
+                    "fp": fp, "keep": false, "en": "Lin Yue, in the moonlight by the stone",
+                    "reason": "It names her.", "by_chance": ["青石"]
+                }]}),
+            ),
+        ] {
+            std::fs::create_dir_all(dir.path().join(folder)).unwrap();
+            write_json(&dir.path().join(folder).join("dialogue-00001.json"), &value).unwrap();
+        }
+        let driver = Driver::new(dir.path().into(), dir.path().into());
+        let Some((Job::Settle, disputes)) = driver.next_job(&batch).unwrap() else {
+            panic!("a settling")
+        };
+        assert_eq!(disputes[0].first_by_chance, ["林月"]);
+        assert_eq!(disputes[0].second_by_chance, ["青石"]);
     }
 
     #[test]
@@ -1197,8 +1273,12 @@ mod tests {
             en: Some("Beneath the forest's moonlight".into()),
             problems: vec![r#"Term("Lin Yue")"#.into()],
         }]);
-        assert!(retry.contains("goes in `by_chance` instead, never one it means"));
-        assert!(retry.contains("Chance, a name in `by_chance` that the line doesn't hold"));
+        assert!(
+            retry.contains("goes in `by_chance` instead, never one it means, nor to fit a budget")
+        );
+        assert!(
+            retry.contains("Chance, a term in `by_chance` that the line's Chinese doesn't hold")
+        );
     }
 
     fn result(fields: &str) -> Vec<u8> {

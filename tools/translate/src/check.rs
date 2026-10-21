@@ -132,7 +132,7 @@ pub enum Problem {
     Char(char),
     /// A glossary name it should hold, as written.
     Term(String),
-    /// A name its answer says the line holds only by chance, which the line doesn't hold.
+    /// A term its answer says the line holds only by chance, which the line's Chinese doesn't hold.
     Chance(String),
     /// Longer than a tight line's budget, in characters drawn.
     TooLong { len: usize, budget: usize },
@@ -330,8 +330,11 @@ pub fn check_within(
         .iter()
         .filter(|t| t.kind == TermKind::Name && said.contains(&t.zh))
         .collect();
-    for zh in chance {
-        if !names.iter().any(|t| &t.zh == zh) {
+    // A listed term the line holds but isn't asked for, such as a word or a name only kept markup
+    // holds, changes nothing; only one the line doesn't hold at all is refused.
+    let listed: BTreeSet<&String> = chance.iter().collect();
+    for zh in listed {
+        if zh.is_empty() || !line.zh.contains(zh.as_str()) {
             problems.push(Problem::Chance(zh.clone()));
         }
     }
@@ -596,10 +599,25 @@ mod tests {
             terms("Beneath the forest's moonlight, by the stone", &["林月"]),
             [Problem::Term("Bluestone".into())]
         );
-        // A name the line doesn't hold isn't there by chance.
+        // A name the line doesn't hold isn't there by chance, however often it's listed.
         assert_eq!(
-            terms(english, &["林月", "长老"]),
-            [Problem::Chance("长老".into())]
+            terms(english, &["林月", "长老", "长老", ""]),
+            [Problem::Chance("".into()), Problem::Chance("长老".into())]
+        );
+        // A term the line holds but isn't asked for changes nothing: a word, or a name only kept
+        // markup holds.
+        assert_eq!(terms(english, &["林月", "月光"]), []);
+        let kept = line("<A HREF=\"guide;林月\">商人</A>", None, false);
+        assert_eq!(
+            check_within(
+                &kept,
+                "<A HREF=\"guide;林月\">Merchant</A>",
+                &glossary,
+                &rules(),
+                None,
+                &["林月".into()]
+            ),
+            []
         );
     }
 
