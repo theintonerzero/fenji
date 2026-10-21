@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::area::Area;
 use crate::batch::{Batch, BatchLine, read_batches};
-use crate::check::{Glossary, Rules, check};
+use crate::check::{Glossary, Rules, check_within};
 use crate::lines::{Line, read_lines};
 use crate::prompt::{
     Answer, Dispute, REVIEW_SCHEMA, Review, SETTLE_SCHEMA, STYLE, Settled, TRANSLATE_SCHEMA,
@@ -470,14 +470,15 @@ fn whole_problems(wanted: &[Fingerprint], got: &[Fingerprint]) -> Option<String>
     (!problems.is_empty()).then(|| problems.join("; "))
 }
 
-/// The checks on `english` as `line`'s, as text.
+/// The checks on `english` as `line`'s, as text, within the budget its batch gives it: planning
+/// set it from the line's fields, which a batch line doesn't carry (#491).
 fn line_problems(
     line: &BatchLine,
     english: &str,
     glossary: &Glossary,
     rules: &Rules,
 ) -> Vec<String> {
-    check(&as_line(line), english, glossary, rules)
+    check_within(&as_line(line), english, glossary, rules, line.budget)
         .iter()
         .map(|p| format!("{p:?}"))
         .collect()
