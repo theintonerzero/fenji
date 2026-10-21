@@ -359,13 +359,26 @@ pub fn tokens(s: &str) -> Vec<Token> {
 
 /// What `s` draws: its text with its markup taken out, but the markup's visible text kept.
 pub fn drawn(s: &str) -> String {
+    draw(s, None)
+}
+
+/// What `s` draws, as [`drawn`], with a line break where each token was and after each of its
+/// visible texts: no text runs on into the next, so a name found in it is one a text holds, not
+/// one the ends of two make (#493).
+pub fn drawn_apart(s: &str) -> String {
+    draw(s, Some('\n'))
+}
+
+fn draw(s: &str, apart: Option<char>) -> String {
     let (chars, found) = scan(s);
     let mut out = String::new();
     let mut at = 0;
     for f in found {
         out.extend(&chars[at..f.start]);
+        out.extend(apart);
         for v in &f.token.visible {
             out.push_str(v);
+            out.extend(apart);
         }
         at = f.end;
     }
@@ -533,6 +546,15 @@ mod tests {
             ]
         );
         assert_eq!(drawn("点#某词#"), "点某词");
+        assert_eq!(
+            drawn_apart("点#某词#\n[q_npcname text=\"某人\"]来"),
+            "点\n某词\n\n\n某人\n来"
+        );
+        // A token's visible texts are apart too.
+        assert_eq!(
+            drawn_apart("[gender male=\"他\" female=\"她\"]"),
+            "\n他\n她\n"
+        );
     }
 
     #[test]
