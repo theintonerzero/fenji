@@ -1086,6 +1086,30 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_line_is_checked_within_its_batchs_budget() {
+        // Planning set the budget from the line's fields, which a batch line doesn't carry; its
+        // English today, three letters of pinyin, would allow four on its own (#491).
+        let line = BatchLine {
+            fp: fenji_pack::fingerprint("蝎妖".as_bytes()),
+            zh: "蝎妖".into(),
+            en_old: Some("Xie".into()),
+            context: String::new(),
+            tight: true,
+            budget: Some(13),
+        };
+        let (glossary, rules) = (Glossary::default(), Rules::from_lines(&[]));
+        assert!(line_problems(&line, "Scorpion Yao", &glossary, &rules).is_empty());
+        let strict = BatchLine {
+            budget: Some(4),
+            ..line
+        };
+        assert_eq!(
+            line_problems(&strict, "Scorpion Yao", &glossary, &rules),
+            ["TooLong { len: 12, budget: 4 }"]
+        );
+    }
+
     fn result(fields: &str) -> Vec<u8> {
         format!(r#"{{"type":"result","session_id":"s",{fields}}}"#).into_bytes()
     }

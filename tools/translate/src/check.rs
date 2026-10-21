@@ -47,7 +47,8 @@ pub struct Rules {
     /// How long a tight line may be, against today's English.
     pub budget_percent: u32,
     /// What each tight field holds today, in characters drawn: the length a quarter of its lines'
-    /// English reaches, where enough of them show it. A tight line may always be that long (#491).
+    /// English reaches, where enough of them show it. A tight line's budget is at least the
+    /// strictest floor of the fields it's shown in, where each of them has one (#491).
     pub floors: BTreeMap<String, usize>,
 }
 
@@ -210,7 +211,8 @@ fn orphan_closes(s: &str) -> BTreeMap<String, usize> {
 }
 
 /// Each tight field's floor ([`Rules::floors`]): the length a quarter of its lines' English today
-/// reaches, in characters drawn, where [`FLOOR_LINES`] or more of its lines have English.
+/// reaches, in characters drawn, where [`FLOOR_LINES`] or more of its lines have English. A line
+/// counts once in a field, however many of the field's rows use it.
 fn floors(lines: &[Line]) -> BTreeMap<String, usize> {
     let mut lengths: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for line in lines {
@@ -218,7 +220,11 @@ fn floors(lines: &[Line]) -> BTreeMap<String, usize> {
             continue;
         };
         let n = drawn(today).chars().count();
-        for field in crate::area::tight_fields(&line.uses).into_iter().flatten() {
+        let fields: BTreeSet<String> = crate::area::tight_fields(&line.uses)
+            .into_iter()
+            .flatten()
+            .collect();
+        for field in fields {
             lengths.entry(field).or_default().push(n);
         }
     }
@@ -552,10 +558,25 @@ mod tests {
                 &[("few", "name")],
             )
         }));
+        // A line counts once in a field, however many rows use it: 29 lines in 58 rows.
+        lines.extend((0..29).map(|i| {
+            let twice = [("rows", "name"), ("rows", "name")];
+            shown_in(line(&format!("行{i}"), Some("A long name"), true), &twice)
+        }));
+        // The length a quarter of the field's lines reach: of 1 to 40 letters, 31.
+        lines.extend((1..=40).map(|n| {
+            let en = "a".repeat(n);
+            shown_in(
+                line(&format!("长{n}"), Some(en.as_str()), true),
+                &[("spread", "name")],
+            )
+        }));
         let rules = Rules::from_lines(&lines);
         assert_eq!(rules.floors.get("npcs.name"), Some(&13));
         assert_eq!(rules.floors.get("vote.name"), Some(&8));
         assert_eq!(rules.floors.get("few.name"), None);
+        assert_eq!(rules.floors.get("rows.name"), None);
+        assert_eq!(rules.floors.get("spread.name"), Some(&31));
 
         let xie = |fields: &[(&str, &str)]| shown_in(line("蝎妖", Some("Xie"), true), fields);
         let npc = xie(&[("npcs", "name")]);
