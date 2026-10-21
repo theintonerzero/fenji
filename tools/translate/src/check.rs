@@ -132,7 +132,7 @@ pub enum Problem {
     Char(char),
     /// A glossary name it should hold, as written.
     Term(String),
-    /// A term its answer says the line holds only by chance, which the line's Chinese doesn't hold.
+    /// An entry of its answer's list of names held by chance that the line's Chinese doesn't hold.
     Chance(String),
     /// Longer than a tight line's budget, in characters drawn.
     TooLong { len: usize, budget: usize },
@@ -330,8 +330,8 @@ pub fn check_within(
         .iter()
         .filter(|t| t.kind == TermKind::Name && said.contains(&t.zh))
         .collect();
-    // A listed term the line holds but isn't asked for, such as a word or a name only kept markup
-    // holds, changes nothing; only one the line doesn't hold at all is refused.
+    // Listed Chinese the line holds but isn't asked for, such as a word, or a name only kept markup
+    // holds, changes nothing; only an entry the line doesn't hold at all is refused.
     let listed: BTreeSet<&String> = chance.iter().collect();
     for zh in listed {
         if zh.is_empty() || !line.zh.contains(zh.as_str()) {
@@ -604,7 +604,7 @@ mod tests {
             terms(english, &["林月", "长老", "长老", ""]),
             [Problem::Chance("".into()), Problem::Chance("长老".into())]
         );
-        // A term the line holds but isn't asked for changes nothing: a word, or a name only kept
+        // Chinese the line holds but isn't asked for changes nothing: a word, or a name only kept
         // markup holds.
         assert_eq!(terms(english, &["林月", "月光"]), []);
         let kept = line("<A HREF=\"guide;林月\">商人</A>", None, false);

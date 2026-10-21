@@ -1069,7 +1069,7 @@ fn lines_retry(lines: &[QueuedLine]) -> String {
          opens; Cjk, Chinese is left; Char, a character the font doesn't draw; Term, a glossary \
          name the line holds isn't written as the glossary has it (a name the line holds only by \
          chance goes in `by_chance` instead, never one it means, nor to fit a budget); Chance, a \
-         term in `by_chance` that the line's Chinese doesn't hold; TooLong, longer than the line's \
+         listing in `by_chance` that the line's Chinese doesn't hold; TooLong, longer than the line's \
          budget; British, a British spelling; Empty, nothing is drawn.\n",
     );
     out
@@ -1277,7 +1277,7 @@ mod tests {
             retry.contains("goes in `by_chance` instead, never one it means, nor to fit a budget")
         );
         assert!(
-            retry.contains("Chance, a term in `by_chance` that the line's Chinese doesn't hold")
+            retry.contains("Chance, a listing in `by_chance` that the line's Chinese doesn't hold")
         );
     }
 
