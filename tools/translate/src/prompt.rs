@@ -33,6 +33,11 @@ pub struct Answer {
 pub struct AnswerLine {
     pub fp: Fingerprint,
     pub en: String,
+    /// The glossary's names, by their Chinese, that the line holds only by chance and its English
+    /// leaves out: their characters run across other words, or are an ordinary word in its
+    /// ordinary sense (#495).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_chance: Vec<String>,
 }
 
 /// A reviewer's answer: every line of its batch, kept, or replaced with a reason.
@@ -49,15 +54,23 @@ pub struct ReviewLine {
     pub keep: bool,
     pub en: Option<String>,
     pub reason: Option<String>,
+    /// [`AnswerLine::by_chance`], for the reviewer's `en`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_chance: Vec<String>,
 }
 
-/// A line the review replaced: the two readings, and the reviewer's reason.
+/// A line the review replaced: the two readings, each with the names it says the line holds only
+/// by chance, and the reviewer's reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dispute {
     pub fp: Fingerprint,
     pub first: String,
     pub second: String,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub first_by_chance: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub second_by_chance: Vec<String>,
 }
 
 /// The third reading's answer: every disputed line, once.
@@ -73,6 +86,9 @@ pub struct SettledLine {
     pub fp: Fingerprint,
     pub en: String,
     pub reason: String,
+    /// [`AnswerLine::by_chance`], for the final `en`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_chance: Vec<String>,
 }
 
 /// A prompt: the job's instructions, the style guide, the glossary's terms the lines hold, and the
@@ -91,37 +107,48 @@ pub fn translate_prompt(b: &Batch, style: &str) -> String {
     compose(TRANSLATE, style, &b.glossary, &b.lines)
 }
 
-/// A line to review: the batch's, with its new English.
+/// A line to review: the batch's, with its new English and the names the translator says it holds
+/// only by chance.
 #[derive(Serialize)]
 struct ToReview<'a> {
     #[serde(flatten)]
     line: &'a BatchLine,
     en_new: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    by_chance: &'a [String],
 }
 
 /// The prompt that reviews `answer`, `b`'s translation. Lines the answer holds that `b` doesn't
 /// stay out.
 pub fn review_prompt(b: &Batch, answer: &Answer, style: &str) -> String {
-    let new: HashMap<Fingerprint, &str> =
-        answer.lines.iter().map(|l| (l.fp, l.en.as_str())).collect();
+    let new: HashMap<Fingerprint, &AnswerLine> = answer.lines.iter().map(|l| (l.fp, l)).collect();
     let lines: Vec<ToReview> = b
         .lines
         .iter()
-        .map(|line| ToReview {
-            line,
-            en_new: new.get(&line.fp).copied(),
+        .map(|line| {
+            let new = new.get(&line.fp);
+            ToReview {
+                line,
+                en_new: new.map(|l| l.en.as_str()),
+                by_chance: new.map_or(&[], |l| &l.by_chance),
+            }
         })
         .collect();
     compose(REVIEW, style, &b.glossary, &lines)
 }
 
-/// A line to settle: the batch's, with its two readings and the reviewer's reason.
+/// A line to settle: the batch's, with its two readings, the names each says it holds only by
+/// chance, and the reviewer's reason.
 #[derive(Serialize)]
 struct ToSettle<'a> {
     #[serde(flatten)]
     line: &'a BatchLine,
     first: &'a str,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    first_by_chance: &'a [String],
     second: &'a str,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    second_by_chance: &'a [String],
     reason: &'a str,
 }
 
@@ -135,7 +162,9 @@ pub fn settle_prompt(b: &Batch, disputes: &[Dispute], style: &str) -> String {
             Some(ToSettle {
                 line,
                 first: &d.first,
+                first_by_chance: &d.first_by_chance,
                 second: &d.second,
+                second_by_chance: &d.second_by_chance,
                 reason: &d.reason,
             })
         })
@@ -222,11 +251,13 @@ mod tests {
                 AnswerLine {
                     fp: ours,
                     en: "Lin Yue has come.".into(),
+                    by_chance: vec![],
                 },
                 // A stray line in an answer stays out of the review.
                 AnswerLine {
                     fp: theirs,
                     en: "Bluestone".into(),
+                    by_chance: vec![],
                 },
             ],
         };
@@ -244,6 +275,8 @@ mod tests {
             first: "Lin Yue has come.".into(),
             second: "Here comes Lin Yue.".into(),
             reason: "Livelier, as she is.".into(),
+            first_by_chance: vec![],
+            second_by_chance: vec![],
         }];
         let s = settle_prompt(dialogue, &disputes, style);
         assert!(s.starts_with(SETTLE));
@@ -257,6 +290,120 @@ mod tests {
             assert!(s.contains(held), "{held}");
         }
         assert!(!s.contains("青石"));
+    }
+
+    /// A prompt's lines, as the JSON it shows them in.
+    fn shown_lines(prompt: &str) -> Vec<Value> {
+        let json = prompt
+            .split_once("## The lines\n\n```json\n")
+            .and_then(|(_, rest)| rest.rsplit_once("\n```"))
+            .expect("the lines' JSON")
+            .0;
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn the_review_and_the_settling_see_the_names_each_reading_holds_by_chance() {
+        // 树林月光下 is a forest's moonlight, not the person 林月: the translator's list is the
+        // review's to judge, and both readings' lists the settling's (#495).
+        let lines = vec![
+            line("树林月光下", Some("Under the moon"), "quest_dialog", "text"),
+            line("林月来了", Some("Lin Yue's here"), "quest_dialog", "text"),
+        ];
+        let glossary = Glossary {
+            terms: vec![Term {
+                zh: "林月".into(),
+                en: "Lin Yue".into(),
+                kind: TermKind::Name,
+                variants: vec![],
+                note: String::new(),
+            }],
+        };
+        let batches = plan_batches(&lines, &glossary, &Rules::from_lines(&[]));
+        let b = &batches[0];
+        let fp = |zh: &str| fingerprint(zh.as_bytes());
+        let (moonlight, coming) = (fp("树林月光下"), fp("林月来了"));
+        let answer = Answer {
+            lines: vec![
+                AnswerLine {
+                    fp: moonlight,
+                    en: "Beneath the forest's moonlight".into(),
+                    by_chance: vec!["林月".into()],
+                },
+                AnswerLine {
+                    fp: coming,
+                    en: "Lin Yue has come.".into(),
+                    by_chance: vec![],
+                },
+            ],
+        };
+        let shown = shown_lines(&review_prompt(b, &answer, "STYLE"));
+        let of = |fp: Fingerprint| {
+            shown
+                .iter()
+                .find(|l| l["fp"] == fp.to_string())
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(of(moonlight)["by_chance"], serde_json::json!(["林月"]));
+        assert_eq!(
+            of(coming).get("by_chance"),
+            None,
+            "only where there are any"
+        );
+
+        let disputes = [
+            Dispute {
+                fp: moonlight,
+                first: "Beneath the forest's moonlight".into(),
+                second: "Under the forest's moon".into(),
+                reason: "Plainer.".into(),
+                first_by_chance: vec!["林月".into()],
+                second_by_chance: vec!["林月".into(), "月光".into()],
+            },
+            Dispute {
+                fp: coming,
+                first: "Lin Yue has come.".into(),
+                second: "Here comes Lin Yue.".into(),
+                reason: "Livelier.".into(),
+                first_by_chance: vec![],
+                second_by_chance: vec![],
+            },
+        ];
+        let shown = shown_lines(&settle_prompt(b, &disputes, "STYLE"));
+        let of = |fp: Fingerprint| {
+            shown
+                .iter()
+                .find(|l| l["fp"] == fp.to_string())
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            of(moonlight)["first_by_chance"],
+            serde_json::json!(["林月"])
+        );
+        assert_eq!(
+            of(moonlight)["second_by_chance"],
+            serde_json::json!(["林月", "月光"])
+        );
+        for list in ["first_by_chance", "second_by_chance"] {
+            assert_eq!(of(coming).get(list), None, "only where there are any");
+        }
+    }
+
+    #[test]
+    fn the_prompts_say_a_name_held_by_chance_is_listed_never_one_the_line_means() {
+        for prompt in [TRANSLATE, SETTLE] {
+            assert!(prompt.contains("`by_chance`"));
+            assert!(prompt.contains("Never list a name the line means, not even to fit a budget"));
+        }
+        // A tight line can't be passed by leaving out a name it means.
+        assert!(
+            REVIEW.contains("Leaving out a name the line means is wrong, even to fit a budget.")
+        );
+        assert!(REVIEW.contains("- **Names by chance.**"));
+        assert!(REVIEW.contains("A line you keep keeps the translator's list."));
+        assert!(SETTLE.contains("`first_by_chance` and `second_by_chance`"));
     }
 
     /// A guide's examples: each `` `source` → `English` `` pair, with `\n` as a line break.
@@ -392,6 +539,11 @@ mod tests {
             serde_json::from_str(&format!(r#"{{"lines":[{{"fp":"{fp}","en":"Hello."}}]}}"#))
                 .unwrap();
         assert_eq!(answer.lines[0].en, "Hello.");
+        let by_chance: Answer = serde_json::from_str(&format!(
+            r#"{{"lines":[{{"fp":"{fp}","en":"Hello.","by_chance":["林月"]}}]}}"#
+        ))
+        .unwrap();
+        assert_eq!(by_chance.lines[0].by_chance, ["林月"]);
         for bad in [
             r#"{"lines":[{"fp":"0011","en":"Hello."}]}"#.to_string(),
             format!(r#"{{"lines":[{{"fp":"{fp}"}}]}}"#),
@@ -420,6 +572,10 @@ mod tests {
         assert_eq!(fields(&settle), (vec!["en", "fp", "reason"], true));
         for schema in [&translate, &review, &settle] {
             assert_eq!(schema["properties"]["fp"]["pattern"], "^[0-9a-f]{32}$");
+            // Optional, as the types' default is: only a line that holds a name by chance has one.
+            let by_chance = &schema["properties"]["by_chance"];
+            assert_eq!(by_chance["type"], "array");
+            assert_eq!(by_chance["items"]["type"], "string");
         }
     }
 }

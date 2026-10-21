@@ -20,6 +20,11 @@
           "en": {
             "type": "string",
             "description": "The line's English."
+          },
+          "by_chance": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The glossary's names, in Chinese, that the line holds only by chance and the English leaves out; only on a line that has any."
           }
         }
       }
