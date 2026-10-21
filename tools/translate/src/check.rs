@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::lines::Line;
-use crate::markup::{Family, drawn, tokens};
+use crate::markup::{Family, drawn, drawn_apart, tokens};
 
 /// The glossary: names and recurring words, each with one English form (RT8, RT9).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,19 +313,19 @@ pub fn check_within(
     odd.sort_unstable();
     odd.dedup();
     problems.extend(odd.into_iter().map(Problem::Char));
-    // The names the source draws: one only a token keeps, such as a guide link's key, stays as it is
-    // in the English (#493). A name the English doesn't write is still met where the source holds
-    // it only inside a longer name the English does: a place given with its region may drop the
-    // region when the longer name's variants say so.
-    let said = drawn(&line.zh);
+    // The names the source's texts draw, and the English writes where it draws them (#493): a name
+    // only a token keeps, such as a guide link's key, stays as it is in the English. A name the
+    // English doesn't write is still met where the source holds it only inside a longer name the
+    // English does: a place given with its region may drop the region when the longer name's
+    // variants say so.
+    let said = drawn_apart(&line.zh);
     let names: Vec<&Term> = glossary
         .terms
         .iter()
         .filter(|t| t.kind == TermKind::Name && said.contains(&t.zh))
         .collect();
-    let written = |t: &Term| {
-        english.contains(&t.en) || t.variants.iter().any(|v| english.contains(v.as_str()))
-    };
+    let written =
+        |t: &Term| shown.contains(&t.en) || t.variants.iter().any(|v| shown.contains(v.as_str()));
     let met: Vec<(usize, usize)> = names
         .iter()
         .filter(|t| written(t))
@@ -446,10 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn a_name_only_kept_markup_holds_isnt_asked_for() {
+    fn a_name_is_asked_for_where_a_text_draws_it() {
         // A guide link's key names whom it leads to, never drawn: the English keeps it as it is.
         let l = line("<A HREF=\"guide;林月\">商人</A>", None, false);
         assert_eq!(problems(&l, "<A HREF=\"guide;林月\">Merchant</A>"), []);
+        // The ends of two lines don't make a name.
+        let l = line("穿过树林\n月光洒下", None, false);
+        assert_eq!(problems(&l, "Through the woods\nthe moonlight falls"), []);
         // A name in markup's visible text is drawn, and asked for.
         let l = line("[q_npcname text=\"林月\"]来了", None, false);
         assert!(
@@ -457,6 +460,35 @@ mod tests {
                 .contains(&Problem::Term("Lin Yue".into()))
         );
         assert_eq!(problems(&l, "[q_npcname text=\"Lin Yue\"] has come"), []);
+    }
+
+    #[test]
+    fn a_name_is_written_where_the_english_draws_it() {
+        let mut glossary = glossary();
+        glossary.terms.push(Term {
+            zh: "林月长老".into(),
+            en: "Elder Lin Yue".into(),
+            kind: TermKind::Name,
+            variants: vec![],
+            note: String::new(),
+        });
+        let terms =
+            |zh: &str, english: &str| check(&line(zh, None, false), english, &glossary, &rules());
+        // The English may move markup inside a name, as English needs.
+        assert_eq!(
+            terms(
+                "[c 99ccff]林月长老[/c]来了",
+                "Elder [c 99ccff]Lin Yue[/c] has come"
+            ),
+            []
+        );
+        assert_eq!(
+            terms(
+                "[c 99ccff]林月[/c]长老来了",
+                "Elder [c 99ccff]Lin Yue[/c] has come"
+            ),
+            []
+        );
     }
 
     #[test]
