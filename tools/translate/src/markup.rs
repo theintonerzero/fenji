@@ -550,6 +550,11 @@ mod tests {
             drawn_apart("点#某词#\n[q_npcname text=\"某人\"]来"),
             "点\n某词\n\n\n某人\n来"
         );
+        // A token's visible texts are apart too.
+        assert_eq!(
+            drawn_apart("[gender male=\"他\" female=\"她\"]"),
+            "\n他\n她\n"
+        );
     }
 
     #[test]
