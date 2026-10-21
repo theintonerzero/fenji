@@ -241,11 +241,17 @@ fn floors(lines: &[Line]) -> BTreeMap<String, usize> {
 /// The most characters a tight line's English may draw (RT11): its English today's, by the rules'
 /// percentage, or what the strictest of its fields holds today, whichever is more. Where today's
 /// English is short pinyin, its field still has room for the name's meaning (#491). A line that
-/// isn't tight, or has no English today, has no budget.
+/// isn't tight, or has no English today, has no budget. One whose English today draws nothing,
+/// only a placeholder or markup, has its field's floor alone, if there's one: such English says
+/// nothing of the room the line has (#497).
 pub fn budget(line: &Line, rules: &Rules) -> Option<usize> {
-    let today = line.en.as_deref().filter(|_| line.tight)?;
-    let own = (drawn(today).chars().count() * rules.budget_percent as usize).div_ceil(100);
-    Some(own.max(floor(line, rules)))
+    let today = drawn(line.en.as_deref().filter(|_| line.tight)?);
+    let floor = floor(line, rules);
+    if today.trim().is_empty() {
+        return (floor > 0).then_some(floor);
+    }
+    let own = (today.chars().count() * rules.budget_percent as usize).div_ceil(100);
+    Some(own.max(floor))
 }
 
 /// What every tight field `line` is shown in holds today: the strictest one's floor, or nothing
@@ -569,6 +575,22 @@ mod tests {
     }
 
     #[test]
+    fn a_tight_line_whose_english_today_draws_nothing_has_no_budget_of_its_own() {
+        // A script's placeholder in a word, whose English today is the placeholder alone: 110% of
+        // nothing drawn was a budget of 0, so any English was too long or empty (#497).
+        let rules = rules();
+        let level = line("{0}级", Some("{0}"), true);
+        assert_eq!(budget(&level, &rules), None);
+        assert_eq!(check(&level, "Level {0}", &Glossary::default(), &rules), []);
+        // Nor does markup alone say how much room there is.
+        let bracket = line("【{0}】[/c]", Some("{0}[/c]"), true);
+        assert_eq!(budget(&bracket, &rules), None);
+        // English today that draws something still sets it.
+        let seconds = line("{0}秒", Some("{0}s"), true);
+        assert_eq!(budget(&seconds, &rules), Some(2));
+    }
+
+    #[test]
     fn a_tight_line_has_the_room_its_field_holds_today() {
         // An NPC named in three letters of pinyin today: 110% of that is four, but a quarter of
         // the field's names today reach thirteen (#491).
@@ -629,6 +651,9 @@ mod tests {
         let xie = |fields: &[(&str, &str)]| shown_in(line("蝎妖", Some("Xie"), true), fields);
         let npc = xie(&[("npcs", "name")]);
         assert_eq!(budget(&npc, &rules), Some(13));
+        // English today that draws nothing leaves the field's floor (#497).
+        let blank = shown_in(line("名", Some("{0}"), true), &[("npcs", "name")]);
+        assert_eq!(budget(&blank, &rules), Some(13));
         assert_eq!(
             check(&npc, "Scorpion Yao", &Glossary::default(), &rules),
             []
