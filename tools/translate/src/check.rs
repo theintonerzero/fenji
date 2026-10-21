@@ -139,13 +139,33 @@ const SUFFIXES: &[&str] = &[
     "ations", "ite", "ites", "ism",
 ];
 
+/// What may follow the root of an -ise or -yse stem, the stem without its e: realis-ing,
+/// organis-er, recognis-able.
+const ROOT_SUFFIXES: &[&str] = &["ing", "er", "ers", "ation", "ations", "able"];
+/// What may come before a British stem and leave it British: un-favourable, im-mobilise.
+const PREFIXES: &[&str] = &[
+    "", "un", "re", "dis", "im", "in", "mis", "de", "pre", "non", "over", "under", "out", "multi",
+    "anti", "semi", "super", "counter",
+];
+
 fn british_word(word: &str) -> bool {
     BRITISH
         .lines()
         .filter_map(|l| l.split_whitespace().next())
         .any(|stem| {
-            word.strip_prefix(stem)
-                .is_some_and(|rest| SUFFIXES.contains(&rest))
+            let root = stem
+                .strip_suffix('e')
+                .filter(|root| root.ends_with("is") || root.ends_with("ys"));
+            PREFIXES
+                .iter()
+                .filter_map(|prefix| word.strip_prefix(prefix))
+                .any(|rest| {
+                    rest.strip_prefix(stem)
+                        .is_some_and(|tail| SUFFIXES.contains(&tail))
+                        || root
+                            .and_then(|root| rest.strip_prefix(root))
+                            .is_some_and(|tail| ROOT_SUFFIXES.contains(&tail))
+                })
         })
 }
 
@@ -444,6 +464,65 @@ mod tests {
         assert!(problems(&l, "“Hi”").contains(&Problem::Char('”')));
         assert!(problems(&l, "").contains(&Problem::Empty));
         assert!(problems(&l, "   ").contains(&Problem::Empty));
+    }
+
+    #[test]
+    fn every_form_of_a_british_spelling_is_refused() {
+        // An -ise verb's other forms, a stem behind a prefix, and stems today's English uses.
+        for word in [
+            "realising",
+            "organiser",
+            "recognisable",
+            "paralysing",
+            "practising",
+            "immobilisation",
+            "unfavourable",
+            "dishonoured",
+            "multicoloured",
+            "stabilised",
+            "fertiliser",
+            "sceptres",
+            "duelling",
+            "channelled",
+            "rancour",
+            "aeons",
+            "anaemic",
+        ] {
+            assert!(british_word(word), "{word}");
+        }
+        // Their American forms, and words American English spells the same way.
+        for word in [
+            "realizing",
+            "organizer",
+            "recognizable",
+            "paralyzing",
+            "practicing",
+            "immobilization",
+            "unfavorable",
+            "dishonored",
+            "multicolored",
+            "stabilized",
+            "fertilizer",
+            "scepters",
+            "dueling",
+            "channeled",
+            "rancor",
+            "eons",
+            "anemic",
+            "rise",
+            "promise",
+            "exercise",
+            "precise",
+            "otherwise",
+            "analysis",
+            "aesthetic",
+            "glamour",
+            "dialogue",
+            "your",
+            "hour",
+        ] {
+            assert!(!british_word(word), "{word}");
+        }
     }
 
     #[test]
