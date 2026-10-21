@@ -46,7 +46,14 @@ pub struct Rules {
     pub allowed: BTreeSet<char>,
     /// How long a tight line may be, against today's English.
     pub budget_percent: u32,
+    /// What each tight field holds today, in characters drawn: the length a quarter of its lines'
+    /// English reaches, where enough of them show it. A tight line's budget is at least the
+    /// strictest floor of the fields it's shown in, where each of them has one (#491).
+    pub floors: BTreeMap<String, usize>,
 }
+
+/// How many of a field's lines need English today for its floor to stand.
+const FLOOR_LINES: usize = 30;
 
 /// `rules.json`, which the early check writes (Task 11): each field overrides.
 #[derive(Debug, Default, Deserialize)]
@@ -71,7 +78,8 @@ pub const NEVER: &[char] = &['‘', '’', '“', '”', '\u{FFFD}'];
 
 impl Rules {
     /// Printable ASCII, a line break and a tab, and every other character today's English uses
-    /// that isn't East Asian or [`NEVER`]; tight lines within 110% of today's length.
+    /// that isn't East Asian or [`NEVER`]; tight lines within 110% of today's length, or as long
+    /// as their fields hold today.
     pub fn from_lines(lines: &[Line]) -> Rules {
         let mut allowed: BTreeSet<char> = (' '..='~').chain(['\n', '\t']).collect();
         for line in lines {
@@ -85,6 +93,7 @@ impl Rules {
         Rules {
             allowed,
             budget_percent: 110,
+            floors: floors(lines),
         }
     }
 
@@ -201,11 +210,53 @@ fn orphan_closes(s: &str) -> BTreeMap<String, usize> {
     orphans
 }
 
+/// Each tight field's floor ([`Rules::floors`]): the length a quarter of its lines' English today
+/// reaches, in characters drawn, where [`FLOOR_LINES`] or more of its lines have English. A line
+/// counts once in a field, however many of the field's rows use it.
+fn floors(lines: &[Line]) -> BTreeMap<String, usize> {
+    let mut lengths: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for line in lines {
+        let Some(today) = line.en.as_deref().filter(|_| line.tight) else {
+            continue;
+        };
+        let n = drawn(today).chars().count();
+        let fields: BTreeSet<String> = crate::area::tight_fields(&line.uses)
+            .into_iter()
+            .flatten()
+            .collect();
+        for field in fields {
+            lengths.entry(field).or_default().push(n);
+        }
+    }
+    lengths
+        .into_iter()
+        .filter(|(_, l)| l.len() >= FLOOR_LINES)
+        .map(|(field, mut l)| {
+            l.sort_unstable();
+            (field, l[l.len() * 3 / 4])
+        })
+        .collect()
+}
+
 /// The most characters a tight line's English may draw (RT11): its English today's, by the rules'
-/// percentage. A line that isn't tight, or has no English today, has no budget.
+/// percentage, or what the strictest of its fields holds today, whichever is more. Where today's
+/// English is short pinyin, its field still has room for the name's meaning (#491). A line that
+/// isn't tight, or has no English today, has no budget.
 pub fn budget(line: &Line, rules: &Rules) -> Option<usize> {
     let today = line.en.as_deref().filter(|_| line.tight)?;
-    Some((drawn(today).chars().count() * rules.budget_percent as usize).div_ceil(100))
+    let own = (drawn(today).chars().count() * rules.budget_percent as usize).div_ceil(100);
+    Some(own.max(floor(line, rules)))
+}
+
+/// What every tight field `line` is shown in holds today: the strictest one's floor, or nothing
+/// where one has none, as a script's string has no field.
+fn floor(line: &Line, rules: &Rules) -> usize {
+    crate::area::tight_fields(&line.uses)
+        .iter()
+        .map(|f| f.as_ref().and_then(|f| rules.floors.get(f)).copied())
+        .collect::<Option<Vec<usize>>>()
+        .and_then(|floors| floors.into_iter().min())
+        .unwrap_or(0)
 }
 
 /// Where `term` is in `source`, as byte ranges, overlapping ones too.
@@ -216,8 +267,20 @@ fn places<'a>(source: &'a str, term: &'a str) -> impl Iterator<Item = (usize, us
         .map(move |(i, _)| (i, i + term.len()))
 }
 
-/// Every problem `english` has as `line`'s translation.
+/// Every problem `english` has as `line`'s translation, within the line's [`budget`].
 pub fn check(line: &Line, english: &str, glossary: &Glossary, rules: &Rules) -> Vec<Problem> {
+    check_within(line, english, glossary, rules, budget(line, rules))
+}
+
+/// [`check`] within `budget`: a batch line's, which planning set from the line's fields, and which
+/// its prompt shows the translator.
+pub fn check_within(
+    line: &Line,
+    english: &str,
+    glossary: &Glossary,
+    rules: &Rules,
+    budget: Option<usize>,
+) -> Vec<Problem> {
     let mut problems = Vec::new();
     let (source, translation) = (counts(&line.zh), counts(english));
     for (shape, &n) in &source {
@@ -273,7 +336,7 @@ pub fn check(line: &Line, english: &str, glossary: &Glossary, rules: &Rules) -> 
             problems.push(Problem::Term(term.en.clone()));
         }
     }
-    if let Some(budget) = budget(line, rules) {
+    if let Some(budget) = budget {
         let len = shown.chars().count();
         if len > budget {
             problems.push(Problem::TooLong { len, budget });
@@ -298,6 +361,7 @@ pub fn check(line: &Line, english: &str, glossary: &Glossary, rules: &Rules) -> 
 mod tests {
     use super::*;
     use crate::area::Area;
+    use crate::lines::Use;
 
     /// An invented line.
     fn line(zh: &str, en: Option<&str>, tight: bool) -> Line {
@@ -316,6 +380,7 @@ mod tests {
         Rules {
             allowed: (' '..='~').chain(['\n', '\t', '–']).collect(),
             budget_percent: 110,
+            floors: BTreeMap::new(),
         }
     }
 
@@ -453,6 +518,99 @@ mod tests {
         assert_eq!(problems(&loose, "Confirm it now"), []);
         // A tight line with no English today has no budget.
         assert_eq!(problems(&line("确定", None, true), "Confirm it now"), []);
+    }
+
+    #[test]
+    fn a_tight_line_has_the_room_its_field_holds_today() {
+        // An NPC named in three letters of pinyin today: 110% of that is four, but a quarter of
+        // the field's names today reach thirteen (#491).
+        let shown_in = |l: Line, fields: &[(&str, &str)]| Line {
+            uses: fields
+                .iter()
+                .map(|&(sheet, field)| Use::Table {
+                    sheet: sheet.into(),
+                    row: "1".into(),
+                    field: field.into(),
+                })
+                .collect(),
+            ..l
+        };
+        let mut lines: Vec<Line> = (0..40)
+            .map(|i| {
+                let en = if i < 30 {
+                    "Ten letter"
+                } else {
+                    "Thirteen char"
+                };
+                shown_in(line(&format!("名{i}"), Some(en), true), &[("npcs", "name")])
+            })
+            .collect();
+        // A voting list's names, eight letters each; a field with too few lines for a floor.
+        lines.extend((0..30).map(|i| {
+            shown_in(
+                line(&format!("票{i}"), Some("Eight ch"), true),
+                &[("vote", "name")],
+            )
+        }));
+        lines.extend((0..29).map(|i| {
+            shown_in(
+                line(&format!("少{i}"), Some("A long name"), true),
+                &[("few", "name")],
+            )
+        }));
+        // A line counts once in a field, however many rows use it: 29 lines in 58 rows.
+        lines.extend((0..29).map(|i| {
+            let twice = [("rows", "name"), ("rows", "name")];
+            shown_in(line(&format!("行{i}"), Some("A long name"), true), &twice)
+        }));
+        // The length a quarter of the field's lines reach: of 1 to 40 letters, 31.
+        lines.extend((1..=40).map(|n| {
+            let en = "a".repeat(n);
+            shown_in(
+                line(&format!("长{n}"), Some(en.as_str()), true),
+                &[("spread", "name")],
+            )
+        }));
+        let rules = Rules::from_lines(&lines);
+        assert_eq!(rules.floors.get("npcs.name"), Some(&13));
+        assert_eq!(rules.floors.get("vote.name"), Some(&8));
+        assert_eq!(rules.floors.get("few.name"), None);
+        assert_eq!(rules.floors.get("rows.name"), None);
+        assert_eq!(rules.floors.get("spread.name"), Some(&31));
+
+        let xie = |fields: &[(&str, &str)]| shown_in(line("蝎妖", Some("Xie"), true), fields);
+        let npc = xie(&[("npcs", "name")]);
+        assert_eq!(budget(&npc, &rules), Some(13));
+        assert_eq!(
+            check(&npc, "Scorpion Yao", &Glossary::default(), &rules),
+            []
+        );
+        // The strictest field it's shown in, and no floor where one field has none.
+        assert_eq!(
+            budget(&xie(&[("npcs", "name"), ("vote", "name")]), &rules),
+            Some(8)
+        );
+        assert_eq!(
+            budget(&xie(&[("npcs", "name"), ("few", "name")]), &rules),
+            Some(4)
+        );
+        // A script's string has no field whose room today's English shows.
+        let mut scripted = npc.clone();
+        scripted.uses.push(Use::Script {
+            path: "data/interface/ui/a.luac".into(),
+        });
+        assert_eq!(budget(&scripted, &rules), Some(4));
+        // Never less than today's own English allows.
+        let long = shown_in(
+            line("长名", Some("A very long name today"), true),
+            &[("vote", "name")],
+        );
+        assert_eq!(budget(&long, &rules), Some(25));
+        // The check takes the budget it's given: a batch's, set with the line's fields.
+        let bare = line("蝎妖", Some("Xie"), true);
+        let within = |b| check_within(&bare, "Scorpion Yao", &Glossary::default(), &rules, b);
+        assert_eq!(within(Some(13)), []);
+        assert_eq!(within(Some(4)), [Problem::TooLong { len: 12, budget: 4 }]);
     }
 
     #[test]

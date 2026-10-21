@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::area::Area;
 use crate::batch::{Batch, BatchLine, read_batches};
-use crate::check::{Glossary, Rules, check};
+use crate::check::{Glossary, Rules, check_within};
 use crate::lines::{Line, read_lines};
 use crate::prompt::{
     Answer, Dispute, REVIEW_SCHEMA, Review, SETTLE_SCHEMA, STYLE, Settled, TRANSLATE_SCHEMA,
@@ -470,14 +470,15 @@ fn whole_problems(wanted: &[Fingerprint], got: &[Fingerprint]) -> Option<String>
     (!problems.is_empty()).then(|| problems.join("; "))
 }
 
-/// The checks on `english` as `line`'s, as text.
+/// The checks on `english` as `line`'s, as text, within the budget its batch gives it: planning
+/// set it from the line's fields, which a batch line doesn't carry (#491).
 fn line_problems(
     line: &BatchLine,
     english: &str,
     glossary: &Glossary,
     rules: &Rules,
 ) -> Vec<String> {
-    check(&as_line(line), english, glossary, rules)
+    check_within(&as_line(line), english, glossary, rules, line.budget)
         .iter()
         .map(|p| format!("{p:?}"))
         .collect()
@@ -1084,6 +1085,30 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_is_checked_within_its_batchs_budget() {
+        // Planning set the budget from the line's fields, which a batch line doesn't carry; its
+        // English today, three letters of pinyin, would allow four on its own (#491).
+        let line = BatchLine {
+            fp: fenji_pack::fingerprint("蝎妖".as_bytes()),
+            zh: "蝎妖".into(),
+            en_old: Some("Xie".into()),
+            context: String::new(),
+            tight: true,
+            budget: Some(13),
+        };
+        let (glossary, rules) = (Glossary::default(), Rules::from_lines(&[]));
+        assert!(line_problems(&line, "Scorpion Yao", &glossary, &rules).is_empty());
+        let strict = BatchLine {
+            budget: Some(4),
+            ..line
+        };
+        assert_eq!(
+            line_problems(&strict, "Scorpion Yao", &glossary, &rules),
+            ["TooLong { len: 12, budget: 4 }"]
+        );
+    }
 
     fn result(fields: &str) -> Vec<u8> {
         format!(r#"{{"type":"result","session_id":"s",{fields}}}"#).into_bytes()

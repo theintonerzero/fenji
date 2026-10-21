@@ -83,7 +83,7 @@ The checks refuse any other character.
 
 ## 6. Length
 
-Where the interface is tight (buttons, tabs, item and skill names, short labels), a line carries a budget. That's the most characters its English may draw, markup not counted, set from today's English. Stay within it:
+Where the interface is tight (buttons, tabs, item and skill names, short labels), a line carries a budget. That's the most characters its English may draw, markup not counted, set from today's English: the line's own, or what its kind of text, such as a character's name, often holds today, whichever is more. Stay within it:
 - use a shorter word;
 - leave articles out of a label (`Open Bag`, not `Open the Bag`);
 - use a shorter form the glossary gives.

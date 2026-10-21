@@ -118,6 +118,22 @@ pub fn classify(uses: &[Use]) -> (Area, bool) {
     (area.unwrap_or(Area::Other), tight)
 }
 
+/// The tight fields a line's uses show it in, as `sheet.field` or `path:column` (RT11). A script's
+/// string is tight in no field whose room today's English shows, so it's `None`.
+pub fn tight_fields(uses: &[Use]) -> Vec<Option<String>> {
+    uses.iter()
+        .filter_map(|u| match u {
+            Use::Script { .. } => Some(None),
+            Use::Tab { path, column } => TIGHT_FIELDS
+                .contains(&column.as_str())
+                .then(|| Some(format!("{path}:{column}"))),
+            Use::Table { sheet, field, .. } => TIGHT_FIELDS
+                .contains(&field.as_str())
+                .then(|| Some(format!("{sheet}.{field}"))),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +172,28 @@ mod tests {
         assert_eq!(classify(&[table("npcs", "name")]), (Area::Other, true));
         assert_eq!(classify(&[]), (Area::Other, false));
         assert_eq!(Area::Items.name(), "items");
+    }
+
+    #[test]
+    fn a_lines_tight_fields_are_named_and_a_scripts_room_is_unknown() {
+        let uses = [
+            table("npcs", "name"),
+            table("quest_dialog", "text"),
+            Use::Tab {
+                path: "data/tables/cutscene/nameconvert.tab".into(),
+                column: "name".into(),
+            },
+            Use::Script {
+                path: "data/interface/ui/a.luac".into(),
+            },
+        ];
+        assert_eq!(
+            tight_fields(&uses),
+            [
+                Some("npcs.name".to_string()),
+                Some("data/tables/cutscene/nameconvert.tab:name".to_string()),
+                None,
+            ]
+        );
     }
 }
