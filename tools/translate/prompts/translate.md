@@ -8,7 +8,7 @@ You get one batch: some of the game's lines in Chinese, after the style guide an
 - `en_old`: its English today, if any. It's context for what the line was taken to mean, never a model to follow;
 - `context`: where the game uses it: a table's row and field, a script, or a file;
 - `tight`: whether the interface holds it tight: a button, a tab, a name, a short label;
-- `budget`: for a tight line, the most characters your English may draw on screen. Markup doesn't count.
+- `budget`: for a tight line, the most characters your English may draw on screen, or null where none is set. Markup doesn't count.
 
 The lines come in the game's order: a table's rows in turn, a row's name before its description, a conversation in order. Read the whole batch before you write. The lines around one tell you who speaks, to whom, and about what.
 

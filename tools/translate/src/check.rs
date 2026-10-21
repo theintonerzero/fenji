@@ -241,17 +241,16 @@ fn floors(lines: &[Line]) -> BTreeMap<String, usize> {
 /// The most characters a tight line's English may draw (RT11): its English today's, by the rules'
 /// percentage, or what the strictest of its fields holds today, whichever is more. Where today's
 /// English is short pinyin, its field still has room for the name's meaning (#491). A line that
-/// isn't tight, or has no English today, has no budget. One whose English today draws nothing,
-/// only a placeholder or markup, has its field's floor alone, if there's one: such English says
-/// nothing of the room the line has (#497).
+/// isn't tight, or has no English today, has no budget. English today that draws nothing, only
+/// markup or white space, says nothing of the room the line has: its budget is the strictest floor
+/// of the fields it's shown in that have one, or none (#497).
 pub fn budget(line: &Line, rules: &Rules) -> Option<usize> {
     let today = drawn(line.en.as_deref().filter(|_| line.tight)?);
-    let floor = floor(line, rules);
     if today.trim().is_empty() {
-        return (floor > 0).then_some(floor);
+        return known_floor(line, rules);
     }
     let own = (today.chars().count() * rules.budget_percent as usize).div_ceil(100);
-    Some(own.max(floor))
+    Some(own.max(floor(line, rules)))
 }
 
 /// What every tight field `line` is shown in holds today: the strictest one's floor, or nothing
@@ -263,6 +262,16 @@ fn floor(line: &Line, rules: &Rules) -> usize {
         .collect::<Option<Vec<usize>>>()
         .and_then(|floors| floors.into_iter().min())
         .unwrap_or(0)
+}
+
+/// The strictest floor of the tight fields `line` is shown in that have one: for a line whose
+/// English today draws nothing, the one measure of its room there is.
+fn known_floor(line: &Line, rules: &Rules) -> Option<usize> {
+    crate::area::tight_fields(&line.uses)
+        .iter()
+        .filter_map(|f| f.as_ref().and_then(|f| rules.floors.get(f)).copied())
+        .min()
+        .filter(|&f| f > 0)
 }
 
 /// Where `term` is in `source`, as byte ranges, overlapping ones too.
@@ -582,9 +591,11 @@ mod tests {
         let level = line("{0}级", Some("{0}"), true);
         assert_eq!(budget(&level, &rules), None);
         assert_eq!(check(&level, "Level {0}", &Glossary::default(), &rules), []);
-        // Nor does markup alone say how much room there is.
+        // Nor does markup or white space alone say how much room there is.
         let bracket = line("【{0}】[/c]", Some("{0}[/c]"), true);
         assert_eq!(budget(&bracket, &rules), None);
+        let spaced = line("{0}的{1}", Some("{0} {1}"), true);
+        assert_eq!(budget(&spaced, &rules), None);
         // English today that draws something still sets it.
         let seconds = line("{0}秒", Some("{0}s"), true);
         assert_eq!(budget(&seconds, &rules), Some(2));
@@ -651,13 +662,27 @@ mod tests {
         let xie = |fields: &[(&str, &str)]| shown_in(line("蝎妖", Some("Xie"), true), fields);
         let npc = xie(&[("npcs", "name")]);
         assert_eq!(budget(&npc, &rules), Some(13));
-        // English today that draws nothing leaves the field's floor (#497).
-        let blank = shown_in(line("名", Some("{0}"), true), &[("npcs", "name")]);
-        assert_eq!(budget(&blank, &rules), Some(13));
         assert_eq!(
             check(&npc, "Scorpion Yao", &Glossary::default(), &rules),
             []
         );
+        // English today that draws nothing leaves the fields' floors (#497): the strictest of
+        // those that have one, a script's string having none.
+        let blank = shown_in(line("名", Some("{0}"), true), &[("npcs", "name")]);
+        assert_eq!(budget(&blank, &rules), Some(13));
+        let scripted = Line {
+            uses: [
+                blank.uses.clone(),
+                vec![Use::Script {
+                    path: "a.lua".into(),
+                }],
+            ]
+            .concat(),
+            ..blank.clone()
+        };
+        assert_eq!(budget(&scripted, &rules), Some(13));
+        let voted = shown_in(blank, &[("npcs", "name"), ("vote", "name")]);
+        assert_eq!(budget(&voted, &rules), Some(8));
         // The strictest field it's shown in, and no floor where one field has none.
         assert_eq!(
             budget(&xie(&[("npcs", "name"), ("vote", "name")]), &rules),
