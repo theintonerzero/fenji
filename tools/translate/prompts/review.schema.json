@@ -28,6 +28,11 @@
           "reason": {
             "anyOf": [{ "type": "string" }, { "type": "null" }],
             "description": "One short sentence on what was wrong when keep is false; null when it's true."
+          },
+          "by_chance": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "When keep is false: the glossary's names, in Chinese, that the line holds only by chance and your English leaves out; only on a line that has any."
           }
         }
       }

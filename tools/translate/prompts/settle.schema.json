@@ -24,6 +24,11 @@
           "reason": {
             "type": "string",
             "description": "One short sentence on why."
+          },
+          "by_chance": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The glossary's names, in Chinese, that the line holds only by chance and the final English leaves out; only on a line that has any."
           }
         }
       }

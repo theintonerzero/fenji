@@ -132,6 +132,8 @@ pub enum Problem {
     Char(char),
     /// A glossary name it should hold, as written.
     Term(String),
+    /// A name its answer says the line holds only by chance, which the line doesn't hold.
+    Chance(String),
     /// Longer than a tight line's budget, in characters drawn.
     TooLong { len: usize, budget: usize },
     /// A British spelling.
@@ -269,17 +271,20 @@ fn places<'a>(source: &'a str, term: &'a str) -> impl Iterator<Item = (usize, us
 
 /// Every problem `english` has as `line`'s translation, within the line's [`budget`].
 pub fn check(line: &Line, english: &str, glossary: &Glossary, rules: &Rules) -> Vec<Problem> {
-    check_within(line, english, glossary, rules, budget(line, rules))
+    check_within(line, english, glossary, rules, budget(line, rules), &[])
 }
 
 /// [`check`] within `budget`: a batch line's, which planning set from the line's fields, and which
-/// its prompt shows the translator.
+/// its prompt shows the translator. `chance` is the names, by their Chinese, that the answer says
+/// the line holds only by chance: their characters run across other words, or are an ordinary
+/// word in its ordinary sense (#495).
 pub fn check_within(
     line: &Line,
     english: &str,
     glossary: &Glossary,
     rules: &Rules,
     budget: Option<usize>,
+    chance: &[String],
 ) -> Vec<Problem> {
     let mut problems = Vec::new();
     let (source, translation) = (counts(&line.zh), counts(english));
@@ -317,13 +322,19 @@ pub fn check_within(
     // only a token keeps, such as a guide link's key, stays as it is in the English. A name the
     // English doesn't write is still met where the source holds it only inside a longer name the
     // English does: a place given with its region may drop the region when the longer name's
-    // variants say so.
+    // variants say so. A name the answer says the line holds only by chance isn't asked for (#495);
+    // the review judges that as it judges the rest.
     let said = drawn_apart(&line.zh);
     let names: Vec<&Term> = glossary
         .terms
         .iter()
         .filter(|t| t.kind == TermKind::Name && said.contains(&t.zh))
         .collect();
+    for zh in chance {
+        if !names.iter().any(|t| &t.zh == zh) {
+            problems.push(Problem::Chance(zh.clone()));
+        }
+    }
     let written =
         |t: &Term| shown.contains(&t.en) || t.variants.iter().any(|v| shown.contains(v.as_str()));
     let met: Vec<(usize, usize)> = names
@@ -331,7 +342,10 @@ pub fn check_within(
         .filter(|t| written(t))
         .flat_map(|t| places(&said, &t.zh))
         .collect();
-    for term in names.iter().filter(|t| !written(t)) {
+    for term in names
+        .iter()
+        .filter(|t| !written(t) && !chance.contains(&t.zh))
+    {
         let inside =
             |(a, b): (usize, usize)| met.iter().any(|&(c, d)| c <= a && b <= d && d - c > b - a);
         if !places(&said, &term.zh).all(inside) {
@@ -554,6 +568,42 @@ mod tests {
     }
 
     #[test]
+    fn a_name_the_line_holds_only_by_chance_is_left_out_as_the_answer_says() {
+        // 树林月光下 is 树林, a forest, then 月光, moonlight: it holds 林月's characters without
+        // naming her, and asking for her there forced her into the English or kept the batch
+        // from passing (#495).
+        let mut glossary = glossary();
+        glossary.terms.push(Term {
+            zh: "青石".into(),
+            en: "Bluestone".into(),
+            kind: TermKind::Name,
+            variants: vec![],
+            note: String::new(),
+        });
+        let l = line("树林月光下，青石旁", None, false);
+        let terms = |english: &str, chance: &[&str]| -> Vec<Problem> {
+            let chance: Vec<String> = chance.iter().map(|c| (*c).into()).collect();
+            check_within(&l, english, &glossary, &rules(), None, &chance)
+                .into_iter()
+                .filter(|p| matches!(p, Problem::Term(_) | Problem::Chance(_)))
+                .collect()
+        };
+        let english = "Beneath the forest's moonlight, by Bluestone";
+        assert_eq!(terms(english, &[]), [Problem::Term("Lin Yue".into())]);
+        assert_eq!(terms(english, &["林月"]), []);
+        // The list leaves out only what it names.
+        assert_eq!(
+            terms("Beneath the forest's moonlight, by the stone", &["林月"]),
+            [Problem::Term("Bluestone".into())]
+        );
+        // A name the line doesn't hold isn't there by chance.
+        assert_eq!(
+            terms(english, &["林月", "长老"]),
+            [Problem::Chance("长老".into())]
+        );
+    }
+
+    #[test]
     fn the_strictest_budget_applies_to_a_tight_line() {
         // Six characters today; 110% of that is 6.6, so seven fit.
         let l = line("确定", Some("Accept"), true);
@@ -656,7 +706,7 @@ mod tests {
         assert_eq!(budget(&long, &rules), Some(25));
         // The check takes the budget it's given: a batch's, set with the line's fields.
         let bare = line("蝎妖", Some("Xie"), true);
-        let within = |b| check_within(&bare, "Scorpion Yao", &Glossary::default(), &rules, b);
+        let within = |b| check_within(&bare, "Scorpion Yao", &Glossary::default(), &rules, b, &[]);
         assert_eq!(within(Some(13)), []);
         assert_eq!(within(Some(4)), [Problem::TooLong { len: 12, budget: 4 }]);
     }
