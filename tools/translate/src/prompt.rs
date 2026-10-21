@@ -321,6 +321,27 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_terms_are_written_one_way_without_the_glossary() {
+        // The owner's conventions (2026-10-18) reached the translator only through the glossary's
+        // entries, so a line holding none of them, as most of 妖's do, had no rule (#489).
+        let rule = STYLE
+            .lines()
+            .find(|l| l.starts_with("- **The setting's terms**"))
+            .expect("the rule for the setting's terms");
+        for term in [
+            "妖 is yao",
+            "who are 魔",
+            "is Master",
+            "Mount Tai",
+            "evil qi",
+            "secret realm",
+            "a raid",
+        ] {
+            assert!(rule.contains(term), "{term}");
+        }
+    }
+
+    #[test]
     fn the_style_guides_examples_pass_the_checks() {
         let rules = Rules::from_lines(&[]);
         let problems = |(zh, en): &(String, String)| {
