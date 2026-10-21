@@ -304,3 +304,20 @@ The style guide is a file in `fenji-content`. It holds no game text, and its exa
 - **The pack's layout** within `text/en/`, and its compression.
 - **The launcher's code** for the pack, and Settings' words (DESIGN.md's components).
 - **The content hook's mechanism,** for the patcher's spec.
+
+## 11. Amendment A: every name and word translated afresh (the owner, 2026-10-21)
+
+The owner, with the bulk's first batches done: "I think yuo should go over what is original like class names and retranslate to see if the new ones are better etc, I think it is really worth it to not keep all the bad original localisation", then "you should retranslate every little bit of english language the originals arent great", and "obviously keep things like Health = Health Attack = Attack etc, those are the best translations for a video game" (#487).
+
+As frozen on 2026-10-18, 6,295 of the glossary's 6,671 entries held today's English as it is: 4,450 names, 1,678 words, and 167 official names, the classes' among them. The glossary decides every line that holds a term, so each name kept from today's English was kept in all of them. These rulings were made on the owner's behalf, as the owner asked before going away (2026-10-21). Where this section and the earlier ones differ, this section wins.
+
+| # | Ruling | Why | Cost if wrong |
+|---|---|---|---|
+| RA1 | **Every glossary entry is translated afresh from the Chinese:** names and words, the official ones included. This replaces RT9's "the official English kept where it's right". Today's English is context only, and a form of it stays only where it's the best translation. People's names stay in pinyin (RT9). | The owner's word. | Names that players knew from the official servers read differently. |
+| RA2 | **The genre's standard terms stay** for stats and the game's systems: Health, Attack, Defense, Level, Damage, Experience, Cooldown (the style guide, §3). | The owner: "those are the best translations for a video game". | — |
+| RA3 | **The same pipeline.** The entries go through the driver as batches of their own, in a work folder of their own, `re/retranslation-terms/`. They're translated, reviewed and settled (RT13), with the same checks. Each entry is one line, whose context says what it is and where the game uses it, with a few of its lines in Chinese. An entry that holds another comes in a later round than that entry, with that entry's new English in its batch's glossary, so the checks keep a name the same inside every compound. | The review and the checks that hold the lines hold the glossary too. | A round for each level of nesting. |
+| RA4 | **Variants and notes are rebuilt** from the new English. That covers a compound's short form from its parts, a person's given name, a plural where the old entry had one, and the note's kind and naming rules. What these don't cover is reviewed in a session. | Each answer holds one English per entry. | A line refused for a form the glossary lacks, which the queue shows. |
+| RA5 | **The most visible names are reviewed in the session:** the classes, the sects, the main places and the main cast, and the stats. They're listed for the owner beside today's English. | The owner asked for the work to go on while they were away. RT15's sample already had the owner's word on the voice. | A name changed again, and its lines rerun. |
+| RA6 | **The glossary is re-frozen.** The bulk's batches are replanned, the 58 done so far run again (RT8), and the bulk resumes. Until then it waits, paused since 2026-10-21. | Every name the same everywhere. | The bulk's first batches done twice. |
+
+**Scale.** About 110 batches of entries take a few hours, about $100 by the CLI's reckoning, and the bulk's 58 batches again, about $60.

@@ -413,6 +413,38 @@
   - any token the client drew differently than expected.
 - [ ] **Step 5: Freeze the glossary.** Ledger its size and its file's SHA-256. From now on, a change to the glossary reruns every batch that uses the term.
 
+### Task 11b (interactive, with the bulk paused): the glossary translated afresh (the spec's Amendment A)
+
+**Files:**
+- Modify: `tools/translate/prompts/style.md` (§3), `tools/translate/src/prompt.rs` (its test), the spec (Amendment A)
+- Local only: `re/retranslation-terms/`, the entries' work folder, with its scripts (`plan_terms.py`, `assemble_terms.py`) kept in it
+
+- [ ] **Step 1: The rules** (#487). The style guide's §3 stops keeping the official names, and holds the genre's standard terms (RA1, RA2).
+- [ ] **Step 2: The entries' batches** (RA3), written by `plan_terms.py`:
+  - every entry of `re/retranslation/glossary.json`, by its kind and its family (a class with its skills, a family's people, a region's places);
+  - in rounds by nesting: an entry holding no other in round 0, and one holding others in the round after theirs, with their new English in its batch's glossary;
+  - each entry a line:
+    - its Chinese;
+    - today's English as `en_old`;
+    - a context that says what it is, its old note's naming rules, how many lines hold it, and three of them in Chinese;
+    - the budget of the tightest line that is the entry alone.
+
+  The folder also holds `lines.jsonl` and `rules.json`, which the driver reads.
+- [ ] **Step 3: Drive each round** with `translate --out re/retranslation-terms drive`, then plan the next one from the last one's English. The queue is read and settled in the session, as the bulk's is.
+- [ ] **Step 4: Assemble** `re/retranslation/glossary.next.json` with `assemble_terms.py`:
+  - each entry's settled English, with its kind;
+  - its variants and note rebuilt (RA4).
+
+  Review the most visible names in the session (RA5), and ledger the calls.
+- [ ] **Step 5: The swap** (RA6):
+  - the tool from `dev`;
+  - the glossary re-frozen;
+  - the bulk's batches replanned;
+  - its finished batches moved aside to run again;
+  - the bulk resumed.
+
+  Ledger the glossary's size and its SHA-256.
+
 ## Phase C: `fenji-content`
 
 ### Task 12: the repository, its notice, its style guide and its releases

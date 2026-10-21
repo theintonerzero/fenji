@@ -308,6 +308,19 @@ mod tests {
     }
 
     #[test]
+    fn the_glossary_is_translated_afresh_and_keeps_the_genres_terms() {
+        // The owner (2026-10-21, the spec's Amendment A): nothing of today's English is kept for
+        // being today's, official names included; the genre's stat and system terms stay.
+        assert!(STYLE.contains("never kept for being today's"));
+        assert!(!STYLE.contains("keeps the official English names"));
+        let rule = STYLE
+            .lines()
+            .find(|l| l.starts_with("- **Stats and the game's systems**"))
+            .expect("the rule for the genre's terms");
+        assert!(rule.contains("Health, Attack, Defense, Level, Damage"));
+    }
+
+    #[test]
     fn the_style_guides_examples_pass_the_checks() {
         let rules = Rules::from_lines(&[]);
         let problems = |(zh, en): &(String, String)| {
