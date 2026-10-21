@@ -290,6 +290,7 @@ mod tests {
                 .map(|(i, l)| AnswerLine {
                     fp: l.fp,
                     en: format!("EN {} {i}", b.id),
+                    by_chance: vec![],
                 })
                 .collect();
             write(&s.work, ANSWERS, &b.id, &Answer { lines });
@@ -375,6 +376,7 @@ mod tests {
                 .map(|l| AnswerLine {
                     fp: l.fp,
                     en: "Iron 剑".into(),
+                    by_chance: vec![],
                 })
                 .collect(),
         };
@@ -414,12 +416,14 @@ mod tests {
                     keep: false,
                     en: Some("Reviewed".into()),
                     reason: Some("Livelier.".into()),
+                    by_chance: vec![],
                 },
                 ReviewLine {
                     fp: second,
                     keep: true,
                     en: None,
                     reason: None,
+                    by_chance: vec![],
                 },
             ],
         };
@@ -435,6 +439,7 @@ mod tests {
                 fp: first,
                 en: "Settled".into(),
                 reason: "Closer.".into(),
+                by_chance: vec![],
             }],
         };
         write(&s.work, SETTLED, &dialogue.id, &settled);
