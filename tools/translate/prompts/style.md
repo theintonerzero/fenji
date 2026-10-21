@@ -40,7 +40,10 @@ Read who speaks, to whom, and how, and write what that speaker would say in Engl
 
 - **The glossary's names.** A term whose kind is `name` is written exactly as the glossary has it, capitals included, or as one of its variants. The checks refuse a name written any other way.
 - **The glossary's words.** A term whose kind is `word` gives a term's sense and the English for it; it isn't a name. In a sentence it takes ordinary English capitals and grammar: a plural, a verb's form. A tooltip's Healing stat keeps its capital, but healing in a story has none.
-- **People's names** are in pinyin, without tone marks: the family name first, then the given name as one word (`Ke Muqing`). The glossary keeps the official English names that are right, and corrects those that aren't.
+- **The glossary's English is Fenji's own,** translated afresh from the Chinese like every line. Today's English, its official names included, is never kept for being today's: a form of it stays only where it's the best translation.
+- **People's names** are in pinyin, without tone marks: the family name first, then the given name as one word (`Ke Muqing`).
+- **Places, sects, classes, skills, titles and things** are named by what their Chinese says, as an English game would name them: short, vivid, and clear about what they name (青石岭 is Bluestone Ridge). Where a place's name is only a proper name, with nothing to translate, it's in pinyin, with its generic part in English.
+- **Stats and the game's systems** take the genre's standard English wherever the Chinese means them: Health, Attack, Defense, Level, Damage, Experience, Cooldown. Players read them as they would in any game.
 - **A name the glossary lacks** is written the same way throughout the batch, as the glossary would write it: in pinyin for a person, and by its meaning for a place or thing whose Chinese name describes it.
 - **Forms of address and titles** (teacher, elder, sworn brother, sect leader) follow the glossary. Where it has none, choose an English form that keeps the relationship, and keep to it.
 
