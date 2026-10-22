@@ -450,6 +450,18 @@ enum Failure {
     Lines(Vec<QueuedLine>),
 }
 
+/// `lines` without the lines an answer repeats exactly, the same in every field: a run sometimes
+/// gives one twice (#499). Two different readings of a line both stay, for the answer to be refused.
+fn drop_repeats<T: PartialEq>(lines: Vec<T>) -> Vec<T> {
+    let mut kept: Vec<T> = Vec::with_capacity(lines.len());
+    for line in lines {
+        if !kept.contains(&line) {
+            kept.push(line);
+        }
+    }
+    kept
+}
+
 /// What's wrong with `got` as the answer for `wanted`: each wanted line once, and no other.
 fn whole_problems(wanted: &[Fingerprint], got: &[Fingerprint]) -> Option<String> {
     let wanted_set: BTreeSet<&Fingerprint> = wanted.iter().collect();
@@ -898,7 +910,8 @@ impl Driver {
         let mut failed = Vec::new();
         let kept = match p.job {
             Job::Translate => {
-                let answer: Answer = serde_json::from_value(value).map_err(shape)?;
+                let mut answer: Answer = serde_json::from_value(value).map_err(shape)?;
+                answer.lines = drop_repeats(answer.lines);
                 let got: Vec<Fingerprint> = answer.lines.iter().map(|l| l.fp).collect();
                 if let Some(why) = whole_problems(wanted, &got) {
                     return Err(Failure::Whole(why));
@@ -918,6 +931,7 @@ impl Driver {
             }
             Job::Review => {
                 let mut review: Review = serde_json::from_value(value).map_err(shape)?;
+                review.lines = drop_repeats(review.lines);
                 let got: Vec<Fingerprint> = review.lines.iter().map(|l| l.fp).collect();
                 if let Some(why) = whole_problems(wanted, &got) {
                     return Err(Failure::Whole(why));
@@ -946,7 +960,8 @@ impl Driver {
                 serde_json::to_value(review)
             }
             Job::Settle => {
-                let settled: Settled = serde_json::from_value(value).map_err(shape)?;
+                let mut settled: Settled = serde_json::from_value(value).map_err(shape)?;
+                settled.lines = drop_repeats(settled.lines);
                 let got: Vec<Fingerprint> = settled.lines.iter().map(|l| l.fp).collect();
                 if let Some(why) = whole_problems(wanted, &got) {
                     return Err(Failure::Whole(why));
@@ -1373,6 +1388,79 @@ mod tests {
         );
         let now = now_of_day(None).expect("the time of day, from date");
         assert!(now < 24 * h);
+    }
+
+    #[test]
+    fn a_line_an_answer_repeats_exactly_is_kept_once() {
+        // A run gave one line twice, the same both times, in all three of a batch's tries (#499).
+        let line = |zh: &str| BatchLine {
+            fp: fenji_pack::fingerprint(zh.as_bytes()),
+            zh: zh.into(),
+            en_old: None,
+            context: String::new(),
+            tight: false,
+            budget: None,
+        };
+        let (done, left) = (line("完成了"), line("离开"));
+        let (a, b) = (done.fp, left.fp);
+        let ctx = Ctx {
+            batches: vec![Batch {
+                id: "interface-00001".into(),
+                lines: vec![done, left],
+                glossary: vec![],
+            }],
+            glossaries: vec![Glossary::default()],
+            rules: Rules::from_lines(&[]),
+        };
+        let driver = Driver::new(PathBuf::new(), PathBuf::new());
+        for (job, first, other, second) in [
+            (
+                Job::Translate,
+                serde_json::json!({"fp": a, "en": "Done!"}),
+                serde_json::json!({"fp": a, "en": "Finished!"}),
+                serde_json::json!({"fp": b, "en": "Left"}),
+            ),
+            (
+                Job::Review,
+                serde_json::json!({"fp": a, "keep": false, "en": "Done!", "reason": "Shorter."}),
+                serde_json::json!({"fp": a, "keep": true, "en": null, "reason": null}),
+                serde_json::json!({"fp": b, "keep": true, "en": null, "reason": null}),
+            ),
+            (
+                Job::Settle,
+                serde_json::json!({"fp": a, "en": "Done!", "reason": "Shorter."}),
+                serde_json::json!({"fp": a, "en": "Finished!", "reason": "Plainer."}),
+                serde_json::json!({"fp": b, "en": "Left", "reason": "Plainer."}),
+            ),
+        ] {
+            let p = Picked {
+                batch: 0,
+                job,
+                disputes: vec![],
+                retry: None,
+            };
+            let judged = |lines: Vec<&Value>| {
+                driver.judge(&ctx, &p, &[a, b], serde_json::json!({ "lines": lines }))
+            };
+            let Ok(kept) = judged(vec![&first, &first, &second]) else {
+                panic!("{}", job.name())
+            };
+            assert_eq!(
+                kept["lines"],
+                serde_json::json!([first, second]),
+                "{}",
+                job.name()
+            );
+            // Two readings of one line are still refused.
+            assert!(
+                matches!(
+                    judged(vec![&first, &other, &second]),
+                    Err(Failure::Whole(_))
+                ),
+                "{}",
+                job.name()
+            );
+        }
     }
 
     #[test]
