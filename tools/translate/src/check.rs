@@ -243,10 +243,15 @@ fn floors(lines: &[Line]) -> BTreeMap<String, usize> {
 /// The most characters a tight line's English may draw (RT11): its English today's, by the rules'
 /// percentage, or what the strictest of its fields holds today, whichever is more. Where today's
 /// English is short pinyin, its field still has room for the name's meaning (#491). A line that
-/// isn't tight, or has no English today, has no budget.
+/// isn't tight, or has no English today, has no budget. English today that draws nothing, only
+/// markup or white space, says nothing of the room the line has: its budget is the strictest floor
+/// of the fields it's shown in that have one, or none (#497).
 pub fn budget(line: &Line, rules: &Rules) -> Option<usize> {
-    let today = line.en.as_deref().filter(|_| line.tight)?;
-    let own = (drawn(today).chars().count() * rules.budget_percent as usize).div_ceil(100);
+    let today = drawn(line.en.as_deref().filter(|_| line.tight)?);
+    if today.trim().is_empty() {
+        return known_floor(line, rules);
+    }
+    let own = (today.chars().count() * rules.budget_percent as usize).div_ceil(100);
     Some(own.max(floor(line, rules)))
 }
 
@@ -259,6 +264,17 @@ fn floor(line: &Line, rules: &Rules) -> usize {
         .collect::<Option<Vec<usize>>>()
         .and_then(|floors| floors.into_iter().min())
         .unwrap_or(0)
+}
+
+/// The strictest floor of the tight fields `line` is shown in that have one: for a line whose
+/// English today draws nothing, the one measure of its room there is. A floor of 0, a field whose
+/// English today mostly draws nothing, is none.
+fn known_floor(line: &Line, rules: &Rules) -> Option<usize> {
+    crate::area::tight_fields(&line.uses)
+        .iter()
+        .filter_map(|f| f.as_ref().and_then(|f| rules.floors.get(f)).copied())
+        .filter(|&f| f > 0)
+        .min()
 }
 
 /// Where `term` is in `source`, as byte ranges, overlapping ones too.
@@ -637,6 +653,24 @@ mod tests {
     }
 
     #[test]
+    fn a_tight_line_whose_english_today_draws_nothing_has_no_budget_of_its_own() {
+        // A script's placeholder in a word, whose English today is the placeholder alone: 110% of
+        // nothing drawn was a budget of 0, so any English was too long or empty (#497).
+        let rules = rules();
+        let level = line("{0}级", Some("{0}"), true);
+        assert_eq!(budget(&level, &rules), None);
+        assert_eq!(check(&level, "Level {0}", &Glossary::default(), &rules), []);
+        // Nor does markup or white space alone say how much room there is.
+        let bracket = line("【{0}】[/c]", Some("{0}[/c]"), true);
+        assert_eq!(budget(&bracket, &rules), None);
+        let spaced = line("{0}的{1}", Some("{0} {1}"), true);
+        assert_eq!(budget(&spaced, &rules), None);
+        // English today that draws something still sets it.
+        let seconds = line("{0}秒", Some("{0}s"), true);
+        assert_eq!(budget(&seconds, &rules), Some(2));
+    }
+
+    #[test]
     fn a_tight_line_has_the_room_its_field_holds_today() {
         // An NPC named in three letters of pinyin today: 110% of that is four, but a quarter of
         // the field's names today reach thirteen (#491).
@@ -687,12 +721,20 @@ mod tests {
                 &[("spread", "name")],
             )
         }));
+        // A field whose English today draws nothing: a floor of 0.
+        lines.extend((0..30).map(|i| {
+            shown_in(
+                line(&format!("提{i}"), Some("{0}"), true),
+                &[("blank", "tip")],
+            )
+        }));
         let rules = Rules::from_lines(&lines);
         assert_eq!(rules.floors.get("npcs.name"), Some(&13));
         assert_eq!(rules.floors.get("vote.name"), Some(&8));
         assert_eq!(rules.floors.get("few.name"), None);
         assert_eq!(rules.floors.get("rows.name"), None);
         assert_eq!(rules.floors.get("spread.name"), Some(&31));
+        assert_eq!(rules.floors.get("blank.tip"), Some(&0));
 
         let xie = |fields: &[(&str, &str)]| shown_in(line("蝎妖", Some("Xie"), true), fields);
         let npc = xie(&[("npcs", "name")]);
@@ -701,6 +743,24 @@ mod tests {
             check(&npc, "Scorpion Yao", &Glossary::default(), &rules),
             []
         );
+        // English today that draws nothing leaves the fields' floors (#497): the strictest of
+        // those that have one, a script's string having none.
+        let blank = shown_in(line("名", Some("{0}"), true), &[("npcs", "name")]);
+        assert_eq!(budget(&blank, &rules), Some(13));
+        let mut blank_scripted = blank.clone();
+        blank_scripted.uses.push(Use::Script {
+            path: "data/interface/ui/a.luac".into(),
+        });
+        assert_eq!(budget(&blank_scripted, &rules), Some(13));
+        let voted = shown_in(blank.clone(), &[("npcs", "name"), ("vote", "name")]);
+        assert_eq!(budget(&voted, &rules), Some(8));
+        // A floor of 0 is none: it neither bounds the line nor lifts the bound of another field.
+        assert_eq!(
+            budget(&shown_in(blank.clone(), &[("blank", "tip")]), &rules),
+            None
+        );
+        let tipped = shown_in(blank, &[("npcs", "name"), ("blank", "tip")]);
+        assert_eq!(budget(&tipped, &rules), Some(13));
         // The strictest field it's shown in, and no floor where one field has none.
         assert_eq!(
             budget(&xie(&[("npcs", "name"), ("vote", "name")]), &rules),
