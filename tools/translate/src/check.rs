@@ -267,13 +267,14 @@ fn floor(line: &Line, rules: &Rules) -> usize {
 }
 
 /// The strictest floor of the tight fields `line` is shown in that have one: for a line whose
-/// English today draws nothing, the one measure of its room there is.
+/// English today draws nothing, the one measure of its room there is. A floor of 0, a field whose
+/// English today mostly draws nothing, is none.
 fn known_floor(line: &Line, rules: &Rules) -> Option<usize> {
     crate::area::tight_fields(&line.uses)
         .iter()
         .filter_map(|f| f.as_ref().and_then(|f| rules.floors.get(f)).copied())
-        .min()
         .filter(|&f| f > 0)
+        .min()
 }
 
 /// Where `term` is in `source`, as byte ranges, overlapping ones too.
@@ -720,12 +721,20 @@ mod tests {
                 &[("spread", "name")],
             )
         }));
+        // A field whose English today draws nothing: a floor of 0.
+        lines.extend((0..30).map(|i| {
+            shown_in(
+                line(&format!("提{i}"), Some("{0}"), true),
+                &[("blank", "tip")],
+            )
+        }));
         let rules = Rules::from_lines(&lines);
         assert_eq!(rules.floors.get("npcs.name"), Some(&13));
         assert_eq!(rules.floors.get("vote.name"), Some(&8));
         assert_eq!(rules.floors.get("few.name"), None);
         assert_eq!(rules.floors.get("rows.name"), None);
         assert_eq!(rules.floors.get("spread.name"), Some(&31));
+        assert_eq!(rules.floors.get("blank.tip"), Some(&0));
 
         let xie = |fields: &[(&str, &str)]| shown_in(line("蝎妖", Some("Xie"), true), fields);
         let npc = xie(&[("npcs", "name")]);
@@ -738,19 +747,20 @@ mod tests {
         // those that have one, a script's string having none.
         let blank = shown_in(line("名", Some("{0}"), true), &[("npcs", "name")]);
         assert_eq!(budget(&blank, &rules), Some(13));
-        let scripted = Line {
-            uses: [
-                blank.uses.clone(),
-                vec![Use::Script {
-                    path: "a.lua".into(),
-                }],
-            ]
-            .concat(),
-            ..blank.clone()
-        };
-        assert_eq!(budget(&scripted, &rules), Some(13));
-        let voted = shown_in(blank, &[("npcs", "name"), ("vote", "name")]);
+        let mut blank_scripted = blank.clone();
+        blank_scripted.uses.push(Use::Script {
+            path: "data/interface/ui/a.luac".into(),
+        });
+        assert_eq!(budget(&blank_scripted, &rules), Some(13));
+        let voted = shown_in(blank.clone(), &[("npcs", "name"), ("vote", "name")]);
         assert_eq!(budget(&voted, &rules), Some(8));
+        // A floor of 0 is none: it neither bounds the line nor lifts the bound of another field.
+        assert_eq!(
+            budget(&shown_in(blank.clone(), &[("blank", "tip")]), &rules),
+            None
+        );
+        let tipped = shown_in(blank, &[("npcs", "name"), ("blank", "tip")]);
+        assert_eq!(budget(&tipped, &rules), Some(13));
         // The strictest field it's shown in, and no floor where one field has none.
         assert_eq!(
             budget(&xie(&[("npcs", "name"), ("vote", "name")]), &rules),
