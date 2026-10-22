@@ -451,7 +451,8 @@ enum Failure {
 }
 
 /// `lines` without the lines an answer repeats exactly, the same in every field: a run sometimes
-/// gives one twice (#499). Two different readings of a line both stay, for the answer to be refused.
+/// gives one twice (#499). Two different readings of a line both stay, for the answer to be
+/// refused.
 fn drop_repeats<T: PartialEq>(lines: Vec<T>) -> Vec<T> {
     let mut kept: Vec<T> = Vec::with_capacity(lines.len());
     for line in lines {
@@ -1442,15 +1443,18 @@ mod tests {
             let judged = |lines: Vec<&Value>| {
                 driver.judge(&ctx, &p, &[a, b], serde_json::json!({ "lines": lines }))
             };
-            let Ok(kept) = judged(vec![&first, &first, &second]) else {
-                panic!("{}", job.name())
-            };
-            assert_eq!(
-                kept["lines"],
-                serde_json::json!([first, second]),
-                "{}",
-                job.name()
-            );
+            // Wherever the repeat is.
+            for lines in [vec![&first, &first, &second], vec![&first, &second, &first]] {
+                let Ok(kept) = judged(lines) else {
+                    panic!("{}", job.name())
+                };
+                assert_eq!(
+                    kept["lines"],
+                    serde_json::json!([first, second]),
+                    "{}",
+                    job.name()
+                );
+            }
             // Two readings of one line are still refused.
             assert!(
                 matches!(
