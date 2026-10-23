@@ -130,8 +130,9 @@ pub enum Problem {
     Cjk,
     /// A character the game's font doesn't draw.
     Char(char),
-    /// A glossary name it should hold, as written.
-    Term(String),
+    /// A glossary name it should hold, as written: the name's Chinese, by which an answer lists a
+    /// name held by chance, and its English (#501).
+    Term { zh: String, en: String },
     /// An entry of its answer's list of names held by chance that the line's Chinese doesn't hold.
     Chance(String),
     /// Longer than a tight line's budget, in characters drawn.
@@ -368,7 +369,10 @@ pub fn check_within(
         let inside =
             |(a, b): (usize, usize)| met.iter().any(|&(c, d)| c <= a && b <= d && d - c > b - a);
         if !places(&said, &term.zh).all(inside) {
-            problems.push(Problem::Term(term.en.clone()));
+            problems.push(Problem::Term {
+                zh: term.zh.clone(),
+                en: term.en.clone(),
+            });
         }
     }
     if let Some(budget) = budget {
@@ -435,6 +439,13 @@ mod tests {
         check(l, english, &glossary(), &rules())
     }
 
+    fn term(zh: &str, en: &str) -> Problem {
+        Problem::Term {
+            zh: zh.into(),
+            en: en.into(),
+        }
+    }
+
     #[test]
     fn a_good_translation_has_no_problems() {
         let l = line(
@@ -490,7 +501,7 @@ mod tests {
         let l = line("[q_npcname text=\"林月\"]来了", None, false);
         assert!(
             problems(&l, "[q_npcname text=\"Someone\"] has come")
-                .contains(&Problem::Term("Lin Yue".into()))
+                .contains(&term("林月", "Lin Yue"))
         );
         assert_eq!(problems(&l, "[q_npcname text=\"Lin Yue\"] has come"), []);
     }
@@ -534,7 +545,7 @@ mod tests {
     #[test]
     fn glossary_names_are_required_as_written() {
         let l = line("林月来了", None, false);
-        assert!(problems(&l, "Linyue has come").contains(&Problem::Term("Lin Yue".into())));
+        assert!(problems(&l, "Linyue has come").contains(&term("林月", "Lin Yue")));
         assert_eq!(problems(&l, "Lin Yue has come"), []);
         assert_eq!(problems(&l, "Yue has come"), []);
     }
@@ -562,7 +573,7 @@ mod tests {
         let terms = |zh: &str, english: &str| -> Vec<Problem> {
             check(&line(zh, None, false), english, &glossary, &rules())
                 .into_iter()
-                .filter(|p| matches!(p, Problem::Term(_)))
+                .filter(|p| matches!(p, Problem::Term { .. }))
                 .collect()
         };
         // The place's short form drops its region, as the longer name allows.
@@ -573,15 +584,15 @@ mod tests {
                 "青石岭的风吹过青石岭·望月台",
                 "The wind blows over Moonwatch Terrace"
             ),
-            [Problem::Term("Bluestone Ridge".into())]
+            [term("青石岭", "Bluestone Ridge")]
         );
         // A longer name the English doesn't write meets nothing inside it.
         assert_eq!(
             terms("青石岭·望月台", "The terrace"),
             [
-                Problem::Term("Bluestone Ridge".into()),
-                Problem::Term("Moonwatch Terrace".into()),
-                Problem::Term("Bluestone Ridge: Moonwatch Terrace".into()),
+                term("青石岭", "Bluestone Ridge"),
+                term("望月台", "Moonwatch Terrace"),
+                term("青石岭·望月台", "Bluestone Ridge: Moonwatch Terrace"),
             ]
         );
     }
@@ -604,16 +615,16 @@ mod tests {
             let chance: Vec<String> = chance.iter().map(|c| (*c).into()).collect();
             check_within(&l, english, &glossary, &rules(), None, &chance)
                 .into_iter()
-                .filter(|p| matches!(p, Problem::Term(_) | Problem::Chance(_)))
+                .filter(|p| matches!(p, Problem::Term { .. } | Problem::Chance(_)))
                 .collect()
         };
         let english = "Beneath the forest's moonlight, by Bluestone";
-        assert_eq!(terms(english, &[]), [Problem::Term("Lin Yue".into())]);
+        assert_eq!(terms(english, &[]), [term("林月", "Lin Yue")]);
         assert_eq!(terms(english, &["林月"]), []);
         // The list leaves out only what it names.
         assert_eq!(
             terms("Beneath the forest's moonlight, by the stone", &["林月"]),
-            [Problem::Term("Bluestone".into())]
+            [term("青石", "Bluestone")]
         );
         // A name the line doesn't hold isn't there by chance, however often it's listed.
         assert_eq!(

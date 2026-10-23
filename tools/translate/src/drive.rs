@@ -1083,10 +1083,11 @@ fn lines_retry(lines: &[QueuedLine]) -> String {
         "\nWhat they mean: MissingToken, a tag, placeholder, code or line break of the source is \
          missing; ExtraToken, one the source doesn't have; OutOfOrder, a tag closes before it \
          opens; Cjk, Chinese is left; Char, a character the font doesn't draw; Term, a glossary \
-         name the line holds isn't written as the glossary has it (a name the line holds only by \
-         chance goes in `by_chance` instead, never one it means, nor to fit a budget); Chance, a \
-         listing in `by_chance` that the line's Chinese doesn't hold; TooLong, longer than the line's \
-         budget; British, a British spelling; Empty, nothing is drawn.\n",
+         name the line holds, zh in Chinese and en in English, isn't written as the glossary has \
+         it (a name the line holds only by chance goes in `by_chance` instead, by its zh, never \
+         one it means, nor to fit a budget); Chance, a listing in `by_chance` that the line's \
+         Chinese doesn't hold; TooLong, longer than the line's budget; British, a British \
+         spelling; Empty, nothing is drawn.\n",
     );
     out
 }
@@ -1144,6 +1145,40 @@ mod tests {
         assert_eq!(
             line_problems(&strict, "Scorpion Yao", &glossary, &rules, &[]),
             ["TooLong { len: 12, budget: 4 }"]
+        );
+    }
+
+    #[test]
+    fn a_missing_name_is_given_by_its_chinese_and_its_english() {
+        // An answer lists a name its line holds only by chance by the name's Chinese, which its
+        // English doesn't show: the problem a retry passes on names both (#501).
+        let zh = "树林月光下";
+        let line = BatchLine {
+            fp: fenji_pack::fingerprint(zh.as_bytes()),
+            zh: zh.into(),
+            en_old: None,
+            context: String::new(),
+            tight: false,
+            budget: None,
+        };
+        let glossary = Glossary {
+            terms: vec![crate::check::Term {
+                zh: "林月".into(),
+                en: "Lin Yue".into(),
+                kind: crate::check::TermKind::Name,
+                variants: vec![],
+                note: String::new(),
+            }],
+        };
+        assert_eq!(
+            line_problems(
+                &line,
+                "Beneath the forest's moonlight",
+                &glossary,
+                &Rules::from_lines(&[]),
+                &[]
+            ),
+            [r#"Term { zh: "林月", en: "Lin Yue" }"#]
         );
     }
 
@@ -1284,14 +1319,39 @@ mod tests {
 
     #[test]
     fn a_retry_says_where_a_name_held_by_chance_goes() {
+        // The retry passes on the check's own problem, so its key and the problem agree.
+        let zh = "树林月光下";
+        let line = BatchLine {
+            fp: fenji_pack::fingerprint(zh.as_bytes()),
+            zh: zh.into(),
+            en_old: None,
+            context: String::new(),
+            tight: false,
+            budget: None,
+        };
+        let glossary = Glossary {
+            terms: vec![crate::check::Term {
+                zh: "林月".into(),
+                en: "Lin Yue".into(),
+                kind: crate::check::TermKind::Name,
+                variants: vec![],
+                note: String::new(),
+            }],
+        };
+        let english = "Beneath the forest's moonlight";
         let retry = lines_retry(&[QueuedLine {
-            fp: Fingerprint([1; 16]),
-            en: Some("Beneath the forest's moonlight".into()),
-            problems: vec![r#"Term("Lin Yue")"#.into()],
+            fp: line.fp,
+            en: Some(english.into()),
+            problems: line_problems(&line, english, &glossary, &Rules::from_lines(&[]), &[]),
         }]);
-        assert!(
-            retry.contains("goes in `by_chance` instead, never one it means, nor to fit a budget")
-        );
+        // The list takes a name by its Chinese, which the problem gives with its English (#501).
+        assert!(retry.contains(r#"Term { zh: "林月", en: "Lin Yue" }"#));
+        assert!(retry.contains(
+            "Term, a glossary name the line holds, zh in Chinese and en in English, isn't written"
+        ));
+        assert!(retry.contains(
+            "goes in `by_chance` instead, by its zh, never one it means, nor to fit a budget"
+        ));
         assert!(
             retry.contains("Chance, a listing in `by_chance` that the line's Chinese doesn't hold")
         );
