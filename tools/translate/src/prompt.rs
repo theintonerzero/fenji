@@ -495,19 +495,37 @@ mod tests {
         let at = STYLE
             .find("- **A name in parts.**")
             .expect("the rule for a name in parts");
-        let end = STYLE[at + 1..]
-            .find("\n- ")
-            .map_or(STYLE.len(), |n| at + 1 + n);
-        let shapes = examples(&STYLE[at..end]);
-        assert_eq!(shapes.len(), 4);
+        let end = STYLE[at..].find("\n- ").map_or(STYLE.len(), |n| at + n);
+        let rule = &STYLE[at..end];
+        assert!(rule.contains("even in a tight line"));
+        let shapes = examples(rule);
         for (zh, en) in &shapes {
-            assert!(zh.contains('·') && !en.contains('·'), "{en}");
+            assert!(zh.contains('·'), "{zh} → {en}");
         }
-        let rule = STYLE
+        assert_eq!(
+            shapes.iter().map(|(_, en)| en.as_str()).collect::<Vec<_>>(),
+            [
+                "Agu Talan",
+                "Lantern Hue: Plum Red",
+                "Bluestone Ridge: Moonwatch Terrace",
+                "Green Bamboo Fan",
+                "Pine Wind Robe (Healing)",
+                "Iron Seal III",
+                "Bamboo Chair 12",
+            ]
+        );
+        let kept = STYLE
             .lines()
             .find(|l| l.starts_with("- **A middle dot that isn't in a name**"))
             .expect("the rule for a dot that isn't in a name");
-        assert!(rule.contains("stays"));
+        for scope in [
+            "stays",
+            "as the Chinese spaces it",
+            "a list's item",
+            "the interface",
+        ] {
+            assert!(kept.contains(scope), "{scope}");
+        }
     }
 
     #[test]
@@ -522,7 +540,7 @@ mod tests {
             )
         };
         let found = examples(STYLE);
-        assert_eq!(found.len(), 12);
+        assert_eq!(found.len(), 15);
         for example in &found {
             assert_eq!(problems(example), [], "{}", example.1);
         }
