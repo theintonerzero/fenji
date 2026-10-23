@@ -489,6 +489,55 @@ mod tests {
     }
 
     #[test]
+    fn a_name_in_parts_takes_an_english_shape_without_the_middle_dot() {
+        // The translator kept the Chinese middle dot between a name's parts, which the guide gave
+        // no shape (#503); a dot that isn't in a name, such as a list's, stays.
+        let at = STYLE
+            .find("- **A name in parts.**")
+            .expect("the rule for a name in parts");
+        let end = STYLE[at..].find("\n- ").map_or(STYLE.len(), |n| at + n);
+        let rule = &STYLE[at..end];
+        for words in [
+            "even in a tight line",
+            "in the Chinese order",
+            "in Roman numerals",
+            "counts or indexes",
+            "in digits",
+        ] {
+            assert!(rule.contains(words), "{words}");
+        }
+        let shapes = examples(rule);
+        for (zh, en) in &shapes {
+            assert!(zh.contains('·'), "{zh} → {en}");
+        }
+        assert_eq!(
+            shapes.iter().map(|(_, en)| en.as_str()).collect::<Vec<_>>(),
+            [
+                "Agu Talan",
+                "Lantern Hue: Plum Red",
+                "Qin Tune: Moon Through the Pines",
+                "Bluestone Ridge: Moonwatch Terrace",
+                "Green Bamboo Fan",
+                "Pine Wind Robe (Healing)",
+                "Iron Seal III",
+                "Bamboo Chair 12",
+            ]
+        );
+        let kept = STYLE
+            .lines()
+            .find(|l| l.starts_with("- **A middle dot that isn't in a name**"))
+            .expect("the rule for a dot that isn't in a name");
+        for scope in [
+            "stays",
+            "as the Chinese spaces it",
+            "a list's item",
+            "the interface",
+        ] {
+            assert!(kept.contains(scope), "{scope}");
+        }
+    }
+
+    #[test]
     fn the_style_guides_examples_pass_the_checks() {
         let rules = Rules::from_lines(&[]);
         let problems = |(zh, en): &(String, String)| {
@@ -500,7 +549,7 @@ mod tests {
             )
         };
         let found = examples(STYLE);
-        assert_eq!(found.len(), 8);
+        assert_eq!(found.len(), 16);
         for example in &found {
             assert_eq!(problems(example), [], "{}", example.1);
         }
