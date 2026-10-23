@@ -43,6 +43,12 @@ Read who speaks, to whom, and how, and write what that speaker would say in Engl
 - **The glossary's English is Fenji's own,** translated afresh from the Chinese like every line. Today's English, its official names included, is never kept for being today's: a form of it stays only where it's the best translation.
 - **People's names** are in pinyin, without tone marks: the family name first, then the given name as one word (`Ke Muqing`).
 - **Places, sects, classes, skills, titles and things** are named by what their Chinese says, as an English game would name them: short, vivid, and clear about what they name (青石岭 is Bluestone Ridge). Where a place's name is only a proper name, with nothing to translate, it's in pinyin, with its generic part in English.
+- **A name in parts.** Chinese joins a name's parts with a middle dot (`·`). English doesn't, so the dot goes, and the name takes the shape English gives it. A person's name in parts, such as a foreign one, takes a space.
+  - a series or a group and its member take a colon: `灯彩·梅红` → `Lantern Hue: Plum Red`
+  - a thing and its kind make one name: `扇·青竹` → `Green Bamboo Fan`
+  - a variant, a mode or a role goes in parentheses: `松风袍·疗愈` → `Pine Wind Robe (Healing)`
+  - a rank or a number follows after a space: `铁印·叁` → `Iron Seal III`
+- **A middle dot that isn't in a name** stays: one that starts a list's item, or that separates two things in the interface.
 - **Stats and the game's systems** take the genre's standard English wherever the Chinese means them: Health, Attack, Defense, Level, Damage, Experience, Cooldown. Players read them as they would in any game.
 - **The setting's terms** are written one way everywhere, whether or not the glossary names them. 妖 is yao, the spirit folk of beasts and plants (the yao, a fox yao, yao qi), kept apart from demons, who are 魔. A zhenren (真人), one of the Perfected, is Master (张真人 is Master Zhang). A mountain whose name is a proper name is Mount X (泰山 is Mount Tai). 邪气 is evil qi. A 秘境 is a secret realm in the story and in a dungeon's name, and a dungeon in the interface, where 团队秘境 is a raid.
 - **A name the glossary lacks** is written the same way throughout the batch, as the glossary would write it: in pinyin for a person, and by its meaning for a place or thing whose Chinese name describes it.
