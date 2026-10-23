@@ -497,7 +497,15 @@ mod tests {
             .expect("the rule for a name in parts");
         let end = STYLE[at..].find("\n- ").map_or(STYLE.len(), |n| at + n);
         let rule = &STYLE[at..end];
-        assert!(rule.contains("even in a tight line"));
+        for words in [
+            "even in a tight line",
+            "in the Chinese order",
+            "in Roman numerals",
+            "counts or indexes",
+            "in digits",
+        ] {
+            assert!(rule.contains(words), "{words}");
+        }
         let shapes = examples(rule);
         for (zh, en) in &shapes {
             assert!(zh.contains('·'), "{zh} → {en}");
@@ -507,6 +515,7 @@ mod tests {
             [
                 "Agu Talan",
                 "Lantern Hue: Plum Red",
+                "Qin Tune: Moon Through the Pines",
                 "Bluestone Ridge: Moonwatch Terrace",
                 "Green Bamboo Fan",
                 "Pine Wind Robe (Healing)",
@@ -540,7 +549,7 @@ mod tests {
             )
         };
         let found = examples(STYLE);
-        assert_eq!(found.len(), 15);
+        assert_eq!(found.len(), 16);
         for example in &found {
             assert_eq!(problems(example), [], "{}", example.1);
         }

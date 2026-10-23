@@ -45,13 +45,14 @@ Read who speaks, to whom, and how, and write what that speaker would say in Engl
 - **Places, sects, classes, skills, titles and things** are named by what their Chinese says, as an English game would name them: short, vivid, and clear about what they name (青石岭 is Bluestone Ridge). Where a place's name is only a proper name, with nothing to translate, it's in pinyin, with its generic part in English.
 - **A name in parts.** Chinese joins a name's parts with a middle dot (`·`). English doesn't, so the dot goes, even in a tight line, and the name takes the shape English gives it:
   - a person's name, such as a foreign one, takes a space between its parts, each in pinyin, in the Chinese order: `阿古·塔兰` → `Agu Talan`
-  - a series and its member, or a kind and a title, take a colon: `灯彩·梅红` → `Lantern Hue: Plum Red`
-  - so do a place and a spot in it: `青石岭·望月台` → `Bluestone Ridge: Moonwatch Terrace`
+  - a series and its member take a colon: `灯彩·梅红` → `Lantern Hue: Plum Red`
+  - so do a kind and a title: `琴曲·松间明月` → `Qin Tune: Moon Through the Pines`
+  - and a place and a spot in it: `青石岭·望月台` → `Bluestone Ridge: Moonwatch Terrace`
   - a kind (a common noun for what it is) and a word that only says which one make one name: `扇·青竹` → `Green Bamboo Fan`
   - a variant, a mode or a role goes in parentheses: `松风袍·疗愈` → `Pine Wind Robe (Healing)`
-  - a rank comes after a space, in Roman numerals: `铁印·叁` → `Iron Seal III`
-  - a number that counts or orders comes after a space, in digits: `竹椅·十二` → `Bamboo Chair 12`
-- **A middle dot that isn't in a name** stays, spaced as the Chinese spaces it: one that starts a list's item (`· 雨天不开放` is `· Closed on rainy days`), or that separates two things in the interface (`{0} · 第{1}卷` is `{0} · Volume {1}`).
+  - a rank or a tier (in the Chinese, often one of 壹 to 捌) comes after a space, in Roman numerals: `铁印·叁` → `Iron Seal III`
+  - a number that counts or indexes comes after a space, in digits: `竹椅·十二` → `Bamboo Chair 12`
+- **A middle dot that isn't in a name** stays, spaced as the Chinese spaces it: one that starts a list's item (`· 雨天不开放` is `· Closed on rainy days`), or that separates two things in the interface (`{0}级 · {1}` is `Level {0} · {1}`).
 - **Stats and the game's systems** take the genre's standard English wherever the Chinese means them: Health, Attack, Defense, Level, Damage, Experience, Cooldown. Players read them as they would in any game.
 - **The setting's terms** are written one way everywhere, whether or not the glossary names them. 妖 is yao, the spirit folk of beasts and plants (the yao, a fox yao, yao qi), kept apart from demons, who are 魔. A zhenren (真人), one of the Perfected, is Master (张真人 is Master Zhang). A mountain whose name is a proper name is Mount X (泰山 is Mount Tai). 邪气 is evil qi. A 秘境 is a secret realm in the story and in a dungeon's name, and a dungeon in the interface, where 团队秘境 is a raid.
 - **A name the glossary lacks** is written the same way throughout the batch, as the glossary would write it: in pinyin for a person, and by its meaning for a place or thing whose Chinese name describes it.
