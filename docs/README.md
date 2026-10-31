@@ -44,4 +44,4 @@ Playing on a friend's server needs only the desktop launcher: the root [README](
 | [`protocol/packets/world.md`](protocol/packets/world.md) | M4: entering the world: 772, the native types 3, 7, 8 and 23, the property blob, time syncs and the creation outfit; seeing each other: types 6, 5 and 9 and another player's 7; two clients on one machine; moving: types 8, 13 and 20, the move clock and the units; the runs, and the 20-bot load measurement. |
 | [`protocol/packets/chat.md`](protocol/packets/chat.md) | M4: chat: the line a player says (115) and the line a client shows (378), the player link, the channels Fenji uses, refusals (270) and their codes, the admins' commands, and the runs with two real clients. |
 
-Ground rules (full text in the design spec, §2): legitimate copies only; clean room, no leaked server material; no game content in the repo; a patched or instrumented client only ever talks to Fenji; private and non-commercial.
+Ground rules (full text in the design spec, §2): legitimate copies only; clean room, no leaked server material; no game content in the repo; a patched or instrumented client only ever talks to Fenji; never monetised.

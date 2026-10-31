@@ -24,7 +24,7 @@ Success looks like this. A host starts the server and sends invites. Each friend
 
 ## Positioning
 
-Fenji is clean-room and legitimate by construction. It uses no leaked server files, ships no game files, and only ever starts the player's own unmodified client. It is private, invite-only and non-commercial: no store, no payments, no telemetry. Anyone can host, and the code is public under AGPL-3.0-or-later.
+Fenji is clean-room and legitimate by construction. It uses no leaked server files, ships no game files, and only ever starts the player's own unmodified client. It is non-commercial, for private and public servers alike: no store, no payments, no telemetry. Anyone can host, and the code is public under AGPL-3.0-or-later.
 
 ## Operating Context
 
