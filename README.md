@@ -29,7 +29,7 @@ The details are in the [design spec](docs/superpowers/specs/2026-10-11-fenji-des
 - **No game content here.** No game files, extracted assets, decompiled scripts, middleware libraries or packet captures. The tools read the game's data from your own installation, at run time.
 - **Patches for Fenji only.** Fenji may patch the client so it works fully with Fenji and can take plugins, and the launcher will apply those patches to each player's own copy (#225; after M4). A patched or instrumented client only ever talks to a Fenji server, never to an official or any other service.
 - **Hands off official services.** Testing happens in a sandbox, or on the project's own Linux machine with the client's network limited to a local Fenji server, and always against our own server.
-- **Private and free.** Fenji is meant for private, invite-only, unlisted and non-commercial servers. The project doesn't run, list or vouch for any server, and won't help with public or paid ones.
+- **Free, never monetised.** A Fenji server can be private, for friends, or open to the public, but never monetised: no paid access, no cash shop, no paid perks. The project doesn't run or vouch for any server, and won't help with monetised ones. Joining a server means trusting its host ([PRIVACY.md](PRIVACY.md#trusting-a-servers-host)).
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the full rules and what they mean for contributors.
 
