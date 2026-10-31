@@ -6,10 +6,12 @@ and variants rebuilt from the new English. The note is the entry's kind and nami
 Chinese: `translate glossary export` takes the notes out of re/ to fenji-content. The checks find
 a name anywhere in a line's English, so a plural that holds the name needs no variant; what's
 rebuilt is a person's given name, where the name is in pinyin, and a creature's plural where it
-doesn't hold the name (Wolves). What these don't cover is reviewed in a session (RA5).
+doesn't hold the name (Wolves). What these don't cover is reviewed in a session (RA5), whose
+calls, in WORK/calls.json, win over the settled English.
 
 usage: assemble_terms.py WORK TERMS
-  writes WORK/glossary.next.json once every entry of WORK/glossary.json has its English in TERMS
+  writes WORK/glossary.next.json once every entry of WORK/glossary.json has its English in TERMS,
+  or a call in WORK/calls.json
 """
 import importlib.util
 import sys
@@ -88,10 +90,12 @@ def note(t):
     return NOTES[kind]
 
 
-def assemble(glossary, entries, english):
+def assemble(glossary, entries, english, calls=None):
     """The next glossary's terms, and the entries with no English yet. `entries` maps each
-    entry's fingerprint to its Chinese; `english`, each fingerprint to its settled English."""
+    entry's fingerprint to its Chinese; `english`, each fingerprint to its settled English;
+    `calls`, an entry's Chinese to the owner's English, which wins."""
     zh_en = {zh: english[fp] for fp, zh in entries.items() if fp in english}
+    zh_en.update(calls or {})
     new, missing = [], []
     for t in glossary:
         en = zh_en.get(t["zh"])
@@ -107,7 +111,8 @@ def main(argv):
         sys.exit(__doc__)
     work, terms = Path(argv[1]), Path(argv[2])
     glossary = plan.read_json(work / "glossary.json")["terms"]
-    new, missing = assemble(glossary, plan.read_json(terms / "entries.json"), plan.final_english(terms))
+    calls = plan.read_json(work / "calls.json") if (work / "calls.json").exists() else {}
+    new, missing = assemble(glossary, plan.read_json(terms / "entries.json"), plan.final_english(terms), calls)
     if missing:
         more = " …" if len(missing) > 20 else ""
         sys.exit(f"{len(missing)} entries have no English yet: {', '.join(missing[:20])}{more}")
