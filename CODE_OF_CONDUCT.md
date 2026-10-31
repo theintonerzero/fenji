@@ -36,7 +36,7 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement privately, through this repository's GitHub reporting form: the **Security** tab, then **Report a vulnerability** (<https://github.com/theintonerzero/fenji/security/advisories/new>), with "Code of conduct" in the title. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement privately, through this repository's GitHub reporting form: the **Security** tab, then **Report a vulnerability** (<https://github.com/theintonerzero/fenji/security/advisories/new>), with "Code of conduct" in the title. In the project's Discord server, you can also send a direct message to the **ModMail** bot, which reaches the moderators privately. All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 
