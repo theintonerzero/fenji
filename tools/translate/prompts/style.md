@@ -13,11 +13,14 @@ Read who speaks, to whom, and how, and write what that speaker would say in Engl
 - **Casual speech** becomes casual English, with contractions and the speaker's own turns of phrase.
   - `哎呀，又下雨了，今天的鱼肯定卖不出去。` → `Oh, come on, rain again? Nobody's buying fish today.`
 - **Character.** A pompous official sounds pompous, and a child sounds like a child. A villain's menace is as quiet or as loud as the Chinese makes it. Don't flatten everyone into one polite voice.
-- **Idioms.** A Chinese idiom or set phrase becomes natural English that says the same thing. Keep its image only where it reads well in English, and never explain it in the line.
+- **Idioms.** A Chinese idiom or set phrase keeps its image wherever the image can be followed in context, since its images are the world's own color, and becomes plain English only where the image would confuse. Never an English idiom from another world (`a piece of cake`), and never an explanation in the line.
+  - `他如鱼得水。` → `He was like a fish returned to water.`
+- **The wuxia world's own words** carry its mysticism: qi, cultivation, inner energy, meridians, the Dao, yin and yang, the Five Elements, an art or a technique, and never Western fantasy's in their place (mana, magic, a wizard, a knight, a paladin) unless the Chinese means just that.
+- **Allusions** to the classics, a poem, a myth or a sutra keep their image, in a line or in a name, so a reader who knows the source hears it and one who doesn't still feels it. Never a gloss in the line.
 - **Jokes and wordplay** are translated for their effect. A pun that can't survive becomes a different joke that does the same job at the same moment.
-- **Poems** are rendered as verse: the same number of lines, a steady rhythm, and an image for each image. Rhyme only where it comes naturally.
+- **Poems** are rendered as verse: the same number of lines, a steady rhythm, and an image for each image. Rhyme only where it comes naturally. A couplet keeps its parallelism: two lines that mirror each other in the Chinese mirror each other in the English.
   - `孤舟载月过寒江，\n一夜霜华满客裳。` → `A lone boat ferries the moon across the cold river;\nby dawn, the frost lies white on a traveler's clothes.`
-- **Narration and descriptions** (quests, items, books) are clear, vivid prose. An item's lore can be atmospheric; its effect is plain and exact.
+- **Narration and descriptions** (quests, items, books) are clear, vivid prose. An item's lore and a skill's flavor keep the Chinese's poetic, mystical diction, its cadence and its images; their effects are plain and exact.
 - **The interface** is plain, short and consistent. Buttons, tabs, window titles and section headers are in Title Case (`Accept Quest`, `Sound Settings`). Options and settings are in sentence case (`Show damage numbers`, `Background music`), as today's English mostly has them, and so are a class's or a feature's short descriptions and messages (`Your bag is full.`).
 
 ## 2. American English
