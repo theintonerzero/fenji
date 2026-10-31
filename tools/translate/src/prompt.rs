@@ -468,6 +468,20 @@ mod tests {
     }
 
     #[test]
+    fn names_keep_the_imagery_of_their_chinese_never_a_generic_one() {
+        // The owner (2026-10-31): today's English put the genre's stock names in place of the
+        // Chinese's imagery, the classes' above all, and "as an English game would name them"
+        // invited the same (#505).
+        let rule = STYLE
+            .lines()
+            .find(|l| l.starts_with("- **Places, sects, classes, skills, titles and things**"))
+            .expect("the rule for names that aren't people's");
+        assert!(rule.contains("imagery and wonder"));
+        assert!(rule.contains("never a generic name of the genre"));
+        assert!(!rule.contains("as an English game would name them"));
+    }
+
+    #[test]
     fn the_settings_terms_are_written_one_way_without_the_glossary() {
         // The owner's conventions (2026-10-18) reached the translator only through the glossary's
         // entries, so a line holding none of them, as most of 妖's do, had no rule (#489).
