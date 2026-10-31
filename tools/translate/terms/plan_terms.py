@@ -6,11 +6,13 @@ line the game shows it alone in, where there is one, so its budget is that line'
 of its own in the `term` context. An entry comes in the round after every entry it holds, and
 its batch's glossary carries those entries' new English, so the checks keep a name the same
 inside every compound. Entries go in batches by kind and family: a family's people, a region's
-places.
+places. An entry the owner has named (RA5) is in WORK/calls.json, its Chinese to its English: no
+round translates it again, and the compounds that hold it carry the owner's English.
 
 usage: plan_terms.py WORK TERMS ROUND
-  WORK   the bulk's work folder (re/retranslation): glossary.json, lines.jsonl, rules.json, and
-         batches/ as `translate batch` plans them, for the lines' budgets and contexts
+  WORK   the bulk's work folder (re/retranslation): glossary.json, lines.jsonl, rules.json,
+         calls.json where the owner has named entries, and batches/ as `translate batch` plans
+         them, for the lines' budgets and contexts
   TERMS  the entries' work folder (re/retranslation-terms), for `translate --out TERMS drive`
   ROUND  0, then each next round once the last one's batches are settled
 """
@@ -133,18 +135,21 @@ def context(t, count, examples, own_context):
     return " ".join(parts)
 
 
-def plan_round(glossary, lines, bulk, english, round_no, max_lines=MAX_LINES):
+def plan_round(glossary, lines, bulk, english, round_no, max_lines=MAX_LINES, calls=None):
     """Round `round_no`'s batches, the lines of its own its entries need, and its entries by
     fingerprint. `bulk` holds the bulk's batch lines' budgets and contexts by fingerprint;
-    `english`, the new English of the entries earlier rounds settled."""
+    `english`, the new English of the entries earlier rounds settled; `calls`, the owner's
+    English for the entries the owner has named, which win over the rounds'."""
+    calls = calls or {}
+    known = {**english, **calls}
     by_zh = {t["zh"]: t for t in glossary}
     held = holds(by_zh)
     round_of = rounds(by_zh)
     chosen = sorted(
-        (t for t in glossary if round_of[t["zh"]] == round_no),
+        (t for t in glossary if round_of[t["zh"]] == round_no and t["zh"] not in calls),
         key=lambda t: (WHATS.index(what(t)), family(t), t["zh"]),
     )
-    missing = sorted({h for t in chosen for h in held[t["zh"]] if h not in english})
+    missing = sorted({h for t in chosen for h in held[t["zh"]] if h not in known})
     if missing:
         raise ValueError(f"round {round_no}: no new English yet for {', '.join(missing)}")
     own = own_lines(glossary, lines)
@@ -203,7 +208,7 @@ def plan_round(glossary, lines, bulk, english, round_no, max_lines=MAX_LINES):
                 "glossary": [
                     {
                         "zh": h,
-                        "en": english[h],
+                        "en": known[h],
                         "kind": by_zh[h]["kind"],
                         "variants": [],
                         "note": by_zh[h]["note"],
@@ -266,8 +271,9 @@ def main(argv):
     if round_no > 0:
         entries = read_json(terms / "entries.json")
         english = {entries[fp]: en for fp, en in final_english(terms).items() if fp in entries}
+    calls = read_json(work / "calls.json") if (work / "calls.json").exists() else {}
     try:
-        batches, _, _ = plan_round(glossary, lines, bulk, english, round_no)
+        batches, _, _ = plan_round(glossary, lines, bulk, english, round_no, calls=calls)
     except ValueError as e:
         sys.exit(str(e))
 

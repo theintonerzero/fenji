@@ -436,7 +436,7 @@
   - each entry's settled English, with its kind;
   - its variants and note rebuilt (RA4).
 
-  Review the most visible names in the session (RA5), and ledger the calls.
+  Review the most visible names in the session (RA5), and ledger the calls in `re/retranslation/calls.json`, each entry's Chinese to the owner's English. Both scripts apply them: no round translates a called entry again, the compounds that hold it carry the owner's English, and assembly takes the call over the settled English (#518). Calls can come before the rounds end, as the classes' did.
 - [ ] **Step 5: The swap** (RA6):
   - the tool from `dev`;
   - the glossary re-frozen;

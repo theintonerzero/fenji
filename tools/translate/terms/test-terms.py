@@ -313,5 +313,58 @@ class AssembleMain(unittest.TestCase):
         self.assertFalse((self.work / "glossary.next.json").exists())
 
 
+class Calls(unittest.TestCase):
+    """The owner's calls (RA5), WORK/calls.json: an entry's Chinese to the owner's English."""
+
+    def test_a_called_entry_is_never_planned(self):
+        glossary = [term("天墉", note=PLACE), term("司命", note="class: the deity of fate")]
+        batches, _, _ = plan.plan_round(glossary, LINES, BULK, {}, 0, calls={"司命": "Fatebinder"})
+        self.assertEqual([l["zh"] for l in lines_of(batches)], ["天墉"])
+
+    def test_a_later_round_carries_a_held_entrys_call_over_its_english(self):
+        glossary = [term("天墉", note=PLACE), term("天墉城", note=PLACE)]
+        batches, _, _ = plan.plan_round(glossary, LINES, BULK, {"天墉": "Tianyong"}, 1, calls={"天墉": "Skywall"})
+        (b,) = batches
+        self.assertEqual(b["glossary"][0]["en"], "Skywall")
+
+    def test_a_called_held_entry_needs_no_english_from_the_rounds(self):
+        glossary = [term("天墉", note=PLACE), term("天墉城", note=PLACE)]
+        batches, _, _ = plan.plan_round(glossary, LINES, BULK, {}, 1, calls={"天墉": "Skywall"})
+        self.assertEqual([l["zh"] for l in lines_of(batches)], ["天墉城"])
+
+    def test_assembly_takes_a_call_over_the_settled_english(self):
+        new, missing = assemble.assemble(
+            [term("司命", note="class: x")], {A: "司命"}, {A: "Fatekeeper"}, calls={"司命": "Fatebinder"}
+        )
+        self.assertEqual(([t["en"] for t in new], missing), (["Fatebinder"], []))
+
+    def test_a_called_entry_needs_no_english_from_the_rounds_to_assemble(self):
+        new, missing = assemble.assemble([term("司命", note="class: x")], {}, {}, calls={"司命": "Fatebinder"})
+        self.assertEqual(([t["en"] for t in new], missing), (["Fatebinder"], []))
+
+    def test_both_scripts_read_the_calls_from_the_work_folder(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            work, terms = root / "retranslation", root / "retranslation-terms"
+            write(work / "glossary.json", {"terms": [term("天墉", note=PLACE), term("天墉城", note=PLACE)]})
+            work.joinpath("lines.jsonl").write_text(
+                "".join(json.dumps(l, ensure_ascii=False) + "\n" for l in LINES), encoding="utf-8")
+            write(work / "rules.json", {"budget_percent": 130})
+            write(work / "batches" / "interface-00001.json", {"id": "interface-00001", "glossary": [], "lines": [
+                {"fp": TIANYONG_CITY_FP, "zh": "天墉城", "en_old": "Tianyong City",
+                 "context": "maps.name, row 7", "tight": True, "budget": 14}]})
+            write(work / "calls.json", {"天墉": "Skywall"})
+            plan.main(["plan_terms.py", str(work), str(terms), "0"])
+            self.assertEqual(list((terms / "batches").glob("*.json")), [])
+            plan.main(["plan_terms.py", str(work), str(terms), "1"])
+            r1 = json.loads((terms / "batches" / "terms-r1-00001.json").read_text(encoding="utf-8"))
+            self.assertEqual(r1["glossary"][0]["en"], "Skywall")
+            write(terms / "answers" / "terms-r1-00001.json", {"lines": [{"fp": TIANYONG_CITY_FP, "en": "Skywall Citadel"}]})
+            assemble.main(["assemble_terms.py", str(work), str(terms)])
+            got = json.loads((work / "glossary.next.json").read_text(encoding="utf-8"))
+            self.assertEqual([(t["zh"], t["en"]) for t in got["terms"]],
+                             [("天墉", "Skywall"), ("天墉城", "Skywall Citadel")])
+
+
 if __name__ == "__main__":
     unittest.main()
