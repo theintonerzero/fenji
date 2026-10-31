@@ -482,6 +482,27 @@ mod tests {
     }
 
     #[test]
+    fn the_wuxia_worlds_images_words_allusions_and_verse_are_kept() {
+        // The owner (2026-10-31): the Chinese's mysticism, its wuxia wording and its poetry, must
+        // survive in the English, where idioms were made plain and Western fantasy's words could
+        // stand in for the genre's (#512).
+        let rule = |start: &str| {
+            STYLE
+                .lines()
+                .find(|l| l.starts_with(start))
+                .unwrap_or_else(|| panic!("no rule starting {start}"))
+        };
+        let idioms = rule("- **Idioms.**");
+        assert!(idioms.contains("keeps its image"));
+        assert!(!idioms.contains("only where it reads well in English"));
+        assert!(rule("- **The wuxia world's own words**").contains("never Western fantasy's"));
+        assert!(rule("- **Allusions**").contains("keep their image"));
+        assert!(rule("- **Narration and descriptions**").contains("mystical"));
+        assert!(rule("- **Poems**").contains("parallelism"));
+        assert!(REVIEW.contains("swapped for Western fantasy's, is wrong"));
+    }
+
+    #[test]
     fn the_settings_terms_are_written_one_way_without_the_glossary() {
         // The owner's conventions (2026-10-18) reached the translator only through the glossary's
         // entries, so a line holding none of them, as most of 妖's do, had no rule (#489).
@@ -563,7 +584,7 @@ mod tests {
             )
         };
         let found = examples(STYLE);
-        assert_eq!(found.len(), 16);
+        assert_eq!(found.len(), 17);
         for example in &found {
             assert_eq!(problems(example), [], "{}", example.1);
         }
