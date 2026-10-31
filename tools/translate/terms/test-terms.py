@@ -264,6 +264,12 @@ class Assemble(unittest.TestCase):
             ("Bone Knife", ["Bone Knives"]),
             ("Mountain Goat", []),
             ("Old Fox", []),
+            # A word that only ends like an irregular one takes -s, which holds the name (#508's review).
+            ("Wild Human", []),
+            ("Fox Shaman", []),
+            ("Grey Mongoose", []),
+            ("Snow Goose", ["Snow Geese"]),
+            ("Field Mouse", ["Field Mice"]),
         ]:
             with self.subTest(en=en):
                 self.assertEqual(assembled("狼", en, note=CREATURE)["variants"], want)

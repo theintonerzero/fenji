@@ -39,11 +39,19 @@ NOTES = {
 IRREGULAR = {"man": "men", "person": "people", "mouse": "mice", "louse": "lice", "goose": "geese", "tooth": "teeth", "foot": "feet"}
 # Words in -f that take -fs.
 TAKE_S = {"chief", "roof", "belief", "chef", "reef", "proof", "brief", "gulf", "serf", "turf", "surf"}
+# Words that only end like an irregular one, and take -s: their plural holds them, so they need no
+# variant, and a wrong one (Humen) would let the checks pass a wrong form.
+LOOKALIKES = {
+    "human", "shaman", "talisman", "caiman", "cayman", "german", "roman", "ottoman", "dolman",
+    "brahman", "mongoose", "bigfoot", "sabertooth",
+}
 
 
 def plural(word):
     """A word's plural where it doesn't hold the word itself, else None."""
     lower = word.lower()
+    if lower in LOOKALIKES:
+        return None
     for one, many in IRREGULAR.items():
         if lower.endswith(one):
             head = word[: len(word) - len(one)]
