@@ -417,7 +417,8 @@
 
 **Files:**
 - Modify: `tools/translate/prompts/style.md` (§3), `tools/translate/src/prompt.rs` (its test), the spec (Amendment A)
-- Local only: `re/retranslation-terms/`, the entries' work folder, with its scripts (`plan_terms.py`, `assemble_terms.py`) kept in it
+- Create: `tools/translate/terms/plan_terms.py` and `assemble_terms.py`, with their test, `test-terms.py`, which CI runs (#506). They were first kept in the work folder, and lost with it.
+- Local only: `re/retranslation-terms/`, the entries' work folder
 
 - [ ] **Step 1: The rules** (#487). The style guide's §3 stops keeping the official names, and holds the genre's standard terms (RA1, RA2).
 - [ ] **Step 2: The entries' batches** (RA3), written by `plan_terms.py`:
