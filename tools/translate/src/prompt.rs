@@ -482,6 +482,32 @@ mod tests {
     }
 
     #[test]
+    fn names_carry_their_image_never_a_gloss_of_their_characters() {
+        // The owner (2026-10-31): the first drafts glossed the characters ("Heavenly Dipper",
+        // "Gray Stone"), as naming things "by what their Chinese says" and the notes' literal
+        // senses invited; a class is the image with a word for what they are (#516).
+        let rule = |start: &str| {
+            STYLE
+                .lines()
+                .find(|l| l.trim_start().starts_with(start))
+                .unwrap_or_else(|| panic!("no rule starting {start}"))
+        };
+        assert!(
+            rule("- **Places, sects, classes, skills, titles and things**")
+                .contains("never a gloss of its characters")
+        );
+        assert!(!STYLE.contains("are named by what their Chinese says"));
+        assert!(
+            rule("- **A class, a school, a rank or a title**")
+                .contains("an English word for what they are")
+        );
+        assert!(rule("- **A skill, an art or an item**").contains("echoes its source"));
+        assert!(rule("- **A literal rendering**").contains("already vivid in English"));
+        assert!(rule("- **A glossary note's literal sense**").contains("never the name"));
+        assert!(rule("- **Never Western fantasy's stock coinages**").contains("-sworn"));
+    }
+
+    #[test]
     fn the_wuxia_worlds_images_words_allusions_and_verse_are_kept() {
         // The owner (2026-10-31): the Chinese's mysticism, its wuxia wording and its poetry, must
         // survive in the English, where idioms were made plain and Western fantasy's words could
