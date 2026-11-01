@@ -149,7 +149,7 @@ jobs:
           # The archive, as this job's report (above).
           if command -v sha256sum > /dev/null; then sum=$(sha256sum -b "$archive"); else sum=$(shasum -a 256 -b "$archive"); fi
           echo "report=${sum%% *} ${archive##*/}" | tee -a "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fenji-server-${{ env.TARGET }}
           path: dist/
@@ -220,12 +220,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
             libssl-dev libayatana-appindicator3-dev librsvg2-dev
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       # Before tauri-cli's install: the cache brings back ~/.cargo/bin, and cargo install then
       # finds the pinned version there.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: apps/launcher/src-tauri
           key: ${{ env.BUNDLE }}
@@ -291,7 +291,7 @@ jobs:
           # The bundle, as this job's report (above).
           if command -v sha256sum > /dev/null; then sum=$(sha256sum -b "${found[0]}"); else sum=$(shasum -a 256 -b "${found[0]}"); fi
           echo "report=${sum%% *} ${found[0]##*/}" | tee -a "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fenji-launcher-${{ env.BUNDLE }}
           path: dist-launcher/
@@ -349,7 +349,7 @@ jobs:
           cargo install --locked tauri-cli --version "$TAURI_CLI_VERSION"
           cargo tauri --version
       # Each bundle's artifact in a folder of its own, nothing merged.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: fenji-launcher-*
           path: artifacts
@@ -385,7 +385,7 @@ jobs:
             echo "$bundle=${sum%% *} $f.sig" | tee -a "$GITHUB_OUTPUT"
           done
           ls -l
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: launcher-signatures
           path: launcher/*.sig
@@ -409,11 +409,11 @@ jobs:
           persist-credentials: false
       # Each artifact in a folder of its own, nothing merged: the next step takes only what each
       # file's own job reported, and refuses anything else.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: fenji-*
           path: artifacts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: launcher-signatures
           path: artifacts/launcher-signatures
@@ -446,7 +446,7 @@ jobs:
         env:
           SSH_SIGNING_PRIVATE_KEY: ${{ secrets.SSH_SIGNING_PRIVATE_KEY }}
         run: scripts/sign-sums.sh dist deploy/allowed_signers
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-files
           path: dist/*
@@ -464,7 +464,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: fenji-*
           path: artifacts
@@ -498,7 +498,7 @@ jobs:
           persist-credentials: false
       # What the sums job put together: the archives, the bundles and their signatures, latest.json,
       # SHA256SUMS and SHA256SUMS.sig.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-files
           path: dist
